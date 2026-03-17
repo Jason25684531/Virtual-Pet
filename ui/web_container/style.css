@@ -1,0 +1,24 @@
+/* ECHOES — 透明背景 WebM 播放器樣式 */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html, body {
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    background-color: transparent;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+#pet-video {
+    width: 100vw;
+    height: 100vh;
+    object-fit: contain;
+    display: block;
+    pointer-events: none;
+}
