@@ -7,12 +7,12 @@ ECHOES — ComfyUI 本機算圖 Client
 import json
 import os
 import shutil
-import threading
 import uuid
-from pathlib import Path
 
 import requests
 import websocket
+
+from character_library import MOTION_SPECS
 
 # ── 常數設定 ────────────────────────────────────────────────
 
@@ -30,19 +30,10 @@ ASSETS_WEBM_DIR = os.path.join(
     "assets", "webm",
 )
 
-# VHS node 454 以 Sequential 模式依序產出 6 支 WebM，
-# 對應 AutoMotionLoader (node 435) 中非零 slot 的執行順序。
-EMOTION_FILENAMES = [
-    "laugh.webm",       # slot 2  — 雀躍大笑
-    "angry.webm",       # slot 6  — 薄怒嘟嘴
-    "awkward.webm",     # slot 11 — 尷尬擺手
-    "speechless.webm",  # slot 13 — 無言微翻白眼
-    "listen.webm",      # slot 16 — 專心聆聽
-    "idle.webm",        # slot 18 — 愉悅微笑 (idle)
-]
-
 # 輸入節點 ID：VHS_LoadImagesPath
 _NODE_IMAGE_INPUT = "456"
+# 動作載入節點 ID：AutoMotionLoader
+_NODE_MOTION_LOADER = "435"
 # 輸出節點 ID：VHS_VideoCombine (帶 Alpha WebM)
 _NODE_VIDEO_OUTPUT = "454"
 # 文字 Prompt 節點 ID：WanVideoTextEncodeCached
@@ -71,6 +62,7 @@ class ComfyUIClient:
     def generate(
         self,
         image_dir: str,
+        target_dir: str,
         on_progress=None,
         positive_prompt: str = "",
         negative_prompt: str = "",
@@ -79,23 +71,50 @@ class ComfyUIClient:
         完整算圖流程（阻塞式，應在背景執行緒呼叫）。
 
         :param image_dir:        角色圖片所在的資料夾絕對路徑
+        :param target_dir:       動作影片歸檔目標資料夾
         :param on_progress:      進度回呼 callback(percent: int)，0-100
         :param positive_prompt:  正向描述文字（留空則使用 JSON 預設值）
         :param negative_prompt:  負向描述文字（留空則使用 JSON 預設值）
-        :return:                 歸檔後的檔案路徑清單
+        :return:                 歸檔後的檔案路徑字典 {motion_key: absolute_path}
         :raises ConnectionError: ComfyUI 未啟動
         :raises RuntimeError:    算圖失敗或輸出不符預期
         """
-        workflow = self._load_workflow()
-        self._set_image_directory(workflow, image_dir)
-        if positive_prompt or negative_prompt:
-            self._set_prompts(workflow, positive_prompt, negative_prompt)
+        archived = {}
+        total_motions = len(MOTION_SPECS)
 
-        prompt_id = self._submit_prompt(workflow)
-        self._listen_progress(prompt_id, on_progress)
+        for motion_index, motion_spec in enumerate(MOTION_SPECS):
+            print(
+                f"[ECHOES] 生成動作 {motion_index + 1}/{total_motions}: "
+                f"{motion_spec['title']} ({motion_spec['key']})"
+            )
 
-        output_files = self._fetch_output_filenames(prompt_id)
-        return self._collect_and_rename_assets(output_files)
+            try:
+                workflow = self._load_workflow()
+                self._set_image_directory(workflow, image_dir)
+                self._set_motion_index(workflow, motion_index)
+                if positive_prompt or negative_prompt:
+                    self._set_prompts(workflow, positive_prompt, negative_prompt)
+
+                prompt_id = self._submit_prompt(workflow)
+                self._listen_progress(
+                    prompt_id,
+                    self._make_progress_callback(on_progress, motion_index, total_motions),
+                )
+
+                output_files = self._fetch_output_filenames(prompt_id)
+                motion_path = self._collect_motion_asset(
+                    output_files,
+                    target_dir,
+                    motion_spec,
+                )
+                if motion_path:
+                    archived[motion_spec["key"]] = motion_path
+            except Exception as exc:
+                raise RuntimeError(
+                    f"動作 {motion_spec['title']} ({motion_spec['key']}) 生成失敗: {exc}"
+                ) from exc
+
+        return archived
 
     def check_connection(self) -> bool:
         """檢查 ComfyUI 是否在線。"""
@@ -117,6 +136,11 @@ class ComfyUIClient:
     def _set_image_directory(workflow: dict, image_dir: str):
         """動態修改 node 456 的 directory，指向使用者的圖片資料夾。"""
         workflow[_NODE_IMAGE_INPUT]["inputs"]["directory"] = image_dir
+
+    @staticmethod
+    def _set_motion_index(workflow: dict, motion_index: int):
+        """指定本次 prompt 要輸出的動作序號。"""
+        workflow[_NODE_MOTION_LOADER]["inputs"]["index"] = motion_index
 
     @staticmethod
     def _set_prompts(
@@ -209,6 +233,17 @@ class ComfyUIClient:
         finally:
             ws.close()
 
+    @staticmethod
+    def _make_progress_callback(on_progress, motion_index: int, total_motions: int):
+        if not on_progress:
+            return None
+
+        def _callback(percent: int):
+            overall = int(((motion_index * 100) + percent) / total_motions)
+            on_progress(min(overall, 100))
+
+        return _callback
+
     # ── History 解析 ─────────────────────────────────────
 
     def _fetch_output_filenames(self, prompt_id: str) -> list[str]:
@@ -240,35 +275,39 @@ class ComfyUIClient:
 
     # ── 檔案歸檔與重命名 ────────────────────────────────
 
-    def _collect_and_rename_assets(self, output_files: list[str]) -> list[str]:
+    def _collect_motion_asset(
+        self,
+        output_files: list[str],
+        target_dir: str,
+        motion_spec: dict,
+    ) -> str | None:
         """
-        將 ComfyUI output 資料夾中的 WebM 搬移至 assets/webm/ 並標準化命名。
-        :return: 歸檔後的完整路徑清單
+        將單次 prompt 產出的 WebM 搬移至指定角色目錄並標準化命名。
         """
-        os.makedirs(ASSETS_WEBM_DIR, exist_ok=True)
+        os.makedirs(target_dir, exist_ok=True)
 
-        if len(output_files) != len(EMOTION_FILENAMES):
+        if not output_files:
+            print(f"[ECHOES] 警告: 動作 {motion_spec['key']} 未取得任何輸出檔。")
+            return None
+
+        if len(output_files) > 1:
             print(
-                f"[ECHOES] 警告: 預期 {len(EMOTION_FILENAMES)} 支影片，"
-                f"實際取得 {len(output_files)} 支。將盡可能歸檔。"
+                f"[ECHOES] 警告: 動作 {motion_spec['key']} 預期 1 支影片，"
+                f"實際取得 {len(output_files)} 支。將使用第一支。"
             )
 
-        archived = []
-        for i, src_name in enumerate(output_files):
-            if i >= len(EMOTION_FILENAMES):
-                break
+        src_name = output_files[0]
+        src_path = os.path.join(self._output_dir, src_name)
+        dst_name = motion_spec["filename"]
+        dst_path = os.path.join(target_dir, dst_name)
 
-            src_path = os.path.join(self._output_dir, src_name)
-            dst_name = EMOTION_FILENAMES[i]
-            dst_path = os.path.join(ASSETS_WEBM_DIR, dst_name)
+        if not os.path.isfile(src_path):
+            print(f"[ECHOES] 警告: 來源檔案不存在，跳過: {src_path}")
+            return None
 
-            if not os.path.isfile(src_path):
-                print(f"[ECHOES] 警告: 來源檔案不存在，跳過: {src_path}")
-                continue
+        if os.path.exists(dst_path):
+            os.remove(dst_path)
 
-            # 直接覆蓋舊檔
-            shutil.move(src_path, dst_path)
-            print(f"[ECHOES] 歸檔: {src_name} → {dst_name}")
-            archived.append(dst_path)
-
-        return archived
+        shutil.move(src_path, dst_path)
+        print(f"[ECHOES] 歸檔: {src_name} → {dst_name}")
+        return dst_path

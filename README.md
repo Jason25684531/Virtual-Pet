@@ -11,12 +11,15 @@
 │                                                            │
 │  main.py                                                   │
 │    └── TransparentWindow (PyQt5 QMainWindow)               │
+│          ├── SettingsDialog (非阻塞角色控制面板)            │
+│          │     ├── 角色庫選擇 / 動作預覽                    │
+│          │     └── 背景算圖 Worker (QThread)               │
 │          ├── QWebEngineView ──→ index.html                 │
 │          │     背景透明 (page.setBackgroundColor α=0)      │
 │          │     ├── style.css   (滿版、透明、無邊距)        │
-│          │     └── app.js      (changeVideo 換片函式)      │
-│          │           ↕ video.src                           │
-│          │     assets/webm/    (情緒動態 WebM 影片)        │
+│          │     └── app.js      (idle / 單次動作切換)       │
+│          │           ↕ file:// absolute video url          │
+│          │     assets/webm/characters/<角色>/motions/      │
 │          │                                                 │
 │          ├── 無邊框 + 永遠置頂 + 不佔工作列               │
 │          ├── 滑鼠拖曳移動                                  │
@@ -40,8 +43,10 @@
 . (Virtual-Pet/)
 ├── main.py                    # 程式進入點
 ├── requirements.txt           # Python 依賴
+├── character_library.py       # 角色資產索引與 manifest 管理
 ├── ui/
 │   ├── transparent_window.py  # PyQt5 透明視窗 + WebEngine
+│   ├── settings_dialog.py     # 非阻塞角色設定 / 算圖面板
 │   └── web_container/
 │       ├── index.html         # HTML5 播放器骨架
 │       ├── style.css          # 透明背景樣式
@@ -53,7 +58,9 @@
 │   ├── vm_connector.py        # FastAPI Client
 │   └── comfyui_client.py      # ComfyUI Client
 ├── assets/
-│   └── webm/                  # 情緒動態 WebM 影片
+│   └── webm/
+│       ├── idle.webm          # 舊版 fallback 影片
+│       └── characters/        # 每個角色獨立資料夾與動作資產
 ├── docs/                      # 專案文件
 ├── openspec/                  # 架構規格文件
 └── venv/                      # Python 虛擬環境
@@ -113,15 +120,27 @@ python main.py
 ### 預期結果
 
 1. 桌面右下角出現 400×400 的透明視窗
-2. 若 `assets/webm/idle.webm` 存在，會自動循環播放該影片
-3. 若檔案不存在，視窗透明無內容（正常行為，需自行放入測試用 WebM）
-4. 可用滑鼠拖曳移動視窗位置
-5. 透明區域的點擊會穿透至底下的視窗
-6. 5 秒後 console 會印出 `[ECHOES] 測試: 呼叫 changeVideo('idle.webm')`
+2. 若已有角色 manifest，會自動載入上次套用角色的 `idle.webm`
+3. 若沒有角色 manifest，但 `assets/webm/idle.webm` 存在，會使用舊版 fallback idle
+4. 右鍵桌面角色可開啟「ECHOES — 角色設定」，該視窗不會鎖住桌面角色拖曳
+5. 在角色設定中可選擇既有角色、播放既有動作，或上傳新圖片重新生成 6 個動作
+6. 非 idle 動作播放完會自動回到 idle
+7. 若檔案不存在，視窗透明無內容（正常行為）
+8. 可用滑鼠拖曳移動視窗位置
+9. 透明區域的點擊會穿透至底下的視窗
+10. 5 秒後 console 會印出 `[ECHOES] 測試: 呼叫 changeVideo('idle.webm')`
+
+## 角色資產流程
+
+1. 在角色設定中選擇一張角色圖片。
+2. 系統會建立 `assets/webm/characters/<timestamp>_<角色名>/`。
+3. 原始圖片會複製到 `source/`，生成出的 6 支 WebM 會存到 `motions/`。
+4. 同層會建立 `manifest.json`，記錄角色名稱、來源圖、動作檔與 prompt。
+5. 之後可從角色下拉選單直接套用歷史角色，並選擇任一已生成動作預覽。
 
 ### 準備測試用 WebM
 
-將任意含 Alpha 通道的 WebM 影片放入 `assets/webm/` 並命名為 `idle.webm`。
+若要沿用舊版 fallback 流程，可將任意含 Alpha 通道的 WebM 影片放入 `assets/webm/` 並命名為 `idle.webm`。
 
 如果暫時沒有素材，可使用 FFmpeg 從帶透明的 PNG 序列生成測試用 WebM：
 
@@ -135,7 +154,9 @@ ffmpeg -framerate 24 -i frame_%04d.png -c:v libvpx-vp9 -pix_fmt yuva420p idle.we
 
 | 函式 | 參數 | 說明 |
 |---|---|---|
-| `changeVideo(filename)` | `string` 純檔名 | 切換 WebM 影片來源 |
+| `setIdleVideo(source)` | `string` 影片 URL | 設定目前角色 idle 動畫 |
+| `playTemporaryVideo(source)` | `string` 影片 URL | 播放單次動作，結束後回到 idle |
+| `changeVideo(source)` | `string` 影片 URL | 舊版相容別名，等同 `setIdleVideo` |
 | `getVideoStatus()` | 無 | 回傳目前播放狀態 (src, paused, currentTime 等) |
 
 Python 端呼叫範例：

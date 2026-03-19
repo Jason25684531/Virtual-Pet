@@ -3,6 +3,7 @@ ECHOES — PyQt5 透明無邊框桌面視窗
 使用 QWebEngineView 載入 HTML/JS WebM 播放器，實現去背精靈渲染。
 """
 
+import json
 import os
 import sys
 import ctypes
@@ -15,6 +16,8 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 
+from character_library import ASSETS_WEBM_DIR, CharacterLibrary, MOTION_MAP
+
 
 class TransparentWindow(QMainWindow):
     """透明無邊框桌面寵物視窗"""
@@ -23,6 +26,8 @@ class TransparentWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self._library = CharacterLibrary()
+        self._settings_dialog = None
         self._init_window()
         self._init_webview()
         self._move_to_bottom_right()
@@ -61,6 +66,7 @@ class TransparentWindow(QMainWindow):
             "web_container", "index.html"
         )
         self.web_view.setUrl(QUrl.fromLocalFile(html_path))
+        self.web_view.loadFinished.connect(self._restore_current_character)
 
     def _move_to_bottom_right(self):
         """將視窗定位到螢幕右下角"""
@@ -127,22 +133,90 @@ class TransparentWindow(QMainWindow):
         return menu
 
     def _open_settings(self):
-        """開啟角色設定對話框，算圖完成後自動刷新影片"""
+        """以非阻塞方式開啟角色設定視窗，避免鎖住主角色視窗操作。"""
+        if self._settings_dialog and self._settings_dialog.isVisible():
+            self._settings_dialog.raise_()
+            self._settings_dialog.activateWindow()
+            return
+
         from ui.settings_dialog import SettingsDialog
-        dlg = SettingsDialog(self)
-        dlg.generation_done.connect(lambda: self.change_video("idle.webm"))
-        dlg.exec_()
+        dlg = SettingsDialog()
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        dlg.apply_character_requested.connect(self.apply_character)
+        dlg.preview_motion_requested.connect(self.preview_character_motion)
+        dlg.generation_done.connect(self.apply_character)
+        dlg.finished.connect(self._on_settings_closed)
+        self._settings_dialog = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _on_settings_closed(self):
+        self._settings_dialog = None
+
+    def _restore_current_character(self):
+        current_character_id = self._library.get_current_character_id()
+        if current_character_id and self.apply_character(current_character_id):
+            return
+
+        fallback_idle = os.path.join(ASSETS_WEBM_DIR, "idle.webm")
+        if os.path.isfile(fallback_idle):
+            self.change_video(fallback_idle, loop=True)
+
+    def apply_character(self, character_id: str) -> bool:
+        """套用指定角色並切回 idle。"""
+        idle_path = self._library.get_motion_path(character_id, "idle")
+        if not idle_path:
+            print(f"[ECHOES] 警告: 角色 {character_id} 尚未生成 idle 動畫。")
+            return False
+
+        self._library.set_current_character_id(character_id)
+        self.change_video(idle_path, loop=True)
+        return True
+
+    def preview_character_motion(self, character_id: str, motion_key: str):
+        """播放指定角色動作，單次動作播完後回到 idle。"""
+        motion_path = self._library.get_motion_path(character_id, motion_key)
+        if not motion_path:
+            print(f"[ECHOES] 警告: 找不到角色 {character_id} 的動作 {motion_key}。")
+            return
+
+        should_loop = not MOTION_MAP.get(motion_key, {}).get("play_once", True)
+        self.change_video(motion_path, loop=should_loop)
 
     # ── Python → JS 橋接 ───────────────────────────────────
 
-    def change_video(self, filename):
+    def change_video(self, filename, loop=True):
         """
         呼叫前端 JS 的 changeVideo() 切換影片。
-        :param filename: 純檔名，例如 "happy.webm"
+        :param filename: 絕對路徑、相對路徑或舊版純檔名
         """
-        safe_name = filename.replace('"', '').replace("'", "").replace("\\", "")
-        js = f'changeVideo("{safe_name}")'
+        absolute_path = self._resolve_video_path(filename)
+        if not absolute_path or not os.path.isfile(absolute_path):
+            print(f"[ECHOES] 警告: 影片不存在，略過切換: {filename}")
+            return
+
+        source_url = QUrl.fromLocalFile(absolute_path).toString()
+        function_name = "setIdleVideo" if loop else "playTemporaryVideo"
+        js = f"{function_name}({json.dumps(source_url)})"
         self.web_view.page().runJavaScript(js)
+
+    def _resolve_video_path(self, filename: str) -> str | None:
+        if not filename:
+            return None
+
+        if os.path.isabs(filename):
+            return filename
+
+        root_relative = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            filename,
+        )
+        if os.path.isfile(root_relative):
+            return root_relative
+
+        legacy_relative = os.path.join(ASSETS_WEBM_DIR, filename)
+        return legacy_relative
 
     # ── 透明區域點擊穿透 + 右鍵選單 (Windows) ────────────────
 
