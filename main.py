@@ -7,6 +7,16 @@ import sys
 import os
 import signal
 
+# 情緒 → WebM 檔名對應表（供未來 VM/Sensor 模組使用）
+EMOTION_MAP = {
+    "開心": "laugh.webm",
+    "生氣": "angry.webm",
+    "尷尬": "awkward.webm",
+    "無言": "speechless.webm",
+    "聆聽": "listen.webm",
+    "預設": "idle.webm",
+}
+
 
 def main():
     # Chromium 透明渲染所需的命令列參數
