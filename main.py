@@ -38,14 +38,14 @@ def main():
     window = TransparentWindow()
     window.show()
 
-    # 測試用：5 秒後呼叫 JS changeVideo 驗證 Python→JS 通路
-    def test_change_video():
-        print("[ECHOES] 測試: 呼叫 changeVideo('idle.webm')")
-        window.change_video("idle.webm")
+    # 測試用：確認房間狀態區可以從 Python 更新
+    def test_room_status():
+        print("[ECHOES] 測試: 更新房間狀態文字")
+        window.set_action_status("房間模式橋接正常", tone="idle", timeout_ms=2500)
 
     timer = QTimer()
     timer.setSingleShot(True)
-    timer.timeout.connect(test_change_video)
+    timer.timeout.connect(test_room_status)
     timer.start(5000)
 
     sys.exit(app.exec_())

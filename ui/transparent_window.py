@@ -3,18 +3,18 @@ ECHOES — PyQt5 透明無邊框桌面視窗
 使用 QWebEngineView 載入 HTML/JS WebM 播放器，實現去背精靈渲染。
 """
 
+import ctypes
+import ctypes.wintypes
 import json
 import os
 import sys
-import ctypes
-import ctypes.wintypes
 
 from PyQt5.QtCore import Qt, QUrl, QPoint
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
 from PyQt5.QtWidgets import (
     QMainWindow, QApplication, QMenu, QAction, QSystemTrayIcon
 )
-from PyQt5.QtWebEngineWidgets import QWebEngineView
+from PyQt5.QtWebEngineWidgets import QWebEngineSettings, QWebEngineView
 
 from character_library import ASSETS_WEBM_DIR, CharacterLibrary, MOTION_MAP
 
@@ -30,6 +30,8 @@ class TransparentWindow(QMainWindow):
         self._settings_dialog = None
         self._init_window()
         self._init_webview()
+        from action_dispatcher import ActionDispatcher
+        self._action_dispatcher = ActionDispatcher(self, self._library, self)
         self._move_to_bottom_right()
         self._init_tray()
 
@@ -59,6 +61,8 @@ class TransparentWindow(QMainWindow):
 
         # 關鍵：讓 Chromium 渲染層背景完全透明
         self.web_view.page().setBackgroundColor(QColor(0, 0, 0, 0))
+        settings = self.web_view.settings()
+        settings.setAttribute(QWebEngineSettings.PlaybackRequiresUserGesture, False)
 
         # 載入本地 index.html
         html_path = os.path.join(
@@ -124,6 +128,20 @@ class TransparentWindow(QMainWindow):
         settings_action.triggered.connect(self._open_settings)
         menu.addAction(settings_action)
 
+        action_menu = menu.addMenu("功能動作")
+
+        report_news_action = QAction("播報新聞", self)
+        report_news_action.triggered.connect(lambda: self.dispatch_action("[ACTION:report_news]"))
+        action_menu.addAction(report_news_action)
+
+        play_music_action = QAction("播放音樂", self)
+        play_music_action.triggered.connect(lambda: self.dispatch_action("[ACTION:play_music]"))
+        action_menu.addAction(play_music_action)
+
+        stop_music_action = QAction("停止音樂", self)
+        stop_music_action.triggered.connect(self.stop_music)
+        action_menu.addAction(stop_music_action)
+
         menu.addSeparator()
 
         quit_action = QAction("✕  離開 ECHOES", self)
@@ -162,9 +180,12 @@ class TransparentWindow(QMainWindow):
         fallback_idle = os.path.join(ASSETS_WEBM_DIR, "idle.webm")
         if os.path.isfile(fallback_idle):
             self.change_video(fallback_idle, loop=True)
+            self.set_room_character("訪客模式")
+            self.set_action_status("房間模式已載入", tone="idle", timeout_ms=2400)
 
     def apply_character(self, character_id: str) -> bool:
         """套用指定角色並切回 idle。"""
+        character_name = self._library.get_character_name(character_id) or character_id
         idle_path = self._library.get_motion_path(character_id, "idle")
         if not idle_path:
             print(f"[ECHOES] 警告: 角色 {character_id} 尚未生成 idle 動畫。")
@@ -172,6 +193,8 @@ class TransparentWindow(QMainWindow):
 
         self._library.set_current_character_id(character_id)
         self.change_video(idle_path, loop=True)
+        self.set_room_character(character_name)
+        self.set_action_status(f"{character_name} 已待命", tone="idle", timeout_ms=2200)
         return True
 
     def preview_character_motion(self, character_id: str, motion_key: str):
@@ -184,6 +207,60 @@ class TransparentWindow(QMainWindow):
         should_loop = not MOTION_MAP.get(motion_key, {}).get("play_once", True)
         self.change_video(motion_path, loop=should_loop)
 
+    def play_action_motion(self, motion_key: str) -> bool:
+        current_character_id = self._library.get_current_character_id()
+        if not current_character_id:
+            print(f"[ECHOES] 警告: 尚未選擇角色，無法播放 action 動作 {motion_key}。")
+            return False
+
+        motion_path = self._library.get_action_motion_path(current_character_id, motion_key)
+        if not motion_path:
+            print(f"[ECHOES] 警告: 目前角色缺少 action 動作 {motion_key}。")
+            return False
+
+        should_loop = not MOTION_MAP.get(motion_key, {}).get("play_once", True)
+        self.change_video(motion_path, loop=should_loop)
+        return True
+
+    def restore_idle_video(self) -> bool:
+        current_character_id = self._library.get_current_character_id()
+        if current_character_id:
+            idle_path = self._library.get_motion_path(current_character_id, "idle")
+            if idle_path:
+                self.change_video(idle_path, loop=True)
+                return True
+
+        fallback_idle = os.path.join(ASSETS_WEBM_DIR, "idle.webm")
+        if os.path.isfile(fallback_idle):
+            self.change_video(fallback_idle, loop=True)
+            return True
+        return False
+
+    def dispatch_action(self, directive: str) -> bool:
+        return self._action_dispatcher.dispatch(directive)
+
+    def set_action_status(self, message: str, tone: str = "idle", timeout_ms: int = 0):
+        self._run_javascript("setActionStatus", message, tone, timeout_ms)
+
+    def clear_action_status(self):
+        self._run_javascript("clearActionStatus")
+
+    def set_room_character(self, name: str):
+        self._run_javascript("setRoomCharacter", name)
+
+    def play_music(self, filename: str, title: str = "") -> bool:
+        absolute_path = self._resolve_media_path(filename)
+        if not absolute_path or not os.path.isfile(absolute_path):
+            print(f"[ECHOES] 警告: 音訊不存在，略過播放: {filename}")
+            return False
+
+        source_url = QUrl.fromLocalFile(absolute_path).toString()
+        self._run_javascript("playRoomAudio", source_url, title)
+        return True
+
+    def stop_music(self):
+        self._run_javascript("stopRoomAudio")
+
     # ── Python → JS 橋接 ───────────────────────────────────
 
     def change_video(self, filename, loop=True):
@@ -191,17 +268,20 @@ class TransparentWindow(QMainWindow):
         呼叫前端 JS 的 changeVideo() 切換影片。
         :param filename: 絕對路徑、相對路徑或舊版純檔名
         """
-        absolute_path = self._resolve_video_path(filename)
+        absolute_path = self._resolve_media_path(filename)
         if not absolute_path or not os.path.isfile(absolute_path):
             print(f"[ECHOES] 警告: 影片不存在，略過切換: {filename}")
             return
 
         source_url = QUrl.fromLocalFile(absolute_path).toString()
         function_name = "setIdleVideo" if loop else "playTemporaryVideo"
-        js = f"{function_name}({json.dumps(source_url)})"
-        self.web_view.page().runJavaScript(js)
+        self._run_javascript(function_name, source_url)
 
-    def _resolve_video_path(self, filename: str) -> str | None:
+    def _run_javascript(self, function_name: str, *args):
+        js_args = ", ".join(json.dumps(arg) for arg in args)
+        self.web_view.page().runJavaScript(f"{function_name}({js_args})")
+
+    def _resolve_media_path(self, filename: str) -> str | None:
         if not filename:
             return None
 

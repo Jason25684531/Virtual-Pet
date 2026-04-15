@@ -7,7 +7,33 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <video id="pet-video" autoplay loop muted playsinline></video>
+    <main class="room-shell" aria-label="ECHOES room scene">
+        <section class="room-scene">
+            <img
+                class="room-background"
+                src="../assets/backgrounds/%E5%88%9D%E9%9F%B3%E6%88%BF3%202.jpg"
+                alt="房間背景"
+            >
+            <div class="room-atmosphere"></div>
+            <div class="room-chrome">
+                <p class="room-eyebrow">ECHOES Room</p>
+                <h1 id="room-character-name">未選擇角色</h1>
+            </div>
+            <div class="room-floor-glow"></div>
+            <div class="room-stage">
+                <div class="room-character-shadow"></div>
+                <video id="pet-video" autoplay loop muted playsinline></video>
+            </div>
+            <section id="action-status" class="action-status" data-tone="idle" aria-live="polite">
+                <span class="action-status__dot"></span>
+                <div class="action-status__copy">
+                    <p class="action-status__label">行動狀態</p>
+                    <p id="action-status-text" class="action-status__text">房間待命中</p>
+                </div>
+            </section>
+        </section>
+    </main>
+    <audio id="room-audio" preload="none"></audio>
     <script src="app.js"></script>
 </body>
 </html>

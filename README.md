@@ -44,13 +44,18 @@
 ├── main.py                    # 程式進入點
 ├── requirements.txt           # Python 依賴
 ├── character_library.py       # 角色資產索引與 manifest 管理
+├── action_dispatcher.py       # [ACTION:*] 綁定表與執行協調器
+├── action_services.py         # 新聞抓取 / 音樂挑選背景 worker
 ├── ui/
+│   ├── assets/
+│   │   ├── backgrounds/       # 房間背景圖
+│   │   └── music/             # 本地音樂資料夾
 │   ├── transparent_window.py  # PyQt5 透明視窗 + WebEngine
 │   ├── settings_dialog.py     # 非阻塞角色設定 / 算圖面板
 │   └── web_container/
-│       ├── index.html         # HTML5 播放器骨架
-│       ├── style.css          # 透明背景樣式
-│       └── app.js             # WebM 熱切換 JS 控制器
+│       ├── index.html         # 房間場景骨架
+│       ├── style.css          # 房間背景 / 角色貼地樣式
+│       └── app.js             # WebM、狀態列與音訊橋接控制器
 ├── sensors/                   # 感知模組 (Week 2+)
 │   ├── window_monitor.py      # psutil 活躍視窗監聽
 │   └── camera_vision.py       # OpenCV + MediaPipe
@@ -119,16 +124,19 @@ python main.py
 
 ### 預期結果
 
-1. 桌面右下角出現 400×400 的透明視窗
+1. 桌面右下角出現房間場景視窗，顯示固定背景、角色舞台與狀態列
 2. 若已有角色 manifest，會自動載入上次套用角色的 `idle.webm`
 3. 若沒有角色 manifest，但 `assets/webm/idle.webm` 存在，會使用舊版 fallback idle
 4. 右鍵桌面角色可開啟「ECHOES — 角色設定」，該視窗不會鎖住桌面角色拖曳
-5. 在角色設定中可選擇既有角色、播放既有動作，或上傳新圖片重新生成 6 個動作
-6. 非 idle 動作播放完會自動回到 idle
-7. 若檔案不存在，視窗透明無內容（正常行為）
-8. 可用滑鼠拖曳移動視窗位置
-9. 透明區域的點擊會穿透至底下的視窗
-10. 5 秒後 console 會印出 `[ECHOES] 測試: 呼叫 changeVideo('idle.webm')`
+5. 右鍵選單新增「功能動作 → 播報新聞 / 播放音樂 / 停止音樂」
+6. 在角色設定中可選擇既有角色、播放既有動作，或上傳新圖片重新生成 6 個動作
+7. 非 idle 動作播放完會自動回到 idle；若 action 專用動畫缺失，仍會執行功能並保持 idle
+8. 狀態列會顯示目前 action，例如新聞標題、目前播放曲目或錯誤訊息
+9. 若 `ui/assets/music/` 沒有可播放檔案，播放音樂 action 會顯示 warning，但不會讓 UI 卡住
+10. 若新聞來源暫時無法存取，新聞 action 會顯示 warning 並回到安全狀態
+11. 可用滑鼠拖曳移動視窗位置
+12. 視窗外圈透明區域的點擊會穿透至底下的視窗
+13. 5 秒後 console 會印出 `[ECHOES] 測試: 更新房間狀態文字`
 
 ## 角色資產流程
 
@@ -137,6 +145,21 @@ python main.py
 3. 原始圖片會複製到 `source/`，生成出的 6 支 WebM 會存到 `motions/`。
 4. 同層會建立 `manifest.json`，記錄角色名稱、來源圖、動作檔與 prompt。
 5. 之後可從角色下拉選單直接套用歷史角色，並選擇任一已生成動作預覽。
+
+### Action 動作檔命名
+
+若要讓角色在功能動作時切換專屬動畫，可在角色 `manifest.json` 的 `motions` 裡加入以下可選鍵值：
+
+- `report_news`: 對應新聞播報動畫，例如 `assets/webm/characters/<角色>/motions/report_news.webm`
+- `play_music`: 對應播放音樂動畫，例如 `assets/webm/characters/<角色>/motions/play_music.webm`
+
+若這兩支影片不存在，系統會保留或回退到 `idle.webm`，但仍會繼續執行 action handler。
+
+## 房間模式資產
+
+- 房間背景預設讀取 `ui/assets/backgrounds/初音房3 2.jpg`
+- 本地音樂 action 會掃描 `ui/assets/music/`，支援 `.mp3`、`.wav`、`.ogg`、`.m4a`、`.aac`、`.flac`
+- 新聞 action 預設抓取 BBC World RSS；若網路或來源失敗，只會在狀態列與 console 顯示警告
 
 ### 準備測試用 WebM
 
@@ -156,6 +179,11 @@ ffmpeg -framerate 24 -i frame_%04d.png -c:v libvpx-vp9 -pix_fmt yuva420p idle.we
 |---|---|---|
 | `setIdleVideo(source)` | `string` 影片 URL | 設定目前角色 idle 動畫 |
 | `playTemporaryVideo(source)` | `string` 影片 URL | 播放單次動作，結束後回到 idle |
+| `setActionStatus(message, tone, timeoutMs)` | `string`, `string`, `number` | 更新房間狀態列文字與 tone |
+| `clearActionStatus()` | 無 | 將狀態列回復待命狀態 |
+| `setRoomCharacter(name)` | `string` | 更新房間場景左上角角色名稱 |
+| `playRoomAudio(source, title)` | `string`, `string` | 播放本地音訊並更新狀態列 |
+| `stopRoomAudio()` | 無 | 停止目前播放中的音訊 |
 | `changeVideo(source)` | `string` 影片 URL | 舊版相容別名，等同 `setIdleVideo` |
 | `getVideoStatus()` | 無 | 回傳目前播放狀態 (src, paused, currentTime 等) |
 

@@ -17,6 +17,9 @@ from PyQt5.QtCore import QSettings
 PROJECT_ROOT = Path(__file__).resolve().parent
 ASSETS_WEBM_DIR = PROJECT_ROOT / "assets" / "webm"
 CHARACTER_LIBRARY_DIR = ASSETS_WEBM_DIR / "characters"
+UI_ASSETS_DIR = PROJECT_ROOT / "ui" / "assets"
+UI_BACKGROUNDS_DIR = UI_ASSETS_DIR / "backgrounds"
+UI_MUSIC_DIR = UI_ASSETS_DIR / "music"
 
 _SETTINGS_ORG = "ECHOES"
 _SETTINGS_APP = "VirtualPet"
@@ -30,7 +33,12 @@ MOTION_SPECS = [
     {"key": "listen", "title": "專心聆聽", "filename": "listen.webm", "play_once": True},
     {"key": "idle", "title": "愉悅微笑", "filename": "idle.webm", "play_once": False},
 ]
-MOTION_MAP = {spec["key"]: spec for spec in MOTION_SPECS}
+ACTION_MOTION_SPECS = [
+    {"key": "report_news", "title": "新聞播報", "filename": "report_news.webm", "play_once": True},
+    {"key": "play_music", "title": "音樂播放", "filename": "play_music.webm", "play_once": True},
+]
+ACTION_MOTION_KEYS = {spec["key"] for spec in ACTION_MOTION_SPECS}
+MOTION_MAP = {spec["key"]: spec for spec in [*MOTION_SPECS, *ACTION_MOTION_SPECS]}
 
 
 def _now_iso() -> str:
@@ -49,6 +57,7 @@ class CharacterLibrary:
     def __init__(self):
         self._settings = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
         CHARACTER_LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+        UI_MUSIC_DIR.mkdir(parents=True, exist_ok=True)
 
     def list_characters(self) -> list[dict]:
         manifests = []
@@ -138,6 +147,17 @@ class CharacterLibrary:
         if not absolute_path.is_file():
             return None
         return str(absolute_path)
+
+    def get_action_motion_path(self, character_id: str, action_key: str) -> str | None:
+        if action_key not in ACTION_MOTION_KEYS:
+            return None
+        return self.get_motion_path(character_id, action_key)
+
+    def get_character_name(self, character_id: str | None) -> str | None:
+        manifest = self.get_character(character_id)
+        if not manifest:
+            return None
+        return manifest.get("name") or manifest.get("id")
 
     def get_preview_image_path(self, character_id: str) -> str | None:
         manifest = self.get_character(character_id)
