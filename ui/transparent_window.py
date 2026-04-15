@@ -21,7 +21,7 @@ from character_library import ASSETS_WEBM_DIR, CharacterLibrary, MOTION_MAP
 
 class TransparentWindow(QMainWindow):
     """透明無邊框桌面寵物視窗"""
-
+    # 視窗尺寸（可根據需求調整，或改為全螢幕）：
     WINDOW_WIDTH = 1920
     WINDOW_HEIGHT = 1080
     # 角色預設位移（相對於視窗中心的像素偏移量）
