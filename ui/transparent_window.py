@@ -22,7 +22,23 @@ from character_library import ASSETS_WEBM_DIR, CharacterLibrary, MOTION_MAP
 class TransparentWindow(QMainWindow):
     """透明無邊框桌面寵物視窗"""
 
-    WINDOW_SIZE = 800
+    WINDOW_WIDTH = 1920
+    WINDOW_HEIGHT = 1080
+    DEMO_ANIMATIONS_DIR = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "assets",
+        "animations",
+    )
+    DEMO_MOTION_MAPPING = {
+        "idle": "Idle.webm",
+        "report_news": "report_news.webm",
+        "play_music": "play_music.webm",
+        "laugh": "雀躍大笑.webm",
+        "angry": "薄怒嘟嘴.webm",
+        "awkward": "尷尬擺手.webm",
+        "speechless": "無言微翻白眼.webm",
+        "listen": "專心聆聽.webm",
+    }
 
     def __init__(self):
         super().__init__()
@@ -38,15 +54,14 @@ class TransparentWindow(QMainWindow):
     # ── 視窗初始化 ──────────────────────────────────────────
 
     def _init_window(self):
-        """設定無邊框、置頂、透明背景"""
+        """設定無邊框、置頂視窗"""
         self.setWindowFlags(
             Qt.FramelessWindowHint
             | Qt.WindowStaysOnTopHint
             | Qt.Tool  # 不在工作列顯示圖示
         )
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setStyleSheet("background: transparent;")
-        self.resize(self.WINDOW_SIZE, self.WINDOW_SIZE)
+        self.resize(self.WINDOW_WIDTH, self.WINDOW_HEIGHT)
 
     def _init_webview(self):
         """建立 QWebEngineView 並載入本地 HTML 播放器"""
@@ -59,8 +74,6 @@ class TransparentWindow(QMainWindow):
 
         self.setCentralWidget(self.web_view)
 
-        # 關鍵：讓 Chromium 渲染層背景完全透明
-        self.web_view.page().setBackgroundColor(QColor(0, 0, 0, 0))
         settings = self.web_view.settings()
         settings.setAttribute(QWebEngineSettings.PlaybackRequiresUserGesture, False)
 
@@ -77,8 +90,8 @@ class TransparentWindow(QMainWindow):
         screen = QApplication.primaryScreen()
         if screen:
             geo = screen.availableGeometry()
-            x = geo.right() - self.WINDOW_SIZE - 20
-            y = geo.bottom() - self.WINDOW_SIZE - 20
+            x = geo.right() - self.WINDOW_WIDTH - 20
+            y = geo.bottom() - self.WINDOW_HEIGHT - 20
             self.move(x, y)
 
     # ── 系統匣圖示 ─────────────────────────────────────────
@@ -177,9 +190,7 @@ class TransparentWindow(QMainWindow):
         if current_character_id and self.apply_character(current_character_id):
             return
 
-        fallback_idle = os.path.join(ASSETS_WEBM_DIR, "idle.webm")
-        if os.path.isfile(fallback_idle):
-            self.change_video(fallback_idle, loop=True)
+        if self.restore_idle_video():
             self.set_room_character("訪客模式")
             self.set_action_status("房間模式已載入", tone="idle", timeout_ms=2400)
 
@@ -208,19 +219,23 @@ class TransparentWindow(QMainWindow):
         self.change_video(motion_path, loop=should_loop)
 
     def play_action_motion(self, motion_key: str) -> bool:
-        current_character_id = self._library.get_current_character_id()
-        if not current_character_id:
-            print(f"[ECHOES] 警告: 尚未選擇角色，無法播放 action 動作 {motion_key}。")
-            return False
-
-        motion_path = self._library.get_action_motion_path(current_character_id, motion_key)
-        if not motion_path:
-            print(f"[ECHOES] 警告: 目前角色缺少 action 動作 {motion_key}。")
-            return False
-
         should_loop = not MOTION_MAP.get(motion_key, {}).get("play_once", True)
-        self.change_video(motion_path, loop=should_loop)
-        return True
+        current_character_id = self._library.get_current_character_id()
+        if current_character_id:
+            motion_path = self._library.get_action_motion_path(current_character_id, motion_key)
+            if motion_path:
+                self.change_video(motion_path, loop=should_loop)
+                return True
+
+        demo_filename = self.DEMO_MOTION_MAPPING.get(motion_key)
+        if demo_filename:
+            demo_path = os.path.join(self.DEMO_ANIMATIONS_DIR, demo_filename)
+            if os.path.isfile(demo_path):
+                self.change_video(demo_path, loop=should_loop)
+                return True
+
+        print(f"[ECHOES] 警告: 找不到可播放的 action 動作 {motion_key}。")
+        return False
 
     def restore_idle_video(self) -> bool:
         current_character_id = self._library.get_current_character_id()
@@ -229,6 +244,14 @@ class TransparentWindow(QMainWindow):
             if idle_path:
                 self.change_video(idle_path, loop=True)
                 return True
+
+        demo_idle_path = os.path.join(
+            self.DEMO_ANIMATIONS_DIR,
+            self.DEMO_MOTION_MAPPING["idle"],
+        )
+        if os.path.isfile(demo_idle_path):
+            self.change_video(demo_idle_path, loop=True)
+            return True
 
         fallback_idle = os.path.join(ASSETS_WEBM_DIR, "idle.webm")
         if os.path.isfile(fallback_idle):
@@ -295,6 +318,13 @@ class TransparentWindow(QMainWindow):
         if os.path.isfile(root_relative):
             return root_relative
 
+        demo_relative = os.path.join(
+            self.DEMO_ANIMATIONS_DIR,
+            os.path.basename(filename),
+        )
+        if os.path.isfile(demo_relative):
+            return demo_relative
+
         legacy_relative = os.path.join(ASSETS_WEBM_DIR, filename)
         return legacy_relative
 
@@ -303,7 +333,7 @@ class TransparentWindow(QMainWindow):
     def nativeEvent(self, event_type, message):
         """
         攔截 Windows 訊息：
-          WM_NCHITTEST   → 透明像素穿透 / 不透明像素 HTCAPTION（可拖曳）
+                    WM_NCHITTEST   → 整個視窗視為標題列，可直接拖曳
           WM_NCRBUTTONUP → 不透明像素右鍵放開，彈出自訂選單
         """
         if sys.platform != "win32":
@@ -311,7 +341,6 @@ class TransparentWindow(QMainWindow):
 
         WM_NCHITTEST   = 0x0084
         WM_NCRBUTTONUP = 0x00A5   # 標題列(NC)右鍵放開時觸發
-        HTTRANSPARENT  = -1
         HTCAPTION      = 2        # 讓 Windows 處理拖曳
 
         try:
@@ -324,26 +353,10 @@ class TransparentWindow(QMainWindow):
                 self._build_menu().exec_(QPoint(sx, sy))
                 return True, 0   # 已消費，不傳遞給 Windows
 
-            if msg.message != WM_NCHITTEST:
-                return super().nativeEvent(event_type, message)
+            if msg.message == WM_NCHITTEST:
+                return True, HTCAPTION
 
-            # ── 命中測試 ──
-            x = ctypes.c_short(msg.lParam & 0xFFFF).value
-            y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
-
-            local_pos = self.mapFromGlobal(QPoint(x, y))
-            lx, ly = local_pos.x(), local_pos.y()
-
-            if lx < 0 or ly < 0 or lx >= self.width() or ly >= self.height():
-                return super().nativeEvent(event_type, message)
-
-            image = self.web_view.grab().toImage()
-            if lx < image.width() and ly < image.height():
-                pixel = image.pixelColor(lx, ly)
-                if pixel.alpha() < 10:
-                    return True, HTTRANSPARENT  # 透明 → 點擊穿透
-
-            return True, HTCAPTION  # 有內容 → 拖曳
+            return super().nativeEvent(event_type, message)
 
         except Exception:
             return super().nativeEvent(event_type, message)

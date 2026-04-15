@@ -19,9 +19,6 @@ EMOTION_MAP = {
 
 
 def main():
-    # Chromium 透明渲染所需的命令列參數
-    sys.argv += ["--disable-gpu"]
-
     from PyQt5.QtWidgets import QApplication
     from PyQt5.QtCore import QTimer
     from ui.transparent_window import TransparentWindow
