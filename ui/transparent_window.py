@@ -9,7 +9,7 @@ import json
 import os
 import sys
 
-from PyQt5.QtCore import Qt, QUrl, QPoint
+from PyQt5.QtCore import Qt, QUrl, QPoint, QTimer
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
 from PyQt5.QtWidgets import (
     QMainWindow, QApplication, QMenu, QAction, QSystemTrayIcon
@@ -24,6 +24,9 @@ class TransparentWindow(QMainWindow):
 
     WINDOW_WIDTH = 1920
     WINDOW_HEIGHT = 1080
+    # 角色預設位移（相對於視窗中心的像素偏移量）
+    DEFAULT_CHARACTER_X_OFFSET = 960
+    DEFAULT_CHARACTER_Y_OFFSET = 540
     DEMO_ANIMATIONS_DIR = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "assets",
@@ -44,6 +47,8 @@ class TransparentWindow(QMainWindow):
         super().__init__()
         self._library = CharacterLibrary()
         self._settings_dialog = None
+        self._character_x_offset = self.DEFAULT_CHARACTER_X_OFFSET
+        self._character_y_offset = self.DEFAULT_CHARACTER_Y_OFFSET
         self._init_window()
         self._init_webview()
         from action_dispatcher import ActionDispatcher
@@ -76,6 +81,7 @@ class TransparentWindow(QMainWindow):
 
         settings = self.web_view.settings()
         settings.setAttribute(QWebEngineSettings.PlaybackRequiresUserGesture, False)
+        settings.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
 
         # 載入本地 index.html
         html_path = os.path.join(
@@ -83,15 +89,21 @@ class TransparentWindow(QMainWindow):
             "web_container", "index.html"
         )
         self.web_view.setUrl(QUrl.fromLocalFile(html_path))
-        self.web_view.loadFinished.connect(self._restore_current_character)
+        self.web_view.loadFinished.connect(self._on_webview_loaded)
+
+    def _on_webview_loaded(self, ok: bool):
+        if not ok:
+            print("[ECHOES] 警告: 房間頁面載入失敗。")
+            return
+        QTimer.singleShot(120, self._restore_current_character)
 
     def _move_to_bottom_right(self):
         """將視窗定位到螢幕右下角"""
         screen = QApplication.primaryScreen()
         if screen:
             geo = screen.availableGeometry()
-            x = geo.right() - self.WINDOW_WIDTH - 20
-            y = geo.bottom() - self.WINDOW_HEIGHT - 20
+            x = geo.x() + max(0, geo.width() - self.WINDOW_WIDTH - 20)
+            y = geo.y() + max(0, geo.height() - self.WINDOW_HEIGHT - 20)
             self.move(x, y)
 
     # ── 系統匣圖示 ─────────────────────────────────────────
@@ -193,6 +205,7 @@ class TransparentWindow(QMainWindow):
         if self.restore_idle_video():
             self.set_room_character("訪客模式")
             self.set_action_status("房間模式已載入", tone="idle", timeout_ms=2400)
+            self.apply_character_position()
 
     def apply_character(self, character_id: str) -> bool:
         """套用指定角色並切回 idle。"""
@@ -204,6 +217,7 @@ class TransparentWindow(QMainWindow):
 
         self._library.set_current_character_id(character_id)
         self.change_video(idle_path, loop=True)
+        self.apply_character_position()
         self.set_room_character(character_name)
         self.set_action_status(f"{character_name} 已待命", tone="idle", timeout_ms=2200)
         return True
@@ -283,6 +297,20 @@ class TransparentWindow(QMainWindow):
 
     def stop_music(self):
         self._run_javascript("stopRoomAudio")
+
+    def apply_character_position(self):
+        """套用目前由 Python 管理的角色位移設定。"""
+        self.move_character_to(self._character_x_offset, self._character_y_offset)
+
+    def set_character_position(self, x_offset: int, y_offset: int):
+        """更新角色位移設定並立即套用。"""
+        self._character_x_offset = x_offset
+        self._character_y_offset = y_offset
+        self.apply_character_position()
+
+    def move_character_to(self, x_offset: int, y_offset: int):
+        """以左為正 x、以下為正 y 的像素偏移量移動角色。"""
+        self._run_javascript("moveCharacter", x_offset, y_offset)
 
     # ── Python → JS 橋接 ───────────────────────────────────
 

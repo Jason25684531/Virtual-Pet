@@ -7,6 +7,7 @@
     'use strict';
 
     var video = document.getElementById('pet-video');
+    var character = document.getElementById('pet-character');
     var audio = document.getElementById('room-audio');
     var roomCharacterName = document.getElementById('room-character-name');
     var actionStatus = document.getElementById('action-status');
@@ -81,6 +82,18 @@
     window.playTemporaryVideo = function (source) {
         console.log('[ECHOES] 播放單次動作:', source);
         setSource(source, false);
+    };
+
+    window.moveCharacter = function (x, y) {
+        var target = character || video;
+
+        if (!target) {
+            console.warn('[ECHOES] 找不到角色容器，無法移動角色');
+            return;
+        }
+
+        target.style.transform = 'translate3d(' + Number(x) + 'px, ' + Number(y) + 'px, 0)';
+        console.log('[ECHOES] 角色位移:', { x: Number(x), y: Number(y) });
     };
 
     window.setActionStatus = function (message, tone, timeoutMs) {
