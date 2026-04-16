@@ -4,7 +4,6 @@ ECHOES — 程式進入點
 """
 
 import sys
-import os
 import signal
 
 # 情緒 → WebM 檔名對應表（供未來 VM/Sensor 模組使用）
@@ -21,6 +20,7 @@ EMOTION_MAP = {
 def main():
     from PyQt5.QtWidgets import QApplication
     from PyQt5.QtCore import QTimer
+    from api_client.vm_connector import VMConnector
     from ui.transparent_window import TransparentWindow
 
     app = QApplication(sys.argv)
@@ -34,16 +34,19 @@ def main():
 
     window = TransparentWindow()
     window.show()
+    window.set_action_status("正在連線 OpenClaw 大腦...", tone="working", timeout_ms=2500)
 
-    # 測試用：確認房間狀態區可以從 Python 更新
-    def test_room_status():
-        print("[ECHOES] 測試: 更新房間狀態文字")
-        window.set_action_status("房間模式橋接正常", tone="idle", timeout_ms=2500)
+    vm_connector = VMConnector(parent=app)
 
-    timer = QTimer()
-    timer.setSingleShot(True)
-    timer.timeout.connect(test_room_status)
-    timer.start(5000)
+    vm_connector.message_received.connect(window.dispatch_action)
+    vm_connector.start()
+
+    def shutdown_vm_connector():
+        vm_connector.stop()
+        if vm_connector.isRunning():
+            vm_connector.wait(3000)
+
+    app.aboutToQuit.connect(shutdown_vm_connector)
 
     sys.exit(app.exec_())
 

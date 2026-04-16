@@ -49,6 +49,8 @@ class TransparentWindow(QMainWindow):
         self._settings_dialog = None
         self._character_x_offset = self.DEFAULT_CHARACTER_X_OFFSET
         self._character_y_offset = self.DEFAULT_CHARACTER_Y_OFFSET
+        self._webview_ready = False
+        self._pending_javascript_calls: list[tuple[str, tuple[object, ...]]] = []
         self._init_window()
         self._init_webview()
         from action_dispatcher import ActionDispatcher
@@ -82,19 +84,23 @@ class TransparentWindow(QMainWindow):
         settings = self.web_view.settings()
         settings.setAttribute(QWebEngineSettings.PlaybackRequiresUserGesture, False)
         settings.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebGLEnabled, True)
+        settings.setAttribute(QWebEngineSettings.Accelerated2dCanvasEnabled, True)
 
         # 載入本地 index.html
         html_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "web_container", "index.html"
         )
-        self.web_view.setUrl(QUrl.fromLocalFile(html_path))
         self.web_view.loadFinished.connect(self._on_webview_loaded)
+        self.web_view.setUrl(QUrl.fromLocalFile(html_path))
 
     def _on_webview_loaded(self, ok: bool):
         if not ok:
             print("[ECHOES] 警告: 房間頁面載入失敗。")
             return
+        self._webview_ready = True
+        self._flush_pending_javascript_calls()
         QTimer.singleShot(120, self._restore_current_character)
 
     def _move_to_bottom_right(self):
@@ -237,6 +243,8 @@ class TransparentWindow(QMainWindow):
         current_character_id = self._library.get_current_character_id()
         if current_character_id:
             motion_path = self._library.get_action_motion_path(current_character_id, motion_key)
+            if not motion_path:
+                motion_path = self._library.get_motion_path(current_character_id, motion_key)
             if motion_path:
                 self.change_video(motion_path, loop=should_loop)
                 return True
@@ -298,6 +306,17 @@ class TransparentWindow(QMainWindow):
     def stop_music(self):
         self._run_javascript("stopRoomAudio")
 
+    def get_render_diagnostics(self) -> dict[str, object]:
+        settings = self.web_view.settings()
+        return {
+            "configured_width": self.WINDOW_WIDTH,
+            "configured_height": self.WINDOW_HEIGHT,
+            "current_width": self.width(),
+            "current_height": self.height(),
+            "webgl_enabled": settings.testAttribute(QWebEngineSettings.WebGLEnabled),
+            "accelerated_2d_canvas_enabled": settings.testAttribute(QWebEngineSettings.Accelerated2dCanvasEnabled),
+        }
+
     def apply_character_position(self):
         """套用目前由 Python 管理的角色位移設定。"""
         self.move_character_to(self._character_x_offset, self._character_y_offset)
@@ -329,8 +348,33 @@ class TransparentWindow(QMainWindow):
         self._run_javascript(function_name, source_url)
 
     def _run_javascript(self, function_name: str, *args):
+        if not self._webview_ready:
+            self._pending_javascript_calls.append((function_name, args))
+            return
+
+        self.web_view.page().runJavaScript(self._build_javascript_bridge_call(function_name, *args))
+
+    def _flush_pending_javascript_calls(self):
+        if not self._webview_ready or not self._pending_javascript_calls:
+            return
+
+        pending_calls = self._pending_javascript_calls
+        self._pending_javascript_calls = []
+        for function_name, args in pending_calls:
+            self._run_javascript(function_name, *args)
+
+    @staticmethod
+    def _build_javascript_bridge_call(function_name: str, *args) -> str:
+        js_function_name = json.dumps(function_name)
         js_args = ", ".join(json.dumps(arg) for arg in args)
-        self.web_view.page().runJavaScript(f"{function_name}({js_args})")
+        return (
+            "(function(){"
+            f"var fn = window[{js_function_name}];"
+            f"if (typeof fn !== 'function') {{ console.warn('[ECHOES] JS bridge 缺少函式:', {js_function_name}); return false; }}"
+            f"fn({js_args});"
+            "return true;"
+            "})();"
+        )
 
     def _resolve_media_path(self, filename: str) -> str | None:
         if not filename:
