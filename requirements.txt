@@ -1,3 +1,4 @@
+# Linux 的 libxcb / libegl 等屬於系統層 runtime，需用套件管理器安裝，不在 pip 清單中替代這些 Python 套件。
 PyQt5>=5.15
 PyQtWebEngine>=5.15
 requests>=2.28

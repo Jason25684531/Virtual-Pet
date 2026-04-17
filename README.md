@@ -7,7 +7,7 @@
 ## 系統架構
 
 ```
-┌─────────────────── Host (本機 Windows) ───────────────────┐
+┌─────────────── Host (本機 Windows / Linux) ───────────────┐
 │                                                            │
 │  main.py                                                   │
 │    └── TransparentWindow (PyQt5 QMainWindow)               │
@@ -23,7 +23,7 @@
 │          │                                                 │
 │          ├── 無邊框 + 永遠置頂 + 不佔工作列               │
 │          ├── 滑鼠拖曳移動                                  │
-│          └── 透明區域點擊穿透 (WM_NCHITTEST)              │
+│          └── 平台相容透明合成 / 無邊框視窗                │
 │                                                            │
 │  sensors/          (Week 2+: psutil / OpenCV / MediaPipe)  │
 │  api_client/       (Week 2+: VM FastAPI / ComfyUI 通訊)   │
@@ -92,12 +92,16 @@
 3. **QWebEngineView：** `page().setBackgroundColor(QColor(0, 0, 0, 0))` ← 最關鍵
 4. **HTML/CSS：** `background-color: transparent`
 
+> Linux 路徑預設保留 GPU / WebGL 加速，不建議為了拖曳功能而停用硬體加速。
+
 ## 快速開始
 
 ### 環境需求
 
 - Python 3.10+
-- Windows 10/11 (目前僅支援 Windows)
+- Windows 10/11 或原生 Linux (Ubuntu 22.04+)
+- Linux 需預先安裝 Qt WebEngine 的系統層 runtime，例如 `libegl1`、`libx11-xcb1`、`libxcb-cursor0`、`libxkbcommon-x11-0`
+- 若要在 Linux 上使用本機 NVIDIA / CUDA 算圖，請安裝對應驅動與 toolkit，完整步驟請見 `docs/linux_deployment.md`
 
 ### 安裝
 
@@ -115,11 +119,23 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
+### Linux 快速開始
+
+1. 先依 `docs/linux_deployment.md` 安裝 `apt` 系統依賴，並確認 compositor / GPU 驅動設定。
+2. 建立虛擬環境：`python3 -m venv venv`
+3. 啟用虛擬環境：`source venv/bin/activate`
+4. 安裝 Python 依賴：`pip install -r requirements.txt`
+5. 執行環境驗證：`python3 tests/verify_linux_env.py`
+6. 啟動主程式：`python3 main.py`
+
+> Linux 部署、OpenClaw 設定檔路徑、Qt WebEngine 共享庫與 WebGL 排錯，請直接參考 `docs/linux_deployment.md`。
+
 ### 啟動
 
 ```bash
 # 確保虛擬環境已啟用
-python main.py
+python main.py   # Windows
+python3 main.py  # Linux
 ```
 
 ### 預期結果
