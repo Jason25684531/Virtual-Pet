@@ -1,0 +1,29 @@
+# 忽略檔案
+venv/
+.env
+__pycache__/
+openspec/
+.claude/
+.github/
+# .gitignore
+.vscode/
+
+# 日誌檔案 (保留目錄結構)
+logs/*.log
+logs/*.log.*
+!logs/.keep
+
+# 日誌文件
+*.log
+
+# # Ngrok 自動生成配置 (包含臨時 URL)
+# frontend/config.js
+
+
+AGENTS.md
+CLAUDE.md
+
+AIA_2026_動態生成Only.json
+
+assets/webm
+ui/assets/
