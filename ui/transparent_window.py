@@ -34,6 +34,7 @@ class TransparentWindow(QMainWindow):
         "idle": "Idle.webm",
         "report_news": "report_news.webm",
         "play_music": "play_music.webm",
+        "wave_response": "running_forward.webm",
         "laugh": "雀躍大笑.webm",
         "angry": "薄怒嘟嘴.webm",
         "awkward": "尷尬擺手.webm",

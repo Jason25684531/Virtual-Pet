@@ -105,6 +105,8 @@
 
 ### 安裝
 
+> 所有安裝與測試都必須先進入專案虛擬環境後再執行，OpenCV 與其他 Python 依賴一律以 `venv/` 內的環境為準。
+
 ```bash
 # 1. 建立虛擬環境（若尚未建立）
 python -m venv venv
@@ -128,12 +130,14 @@ pip install -r requirements.txt
 5. 執行環境驗證：`python3 tests/verify_linux_env.py`
 6. 啟動主程式：`python3 main.py`
 
+> Ubuntu 24.04 上若要啟用揮手偵測，請在已啟用的虛擬環境內安裝 `requirements.txt` 中的 `opencv-python`，不要在系統 Python 直接執行 `pip install` 或測試指令。
+
 > Linux 部署、OpenClaw 設定檔路徑、Qt WebEngine 共享庫與 WebGL 排錯，請直接參考 `docs/linux_deployment.md`。
 
 ### 啟動
 
 ```bash
-# 確保虛擬環境已啟用
+# 確保虛擬環境已啟用；所有測試也必須沿用同一個 venv
 python main.py   # Windows
 python3 main.py  # Linux
 ```
@@ -168,8 +172,9 @@ python3 main.py  # Linux
 
 - `report_news`: 對應新聞播報動畫，例如 `assets/webm/characters/<角色>/motions/report_news.webm`
 - `play_music`: 對應播放音樂動畫，例如 `assets/webm/characters/<角色>/motions/play_music.webm`
+- `wave_response`: 對應揮手回應動畫，標準檔名為 `assets/webm/characters/<角色>/motions/running_forward.webm`
 
-若這兩支影片不存在，系統會保留或回退到 `idle.webm`，但仍會繼續執行 action handler。
+若這些影片不存在，系統會保留或回退到 `idle.webm`，但仍會繼續執行 action handler 或感測流程。
 
 ## 房間模式資產
 

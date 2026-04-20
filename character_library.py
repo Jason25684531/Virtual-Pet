@@ -36,6 +36,7 @@ MOTION_SPECS = [
 ACTION_MOTION_SPECS = [
     {"key": "report_news", "title": "新聞播報", "filename": "report_news.webm", "play_once": True},
     {"key": "play_music", "title": "音樂播放", "filename": "play_music.webm", "play_once": True},
+    {"key": "wave_response", "title": "揮手回應", "filename": "running_forward.webm", "play_once": True},
 ]
 ACTION_MOTION_KEYS = {spec["key"] for spec in ACTION_MOTION_SPECS}
 MOTION_MAP = {spec["key"]: spec for spec in [*MOTION_SPECS, *ACTION_MOTION_SPECS]}

@@ -52,6 +52,12 @@ class ActionDispatcher(QObject):
                 status_label="正在挑選音樂",
                 handler_name="_handle_play_music",
             ),
+            "wave_response": ActionBinding(
+                name="wave_response",
+                motion_key="wave_response",
+                status_label="正在回應揮手",
+                handler_name="_handle_motion_only",
+            ),
             "laugh": ActionBinding(
                 name="laugh",
                 motion_key="laugh",
@@ -309,6 +315,31 @@ def run_backend_payload_e2e_probe() -> dict[str, object]:
             and window.status_calls[0][0] == "連線成功！Nolan，我們準備好了。"
             and window.motion_calls == ["laugh"]
             and window.call_order[:2] == [("status", "連線成功！Nolan，我們準備好了。"), ("motion", "laugh")]
+            and idle_restored
+            and window.restore_idle_calls == 1
+        ),
+    }
+
+
+def run_wave_response_debug_probe() -> dict[str, object]:
+    directive = "[ACTION:wave_response]"
+    window = _DebugProbeWindow()
+    dispatcher = ActionDispatcher(window, library=object())
+    dispatched = dispatcher.dispatch(directive)
+    idle_restored = window.simulate_motion_end()
+
+    return {
+        "directive": directive,
+        "dispatched": dispatched,
+        "status_calls": window.status_calls,
+        "motion_calls": window.motion_calls,
+        "idle_restored": idle_restored,
+        "restore_idle_calls": window.restore_idle_calls,
+        "ok": (
+            dispatched
+            and bool(window.status_calls)
+            and window.status_calls[0][0] == "正在回應揮手"
+            and window.motion_calls == ["wave_response"]
             and idle_restored
             and window.restore_idle_calls == 1
         ),
