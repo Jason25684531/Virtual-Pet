@@ -42,6 +42,15 @@ class FakeCapture:
         self.released = True
 
 class WaveSensorTests(unittest.TestCase):
+    def test_disabled_detection_skips_camera_capture(self):
+        capture_requests: list[int] = []
+        sensor = WaveSensor(
+            config=WaveDetectionConfig(detection_enabled=False),
+            capture_factory=lambda index: capture_requests.append(index),
+        )
+        sensor.run()
+        self.assertEqual(capture_requests, [])
+
     def test_wave_sequence_detects_after_two_direction_changes(self):
         sensor = WaveSensor(
             config=WaveDetectionConfig(
@@ -130,6 +139,30 @@ class WaveSensorTests(unittest.TestCase):
         sensor.run()
         self.assertTrue(capture.released)
         self.assertEqual(directives, [WAVE_RESPONSE_DIRECTIVE])
+
+    @unittest.skipIf(cv2 is None, "OpenCV 尚未安裝於虛擬環境")
+    def test_debug_window_flag_uses_preview_hook(self):
+        frames = [object()]
+        capture = FakeCapture(frames)
+        preview_calls: list[tuple[int | None, float, bool]] = []
+        sensor = WaveSensor(
+            config=WaveDetectionConfig(
+                show_debug_window=True,
+                loop_sleep_ms=0,
+            ),
+            capture_factory=lambda _index: capture,
+            time_source=lambda: 0.5,
+        )
+        sensor._extract_motion_center_x = lambda _frame: None
+
+        def preview_stub(_frame, center_x, timestamp, triggered):
+            preview_calls.append((center_x, timestamp, triggered))
+            sensor.stop()
+
+        sensor._show_debug_window = preview_stub
+        sensor.run()
+        self.assertTrue(capture.released)
+        self.assertEqual(preview_calls, [(None, 0.5, False)])
 
 
 class WaveResponseIntegrationTests(unittest.TestCase):

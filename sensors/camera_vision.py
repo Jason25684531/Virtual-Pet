@@ -19,10 +19,16 @@ except ImportError:  # pragma: no cover - 依安裝環境決定
 
 
 WAVE_RESPONSE_DIRECTIVE = "[ACTION:wave_response]"
+# 直接改這兩個 boolean，就能控制是否啟用 OpenCV 揮手偵測與預覽視窗。
+OPENCV_WAVE_DETECTION_ENABLED = True
+OPENCV_DEBUG_WINDOW_ENABLED = False
 
 
 @dataclass(frozen=True)
 class WaveDetectionConfig:
+    detection_enabled: bool = OPENCV_WAVE_DETECTION_ENABLED
+    show_debug_window: bool = OPENCV_DEBUG_WINDOW_ENABLED
+    debug_window_name: str = "ECHOES OpenCV Wave Detection"
     camera_index: int = 0
     frame_width: int = 640
     frame_height: int = 360
@@ -65,6 +71,8 @@ class WaveSensor(QThread):
         self._direction_events: deque[tuple[float, int]] = deque()
         self._last_trigger_timestamp = float("-inf")
         self._warned_keys: set[str] = set()
+        self._last_motion_bbox: tuple[int, int, int, int] | None = None
+        self._debug_window_available = True
 
     def stop(self):
         self._stop_requested = True
@@ -72,6 +80,10 @@ class WaveSensor(QThread):
     def run(self):
         self._stop_requested = False
         self._reset_tracking_state()
+
+        if not self._config.detection_enabled:
+            print("[ECHOES] 提示: OpenCV 揮手偵測已由 boolean 開關停用。")
+            return
 
         if cv2 is None:
             self._emit_warning_once("opencv-missing", "找不到 OpenCV，請先在虛擬環境內安裝 requirements.txt。")
@@ -95,10 +107,13 @@ class WaveSensor(QThread):
 
                 self._warned_keys.discard("camera-read-failure")
 
-                center_x = self._extract_motion_center_x(frame)
                 timestamp = self._time_source()
-                if self._register_horizontal_motion(center_x, timestamp):
+                center_x = self._extract_motion_center_x(frame)
+                triggered = self._register_horizontal_motion(center_x, timestamp)
+                if triggered:
                     self.wave_detected.emit(WAVE_RESPONSE_DIRECTIVE)
+                if self._config.show_debug_window:
+                    self._show_debug_window(frame, center_x, timestamp, triggered)
 
                 self.msleep(self._config.loop_sleep_ms)
         finally:
@@ -119,14 +134,22 @@ class WaveSensor(QThread):
         capture = self._capture
         self._capture = None
         self._previous_roi_gray = None
+        self._last_motion_bbox = None
         if capture is not None and hasattr(capture, "release"):
             capture.release()
+        if cv2 is not None and self._config.show_debug_window and self._debug_window_available:
+            try:
+                cv2.destroyWindow(self._config.debug_window_name)
+            except cv2.error:
+                self._debug_window_available = False
 
     def _reset_tracking_state(self):
         self._previous_roi_gray = None
         self._last_center_x = None
         self._direction_events.clear()
         self._last_trigger_timestamp = float("-inf")
+        self._last_motion_bbox = None
+        self._debug_window_available = True
 
     def _emit_warning_once(self, key: str, message: str):
         if key in self._warned_keys:
@@ -139,12 +162,14 @@ class WaveSensor(QThread):
             return None
 
         resized = cv2.resize(frame, (self._config.frame_width, self._config.frame_height))
-        roi = self._extract_roi(resized)
+        roi, roi_bounds = self._extract_roi(resized)
+        roi_left, roi_top, _, _ = roi_bounds
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, self._blur_kernel_size(), 0)
 
         if self._previous_roi_gray is None:
             self._previous_roi_gray = blurred
+            self._last_motion_bbox = None
             return None
 
         frame_delta = cv2.absdiff(self._previous_roi_gray, blurred)
@@ -154,14 +179,19 @@ class WaveSensor(QThread):
         threshold = cv2.dilate(threshold, None, iterations=self._config.dilation_iterations)
         contours = self._find_contours(threshold)
         if not contours:
+            self._last_motion_bbox = None
             return None
 
         largest_contour = max(contours, key=cv2.contourArea)
         if cv2.contourArea(largest_contour) < self._config.min_contour_area:
+            self._last_motion_bbox = None
             return None
 
-        x, _, width, _ = cv2.boundingRect(largest_contour)
-        return x + width // 2
+        x, y, width, height = cv2.boundingRect(largest_contour)
+        absolute_x = roi_left + x
+        absolute_y = roi_top + y
+        self._last_motion_bbox = (absolute_x, absolute_y, width, height)
+        return absolute_x + width // 2
 
     def _extract_roi(self, frame):
         frame_height, frame_width = frame.shape[:2]
@@ -169,7 +199,7 @@ class WaveSensor(QThread):
         bottom = max(top + 1, min(frame_height, int(frame_height * self._config.roi_bottom_ratio)))
         left = max(0, min(frame_width - 1, int(frame_width * self._config.roi_left_ratio)))
         right = max(left + 1, min(frame_width, int(frame_width * self._config.roi_right_ratio)))
-        return frame[top:bottom, left:right]
+        return frame[top:bottom, left:right], (left, top, right, bottom)
 
     def _blur_kernel_size(self) -> tuple[int, int]:
         size = max(3, self._config.blur_kernel_size)
@@ -232,6 +262,63 @@ class WaveSensor(QThread):
 
     def _is_in_cooldown(self, timestamp: float) -> bool:
         return (timestamp - self._last_trigger_timestamp) * 1000 < self._config.cooldown_ms
+
+    def _show_debug_window(self, frame, center_x: int | None, timestamp: float, triggered: bool):
+        if cv2 is None or not self._debug_window_available:
+            return
+
+        debug_frame = cv2.resize(frame, (self._config.frame_width, self._config.frame_height))
+        left, top, right, bottom = self._extract_roi(debug_frame)[1]
+        cv2.rectangle(debug_frame, (left, top), (right, bottom), (80, 180, 255), 2)
+
+        if self._last_motion_bbox:
+            x, y, width, height = self._last_motion_bbox
+            cv2.rectangle(debug_frame, (x, y), (x + width, y + height), (0, 255, 0), 2)
+
+        if center_x is not None:
+            cv2.line(
+                debug_frame,
+                (center_x, top),
+                (center_x, bottom),
+                (0, 255, 255),
+                2,
+            )
+
+        status_text = "triggered" if triggered else "cooldown" if self._is_in_cooldown(timestamp) else "tracking"
+        cv2.putText(
+            debug_frame,
+            f"wave_sensor: {status_text}",
+            (16, 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.75,
+            (0, 255, 0) if triggered else (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            debug_frame,
+            "Press Q or ESC to close preview",
+            (16, 56),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (180, 180, 180),
+            1,
+            cv2.LINE_AA,
+        )
+
+        try:
+            cv2.imshow(self._config.debug_window_name, debug_frame)
+            key = cv2.waitKey(1) & 0xFF
+        except cv2.error:
+            self._debug_window_available = False
+            self._emit_warning_once(
+                "debug-window-unavailable",
+                "OpenCV 預覽視窗無法開啟，目前環境缺少 HighGUI/桌面視窗支援。",
+            )
+            return
+
+        if key in (27, ord("q"), ord("Q")):
+            self.stop()
 
 
 def run_wave_sequence_probe(sequence: list[tuple[float, int | None]], config: WaveDetectionConfig | None = None) -> dict[str, object]:

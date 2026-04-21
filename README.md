@@ -142,6 +142,11 @@ python main.py   # Windows
 python3 main.py  # Linux
 ```
 
+若要切換 OpenCV 揮手偵測或預覽視窗，可直接修改 [sensors/camera_vision.py](/home/norlan/projecgt/Virtual-Pet/sensors/camera_vision.py) 最上方的兩個 boolean：
+
+- `OPENCV_WAVE_DETECTION_ENABLED = True / False`
+- `OPENCV_DEBUG_WINDOW_ENABLED = True / False`
+
 ### 預期結果
 
 1. 桌面右下角出現房間場景視窗，顯示固定背景、角色舞台與狀態列
