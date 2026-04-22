@@ -3,16 +3,13 @@ ECHOES — PyQt5 透明無邊框桌面視窗
 使用 QWebEngineView 載入 HTML/JS WebM 播放器，實現去背精靈渲染。
 """
 
-import ctypes
-import ctypes.wintypes
 import json
 import os
-import sys
 
-from PyQt5.QtCore import Qt, QUrl, QPoint, QTimer
+from PyQt5.QtCore import QEvent, Qt, QTimer, QUrl
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
 from PyQt5.QtWidgets import (
-    QMainWindow, QApplication, QMenu, QAction, QSystemTrayIcon
+    QAction, QApplication, QMainWindow, QMenu, QSystemTrayIcon, QWidget,
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineSettings, QWebEngineView
 
@@ -24,9 +21,10 @@ class TransparentWindow(QMainWindow):
     # 視窗尺寸（可根據需求調整，或改為全螢幕）：
     WINDOW_WIDTH = 1920
     WINDOW_HEIGHT = 1080
+    DRAG_SURFACE_HEIGHT = 160
     # 角色預設位移（相對於視窗中心的像素偏移量）
-    DEFAULT_CHARACTER_X_OFFSET = 960
-    DEFAULT_CHARACTER_Y_OFFSET = 540
+    DEFAULT_CHARACTER_X_OFFSET = 0
+    DEFAULT_CHARACTER_Y_OFFSET = 0
     DEMO_ANIMATIONS_DIR = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "assets",
@@ -36,6 +34,7 @@ class TransparentWindow(QMainWindow):
         "idle": "Idle.webm",
         "report_news": "report_news.webm",
         "play_music": "play_music.webm",
+        "wave_response": "running_forward.webm",
         "laugh": "雀躍大笑.webm",
         "angry": "薄怒嘟嘴.webm",
         "awkward": "尷尬擺手.webm",
@@ -50,9 +49,11 @@ class TransparentWindow(QMainWindow):
         self._character_x_offset = self.DEFAULT_CHARACTER_X_OFFSET
         self._character_y_offset = self.DEFAULT_CHARACTER_Y_OFFSET
         self._webview_ready = False
+        self._drag_pos = None
         self._pending_javascript_calls: list[tuple[str, tuple[object, ...]]] = []
         self._init_window()
         self._init_webview()
+        self._init_drag_surface()
         from action_dispatcher import ActionDispatcher
         self._action_dispatcher = ActionDispatcher(self, self._library, self)
         self._move_to_bottom_right()
@@ -67,6 +68,7 @@ class TransparentWindow(QMainWindow):
             | Qt.WindowStaysOnTopHint
             | Qt.Tool  # 不在工作列顯示圖示
         )
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setStyleSheet("background: transparent;")
         self.resize(self.WINDOW_WIDTH, self.WINDOW_HEIGHT)
 
@@ -75,8 +77,7 @@ class TransparentWindow(QMainWindow):
         self.web_view = QWebEngineView(self)
         self.web_view.setStyleSheet("background: transparent;")
 
-        # 停用 Chromium 的任何預設右鍵選單
-        # 注意：有 HTCAPTION 路徑時，右鍵事件由 nativeEvent (WM_NCRBUTTONUP) 接管
+        # 停用 Chromium 的任何預設右鍵選單，改由 Qt 視窗層統一處理。
         self.web_view.setContextMenuPolicy(Qt.NoContextMenu)
 
         self.setCentralWidget(self.web_view)
@@ -95,12 +96,27 @@ class TransparentWindow(QMainWindow):
         self.web_view.loadFinished.connect(self._on_webview_loaded)
         self.web_view.setUrl(QUrl.fromLocalFile(html_path))
 
+    def _init_drag_surface(self):
+        """建立僅覆蓋房間頂部的拖曳層，避免攔截整個 WebGL 畫面。"""
+        self._drag_surface = QWidget(self)
+        self._drag_surface.setObjectName("drag-surface")
+        self._drag_surface.setStyleSheet("background: transparent;")
+        self._drag_surface.setCursor(Qt.OpenHandCursor)
+        self._drag_surface.installEventFilter(self)
+        self._update_drag_surface_geometry()
+        self._drag_surface.raise_()
+
+    def _update_drag_surface_geometry(self):
+        if hasattr(self, "_drag_surface"):
+            self._drag_surface.setGeometry(0, 0, self.width(), self.DRAG_SURFACE_HEIGHT)
+
     def _on_webview_loaded(self, ok: bool):
         if not ok:
             print("[ECHOES] 警告: 房間頁面載入失敗。")
             return
         self._webview_ready = True
         self._flush_pending_javascript_calls()
+        self._drag_surface.raise_()
         QTimer.singleShot(120, self._restore_current_character)
 
     def _move_to_bottom_right(self):
@@ -143,6 +159,9 @@ class TransparentWindow(QMainWindow):
             self.showNormal()
             self.raise_()
             self.activateWindow()
+
+    def _show_context_menu(self, global_pos):
+        self._tray_menu.exec_(global_pos)
 
     def _build_menu(self) -> QMenu:
         """建立共用右鍵選單（視窗右鍵 & 系統匣共用）"""
@@ -202,6 +221,67 @@ class TransparentWindow(QMainWindow):
 
     def _on_settings_closed(self):
         self._settings_dialog = None
+
+    def eventFilter(self, watched, event):
+        if watched is self._drag_surface:
+            event_type = event.type()
+            if event_type == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                self._handle_drag_press(event)
+                return True
+            if event_type == QEvent.MouseMove and event.buttons() & Qt.LeftButton:
+                self._handle_drag_move(event)
+                return True
+            if event_type == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+                self._handle_drag_release(event)
+                return True
+            if event_type == QEvent.ContextMenu:
+                self._show_context_menu(event.globalPos())
+                return True
+
+        return super().eventFilter(watched, event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_drag_surface_geometry()
+        if hasattr(self, "_drag_surface"):
+            self._drag_surface.raise_()
+
+    def contextMenuEvent(self, event):
+        self._show_context_menu(event.globalPos())
+
+    def mousePressEvent(self, event):
+        self._handle_drag_press(event)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        self._handle_drag_move(event)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._handle_drag_release(event)
+        super().mouseReleaseEvent(event)
+
+    def _handle_drag_press(self, event):
+        if event.button() != Qt.LeftButton:
+            return
+
+        window_handle = self.windowHandle()
+        if window_handle is not None and window_handle.startSystemMove():
+            self._drag_pos = None
+            return
+
+        self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
+
+    def _handle_drag_move(self, event):
+        if not (event.buttons() & Qt.LeftButton):
+            return
+        if self._drag_pos is None:
+            return
+        self.move(event.globalPos() - self._drag_pos)
+
+    def _handle_drag_release(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_pos = None
 
     def _restore_current_character(self):
         current_character_id = self._library.get_current_character_id()
@@ -399,36 +479,3 @@ class TransparentWindow(QMainWindow):
 
         legacy_relative = os.path.join(ASSETS_WEBM_DIR, filename)
         return legacy_relative
-
-    # ── 透明區域點擊穿透 + 右鍵選單 (Windows) ────────────────
-
-    def nativeEvent(self, event_type, message):
-        """
-        攔截 Windows 訊息：
-                    WM_NCHITTEST   → 整個視窗視為標題列，可直接拖曳
-          WM_NCRBUTTONUP → 不透明像素右鍵放開，彈出自訂選單
-        """
-        if sys.platform != "win32":
-            return super().nativeEvent(event_type, message)
-
-        WM_NCHITTEST   = 0x0084
-        WM_NCRBUTTONUP = 0x00A5   # 標題列(NC)右鍵放開時觸發
-        HTCAPTION      = 2        # 讓 Windows 處理拖曳
-
-        try:
-            msg = ctypes.wintypes.MSG.from_address(int(message))
-
-            # ── NC 右鍵放開 → 彈出自訂選單，阻止 Windows 系統選單 ──
-            if msg.message == WM_NCRBUTTONUP:
-                sx = ctypes.c_short(msg.lParam & 0xFFFF).value
-                sy = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
-                self._build_menu().exec_(QPoint(sx, sy))
-                return True, 0   # 已消費，不傳遞給 Windows
-
-            if msg.message == WM_NCHITTEST:
-                return True, HTCAPTION
-
-            return super().nativeEvent(event_type, message)
-
-        except Exception:
-            return super().nativeEvent(event_type, message)

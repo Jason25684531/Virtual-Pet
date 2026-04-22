@@ -12,7 +12,6 @@ import hashlib
 import json
 import locale
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -47,9 +46,8 @@ CLIENT_MODE = "node"
 CLIENT_CAPS = ("tool-events",)
 DEVICE_KEY_FILENAME = "device.key"
 DEVICE_CLIENT_LABEL = "ECHOES-Host"
-DEFAULT_WSL_USER = "comfyuilinux"
-DEFAULT_OPENCLAW_DISTRO = "Ubuntu-22.04"
 OPENCLAW_TOKEN_ENV = "OPENCLAW_ACCESS_TOKEN"
+OPENCLAW_CONFIG_PATH_ENV = "OPENCLAW_CONFIG_PATH"
 MESSAGE_TEXT_KEYS = ("text", "message", "content", "delta", "reply", "response")
 MESSAGE_ACTION_KEYS = ("action", "action_name", "directive")
 IGNORED_GATEWAY_EVENTS = {"connect.challenge", "tick", "sessions.changed", "system-presence"}
@@ -65,7 +63,7 @@ SUPPORTED_ACTION_NAMES = {
     "play_music",
 }
 HOST_UI_PROTOCOL_PREFIX = (
-    "你正在回覆 ECHOES Windows Host UI。"
+    "你正在回覆 ECHOES Host UI。"
     "禁止自行呼叫任何搜尋、新聞、天氣、音樂或其他外部工具。"
     "你只需要依照 AGENTS.md 選擇最合適的一個具體 [ACTION:...] 白名單標籤，"
     "回覆一句簡短自然語言，並把標籤放在最後。"
@@ -463,53 +461,47 @@ class VMConnector(QThread):
         if env_token:
             return env_token
 
-        file_token = self._load_access_token_from_wsl_share()
-        if file_token:
-            return file_token
+        explicit_config_path = os.environ.get(OPENCLAW_CONFIG_PATH_ENV, "").strip()
+        if explicit_config_path:
+            token = self._load_access_token_from_config_path(Path(explicit_config_path).expanduser())
+            if token:
+                return token
 
-        return self._load_access_token_from_wsl_command()
+        candidate_paths = [
+            Path.home() / ".openclaw" / "openclaw.json",
+        ]
 
-    def _load_access_token_from_wsl_share(self) -> str | None:
-        distro_names = self._list_wsl_distros()
-        if DEFAULT_OPENCLAW_DISTRO not in distro_names:
-            distro_names.insert(0, DEFAULT_OPENCLAW_DISTRO)
+        xdg_config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
+        if xdg_config_home:
+            candidate_paths.append(Path(xdg_config_home).expanduser() / "openclaw" / "openclaw.json")
+        else:
+            candidate_paths.append(Path.home() / ".config" / "openclaw" / "openclaw.json")
 
-        for distro_name in distro_names:
-            config_path = Path(
-                f"\\\\wsl$\\{distro_name}\\home\\{DEFAULT_WSL_USER}\\.openclaw\\openclaw.json"
-            )
-            if not config_path.is_file():
-                continue
-
-            with contextlib.suppress(OSError, json.JSONDecodeError, TypeError, ValueError):
-                config = json.loads(config_path.read_text(encoding="utf-8"))
-                token = self._extract_gateway_token(config)
-                if token:
-                    return token
+        for config_path in candidate_paths:
+            token = self._load_access_token_from_config_path(config_path)
+            if token:
+                return token
         return None
 
-    def _load_access_token_from_wsl_command(self) -> str | None:
-        command = [
-            "wsl",
-            "-u",
-            DEFAULT_WSL_USER,
-            "--",
-            "bash",
-            "-lc",
-            "cat ~/.openclaw/openclaw.json",
-        ]
-        with contextlib.suppress(OSError, subprocess.SubprocessError, json.JSONDecodeError, TypeError, ValueError):
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                timeout=5,
-                check=True,
-            )
-            output = self._decode_wsl_output(result.stdout).lstrip("\ufeff").strip()
-            if not output:
-                return None
-            config = json.loads(output)
-            return self._extract_gateway_token(config)
+    def _load_access_token_from_config_path(self, config_path: Path) -> str | None:
+        if not config_path.is_file():
+            return None
+
+        try:
+            raw_text = config_path.read_text(encoding="utf-8-sig")
+            config = json.loads(raw_text)
+        except OSError as exc:
+            print(f"[ECHOES] 警告: 無法讀取 OpenClaw 設定檔: {config_path} ({exc})")
+            return None
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            print(f"[ECHOES] 警告: OpenClaw 設定檔格式錯誤: {config_path} ({exc})")
+            return None
+
+        token = self._extract_gateway_token(config)
+        if token:
+            return token
+
+        print(f"[ECHOES] 警告: OpenClaw 設定檔缺少 gateway token: {config_path}")
         return None
 
     @staticmethod
@@ -531,29 +523,6 @@ class VMConnector(QThread):
             if normalized:
                 return normalized
         return None
-
-    @staticmethod
-    def _list_wsl_distros() -> list[str]:
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            result = subprocess.run(
-                ["wsl", "-l", "-q"],
-                capture_output=True,
-                timeout=5,
-                check=True,
-            )
-            output = VMConnector._decode_wsl_output(result.stdout).replace("\x00", "")
-            return [line.strip() for line in output.splitlines() if line.strip()]
-        return []
-
-    @staticmethod
-    def _decode_wsl_output(raw_output: bytes | str) -> str:
-        if isinstance(raw_output, str):
-            return raw_output
-
-        for encoding in ("utf-8-sig", "utf-16-le", "utf-16", "cp950"):
-            with contextlib.suppress(UnicodeDecodeError):
-                return raw_output.decode(encoding)
-        return raw_output.decode("utf-8", errors="ignore")
 
     def _load_or_generate_key(self) -> str:
         if self._device_private_key is not None and self._device_identity_hex:
