@@ -9,11 +9,12 @@ import os
 from PyQt5.QtCore import QEvent, Qt, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QLineEdit, QMainWindow, QMenu, QSystemTrayIcon, QWidget,
+    QAction, QApplication, QLineEdit, QMainWindow, QMenu, QPushButton, QSystemTrayIcon, QWidget,
 )
 from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineSettings, QWebEngineView
 
 from character_library import ASSETS_WEBM_DIR, CharacterLibrary, MOTION_MAP
+from interaction_trace import InteractionLatencyTracker
 
 
 class EchoesWebPage(QWebEnginePage):
@@ -46,6 +47,8 @@ class DeveloperInputLineEdit(QLineEdit):
 class TransparentWindow(QMainWindow):
     """透明無邊框桌面寵物視窗"""
     developer_query_submitted = pyqtSignal(str)
+    stt_start_requested = pyqtSignal()
+    stt_stop_requested = pyqtSignal()
     RAW_JAVASCRIPT_MARKER = "__raw_javascript__"
 
     # 視窗尺寸（可根據需求調整，或改為全螢幕）：
@@ -55,6 +58,10 @@ class TransparentWindow(QMainWindow):
     DEV_INPUT_WIDTH = 560
     DEV_INPUT_HEIGHT = 44
     DEV_INPUT_MARGIN_BOTTOM = 28
+    STT_BUTTON_WIDTH = 132
+    STT_BUTTON_HEIGHT = 40
+    STT_BUTTON_MARGIN_LEFT = 24
+    STT_BUTTON_MARGIN_BOTTOM = 30
     # 角色預設位移（相對於視窗中心的像素偏移量）
     DEFAULT_CHARACTER_X_OFFSET = 0
     DEFAULT_CHARACTER_Y_OFFSET = 0
@@ -75,23 +82,28 @@ class TransparentWindow(QMainWindow):
         "listen": "專心聆聽.webm",
     }
 
-    def __init__(self):
+    def __init__(self, latency_tracker: InteractionLatencyTracker | None = None):
         super().__init__()
         self._library = CharacterLibrary()
+        self._latency_tracker = latency_tracker
         self._settings_dialog = None
         self._character_x_offset = self.DEFAULT_CHARACTER_X_OFFSET
         self._character_y_offset = self.DEFAULT_CHARACTER_Y_OFFSET
         self._webview_ready = False
         self._drag_pos = None
+        self._stt_listening = False
+        self._stt_available = True
         self._pending_javascript_calls: list[tuple[str, tuple[object, ...]]] = []
         self._init_window()
         self._init_webview()
         self._init_drag_surface()
         self._init_developer_input()
+        self._init_stt_button()
         from action_dispatcher import ActionDispatcher
         self._action_dispatcher = ActionDispatcher(
             self,
             self._library,
+            latency_tracker=self._latency_tracker,
             parent=self,
         )
         self._move_to_bottom_right()
@@ -183,6 +195,66 @@ class TransparentWindow(QMainWindow):
         self.installEventFilter(self)
         self._update_developer_input_geometry()
 
+    def _init_stt_button(self):
+        self._stt_button = QPushButton(self)
+        self._stt_button.setObjectName("stt-toggle-button")
+        self._stt_button.setFixedSize(self.STT_BUTTON_WIDTH, self.STT_BUTTON_HEIGHT)
+        self._stt_button.clicked.connect(self._handle_stt_button_clicked)
+        self._stt_button.installEventFilter(self)
+        self._apply_stt_button_state()
+        self._update_stt_button_geometry()
+
+    def _apply_stt_button_state(self):
+        if not hasattr(self, "_stt_button"):
+            return
+
+        if not self._stt_available:
+            label = "STT 不可用"
+            background = "rgba(92, 92, 92, 180)"
+            border = "rgba(190, 190, 190, 110)"
+            enabled = False
+        elif self._stt_listening:
+            label = "結束收音"
+            background = "rgba(176, 52, 52, 215)"
+            border = "rgba(255, 214, 214, 160)"
+            enabled = True
+        else:
+            label = "開始收音"
+            background = "rgba(32, 126, 92, 215)"
+            border = "rgba(210, 255, 239, 150)"
+            enabled = True
+
+        self._stt_button.setText(label)
+        self._stt_button.setEnabled(enabled)
+        self._stt_button.setStyleSheet(
+            f"""
+            QPushButton#stt-toggle-button {{
+                background: {background};
+                color: #ffffff;
+                border: 1px solid {border};
+                border-radius: 14px;
+                font-size: 15px;
+                font-weight: 600;
+                padding: 0 14px;
+            }}
+            QPushButton#stt-toggle-button:disabled {{
+                color: rgba(255, 255, 255, 0.75);
+            }}
+            """
+        )
+        if hasattr(self, "_tray_stt_toggle_action"):
+            self._tray_stt_toggle_action.setText(label)
+            self._tray_stt_toggle_action.setEnabled(enabled)
+
+    def _update_stt_button_geometry(self):
+        if not hasattr(self, "_stt_button"):
+            return
+        y = max(
+            self.DRAG_SURFACE_HEIGHT + 24,
+            self.height() - self.STT_BUTTON_HEIGHT - self.STT_BUTTON_MARGIN_BOTTOM,
+        )
+        self._stt_button.move(self.STT_BUTTON_MARGIN_LEFT, y)
+
     def _update_drag_surface_geometry(self):
         if hasattr(self, "_drag_surface"):
             self._drag_surface.setGeometry(0, 0, self.width(), self.DRAG_SURFACE_HEIGHT)
@@ -202,6 +274,8 @@ class TransparentWindow(QMainWindow):
     def _raise_overlay_widgets(self):
         if hasattr(self, "_drag_surface"):
             self._drag_surface.raise_()
+        if hasattr(self, "_stt_button"):
+            self._stt_button.raise_()
         if hasattr(self, "_developer_input") and self._developer_input.isVisible():
             self._developer_input.raise_()
 
@@ -287,6 +361,10 @@ class TransparentWindow(QMainWindow):
         stop_music_action.triggered.connect(self.stop_music)
         action_menu.addAction(stop_music_action)
 
+        self._tray_stt_toggle_action = QAction("開始收音", self)
+        self._tray_stt_toggle_action.triggered.connect(self._handle_stt_button_clicked)
+        menu.addAction(self._tray_stt_toggle_action)
+
         menu.addSeparator()
 
         quit_action = QAction("✕  離開 ECHOES", self)
@@ -352,6 +430,7 @@ class TransparentWindow(QMainWindow):
         super().resizeEvent(event)
         self._update_drag_surface_geometry()
         self._update_developer_input_geometry()
+        self._update_stt_button_geometry()
         self._raise_overlay_widgets()
 
     def keyPressEvent(self, event):
@@ -486,8 +565,25 @@ class TransparentWindow(QMainWindow):
             return self.change_video(fallback_idle, loop=True)
         return False
 
-    def dispatch_action(self, directive: str) -> bool:
-        return self._action_dispatcher.dispatch(directive)
+    def dispatch_action(self, directive: str, trace_id: str | None = None) -> bool:
+        return self._action_dispatcher.dispatch(directive, trace_id=trace_id)
+
+    def set_stt_listening(self, active: bool):
+        self._stt_listening = bool(active)
+        self._apply_stt_button_state()
+
+    def set_stt_available(self, available: bool):
+        self._stt_available = bool(available)
+        self._apply_stt_button_state()
+
+    def _handle_stt_button_clicked(self):
+        if not self._stt_available:
+            self.set_action_status("Azure STT 尚未配置完成。", tone="warn", timeout_ms=3200)
+            return
+        if self._stt_listening:
+            self.stt_stop_requested.emit()
+            return
+        self.stt_start_requested.emit()
 
     def toggle_developer_input(self):
         if self._developer_input.isVisible():

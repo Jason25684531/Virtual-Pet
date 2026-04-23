@@ -1,5 +1,5 @@
 """
-ECHOES — Host 端本地大腦與 ElevenLabs TTS worker。
+ECHOES — Host 端本地大腦串流推論 worker。
 
 開發提醒：
 - 請先進入專案虛擬環境再執行，並安裝 `langchain`、`langchain-community`、`python-dotenv`。
@@ -17,23 +17,20 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import uuid4
 
-import requests
 from PyQt5.QtCore import QThread, pyqtSignal
 
 import config
 from character_library import CHARACTER_LIBRARY_DIR, CharacterLibrary, PROJECT_ROOT
+from interaction_trace import InteractionLatencyTracker
 
 try:
-    from langchain.chains import ConversationChain
     from langchain.memory import ConversationBufferMemory
     from langchain.prompts import PromptTemplate
     from langchain_community.llms import Ollama
     from langchain_core.messages import SystemMessage
     LANGCHAIN_IMPORT_ERROR = None
 except ModuleNotFoundError as exc:  # pragma: no cover - 允許在依賴缺失時安全降級
-    ConversationChain = None  # type: ignore[assignment]
     ConversationBufferMemory = None  # type: ignore[assignment]
     PromptTemplate = None  # type: ignore[assignment]
     Ollama = None  # type: ignore[assignment]
@@ -126,107 +123,137 @@ class SoulLoader:
         return SystemMessage(content=content)
 
 
-class ElevenLabsTTSWorker(QThread):
-    """在背景執行緒呼叫 ElevenLabs 並輸出暫存音檔。"""
+SENTENCE_BOUNDARY_PATTERN = re.compile(r"[，。！？]")
+ACTION_PREFIX_PATTERN = re.compile(
+    r"^\s*(\[\s*ACTION\s*:\s*(?P<action>[A-Za-z0-9_-]+)\s*\])",
+    re.IGNORECASE,
+)
 
-    finished_signal = pyqtSignal(bool, str, object)
 
-    def __init__(
-        self,
-        text: str,
-        reply_id: str | None = None,
-        voice_id: str | None = None,
-        temp_audio_dir: str | Path | None = None,
-        parent=None,
-    ):
-        super().__init__(parent)
-        self._text = text
-        self._reply_id = (reply_id or uuid4().hex).strip()
-        self._voice_id = (voice_id or "").strip()
-        self._temp_audio_dir = Path(temp_audio_dir) if temp_audio_dir else config.TEMP_AUDIO_DIR
+class StreamedReplyParser:
+    """解析串流 token，優先提取最前置 action，再按句讀切出自然語言片段。"""
 
-    def run(self):
-        speech_text = sanitize_tts_text(self._text)
-        if not speech_text:
-            self.finished_signal.emit(False, "略過 TTS：沒有可朗讀的文字。", None)
-            return
+    def __init__(self):
+        self._prefix_decided = False
+        self._action_emitted = False
+        self._prefix_buffer = ""
+        self._text_buffer = ""
+        self._emitted_fragments: list[str] = []
 
-        api_key = os.getenv("ELEVENLABS_API_KEY", "").strip()
-        voice_id = self._voice_id or config.ELEVENLABS_VOICE_ID
-        if not api_key or not voice_id:
-            self.finished_signal.emit(False, "略過 TTS：缺少 ElevenLabs API Key 或 Voice ID。", None)
-            return
+    def feed(self, token: str) -> list[str]:
+        text = str(token or "")
+        if not text:
+            return []
 
-        output_dir = Path(
-            os.getenv("ELEVENLABS_TEMP_AUDIO_DIR", "").strip() or str(self._temp_audio_dir)
-        )
-        try:
-            output_dir.mkdir(parents=True, exist_ok=True)
-            _cleanup_temp_audio_dir(output_dir)
-        except OSError as exc:
-            self.finished_signal.emit(False, f"TTS 暫存目錄建立失敗: {exc}", None)
-            return
+        if not self._prefix_decided:
+            self._prefix_buffer += text
+            return self._consume_prefix_buffer()
 
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-        headers = {
-            "xi-api-key": api_key,
-            "Accept": "audio/mpeg",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "text": speech_text,
-            "model_id": os.getenv("ELEVENLABS_MODEL_ID", config.DEFAULT_TTS_MODEL_ID).strip() or config.DEFAULT_TTS_MODEL_ID,
-            "voice_settings": {
-                "stability": float(os.getenv("ELEVENLABS_STABILITY", "0.45")),
-                "similarity_boost": float(os.getenv("ELEVENLABS_SIMILARITY_BOOST", "0.8")),
-            },
-        }
+        return self._consume_text(text)
 
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=config.DEFAULT_TTS_TIMEOUT)
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            self.finished_signal.emit(False, f"ElevenLabs TTS 請求失敗: {exc}", None)
-            return
+    def flush(self) -> list[str]:
+        outputs: list[str] = []
+        if not self._prefix_decided and self._prefix_buffer:
+            outputs.extend(self._force_prefix_as_text())
 
-        audio_bytes = response.content or b""
-        content_type = response.headers.get("content-type", "").lower()
-        if not audio_bytes or "audio" not in content_type:
-            self.finished_signal.emit(False, "ElevenLabs 回傳了無效音檔，已改用純文字回覆。", None)
-            return
+        trailing = sanitize_tts_text(self._text_buffer)
+        self._text_buffer = ""
+        if trailing:
+            outputs.append(trailing)
+            self._emitted_fragments.append(trailing)
+        return outputs
 
-        output_path = output_dir / f"{self._reply_id}.mp3"
-        try:
-            output_path.write_bytes(audio_bytes)
-        except OSError as exc:
-            self.finished_signal.emit(False, f"TTS 音檔寫入失敗: {exc}", None)
-            return
+    def build_memory_reply(self) -> str:
+        if not self._emitted_fragments:
+            return ""
 
-        result = {
-            "reply_id": self._reply_id,
-            "audio_path": str(output_path),
-            "text": speech_text,
-            "title": f"ECHOES 語音 {self._reply_id[:8]}",
-        }
-        self.finished_signal.emit(True, "語音生成完成。", result)
+        parts = list(self._emitted_fragments)
+        if parts and parts[0].startswith("[ACTION:"):
+            action = parts.pop(0)
+            natural = "".join(parts).strip()
+            return f"{action} {natural}".strip() if natural else action
+        return "".join(parts).strip()
+
+    def _consume_prefix_buffer(self) -> list[str]:
+        stripped = self._prefix_buffer.lstrip()
+        if not stripped:
+            return []
+
+        if not stripped.startswith("["):
+            return self._force_prefix_as_text()
+
+        if "]" not in stripped:
+            return []
+
+        match = ACTION_PREFIX_PATTERN.match(self._prefix_buffer)
+        if not match:
+            return self._force_prefix_as_text()
+
+        raw_action = (match.group("action") or "").lower()
+        action_name = config.canonicalize_host_action(raw_action)
+        if not action_name:
+            return self._force_prefix_as_text()
+
+        self._prefix_decided = True
+        self._action_emitted = True
+        directive = f"[ACTION:{action_name}]"
+        remainder = self._prefix_buffer[match.end():]
+        self._prefix_buffer = ""
+        self._emitted_fragments.append(directive)
+        outputs = [directive]
+        outputs.extend(self._consume_text(remainder))
+        return outputs
+
+    def _force_prefix_as_text(self) -> list[str]:
+        self._prefix_decided = True
+        prefix_text = self._prefix_buffer
+        self._prefix_buffer = ""
+        return self._consume_text(prefix_text)
+
+    def _consume_text(self, text: str) -> list[str]:
+        outputs: list[str] = []
+        self._text_buffer += text
+
+        while True:
+            match = SENTENCE_BOUNDARY_PATTERN.search(self._text_buffer)
+            if not match:
+                break
+
+            end_index = match.end()
+            chunk = sanitize_tts_text(self._text_buffer[:end_index])
+            self._text_buffer = self._text_buffer[end_index:]
+            self._text_buffer = self._text_buffer.lstrip()
+            if not chunk:
+                continue
+            outputs.append(chunk)
+            self._emitted_fragments.append(chunk)
+
+        return outputs
 
 
 class BrainEngine(QThread):
     """在背景執行緒中執行本地 Ollama 推論；本機大腦已完成與 OpenClaw 解耦。"""
 
     message_received = pyqtSignal(str)
+    streamed_fragment = pyqtSignal(str, object)
     warning_emitted = pyqtSignal(str)
     profile_changed = pyqtSignal(str)
 
-    def __init__(self, library: CharacterLibrary | None = None, parent=None):
+    def __init__(
+        self,
+        library: CharacterLibrary | None = None,
+        latency_tracker: InteractionLatencyTracker | None = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self._library = library or CharacterLibrary()
         self._soul_loader = SoulLoader()
-        self._request_queue: "queue.Queue[tuple[str, BrainProfile | None] | None]" = queue.Queue()
+        self._request_queue: "queue.Queue[tuple[str, BrainProfile | None, str | None] | None]" = queue.Queue()
         self._lock = threading.Lock()
         self._memory_registry: dict[str, object] = {}
         self._active_profile = BrainProfile.from_character_library(self._library)
         self._llm_cache: dict[str, object] = {}
+        self._latency_tracker = latency_tracker
 
     def run(self):
         while True:
@@ -234,25 +261,42 @@ class BrainEngine(QThread):
             if queued_item is None:
                 return
 
-            prompt_text, profile_override = queued_item
-            self._handle_prompt(prompt_text, profile_override)
+            prompt_text, profile_override, trace_id = queued_item
+            self._handle_prompt(prompt_text, profile_override, trace_id=trace_id)
 
     def stop(self):
         self._request_queue.put(None)
 
-    def send_to_brain(self, text: str, profile: BrainProfile | None = None) -> bool:
+    def send_to_brain(
+        self,
+        text: str,
+        profile: BrainProfile | None = None,
+        trace_id: str | None = None,
+    ) -> bool:
         message = (text or "").strip()
         if not message:
             return False
-        self._request_queue.put((message, profile))
+        if self._latency_tracker is not None:
+            self._latency_tracker.mark_brain_queued(trace_id)
+        self._request_queue.put((message, profile, trace_id))
         return True
 
-    def send_message(self, message: str, profile: BrainProfile | None = None) -> bool:
-        return self.send_to_brain(message, profile=profile)
+    def send_message(
+        self,
+        message: str,
+        profile: BrainProfile | None = None,
+        trace_id: str | None = None,
+    ) -> bool:
+        return self.send_to_brain(message, profile=profile, trace_id=trace_id)
 
-    def send_query(self, text: str, profile: BrainProfile | None = None) -> bool:
+    def send_query(
+        self,
+        text: str,
+        profile: BrainProfile | None = None,
+        trace_id: str | None = None,
+    ) -> bool:
         """提供 UI Dev Mode 使用的查詢入口，內部仍走同一條背景推論管線。"""
-        return self.send_to_brain(text, profile=profile)
+        return self.send_to_brain(text, profile=profile, trace_id=trace_id)
 
     def set_active_profile(self, profile: BrainProfile):
         with self._lock:
@@ -276,10 +320,17 @@ class BrainEngine(QThread):
         target_profile_id = profile_id or self._active_profile.profile_id
         self._memory_registry.pop(target_profile_id, None)
 
-    def _handle_prompt(self, prompt_text: str, profile_override: BrainProfile | None = None):
+    def _handle_prompt(
+        self,
+        prompt_text: str,
+        profile_override: BrainProfile | None = None,
+        trace_id: str | None = None,
+    ):
         profile = profile_override or self._get_active_profile()
         if profile_override is not None:
             self.set_active_profile(profile_override)
+        if self._latency_tracker is not None:
+            self._latency_tracker.mark_brain_started(trace_id)
 
         if LANGCHAIN_IMPORT_ERROR is not None:
             warning = (
@@ -287,7 +338,11 @@ class BrainEngine(QThread):
                 "`langchain`、`langchain-community`、`python-dotenv`。"
             )
             self.warning_emitted.emit(warning)
-            self.message_received.emit(f"{warning} [ACTION:listen]")
+            if self._latency_tracker is not None:
+                self._latency_tracker.mark_failure(trace_id, "brain", warning)
+            self._emit_fragment(f"[ACTION:listen] {warning}", trace_id)
+            if self._latency_tracker is not None:
+                self._latency_tracker.mark_brain_completed(trace_id)
             return
 
         soul_message, soul_warning = self._soul_loader.load(profile.persona_key)
@@ -298,21 +353,66 @@ class BrainEngine(QThread):
         if knowledge_warning:
             self.warning_emitted.emit(knowledge_warning)
 
+        memory = self._get_or_create_memory(profile.profile_id)
         try:
-            chain = self._build_conversation_chain(profile, soul_message.content, knowledge_context)
-            raw_reply = str(chain.predict(input=prompt_text)).strip()
+            prompt = self._build_stream_prompt(
+                profile=profile,
+                user_input=prompt_text,
+                system_prompt=soul_message.content,
+                knowledge_context=knowledge_context,
+                memory=memory,
+            )
+            parser = StreamedReplyParser()
+            emitted_anything = False
+
+            for token in self._stream_llm_tokens(profile, prompt):
+                for fragment in parser.feed(token):
+                    emitted_anything = True
+                    self._emit_fragment(fragment, trace_id)
+
+            for fragment in parser.flush():
+                emitted_anything = True
+                self._emit_fragment(fragment, trace_id)
+
+            memory_reply = parser.build_memory_reply()
+            if memory_reply:
+                memory.save_context({"input": prompt_text}, {"response": memory_reply})
+            elif not emitted_anything:
+                fallback = "我剛剛有點恍神了，請再說一次。"
+                memory.save_context({"input": prompt_text}, {"response": fallback})
+                self._emit_fragment(fallback, trace_id)
+            if self._latency_tracker is not None:
+                self._latency_tracker.mark_brain_completed(trace_id)
         except Exception as exc:
             warning = f"警告: 本地 Ollama 推論失敗，已改用安全回覆。({exc})"
             self.warning_emitted.emit(warning)
-            self.message_received.emit("抱歉，我現在無法順利連線本地大腦，請稍後再試。 [ACTION:listen]")
+            if self._latency_tracker is not None:
+                self._latency_tracker.mark_failure(trace_id, "brain", warning)
+            self._emit_fragment("[ACTION:listen] 抱歉，我現在無法順利連線本地大腦，請稍後再試。", trace_id)
+            if self._latency_tracker is not None:
+                self._latency_tracker.mark_brain_completed(trace_id)
             return
 
-        normalized_reply = self._normalize_reply(raw_reply)
-        self.message_received.emit(normalized_reply)
+    def _emit_fragment(self, fragment: str, trace_id: str | None):
+        if self._latency_tracker is not None:
+            self._latency_tracker.mark_fragment_emitted(trace_id, fragment)
+        self.message_received.emit(fragment)
+        self.streamed_fragment.emit(fragment, trace_id)
 
-    def _build_conversation_chain(self, profile: BrainProfile, system_prompt: str, knowledge_context: str):
+    def _build_stream_prompt(
+        self,
+        profile: BrainProfile,
+        user_input: str,
+        system_prompt: str,
+        knowledge_context: str,
+        memory,
+    ) -> str:
         llm = self._get_or_create_llm(profile)
-        memory = self._get_or_create_memory(profile.profile_id)
+        del llm
+        history = memory.load_memory_variables({}).get("history", "")
+        if history is None:
+            history = ""
+        history_text = str(history)
         prompt = PromptTemplate(
             input_variables=["history", "input", "system_prompt", "knowledge_context", "host_action_prompt"],
             template=(
@@ -321,7 +421,8 @@ class BrainEngine(QThread):
                 "{knowledge_context}"
                 "以下是你與使用者的對話歷史：\n{history}\n\n"
                 "使用者：{input}\n"
-                "請直接輸出回覆內容。若需要 Host 執行動作，只能在最後附上一個 [ACTION:...] 標籤。\n"
+                "請直接輸出回覆內容。若需要 Host 執行動作，必須先輸出單一 [ACTION:...] 前綴，"
+                "而且它必須是整段回覆的第一個有效字元；後面才能接自然語言內容。\n"
                 "ECHOES："
             ),
         ).partial(
@@ -329,12 +430,14 @@ class BrainEngine(QThread):
             knowledge_context=knowledge_context,
             host_action_prompt=config.HOST_ACTION_PROMPT,
         )
-        return ConversationChain(
-            llm=llm,
-            memory=memory,
-            prompt=prompt,
-            verbose=False,
-        )
+        return prompt.format(history=history_text, input=user_input)
+
+    def _stream_llm_tokens(self, profile: BrainProfile, prompt: str):
+        llm = self._get_or_create_llm(profile)
+        for chunk in llm.stream(prompt):
+            text = self._coerce_stream_chunk(chunk)
+            if text:
+                yield text
 
     def _get_or_create_llm(self, profile: BrainProfile):
         base_url = config.OLLAMA_BASE_URL
@@ -396,7 +499,7 @@ class BrainEngine(QThread):
     def _normalize_reply(reply: str) -> str:
         text = (reply or "").strip()
         if not text:
-            return "我剛剛有點恍神了，請再說一次。 [ACTION:listen]"
+            return "[ACTION:listen] 我剛剛有點恍神了，請再說一次。"
 
         match = ACTION_DIRECTIVE_PATTERN.search(text)
         raw_action_name = ""
@@ -406,11 +509,22 @@ class BrainEngine(QThread):
         natural_text = sanitize_tts_text(text)
         if not action_name:
             if raw_action_name:
-                return natural_text or "我有聽見你，繼續說吧。 [ACTION:listen]"
-            return natural_text or "我有聽見你，繼續說吧。 [ACTION:listen]"
+                return natural_text or "[ACTION:listen] 我有聽見你，繼續說吧。"
+            return natural_text or "[ACTION:listen] 我有聽見你，繼續說吧。"
         if not natural_text:
             return f"[ACTION:{action_name}]"
-        return f"{natural_text} [ACTION:{action_name}]"
+        return f"[ACTION:{action_name}] {natural_text}"
+
+    @staticmethod
+    def _coerce_stream_chunk(chunk: object) -> str:
+        if chunk is None:
+            return ""
+        if isinstance(chunk, str):
+            return chunk
+        content = getattr(chunk, "content", None)
+        if content is not None:
+            return str(content)
+        return str(chunk)
 
 
 def sanitize_tts_text(text: str) -> str:
@@ -461,16 +575,3 @@ def _resolve_manifest_or_default_path(manifest: dict | None, key: str, default_p
     if path.is_absolute():
         return str(path)
     return str((PROJECT_ROOT / path).resolve())
-
-
-def _cleanup_temp_audio_dir(directory: Path, keep_limit: int = 20):
-    files = sorted(
-        [path for path in directory.glob("*.mp3") if path.is_file()],
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    for stale_file in files[keep_limit:]:
-        try:
-            stale_file.unlink()
-        except OSError:
-            continue

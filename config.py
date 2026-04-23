@@ -28,6 +28,7 @@ DEFAULT_ELEVENLABS_VOICE_ID = "zENt0ljwLXypGqHDsdzz"
 DEFAULT_TTS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_TTS_TIMEOUT = (5, 45)
 DEFAULT_TEMP_AUDIO_DIR = PROJECT_ROOT / "assets" / "temp_audio"
+DEFAULT_AZURE_STT_LANGUAGE = "zh-TW"
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL).strip() or DEFAULT_OLLAMA_BASE_URL
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL
@@ -39,21 +40,40 @@ TEMP_AUDIO_DIR = Path(
     os.getenv("ELEVENLABS_TEMP_AUDIO_DIR", "").strip() or str(DEFAULT_TEMP_AUDIO_DIR)
 )
 
+
+def _read_bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name, "").strip().lower()
+    if not value:
+        return default
+    return value not in {"0", "false", "no", "off"}
+
+
+AZURE_STT_API_KEY = os.getenv("AZURE_STT_API_KEY", "").strip()
+AZURE_STT_REGION = os.getenv("AZURE_STT_REGION", "").strip()
+AZURE_STT_LANGUAGE = (
+    os.getenv("AZURE_STT_LANGUAGE", DEFAULT_AZURE_STT_LANGUAGE).strip()
+    or DEFAULT_AZURE_STT_LANGUAGE
+)
+AZURE_STT_ENABLED = _read_bool_env("AZURE_STT_ENABLED", default=True)
+
 PERSONA_PROMPTS = {
     "default": (
         "你是       ECHOES，本機桌面陪伴 AI。"
         "請以自然、簡潔、溫暖的繁體中文回覆。"
-        "若需要觸發 Host action，只能使用單一 [ACTION:...] 標籤並放在回覆最後。"
+        "若需要觸發 Host action，只能使用單一 [ACTION:...] 標籤，"
+        "且必須放在回覆最前面、作為第一個有效字元。"
     ),
     "初音 (正式版)": (
         "你是 ECHOES 的初音系桌面角色。"
         "語氣清亮、活潑、友善，保持簡潔，不要過度冗長。"
-        "若需要觸發 Host action，只能使用單一 [ACTION:...] 標籤並放在回覆最後。"
+        "若需要觸發 Host action，只能使用單一 [ACTION:...] 標籤，"
+        "且必須放在回覆最前面、作為第一個有效字元。"
     ),
     "20260415_168888_初音": (
         "你是 ECHOES 的初音系桌面角色。"
         "語氣清亮、活潑、友善，保持簡潔，不要過度冗長。"
-        "若需要觸發 Host action，只能使用單一 [ACTION:...] 標籤並放在回覆最後。"
+        "若需要觸發 Host action，只能使用單一 [ACTION:...] 標籤，"
+        "且必須放在回覆最前面、作為第一個有效字元。"
     ),
 }
 
@@ -99,11 +119,13 @@ HOST_ACTION_ALIASES = {
 }
 
 HOST_ACTION_PROMPT = (
-    "若需要觸發 Host action，只能從以下白名單挑一個，且只能輸出一個並放在回覆最後："
+    "若需要觸發 Host action，只能從以下白名單挑一個，且只能輸出一個，"
+    "並且必須放在整段回覆最前面、作為第一個有效字元："
     "[ACTION:report_news]、[ACTION:play_music]、[ACTION:wave_response]、[ACTION:laugh]、"
     "[ACTION:angry]、[ACTION:awkward]、[ACTION:speechless]、[ACTION:listen]、[ACTION:idle]。"
     "新聞、頭條、天氣請使用 report_news；音樂、放鬆、播歌請使用 play_music；"
     "一般聆聽或不確定時使用 listen。禁止自創新的 action 名稱。"
+    "除了最前面的 action 前綴外，後續內容只能是自然語言回覆。"
 )
 
 
@@ -129,3 +151,7 @@ def canonicalize_host_action(action_name: str | None) -> str:
     if normalized in HOST_ACTION_NAMES:
         return normalized
     return HOST_ACTION_ALIASES.get(normalized, "")
+
+
+def azure_stt_is_configured() -> bool:
+    return bool(AZURE_STT_API_KEY and AZURE_STT_REGION)

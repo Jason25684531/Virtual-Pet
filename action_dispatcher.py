@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from collections import deque
 from uuid import uuid4
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,9 +17,11 @@ from typing import TYPE_CHECKING
 from PyQt5.QtCore import QObject
 
 from action_services import MusicSelectionWorker, NewsFetchWorker
-from api_client.brain_engine import ElevenLabsTTSWorker, sanitize_tts_text
+from api_client.brain_engine import sanitize_tts_text
+from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
 from character_library import ASSETS_WEBM_DIR, MOTION_MAP
 import config
+from interaction_trace import InteractionLatencyTracker
 
 if TYPE_CHECKING:
     from character_library import CharacterLibrary
@@ -45,9 +48,12 @@ class ActionDispatcher(QObject):
         self,
         window: "TransparentWindow",
         library: "CharacterLibrary",
-        tts_worker_factory=ElevenLabsTTSWorker,
+        tts_worker_factory=ElevenLabsStreamingTTSWorker,
+        news_worker_factory=NewsFetchWorker,
+        music_worker_factory=MusicSelectionWorker,
         motion_path_resolver=None,
         tts_enabled: bool = True,
+        latency_tracker: InteractionLatencyTracker | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -55,11 +61,19 @@ class ActionDispatcher(QObject):
         self._library = library
         self._workers: list[object] = []
         self._tts_worker_factory = (
-            tts_worker_factory if callable(tts_worker_factory) else ElevenLabsTTSWorker
+            tts_worker_factory if callable(tts_worker_factory) else ElevenLabsStreamingTTSWorker
+        )
+        self._news_worker_factory = (
+            news_worker_factory if callable(news_worker_factory) else NewsFetchWorker
+        )
+        self._music_worker_factory = (
+            music_worker_factory if callable(music_worker_factory) else MusicSelectionWorker
         )
         self._motion_path_resolver = motion_path_resolver
         self._tts_enabled = tts_enabled
-        self._latest_tts_reply_id: str | None = None
+        self._latency_tracker = latency_tracker
+        self._active_tts_worker: object | None = None
+        self._pending_tts_chunks: deque[tuple[str, str, str | None]] = deque()
         self._bindings = {
             "report_news": ActionBinding(
                 name="report_news",
@@ -117,7 +131,7 @@ class ActionDispatcher(QObject):
             ),
         }
 
-    def dispatch(self, directive: str) -> bool:
+    def dispatch(self, directive: str, trace_id: str | None = None) -> bool:
         raw_action_name, display_message = self._parse_directive(directive)
         action_name = config.canonicalize_host_action(raw_action_name)
         if raw_action_name and action_name and raw_action_name != action_name:
@@ -137,7 +151,7 @@ class ActionDispatcher(QObject):
 
         if not action_name:
             if display_message:
-                self._show_brain_message(display_message, has_action=False)
+                self._show_brain_message(display_message, has_action=False, trace_id=trace_id)
                 return True
 
             print(f"[ECHOES] 警告: 收到空白或無效訊息: {directive}")
@@ -158,6 +172,8 @@ class ActionDispatcher(QObject):
             self._window.set_action_status(binding.status_label, tone="working")
 
         print(f"[ECHOES] Action tag 命中: {action_name} -> motion `{binding.motion_key}`")
+        if self._latency_tracker is not None:
+            self._latency_tracker.mark_action_dispatched(trace_id, action_name)
         motion_found = self._play_binding_motion(binding)
         if not motion_found:
             print(f"[ECHOES] 警告: action {action_name} 缺少對應動作，改以安全狀態執行。")
@@ -167,7 +183,7 @@ class ActionDispatcher(QObject):
 
         if display_message:
             try:
-                self._synthesize_tts(display_message, tone=message_tone)
+                self._synthesize_tts(display_message, tone=message_tone, trace_id=trace_id)
             except Exception as exc:  # pragma: no cover - 防止 TTS 異常阻斷動作播放
                 print(f"[ECHOES] 警告: TTS 背景啟動失敗，但動作已照常執行。({exc})")
         return True
@@ -193,11 +209,11 @@ class ActionDispatcher(QObject):
             return normalized.split(":", 1)[1].strip(), ""
         return None, stripped
 
-    def _show_brain_message(self, message: str, has_action: bool):
+    def _show_brain_message(self, message: str, has_action: bool, trace_id: str | None = None):
         tone = self._resolve_message_tone(message, has_action)
         timeout_ms = 4200 if tone == "warn" else 6000 if tone == "error" else 6500
         self._window.set_action_status(message, tone=tone, timeout_ms=timeout_ms)
-        self._synthesize_tts(message, tone=tone)
+        self._synthesize_tts(message, tone=tone, trace_id=trace_id)
 
     @staticmethod
     def _resolve_message_tone(message: str, has_action: bool) -> str:
@@ -209,11 +225,11 @@ class ActionDispatcher(QObject):
         return "working" if has_action else "idle"
 
     def _handle_report_news(self, binding: ActionBinding, motion_found: bool):
-        worker = NewsFetchWorker(parent=self)
+        worker = self._news_worker_factory(parent=self)
         self._start_worker(worker, lambda success, message, payload: self._on_news_finished(binding, motion_found, success, message, payload))
 
     def _handle_play_music(self, binding: ActionBinding, motion_found: bool):
-        worker = MusicSelectionWorker(parent=self)
+        worker = self._music_worker_factory(parent=self)
         self._start_worker(worker, lambda success, message, payload: self._on_music_finished(binding, motion_found, success, message, payload))
 
     def _handle_motion_only(self, binding: ActionBinding, motion_found: bool):
@@ -336,7 +352,7 @@ class ActionDispatcher(QObject):
         worker.finished.connect(on_thread_finished)
         worker.start()
 
-    def _synthesize_tts(self, message: str, tone: str):
+    def _synthesize_tts(self, message: str, tone: str, trace_id: str | None = None):
         if not self._tts_enabled or tone in {"warn", "error"}:
             return
 
@@ -345,42 +361,69 @@ class ActionDispatcher(QObject):
             return
 
         if not callable(self._tts_worker_factory):
-            print("[ECHOES] 警告: TTS worker factory 無效，已回退到 ElevenLabsTTSWorker。")
-            self._tts_worker_factory = ElevenLabsTTSWorker
+            print("[ECHOES] 警告: TTS worker factory 無效，已回退到 ElevenLabsStreamingTTSWorker。")
+            self._tts_worker_factory = ElevenLabsStreamingTTSWorker
 
         reply_id = uuid4().hex
-        self._latest_tts_reply_id = reply_id
+        self._pending_tts_chunks.append((reply_id, speech_text, trace_id))
+        if self._latency_tracker is not None:
+            self._latency_tracker.mark_tts_enqueued(trace_id, reply_id, speech_text)
+        self._start_next_tts_worker()
+
+    def _start_next_tts_worker(self):
+        if self._active_tts_worker is not None or not self._pending_tts_chunks:
+            return
+
+        reply_id, speech_text, trace_id = self._pending_tts_chunks.popleft()
         worker = self._tts_worker_factory(
             text=speech_text,
             reply_id=reply_id,
+            trace_id=trace_id,
             parent=self,
         )
-        self._start_worker(
-            worker,
-            lambda success, result_message, payload: self._on_tts_finished(
-                reply_id,
-                success,
-                result_message,
-                payload,
-            ),
-        )
+        self._active_tts_worker = worker
+        self._workers.append(worker)
+
+        def handle_result(success: bool, result_message: str, payload: object, current_reply_id=reply_id):
+            self._on_tts_finished(current_reply_id, success, result_message, payload)
+
+        def handle_progress(event_name: str, payload: object):
+            self._on_tts_progress(event_name, payload)
+
+        def on_thread_finished(current_worker=worker):
+            if current_worker in self._workers:
+                self._workers.remove(current_worker)
+            if self._active_tts_worker is current_worker:
+                self._active_tts_worker = None
+            if hasattr(current_worker, "deleteLater"):
+                current_worker.deleteLater()
+            self._start_next_tts_worker()
+
+        worker.finished_signal.connect(handle_result)
+        if hasattr(worker, "progress_signal"):
+            worker.progress_signal.connect(handle_progress)
+        worker.finished.connect(on_thread_finished)
+        worker.start()
+
+    def _on_tts_progress(self, event_name: str, payload: object):
+        if event_name != "stream_started" or not isinstance(payload, dict):
+            return
+        if self._latency_tracker is not None:
+            self._latency_tracker.mark_tts_stream_started(
+                payload.get("trace_id"),
+                str(payload.get("reply_id", "")),
+                int(payload.get("bytes_forwarded", 0) or 0),
+            )
 
     def _on_tts_finished(self, reply_id: str, success: bool, message: str, payload: object):
+        trace_id = payload.get("trace_id") if isinstance(payload, dict) else None
+        if self._latency_tracker is not None:
+            self._latency_tracker.mark_tts_finished(trace_id, reply_id, success, message)
         if not success:
-            print(f"[ECHOES] 提示: TTS 未播放，保留文字回覆。{message}")
+            print(f"[ECHOES] 提示: 串流 TTS 未播放，保留文字回覆。{message}")
             return
 
-        if reply_id != self._latest_tts_reply_id:
-            print(f"[ECHOES] 提示: 忽略過期的 TTS 音檔 {reply_id}。")
-            return
-
-        if not isinstance(payload, dict):
-            print("[ECHOES] 警告: TTS payload 格式錯誤。")
-            return
-
-        audio_path = payload.get("audio_path", "")
-        if not self._window.play_music(audio_path, "", update_status=False):
-            print(f"[ECHOES] 警告: 無法播放 TTS 音檔: {audio_path}")
+        print(f"[ECHOES] 提示: 串流語音片段播放完成。{message}")
 
     def _on_news_finished(
         self,
@@ -418,6 +461,7 @@ class ActionDispatcher(QObject):
         self._window.set_action_status(message, tone="error", timeout_ms=6000)
         self._window.restore_idle_video()
 
+ 
 
 class _DebugProbeWindow:
     def __init__(self):
@@ -516,21 +560,53 @@ class _DebugSignal:
 
 
 class _ImmediateTTSWorker:
-    def __init__(self, text: str, reply_id: str | None = None, parent=None):
+    def __init__(
+        self,
+        text: str,
+        reply_id: str | None = None,
+        trace_id: str | None = None,
+        parent=None,
+    ):
         del parent
         self._text = text
         self._reply_id = reply_id or "debug-reply"
+        self._trace_id = trace_id or ""
+        self.finished_signal = _DebugSignal()
+        self.progress_signal = _DebugSignal()
+        self.finished = _DebugSignal()
+
+    def start(self):
+        self.progress_signal.emit(
+            "stream_started",
+            {
+                "reply_id": self._reply_id,
+                "trace_id": self._trace_id,
+                "bytes_forwarded": len(self._text.encode("utf-8")),
+            },
+        )
+        payload = {
+            "reply_id": self._reply_id,
+            "trace_id": self._trace_id,
+            "text": self._text,
+        }
+        self.finished_signal.emit(True, "語音生成完成。", payload)
+        self.finished.emit()
+
+    def deleteLater(self):
+        return None
+
+
+class _ImmediateServiceWorker:
+    def __init__(self, success: bool = True, message: str = "", payload: object | None = None, parent=None):
+        del parent
+        self._success = success
+        self._message = message
+        self._payload = payload
         self.finished_signal = _DebugSignal()
         self.finished = _DebugSignal()
 
     def start(self):
-        payload = {
-            "reply_id": self._reply_id,
-            "audio_path": f"/tmp/{self._reply_id}.mp3",
-            "title": "ECHOES 語音 debug",
-            "text": self._text,
-        }
-        self.finished_signal.emit(True, "語音生成完成。", payload)
+        self.finished_signal.emit(self._success, self._message, self._payload)
         self.finished.emit()
 
     def deleteLater(self):
@@ -563,15 +639,52 @@ def run_tts_dispatch_debug_probe() -> dict[str, object]:
             "call_order": window.call_order,
             "ok": (
                 dispatched
-                and bool(window.audio_calls)
-                and window.audio_calls[0][0].endswith(".mp3")
-                and window.audio_calls[0][2] is False
+                and not window.audio_calls
                 and window.motion_calls == ["listen"]
                 and bool(window.motion_asset_calls)
                 and window.motion_asset_calls[0][1].endswith("listen.webm")
-                and len(window.call_order) >= 3
+                and len(window.call_order) >= 2
                 and window.call_order[0] == ("status", "這是一段測試語音。")
                 and window.call_order[1] == ("motion", "listen")
-                and window.call_order[2][0] == "audio"
+            ),
+        }
+
+
+def run_streamed_action_first_debug_probe() -> dict[str, object]:
+    with tempfile.TemporaryDirectory(prefix="echoes-debug-webm-") as temp_dir:
+        listen_path = Path(temp_dir) / "listen.webm"
+        idle_path = Path(temp_dir) / "Idle.webm"
+        listen_path.write_bytes(b"debug")
+        idle_path.write_bytes(b"debug")
+        resolver = lambda motion_key: str({"listen": listen_path, "idle": idle_path}.get(motion_key, ""))
+        window = _DebugProbeWindow()
+        dispatcher = ActionDispatcher(
+            window,
+            library=object(),
+            tts_worker_factory=_ImmediateTTSWorker,
+            motion_path_resolver=resolver,
+            tts_enabled=True,
+        )
+
+        dispatched_action = dispatcher.dispatch("[ACTION:listen]")
+        dispatched_chunk = dispatcher.dispatch("第一句測試語音。")
+
+        return {
+            "dispatched_action": dispatched_action,
+            "dispatched_chunk": dispatched_chunk,
+            "status_calls": window.status_calls,
+            "motion_calls": window.motion_calls,
+            "motion_asset_calls": window.motion_asset_calls,
+            "audio_calls": window.audio_calls,
+            "call_order": window.call_order,
+            "ok": (
+                dispatched_action
+                and dispatched_chunk
+                and window.motion_calls == ["listen"]
+                and not window.audio_calls
+                and len(window.call_order) >= 3
+                and window.call_order[0] == ("status", "正在專心聆聽")
+                and window.call_order[1] == ("motion", "listen")
+                and window.call_order[2] == ("status", "第一句測試語音。")
             ),
         }

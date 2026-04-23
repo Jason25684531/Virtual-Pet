@@ -7,7 +7,9 @@
 - 本地 AI 回覆與 `[ACTION:...]` 動作標籤解析
 - 角色 `manifest.json` 驅動的 WebM 動作播放
 - `wave_response` 揮手感測回應
+- 明確可控的 Azure STT 開始 / 結束收音
 - 新聞 / 音樂 action service
+- 互動延遲追蹤與 bottleneck 摘要 log
 - 測試與手動驗證腳本分流
 
 ## 架構圖
@@ -206,6 +208,8 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_MODEL=minimax-m2.7:cloud
 ELEVENLABS_API_KEY=your_api_key
 ELEVENLABS_VOICE_ID=zENt0ljwLXypGqHDsdzz
+AZURE_STT_API_KEY=your_azure_speech_key
+AZURE_STT_REGION=eastus
 ```
 
 ## 啟動
@@ -236,6 +240,94 @@ python scripts/smoke_test.py
 - 檢查 Ollama API
 - 檢查 ElevenLabs API
 - 檢查暫存音訊目錄
+
+### STT / LLM / TTS 串流驗證流程
+
+請先確認：
+
+- 已啟用虛擬環境 `source venv/bin/activate`
+- `.env` 已包含 `AZURE_STT_API_KEY`、`AZURE_STT_REGION`、`ELEVENLABS_API_KEY`、`ELEVENLABS_VOICE_ID`、`OLLAMA_BASE_URL`、`OLLAMA_MODEL`
+- 本機可執行 `ffplay`
+- `ollama` 服務已啟動，且 `.env` 指定模型已可使用
+
+1. 先跑自動化驗證
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+建議至少確認這幾組測試都有通過：
+
+- `tests.test_microphone_stt`
+- `tests.test_brain_streaming`
+- `tests.test_elevenlabs_streaming`
+- `tests.test_action_playback`
+
+2. 再跑外部服務 smoke test
+
+```bash
+python scripts/smoke_test.py
+```
+
+預期重點：
+
+- `.env` 檢查通過
+- Ollama 能正常回應
+- ElevenLabs 能回傳有效音訊
+
+3. 啟動主程式
+
+```bash
+python main.py
+```
+
+4. 手動驗證低延遲互動
+
+- 先點畫面左下角的 `開始收音`
+- 對著麥克風說一句短句，例如：`請先跟我打招呼，再補一句鼓勵我。`
+- 預期前端會先更新狀態氣泡，並在模型決定 action 後立即切到對應 WebM
+- 預期第一個句讀完成後就開始播放語音，不需要等整段回答結束
+- 若模型輸出多句內容，語音應該會分句接續播放
+- 驗證完成後可按 `結束收音`，確認 STT session 能優雅停止
+
+5. 觀察後端 log
+
+正常情況下，terminal 應能看到這四類訊息：
+
+- STT：`[ECHOES][STT] 觸發 Recognized：...`
+- STT 控制：`[ECHOES][STT][CTRL] ...`
+- Action：`[ECHOES] Action tag 命中: ...`
+- TTS：`[ECHOES] 提示: 串流語音片段播放完成。...`
+- 延遲追蹤：`[ECHOES][TRACE][trace_id] ...`
+
+若有降級或異常，也應該能直接從 log 看出原因，例如：
+
+- 缺少 Azure 設定
+- 找不到 `ffplay`
+- ElevenLabs 串流失敗
+- Ollama 無法連線
+
+6. 判讀延遲摘要
+
+每次互動完成後，terminal 會輸出一條摘要，格式類似：
+
+```text
+[ECHOES][TRACE][abcd1234] 互動完成摘要 source=stt total=1284ms | stages: brain_queue_wait=2ms; llm_to_first_output=410ms; tts_startup=180ms; tts_tail=692ms | bottleneck=tts_tail(692ms)
+```
+
+可用這些欄位快速判斷誰在拖慢：
+
+- `brain_queue_wait`: 文字進入腦引擎佇列後，真正開始處理前等了多久
+- `llm_to_first_output`: Ollama 從開始推論到吐出第一個片段花了多久
+- `tts_startup`: 第一段 TTS 進佇列後，到真的開始送入播放器花了多久
+- `tts_tail`: TTS 開始後到整段互動結束還拖了多久
+- `bottleneck=...`: 目前這次互動最慢的階段
+
+7. 驗證前後端責任分界
+
+- 前端只負責顯示狀態文字與 WebM 動畫
+- 角色說話聲音由 Python 背景直接播放，不依賴前端 `audio_path`
+- 音樂 action 仍可使用前端音訊橋接，這與 TTS 串流是分開的路徑
 
 ### Linux 環境驗證
 
