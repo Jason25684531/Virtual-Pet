@@ -6,22 +6,40 @@ ECHOES — PyQt5 透明無邊框桌面視窗
 import json
 import os
 
-from PyQt5.QtCore import QEvent, Qt, QTimer, QUrl
+from PyQt5.QtCore import QEvent, Qt, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QMainWindow, QMenu, QSystemTrayIcon, QWidget,
+    QAction, QApplication, QLineEdit, QMainWindow, QMenu, QSystemTrayIcon, QWidget,
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineSettings, QWebEngineView
 
 from character_library import ASSETS_WEBM_DIR, CharacterLibrary, MOTION_MAP
 
 
+class DeveloperInputLineEdit(QLineEdit):
+    """Dev Mode 專用輸入框；失焦時自動交還點擊穿透。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._focus_lost_callback = None
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        if callable(self._focus_lost_callback):
+            QTimer.singleShot(0, self._focus_lost_callback)
+
+
 class TransparentWindow(QMainWindow):
     """透明無邊框桌面寵物視窗"""
+    developer_query_submitted = pyqtSignal(str)
+
     # 視窗尺寸（可根據需求調整，或改為全螢幕）：
     WINDOW_WIDTH = 1920
     WINDOW_HEIGHT = 1080
     DRAG_SURFACE_HEIGHT = 160
+    DEV_INPUT_WIDTH = 560
+    DEV_INPUT_HEIGHT = 44
+    DEV_INPUT_MARGIN_BOTTOM = 28
     # 角色預設位移（相對於視窗中心的像素偏移量）
     DEFAULT_CHARACTER_X_OFFSET = 0
     DEFAULT_CHARACTER_Y_OFFSET = 0
@@ -54,8 +72,13 @@ class TransparentWindow(QMainWindow):
         self._init_window()
         self._init_webview()
         self._init_drag_surface()
+        self._init_developer_input()
         from action_dispatcher import ActionDispatcher
-        self._action_dispatcher = ActionDispatcher(self, self._library, self)
+        self._action_dispatcher = ActionDispatcher(
+            self,
+            self._library,
+            parent=self,
+        )
         self._move_to_bottom_right()
         self._init_tray()
 
@@ -106,9 +129,61 @@ class TransparentWindow(QMainWindow):
         self._update_drag_surface_geometry()
         self._drag_surface.raise_()
 
+    def _init_developer_input(self):
+        """建立 Dev Mode 底部輸入框，用來手動測試本地大腦與 TTS。"""
+        self._developer_input = DeveloperInputLineEdit(self)
+        self._developer_input.setObjectName("developer-input")
+        self._developer_input.setPlaceholderText("Dev Mode：輸入文字後按 Enter，送進 BrainEngine")
+        self._developer_input.setClearButtonEnabled(True)
+        self._developer_input.setFixedHeight(self.DEV_INPUT_HEIGHT)
+        self._developer_input.setStyleSheet(
+            """
+            QLineEdit#developer-input {
+                background: rgba(10, 12, 18, 180);
+                color: #ffffff;
+                border: 1px solid rgba(255, 255, 255, 90);
+                border-radius: 14px;
+                padding: 0 14px;
+                selection-background-color: rgba(125, 205, 255, 170);
+                font-size: 16px;
+            }
+            QLineEdit#developer-input:focus {
+                border: 1px solid rgba(255, 255, 255, 180);
+                background: rgba(18, 24, 32, 210);
+            }
+            """
+        )
+        self._developer_input.returnPressed.connect(self._submit_developer_query)
+        self._developer_input._focus_lost_callback = self._hide_developer_input
+        self._developer_input.hide()
+        self._developer_input.setEnabled(False)
+        self._developer_input.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._developer_input.installEventFilter(self)
+        self.web_view.installEventFilter(self)
+        self.installEventFilter(self)
+        self._update_developer_input_geometry()
+
     def _update_drag_surface_geometry(self):
         if hasattr(self, "_drag_surface"):
             self._drag_surface.setGeometry(0, 0, self.width(), self.DRAG_SURFACE_HEIGHT)
+
+    def _update_developer_input_geometry(self):
+        if not hasattr(self, "_developer_input"):
+            return
+
+        available_width = max(320, min(self.DEV_INPUT_WIDTH, self.width() - 48))
+        x = max(24, (self.width() - available_width) // 2)
+        y = max(
+            self.DRAG_SURFACE_HEIGHT + 24,
+            self.height() - self.DEV_INPUT_HEIGHT - self.DEV_INPUT_MARGIN_BOTTOM,
+        )
+        self._developer_input.setGeometry(x, y, available_width, self.DEV_INPUT_HEIGHT)
+
+    def _raise_overlay_widgets(self):
+        if hasattr(self, "_drag_surface"):
+            self._drag_surface.raise_()
+        if hasattr(self, "_developer_input") and self._developer_input.isVisible():
+            self._developer_input.raise_()
 
     def _on_webview_loaded(self, ok: bool):
         if not ok:
@@ -116,7 +191,7 @@ class TransparentWindow(QMainWindow):
             return
         self._webview_ready = True
         self._flush_pending_javascript_calls()
-        self._drag_surface.raise_()
+        self._raise_overlay_widgets()
         QTimer.singleShot(120, self._restore_current_character)
 
     def _move_to_bottom_right(self):
@@ -223,6 +298,19 @@ class TransparentWindow(QMainWindow):
         self._settings_dialog = None
 
     def eventFilter(self, watched, event):
+        if event.type() == QEvent.KeyPress:
+            if watched is self._developer_input and event.key() == Qt.Key_Escape:
+                self._hide_developer_input()
+                return True
+            if (
+                watched is not self._developer_input
+                and event.key() == Qt.Key_D
+                and event.modifiers() == Qt.NoModifier
+                and not event.isAutoRepeat()
+            ):
+                self.toggle_developer_input()
+                return True
+
         if watched is self._drag_surface:
             event_type = event.type()
             if event_type == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
@@ -243,8 +331,19 @@ class TransparentWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._update_drag_surface_geometry()
-        if hasattr(self, "_drag_surface"):
-            self._drag_surface.raise_()
+        self._update_developer_input_geometry()
+        self._raise_overlay_widgets()
+
+    def keyPressEvent(self, event):
+        if (
+            self.focusWidget() is not self._developer_input
+            and event.key() == Qt.Key_D
+            and event.modifiers() == Qt.NoModifier
+            and not event.isAutoRepeat()
+        ):
+            self.toggle_developer_input()
+            return
+        super().keyPressEvent(event)
 
     def contextMenuEvent(self, event):
         self._show_context_menu(event.globalPos())
@@ -326,6 +425,7 @@ class TransparentWindow(QMainWindow):
             if not motion_path:
                 motion_path = self._library.get_motion_path(current_character_id, motion_key)
             if motion_path:
+                print(f"[ECHOES] 播放角色動作 `{motion_key}`: {motion_path}")
                 self.change_video(motion_path, loop=should_loop)
                 return True
 
@@ -333,6 +433,7 @@ class TransparentWindow(QMainWindow):
         if demo_filename:
             demo_path = os.path.join(self.DEMO_ANIMATIONS_DIR, demo_filename)
             if os.path.isfile(demo_path):
+                print(f"[ECHOES] 播放示範動作 `{motion_key}`: {demo_path}")
                 self.change_video(demo_path, loop=should_loop)
                 return True
 
@@ -364,6 +465,42 @@ class TransparentWindow(QMainWindow):
     def dispatch_action(self, directive: str) -> bool:
         return self._action_dispatcher.dispatch(directive)
 
+    def toggle_developer_input(self):
+        if self._developer_input.isVisible():
+            self._hide_developer_input()
+            return
+        self._show_developer_input()
+
+    def _show_developer_input(self):
+        self._developer_input.setEnabled(True)
+        self._developer_input.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self._developer_input.show()
+        self._developer_input.raise_()
+        self._developer_input.setFocus(Qt.ShortcutFocusReason)
+        self._developer_input.selectAll()
+        self.set_action_status("Dev Mode 已開啟，按 Enter 可直接測試大腦與 TTS", tone="working", timeout_ms=2200)
+
+    def _hide_developer_input(self):
+        if not self._developer_input.isVisible():
+            self._developer_input.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            self._developer_input.setEnabled(False)
+            return
+
+        self._developer_input.clearFocus()
+        self._developer_input.hide()
+        self._developer_input.setEnabled(False)
+        self._developer_input.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+    def _submit_developer_query(self):
+        query = self._developer_input.text().strip()
+        if not query:
+            self.set_action_status("Dev Mode 輸入為空，未送出。", tone="warn", timeout_ms=2200)
+            return
+
+        self.developer_query_submitted.emit(query)
+        self._developer_input.clear()
+        self._hide_developer_input()
+
     def set_action_status(self, message: str, tone: str = "idle", timeout_ms: int = 0):
         self._run_javascript("setActionStatus", message, tone, timeout_ms)
 
@@ -373,14 +510,14 @@ class TransparentWindow(QMainWindow):
     def set_room_character(self, name: str):
         self._run_javascript("setRoomCharacter", name)
 
-    def play_music(self, filename: str, title: str = "") -> bool:
+    def play_music(self, filename: str, title: str = "", update_status: bool = True) -> bool:
         absolute_path = self._resolve_media_path(filename)
         if not absolute_path or not os.path.isfile(absolute_path):
             print(f"[ECHOES] 警告: 音訊不存在，略過播放: {filename}")
             return False
 
         source_url = QUrl.fromLocalFile(absolute_path).toString()
-        self._run_javascript("playRoomAudio", source_url, title)
+        self._run_javascript("playRoomAudio", source_url, title, update_status)
         return True
 
     def stop_music(self):

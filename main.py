@@ -20,7 +20,7 @@ EMOTION_MAP = {
 def main():
     from PyQt5.QtWidgets import QApplication
     from PyQt5.QtCore import QTimer
-    from api_client.vm_connector import VMConnector
+    from api_client.brain_engine import BrainEngine
     from sensors.camera_vision import (
         OPENCV_DEBUG_WINDOW_ENABLED,
         OPENCV_WAVE_DETECTION_ENABLED,
@@ -40,17 +40,38 @@ def main():
 
     window = TransparentWindow()
     window.show()
-    window.set_action_status("正在連線 OpenClaw 大腦...", tone="working", timeout_ms=2500)
+    window.set_action_status("正在預熱本地 Ollama 大腦...", tone="working", timeout_ms=2500)
 
-    vm_connector = VMConnector(parent=app)
+    brain_engine = BrainEngine(parent=app)
+    original_apply_character = window.apply_character
+
+    def apply_character_and_sync(character_id: str) -> bool:
+        applied = original_apply_character(character_id)
+        if applied:
+            brain_engine.sync_profile_from_character(character_id=character_id)
+        return applied
+
+    window.apply_character = apply_character_and_sync  # type: ignore[method-assign]
+
+    def handle_developer_query(text: str):
+        preview = text if len(text) <= 24 else f"{text[:24]}..."
+        window.set_action_status(f"Dev Query 已送出: {preview}", tone="working", timeout_ms=2800)
+        if not brain_engine.send_query(text):
+            window.set_action_status("Dev Query 送出失敗：請輸入非空白文字。", tone="warn", timeout_ms=3200)
+
+    window.developer_query_submitted.connect(handle_developer_query)
+
     wave_sensor_config = WaveDetectionConfig(
         detection_enabled=OPENCV_WAVE_DETECTION_ENABLED,
         show_debug_window=OPENCV_DEBUG_WINDOW_ENABLED,
     )
     wave_sensor = WaveSensor(config=wave_sensor_config, parent=app)
 
-    vm_connector.message_received.connect(window.dispatch_action)
-    vm_connector.start()
+    brain_engine.message_received.connect(window.dispatch_action)
+    brain_engine.warning_emitted.connect(
+        lambda message: window.set_action_status(message, tone="warn", timeout_ms=4800)
+    )
+    brain_engine.start()
     if wave_sensor_config.detection_enabled:
         wave_sensor.wave_detected.connect(window.dispatch_action)
         wave_sensor.sensor_warning.connect(
@@ -62,10 +83,10 @@ def main():
     else:
         print("[ECHOES] 提示: OpenCV 揮手偵測已關閉，可到 sensors/camera_vision.py 將 boolean 改為 True。")
 
-    def shutdown_vm_connector():
-        vm_connector.stop()
-        if vm_connector.isRunning():
-            vm_connector.wait(3000)
+    def shutdown_brain_engine():
+        brain_engine.stop()
+        if brain_engine.isRunning():
+            brain_engine.wait(3000)
 
     def shutdown_wave_sensor():
         if not wave_sensor_config.detection_enabled:
@@ -74,7 +95,7 @@ def main():
         if wave_sensor.isRunning():
             wave_sensor.wait(3000)
 
-    app.aboutToQuit.connect(shutdown_vm_connector)
+    app.aboutToQuit.connect(shutdown_brain_engine)
     app.aboutToQuit.connect(shutdown_wave_sensor)
 
     sys.exit(app.exec_())

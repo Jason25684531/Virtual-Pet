@@ -4,7 +4,7 @@ ECHOES Linux 環境驗證工具
 
 用途：
 1. 檢查 PyQt5 / Qt WebEngine 常見共享庫是否缺漏。
-2. 驗證 VMConnector 的 Linux token 探測順序。
+2. 驗證 legacy OpenClaw VMConnector 的 Linux token 探測順序。
 3. 啟動微型 QWebEngineView，探測 WebGL 與透明背景設定。
 """
 
@@ -134,7 +134,7 @@ def write_openclaw_config(path: Path, token: str):
 
 def verify_config_discovery() -> dict[str, Any]:
     try:
-        from api_client import vm_connector as vm_connector_module
+        from legacy.openclaw import vm_connector as vm_connector_module
     except ModuleNotFoundError as exc:
         if exc.name != "PyQt5":
             return {
@@ -160,7 +160,7 @@ def verify_config_discovery() -> dict[str, Any]:
         sys.modules.setdefault("PyQt5", pyqt5_module)
         sys.modules["PyQt5.QtCore"] = qtcore_module
         try:
-            from api_client import vm_connector as vm_connector_module
+            from legacy.openclaw import vm_connector as vm_connector_module
         except Exception as inner_exc:
             return {
                 "status": "import-failed",

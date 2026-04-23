@@ -1,0 +1,73 @@
+"""
+ECHOES — 集中式設定中心。
+
+本機大腦已完成與 OpenClaw 解耦；LangChain / Ollama / ElevenLabs 的
+非敏感預設值與 persona prompt 由此集中管理，敏感資訊仍只從 `.env` 讀取。
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:  # pragma: no cover - 允許在依賴尚未安裝時安全匯入
+    def load_dotenv(*_args, **_kwargs):  # type: ignore[override]
+        return False
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+ENV_PATH = PROJECT_ROOT / ".env"
+load_dotenv(ENV_PATH, override=False)
+
+DEFAULT_PERSONA_KEY = "default"
+DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
+DEFAULT_OLLAMA_MODEL = "minimax-m2.7:cloud"
+DEFAULT_ELEVENLABS_VOICE_ID = "zENt0ljwLXypGqHDsdzz"
+DEFAULT_TTS_MODEL_ID = "eleven_multilingual_v2"
+DEFAULT_TTS_TIMEOUT = (5, 45)
+DEFAULT_TEMP_AUDIO_DIR = PROJECT_ROOT / "assets" / "temp_audio"
+
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL).strip() or DEFAULT_OLLAMA_BASE_URL
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL
+ELEVENLABS_VOICE_ID = (
+    os.getenv("ELEVENLABS_VOICE_ID", DEFAULT_ELEVENLABS_VOICE_ID).strip()
+    or DEFAULT_ELEVENLABS_VOICE_ID
+)
+TEMP_AUDIO_DIR = Path(
+    os.getenv("ELEVENLABS_TEMP_AUDIO_DIR", "").strip() or str(DEFAULT_TEMP_AUDIO_DIR)
+)
+
+PERSONA_PROMPTS = {
+    "default": (
+        "你是 ECHOES，本機桌面陪伴 AI。"
+        "請以自然、簡潔、溫暖的繁體中文回覆。"
+        "若需要觸發 Host action，只能使用單一 [ACTION:...] 標籤並放在回覆最後。"
+    ),
+    "初音 (正式版)": (
+        "你是 ECHOES 的初音系桌面角色。"
+        "語氣清亮、活潑、友善，保持簡潔，不要過度冗長。"
+        "若需要觸發 Host action，只能使用單一 [ACTION:...] 標籤並放在回覆最後。"
+    ),
+    "20260415_168888_初音": (
+        "你是 ECHOES 的初音系桌面角色。"
+        "語氣清亮、活潑、友善，保持簡潔，不要過度冗長。"
+        "若需要觸發 Host action，只能使用單一 [ACTION:...] 標籤並放在回覆最後。"
+    ),
+}
+
+
+def resolve_persona_key(*candidates: str | None) -> str:
+    """依序尋找存在於 PERSONA_PROMPTS 的 persona key。"""
+
+    for candidate in candidates:
+        key = str(candidate or "").strip()
+        if key and key in PERSONA_PROMPTS:
+            return key
+    return DEFAULT_PERSONA_KEY
+
+
+def get_persona_prompt(persona_key: str | None) -> str:
+    key = resolve_persona_key(persona_key)
+    return PERSONA_PROMPTS.get(key, PERSONA_PROMPTS[DEFAULT_PERSONA_KEY])

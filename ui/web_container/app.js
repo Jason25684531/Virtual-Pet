@@ -57,7 +57,9 @@
     });
 
     audio.addEventListener('ended', function () {
-        setStatus('音樂播放完畢', 'idle', 2200);
+        if (audio.dataset.statusManaged === 'true') {
+            setStatus('音樂播放完畢', 'idle', 2200);
+        }
     });
 
     audio.addEventListener('error', function () {
@@ -108,18 +110,22 @@
         roomCharacterName.textContent = name || '未選擇角色';
     };
 
-    window.playRoomAudio = function (source, title) {
+    window.playRoomAudio = function (source, title, updateStatus) {
         if (!source || typeof source !== 'string') {
             console.warn('[ECHOES] 無效的音訊來源:', source);
             setStatus('找不到可播放音訊', 'warn', 3200);
             return;
         }
 
+        var shouldUpdateStatus = updateStatus !== false;
+        audio.dataset.statusManaged = shouldUpdateStatus ? 'true' : 'false';
         audio.pause();
         audio.src = source;
         audio.load();
         audio.play().then(function () {
-            setStatus(title ? '正在播放: ' + title : '音樂播放中', 'music', 0);
+            if (shouldUpdateStatus) {
+                setStatus(title ? '正在播放: ' + title : '音樂播放中', 'music', 0);
+            }
         }).catch(function (err) {
             console.warn('[ECHOES] 音樂播放失敗:', err.message);
             setStatus('音樂播放失敗: ' + err.message, 'error', 4800);
@@ -128,6 +134,7 @@
 
     window.stopRoomAudio = function () {
         audio.pause();
+        audio.dataset.statusManaged = 'false';
         audio.removeAttribute('src');
         audio.load();
     };

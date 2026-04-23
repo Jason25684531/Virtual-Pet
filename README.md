@@ -1,6 +1,6 @@
 # ECHOES — 次世代虛擬室友 (AR 視覺共感版)
 
-結合生成式 AI 與電腦視覺的桌面陪伴數位生命體。透過本機感知使用者行為，在虛擬機中進行大腦運算，最終在桌面渲染具備 Alpha 透明通道的動態精靈。
+結合生成式 AI 與電腦視覺的桌面陪伴數位生命體。透過本機感知使用者行為，在 Host 端以 LangChain + Ollama 執行本地大腦推論，最終在桌面渲染具備 Alpha 透明通道的動態精靈。
 
 ---
 
@@ -28,13 +28,9 @@
 │  sensors/          (Week 2+: psutil / OpenCV / MediaPipe)  │
 │  api_client/       (Week 2+: VM FastAPI / ComfyUI 通訊)   │
 │                                                            │
-└────────── HTTP REST API (JSON) ──────────┐                 │
-                                           ▼                 │
-┌──────── VM (Linux 虛擬機) ─────────┐                       │
-│  FastAPI  →  OpenClaw  →  SQLite   │                       │
-│  (API)      (大腦)       (記憶庫)  │                       │
-└────────────────────────────────────┘                       │
-                                                             │
+│  config.py         (LangChain / Ollama / TTS 集中設定)     │
+│  legacy/openclaw/  (舊版 OpenClaw 連線封存區)              │
+│                                                            │
 ```
 
 ## 目錄結構
@@ -42,7 +38,9 @@
 ```
 . (Virtual-Pet/)
 ├── main.py                    # 程式進入點
+├── config.py                  # 本機大腦 / TTS 集中設定
 ├── requirements.txt           # Python 依賴
+├── smoke_test.py              # LangChain / Ollama / ElevenLabs 冒煙測試
 ├── character_library.py       # 角色資產索引與 manifest 管理
 ├── action_dispatcher.py       # [ACTION:*] 綁定表與執行協調器
 ├── action_services.py         # 新聞抓取 / 音樂挑選背景 worker
@@ -60,13 +58,16 @@
 │   ├── window_monitor.py      # psutil 活躍視窗監聽
 │   └── camera_vision.py       # OpenCV + MediaPipe
 ├── api_client/                # 對外通訊 (Week 2+)
-│   ├── vm_connector.py        # FastAPI Client
+│   ├── brain_engine.py        # LangChain + Ollama 本機大腦
 │   └── comfyui_client.py      # ComfyUI Client
 ├── assets/
+│   └── temp_audio/            # ElevenLabs 暫存音檔
 │   └── webm/
 │       ├── idle.webm          # 舊版 fallback 影片
 │       └── characters/        # 每個角色獨立資料夾與動作資產
 ├── docs/                      # 專案文件
+├── legacy/
+│   └── openclaw/              # 舊版 OpenClaw 連線模組封存
 ├── openspec/                  # 架構規格文件
 └── venv/                      # Python 虛擬環境
 ```
@@ -78,7 +79,9 @@
 | UI 容器 | PyQt5 + QWebEngineView | 透明無邊框桌面視窗 |
 | 前端播放器 | 原生 HTML5 / CSS3 / JavaScript | WebM 影片循環播放與熱切換 |
 | 感知 | OpenCV + MediaPipe + psutil | 表情偵測、視窗監聽 (Week 2+) |
-| 通訊 | Python requests ↔ FastAPI | Host ↔ VM JSON API (Week 2+) |
+| 本機大腦 | LangChain + Ollama | Host 端對話推論與多輪記憶 |
+| TTS | ElevenLabs API | 非阻塞語音合成與暫存音檔輸出 |
+| 通訊 | Python requests | 本地 Ollama / ElevenLabs / ComfyUI HTTP 呼叫 |
 | 渲染 | ComfyUI (LayerDiffuse) | 去背算圖 (Week 2+) |
 
 > **技術戒律：** 禁止使用 QMediaPlayer、禁止使用前端框架 (React/Vue/Tailwind)
@@ -121,18 +124,33 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
+### `.env` 設定
+
+本地 LangChain / Ollama 與 ElevenLabs TTS 需要從 `.env` 載入設定；請在已啟用的虛擬環境內安裝 `langchain`、`langchain-community`、`python-dotenv`，並至少提供以下變數：
+
+```bash
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=minimax-m2.7:cloud
+ELEVENLABS_API_KEY=your_api_key
+ELEVENLABS_VOICE_ID=zENt0ljwLXypGqHDsdzz
+```
+
+若未設定 ElevenLabs 金鑰或 voice，系統會保留文字回覆並安全略過語音播放。
+`config.py` 會集中管理 persona prompt、Ollama 預設模型、TTS voice 與暫存目錄；API Key 仍只會從 `.env` 讀取。
+
 ### Linux 快速開始
 
 1. 先依 `docs/linux_deployment.md` 安裝 `apt` 系統依賴，並確認 compositor / GPU 驅動設定。
 2. 建立虛擬環境：`python3 -m venv venv`
 3. 啟用虛擬環境：`source venv/bin/activate`
 4. 安裝 Python 依賴：`pip install -r requirements.txt`
-5. 執行環境驗證：`python3 tests/verify_linux_env.py`
-6. 啟動主程式：`python3 main.py`
+5. 執行冒煙測試：`python3 smoke_test.py`
+6. 執行環境驗證：`python3 tests/verify_linux_env.py`
+7. 啟動主程式：`python3 main.py`
 
 > Ubuntu 24.04 上若要啟用揮手偵測，請在已啟用的虛擬環境內安裝 `requirements.txt` 中的 `opencv-python`，不要在系統 Python 直接執行 `pip install` 或測試指令。
 
-> Linux 部署、OpenClaw 設定檔路徑、Qt WebEngine 共享庫與 WebGL 排錯，請直接參考 `docs/linux_deployment.md`。
+> Linux 部署、Qt WebEngine 共享庫與 WebGL 排錯，請直接參考 `docs/linux_deployment.md`。舊版 OpenClaw 連線模組已移至 `legacy/openclaw/` 封存。
 
 ### 啟動
 
@@ -223,5 +241,5 @@ window.change_video("happy.webm")  # 切換到開心動畫
 
 - [x] **Week 1：** 基礎渲染與前端容器 (目前)
 - [ ] **Week 2：** 感知模組 (psutil + OpenCV)
-- [ ] **Week 3：** VM API 橋接 (FastAPI + OpenClaw)
+- [x] **Week 3：** 本機大腦遷移 (LangChain + Ollama + ElevenLabs)
 - [ ] **Week 4：** ComfyUI 算圖整合
