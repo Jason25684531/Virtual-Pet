@@ -3,7 +3,7 @@ ECHOES smoke test for LangChain + ElevenLabs environment.
 
 請務必先進入 Ubuntu 24.04 專案虛擬環境後再執行：
     source venv/bin/activate
-    python smoke_test.py
+    python scripts/smoke_test.py
 """
 
 from __future__ import annotations
@@ -17,11 +17,14 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import config
 from api_client.brain_engine import BrainEngine
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
 ENV_PATH = PROJECT_ROOT / ".env"
 TEMP_AUDIO_DIR = config.TEMP_AUDIO_DIR
 DEFAULT_OLLAMA_MODEL = config.DEFAULT_OLLAMA_MODEL

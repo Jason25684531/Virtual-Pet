@@ -1,132 +1,205 @@
-# ECHOES — 次世代虛擬室友 (AR 視覺共感版)
+# ECHOES Virtual Pet
 
-結合生成式 AI 與電腦視覺的桌面陪伴數位生命體。透過本機感知使用者行為，在 Host 端以 LangChain + Ollama 執行本地大腦推論，最終在桌面渲染具備 Alpha 透明通道的動態精靈。
+以 PyQt5 + QWebEngine 為外殼、LangChain + Ollama 為本地大腦、ElevenLabs 為 TTS、WebM 為角色動作載體的桌面虛擬寵物專案。
 
----
+目前主線已完成：
 
-## 系統架構
+- 本地 AI 回覆與 `[ACTION:...]` 動作標籤解析
+- 角色 `manifest.json` 驅動的 WebM 動作播放
+- `wave_response` 揮手感測回應
+- 新聞 / 音樂 action service
+- 測試與手動驗證腳本分流
 
+## 架構圖
+
+```text
+使用者輸入 / 感測事件
+        │
+        ▼
++--------------------+
+| BrainEngine        |
+| api_client/        |
+| - Ollama 對話      |
+| - TTS 文字清理     |
+| - Action 正規化    |
++--------------------+
+        │ message_received
+        ▼
++--------------------+
+| ActionDispatcher   |
+| - 解析 [ACTION:*]  |
+| - 白名單 / alias   |
+| - 資產路徑驗證     |
+| - fallback Idle    |
++--------------------+
+        │
+        ▼
++------------------------------+
+| TransparentWindow            |
+| ui/transparent_window.py     |
+| - PyQt5 無邊框透明視窗       |
+| - QWebEngineView             |
+| - Python -> JS 橋接          |
++------------------------------+
+        │ runJavaScript
+        ▼
++------------------------------+
+| ui/web_container/app.js      |
+| - setIdleVideo()             |
+| - playTemporaryVideo()       |
+| - playRoomAudio()            |
++------------------------------+
+        │
+        ▼
+角色 WebM / 音訊資產
+
+額外事件來源：
+- sensors/camera_vision.py -> [ACTION:wave_response]
+- action_services.py -> 新聞 / 音樂背景 worker
 ```
-┌─────────────── Host (本機 Windows / Linux) ───────────────┐
-│                                                            │
-│  main.py                                                   │
-│    └── TransparentWindow (PyQt5 QMainWindow)               │
-│          ├── SettingsDialog (非阻塞角色控制面板)            │
-│          │     ├── 角色庫選擇 / 動作預覽                    │
-│          │     └── 背景算圖 Worker (QThread)               │
-│          ├── QWebEngineView ──→ index.html                 │
-│          │     背景透明 (page.setBackgroundColor α=0)      │
-│          │     ├── style.css   (滿版、透明、無邊距)        │
-│          │     └── app.js      (idle / 單次動作切換)       │
-│          │           ↕ file:// absolute video url          │
-│          │     assets/webm/characters/<角色>/motions/      │
-│          │                                                 │
-│          ├── 無邊框 + 永遠置頂 + 不佔工作列               │
-│          ├── 滑鼠拖曳移動                                  │
-│          └── 平台相容透明合成 / 無邊框視窗                │
-│                                                            │
-│  sensors/          (Week 2+: psutil / OpenCV / MediaPipe)  │
-│  api_client/       (Week 2+: VM FastAPI / ComfyUI 通訊)   │
-│                                                            │
-│  config.py         (LangChain / Ollama / TTS 集中設定)     │
-│  legacy/openclaw/  (舊版 OpenClaw 連線封存區)              │
-│                                                            │
-```
 
-## 目錄結構
+## 目前目錄
 
-```
-. (Virtual-Pet/)
-├── main.py                    # 程式進入點
-├── config.py                  # 本機大腦 / TTS 集中設定
-├── requirements.txt           # Python 依賴
-├── smoke_test.py              # LangChain / Ollama / ElevenLabs 冒煙測試
-├── character_library.py       # 角色資產索引與 manifest 管理
-├── action_dispatcher.py       # [ACTION:*] 綁定表與執行協調器
-├── action_services.py         # 新聞抓取 / 音樂挑選背景 worker
+```text
+Virtual-Pet/
+├── main.py                     # 應用程式進入點
+├── config.py                   # 全域設定、action 白名單、prompt 規則
+├── character_library.py        # 角色 manifest / 動作資產索引
+├── action_dispatcher.py        # Action 解析、路徑驗證、fallback、TTS 協調
+├── action_services.py          # 新聞與音樂背景 worker
+├── api_client/
+│   ├── brain_engine.py         # Ollama / LangChain / ElevenLabs 整合
+│   └── comfyui_client.py       # ComfyUI 生成 client
+├── sensors/
+│   └── camera_vision.py        # OpenCV 揮手偵測
 ├── ui/
-│   ├── assets/
-│   │   ├── backgrounds/       # 房間背景圖
-│   │   └── music/             # 本地音樂資料夾
-│   ├── transparent_window.py  # PyQt5 透明視窗 + WebEngine
-│   ├── settings_dialog.py     # 非阻塞角色設定 / 算圖面板
+│   ├── transparent_window.py   # 主視窗與 JS bridge
+│   ├── settings_dialog.py      # 角色設定與生成功能
 │   └── web_container/
-│       ├── index.html         # 房間場景骨架
-│       ├── style.css          # 房間背景 / 角色貼地樣式
-│       └── app.js             # WebM、狀態列與音訊橋接控制器
-├── sensors/                   # 感知模組 (Week 2+)
-│   ├── window_monitor.py      # psutil 活躍視窗監聽
-│   └── camera_vision.py       # OpenCV + MediaPipe
-├── api_client/                # 對外通訊 (Week 2+)
-│   ├── brain_engine.py        # LangChain + Ollama 本機大腦
-│   └── comfyui_client.py      # ComfyUI Client
-├── assets/
-│   └── temp_audio/            # ElevenLabs 暫存音檔
-│   └── webm/
-│       ├── idle.webm          # 舊版 fallback 影片
-│       └── characters/        # 每個角色獨立資料夾與動作資產
-├── docs/                      # 專案文件
+│       ├── index.html          # 房間場景 DOM
+│       ├── style.css           # 房間樣式
+│       └── app.js              # WebM / 音訊播放控制
+├── tests/
+│   ├── test_action_playback.py # Action / URL bridge / fallback 測試
+│   └── test_wave_sensor.py     # Wave sensor 與整合測試
+├── scripts/
+│   ├── smoke_test.py           # Ollama / ElevenLabs / env 冒煙測試
+│   └── verify_linux_env.py     # Linux Qt / WebGL / shared lib 驗證
+├── docs/
+│   ├── linux_deployment.md     # Linux 安裝與排錯
+│   ├── STTTTS.md               # STT / TTS 筆記
+│   └── archive/                # 歷史參考文件
 ├── legacy/
-│   └── openclaw/              # 舊版 OpenClaw 連線模組封存
-├── openspec/                  # 架構規格文件
-└── venv/                      # Python 虛擬環境
+│   └── openclaw/               # 舊版 OpenClaw 連線封存
+└── openspec/                   # OpenSpec 規格與變更紀錄
 ```
 
-## 技術棧
+## 核心模組說明
 
-| 層級 | 技術 | 用途 |
-|---|---|---|
-| UI 容器 | PyQt5 + QWebEngineView | 透明無邊框桌面視窗 |
-| 前端播放器 | 原生 HTML5 / CSS3 / JavaScript | WebM 影片循環播放與熱切換 |
-| 感知 | OpenCV + MediaPipe + psutil | 表情偵測、視窗監聽 (Week 2+) |
-| 本機大腦 | LangChain + Ollama | Host 端對話推論與多輪記憶 |
-| TTS | ElevenLabs API | 非阻塞語音合成與暫存音檔輸出 |
-| 通訊 | Python requests | 本地 Ollama / ElevenLabs / ComfyUI HTTP 呼叫 |
-| 渲染 | ComfyUI (LayerDiffuse) | 去背算圖 (Week 2+) |
+- `main.py`
+  啟動 `QApplication`、`TransparentWindow`、`BrainEngine`、`WaveSensor`，並管理關閉流程。
 
-> **技術戒律：** 禁止使用 QMediaPlayer、禁止使用前端框架 (React/Vue/Tailwind)
+- `api_client/brain_engine.py`
+  負責本地大腦推論、對話記憶、TTS 文字清理，以及把 AI 可能輸出的 action alias 正規化成 Host 可接受的白名單 action。
 
-## 透明渲染原理
+- `action_dispatcher.py`
+  專案的 action 中樞。收到 `[ACTION:tag]` 後會：
+  1. 正規化 action 名稱
+  2. 驗證對應 WebM 是否存在
+  3. 缺檔時退回 `Idle.webm`
+  4. 依 action 啟動新聞 / 音樂 / 單次動作 / TTS
 
-要讓桌面精靈「浮在桌面上」且背景完全透明，需要**四層透明設定同時生效**：
+- `character_library.py`
+  管理角色資料夾、`manifest.json`、動作檔路徑、目前角色狀態。
 
-1. **QApplication：** `--disable-gpu` (避免部分 Windows GPU 合成器干擾)
-2. **QMainWindow：** `Qt.WA_TranslucentBackground` + `FramelessWindowHint`
-3. **QWebEngineView：** `page().setBackgroundColor(QColor(0, 0, 0, 0))` ← 最關鍵
-4. **HTML/CSS：** `background-color: transparent`
+- `ui/transparent_window.py`
+  管理透明視窗、系統匣、角色切換、動作播放，以及 Python 到 JavaScript 的橋接。
 
-> Linux 路徑預設保留 GPU / WebGL 加速，不建議為了拖曳功能而停用硬體加速。
+- `ui/web_container/app.js`
+  真正控制瀏覽器中的 `<video>` 與 `<audio>` 元素，處理 idle、temporary motion、動作播放完回 idle。
 
-## 快速開始
+- `sensors/camera_vision.py`
+  OpenCV 揮手偵測，偵測成功後送出 `[ACTION:wave_response]`。
 
-### 環境需求
+## Action 白名單
 
-- Python 3.10+
-- Windows 10/11 或原生 Linux (Ubuntu 22.04+)
-- Linux 需預先安裝 Qt WebEngine 的系統層 runtime，例如 `libegl1`、`libx11-xcb1`、`libxcb-cursor0`、`libxkbcommon-x11-0`
-- 若要在 Linux 上使用本機 NVIDIA / CUDA 算圖，請安裝對應驅動與 toolkit，完整步驟請見 `docs/linux_deployment.md`
+目前 Host 支援的 action：
 
-### 安裝
+- `report_news`
+- `play_music`
+- `wave_response`
+- `laugh`
+- `angry`
+- `awkward`
+- `speechless`
+- `listen`
+- `idle`
 
-> 所有安裝與測試都必須先進入專案虛擬環境後再執行，OpenCV 與其他 Python 依賴一律以 `venv/` 內的環境為準。
+AI 若輸出常見 alias，系統也會自動正規化，例如：
+
+- `news` -> `report_news`
+- `music` -> `play_music`
+- `happy` -> `laugh`
+- `mad` -> `angry`
+- `thinking` -> `listen`
+
+## 資產規則
+
+角色資產放在：
+
+```text
+assets/webm/characters/<character_id>/
+├── manifest.json
+├── source/
+└── motions/
+```
+
+`manifest.json` 內的 `motions` 目前至少建議包含：
+
+- `idle`
+- `report_news`
+- `play_music`
+- `wave_response`
+- `laugh`
+- `angry`
+- `awkward`
+- `speechless`
+- `listen`
+
+其中：
+
+- `wave_response` 預設標準檔名為 `running_forward.webm`
+- 缺少 action 專用 WebM 時，系統會安全退回 idle
+
+## 安裝
+
+### 1. 建立並啟用虛擬環境
 
 ```bash
-# 1. 建立虛擬環境（若尚未建立）
 python -m venv venv
+```
 
-# 2. 啟用虛擬環境
-# Windows PowerShell:
+Windows PowerShell：
+
+```bash
 .\venv\Scripts\Activate.ps1
-# Windows CMD:
-.\venv\Scripts\activate.bat
+```
 
-# 3. 安裝依賴
+Linux / macOS：
+
+```bash
+source venv/bin/activate
+```
+
+### 2. 安裝依賴
+
+```bash
 pip install -r requirements.txt
 ```
 
-### `.env` 設定
+### 3. 設定 `.env`
 
-本地 LangChain / Ollama 與 ElevenLabs TTS 需要從 `.env` 載入設定；請在已啟用的虛擬環境內安裝 `langchain`、`langchain-community`、`python-dotenv`，並至少提供以下變數：
+最少建議提供：
 
 ```bash
 OLLAMA_BASE_URL=http://127.0.0.1:11434
@@ -135,111 +208,66 @@ ELEVENLABS_API_KEY=your_api_key
 ELEVENLABS_VOICE_ID=zENt0ljwLXypGqHDsdzz
 ```
 
-若未設定 ElevenLabs 金鑰或 voice，系統會保留文字回覆並安全略過語音播放。
-`config.py` 會集中管理 persona prompt、Ollama 預設模型、TTS voice 與暫存目錄；API Key 仍只會從 `.env` 讀取。
-
-### Linux 快速開始
-
-1. 先依 `docs/linux_deployment.md` 安裝 `apt` 系統依賴，並確認 compositor / GPU 驅動設定。
-2. 建立虛擬環境：`python3 -m venv venv`
-3. 啟用虛擬環境：`source venv/bin/activate`
-4. 安裝 Python 依賴：`pip install -r requirements.txt`
-5. 執行冒煙測試：`python3 smoke_test.py`
-6. 執行環境驗證：`python3 tests/verify_linux_env.py`
-7. 啟動主程式：`python3 main.py`
-
-> Ubuntu 24.04 上若要啟用揮手偵測，請在已啟用的虛擬環境內安裝 `requirements.txt` 中的 `opencv-python`，不要在系統 Python 直接執行 `pip install` 或測試指令。
-
-> Linux 部署、Qt WebEngine 共享庫與 WebGL 排錯，請直接參考 `docs/linux_deployment.md`。舊版 OpenClaw 連線模組已移至 `legacy/openclaw/` 封存。
-
-### 啟動
+## 啟動
 
 ```bash
-# 確保虛擬環境已啟用；所有測試也必須沿用同一個 venv
-python main.py   # Windows
-python3 main.py  # Linux
+python main.py
 ```
 
-若要切換 OpenCV 揮手偵測或預覽視窗，可直接修改 [sensors/camera_vision.py](/home/norlan/projecgt/Virtual-Pet/sensors/camera_vision.py) 最上方的兩個 boolean：
+Linux 使用者若遇到 Qt / WebEngine / WebGL 問題，請先看 [docs/linux_deployment.md](/home/norlan/projecgt/Virtual-Pet/docs/linux_deployment.md)。
 
-- `OPENCV_WAVE_DETECTION_ENABLED = True / False`
-- `OPENCV_DEBUG_WINDOW_ENABLED = True / False`
+## 測試與驗證
 
-### 預期結果
-
-1. 桌面右下角出現房間場景視窗，顯示固定背景、角色舞台與狀態列
-2. 若已有角色 manifest，會自動載入上次套用角色的 `idle.webm`
-3. 若沒有角色 manifest，但 `assets/webm/idle.webm` 存在，會使用舊版 fallback idle
-4. 右鍵桌面角色可開啟「ECHOES — 角色設定」，該視窗不會鎖住桌面角色拖曳
-5. 右鍵選單新增「功能動作 → 播報新聞 / 播放音樂 / 停止音樂」
-6. 在角色設定中可選擇既有角色、播放既有動作，或上傳新圖片重新生成 6 個動作
-7. 非 idle 動作播放完會自動回到 idle；若 action 專用動畫缺失，仍會執行功能並保持 idle
-8. 狀態列會顯示目前 action，例如新聞標題、目前播放曲目或錯誤訊息
-9. 若 `ui/assets/music/` 沒有可播放檔案，播放音樂 action 會顯示 warning，但不會讓 UI 卡住
-10. 若新聞來源暫時無法存取，新聞 action 會顯示 warning 並回到安全狀態
-11. 可用滑鼠拖曳移動視窗位置
-12. 視窗外圈透明區域的點擊會穿透至底下的視窗
-13. 5 秒後 console 會印出 `[ECHOES] 測試: 更新房間狀態文字`
-
-## 角色資產流程
-
-1. 在角色設定中選擇一張角色圖片。
-2. 系統會建立 `assets/webm/characters/<timestamp>_<角色名>/`。
-3. 原始圖片會複製到 `source/`，生成出的 6 支 WebM 會存到 `motions/`。
-4. 同層會建立 `manifest.json`，記錄角色名稱、來源圖、動作檔與 prompt。
-5. 之後可從角色下拉選單直接套用歷史角色，並選擇任一已生成動作預覽。
-
-### Action 動作檔命名
-
-若要讓角色在功能動作時切換專屬動畫，可在角色 `manifest.json` 的 `motions` 裡加入以下可選鍵值：
-
-- `report_news`: 對應新聞播報動畫，例如 `assets/webm/characters/<角色>/motions/report_news.webm`
-- `play_music`: 對應播放音樂動畫，例如 `assets/webm/characters/<角色>/motions/play_music.webm`
-- `wave_response`: 對應揮手回應動畫，標準檔名為 `assets/webm/characters/<角色>/motions/running_forward.webm`
-
-若這些影片不存在，系統會保留或回退到 `idle.webm`，但仍會繼續執行 action handler 或感測流程。
-
-## 房間模式資產
-
-- 房間背景預設讀取 `ui/assets/backgrounds/初音房3 2.jpg`
-- 本地音樂 action 會掃描 `ui/assets/music/`，支援 `.mp3`、`.wav`、`.ogg`、`.m4a`、`.aac`、`.flac`
-- 新聞 action 預設抓取 BBC World RSS；若網路或來源失敗，只會在狀態列與 console 顯示警告
-
-### 準備測試用 WebM
-
-若要沿用舊版 fallback 流程，可將任意含 Alpha 通道的 WebM 影片放入 `assets/webm/` 並命名為 `idle.webm`。
-
-如果暫時沒有素材，可使用 FFmpeg 從帶透明的 PNG 序列生成測試用 WebM：
+### 單元測試
 
 ```bash
-ffmpeg -framerate 24 -i frame_%04d.png -c:v libvpx-vp9 -pix_fmt yuva420p idle.webm
+python -m unittest discover -s tests -v
 ```
 
-## JavaScript API
+### 冒煙測試
 
-前端提供以下函式，可由 Python 透過 `page().runJavaScript()` 呼叫：
-
-| 函式 | 參數 | 說明 |
-|---|---|---|
-| `setIdleVideo(source)` | `string` 影片 URL | 設定目前角色 idle 動畫 |
-| `playTemporaryVideo(source)` | `string` 影片 URL | 播放單次動作，結束後回到 idle |
-| `setActionStatus(message, tone, timeoutMs)` | `string`, `string`, `number` | 更新房間狀態列文字與 tone |
-| `clearActionStatus()` | 無 | 將狀態列回復待命狀態 |
-| `setRoomCharacter(name)` | `string` | 更新房間場景左上角角色名稱 |
-| `playRoomAudio(source, title)` | `string`, `string` | 播放本地音訊並更新狀態列 |
-| `stopRoomAudio()` | 無 | 停止目前播放中的音訊 |
-| `changeVideo(source)` | `string` 影片 URL | 舊版相容別名，等同 `setIdleVideo` |
-| `getVideoStatus()` | 無 | 回傳目前播放狀態 (src, paused, currentTime 等) |
-
-Python 端呼叫範例：
-
-```python
-window.change_video("happy.webm")  # 切換到開心動畫
+```bash
+python scripts/smoke_test.py
 ```
 
-## 開發階段
+用途：
 
-- [x] **Week 1：** 基礎渲染與前端容器 (目前)
-- [ ] **Week 2：** 感知模組 (psutil + OpenCV)
-- [x] **Week 3：** 本機大腦遷移 (LangChain + Ollama + ElevenLabs)
-- [ ] **Week 4：** ComfyUI 算圖整合
+- 檢查 `.env`
+- 檢查 Ollama API
+- 檢查 ElevenLabs API
+- 檢查暫存音訊目錄
+
+### Linux 環境驗證
+
+```bash
+python scripts/verify_linux_env.py
+```
+
+用途：
+
+- 檢查 Qt WebEngine shared libraries
+- 檢查 WebGL / renderer 狀態
+- 檢查 Linux 上 legacy OpenClaw 設定檔探測順序
+
+## 開發流程建議
+
+1. 啟用 `venv`
+2. 修改程式
+3. 先跑：
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+4. 若涉及本地大腦或 Linux 部署，再補跑：
+
+```bash
+python scripts/smoke_test.py
+python scripts/verify_linux_env.py
+```
+
+## 備註
+
+- `legacy/openclaw/` 是封存區，不是目前主流程依賴。
+- `docs/archive/` 放歷史參考文件，不影響執行。
+- `__pycache__` 與暫存音檔可以隨時清理，不應視為專案原始碼的一部分。

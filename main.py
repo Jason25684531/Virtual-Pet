@@ -6,16 +6,6 @@ ECHOES — 程式進入點
 import sys
 import signal
 
-# 情緒 → WebM 檔名對應表（供未來 VM/Sensor 模組使用）
-EMOTION_MAP = {
-    "開心": "laugh.webm",
-    "生氣": "angry.webm",
-    "尷尬": "awkward.webm",
-    "無言": "speechless.webm",
-    "聆聽": "listen.webm",
-    "預設": "idle.webm",
-}
-
 
 def main():
     from PyQt5.QtWidgets import QApplication
@@ -85,6 +75,7 @@ def main():
 
     def shutdown_brain_engine():
         brain_engine.stop()
+        brain_engine.quit()
         if brain_engine.isRunning():
             brain_engine.wait(3000)
 
@@ -92,6 +83,7 @@ def main():
         if not wave_sensor_config.detection_enabled:
             return
         wave_sensor.stop()
+        wave_sensor.quit()
         if wave_sensor.isRunning():
             wave_sensor.wait(3000)
 

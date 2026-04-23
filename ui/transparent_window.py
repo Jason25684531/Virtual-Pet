@@ -11,9 +11,23 @@ from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
 from PyQt5.QtWidgets import (
     QAction, QApplication, QLineEdit, QMainWindow, QMenu, QSystemTrayIcon, QWidget,
 )
-from PyQt5.QtWebEngineWidgets import QWebEngineSettings, QWebEngineView
+from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineSettings, QWebEngineView
 
 from character_library import ASSETS_WEBM_DIR, CharacterLibrary, MOTION_MAP
+
+
+class EchoesWebPage(QWebEnginePage):
+    """自訂 WebPage，將前端 console 訊息轉印至 Python Terminal。"""
+
+    _LEVEL_LABELS = {
+        QWebEnginePage.InfoMessageLevel: "INFO",
+        QWebEnginePage.WarningMessageLevel: "WARN",
+        QWebEnginePage.ErrorMessageLevel: "ERROR",
+    }
+
+    def javaScriptConsoleMessage(self, level, message, line_number, source_id):
+        label = self._LEVEL_LABELS.get(level, "LOG")
+        print(f"[JS {label}] {message}  (line {line_number}, {source_id})")
 
 
 class DeveloperInputLineEdit(QLineEdit):
@@ -32,6 +46,7 @@ class DeveloperInputLineEdit(QLineEdit):
 class TransparentWindow(QMainWindow):
     """透明無邊框桌面寵物視窗"""
     developer_query_submitted = pyqtSignal(str)
+    RAW_JAVASCRIPT_MARKER = "__raw_javascript__"
 
     # 視窗尺寸（可根據需求調整，或改為全螢幕）：
     WINDOW_WIDTH = 1920
@@ -103,11 +118,16 @@ class TransparentWindow(QMainWindow):
         # 停用 Chromium 的任何預設右鍵選單，改由 Qt 視窗層統一處理。
         self.web_view.setContextMenuPolicy(Qt.NoContextMenu)
 
+        # 掛上自訂 Page，讓前端 console 訊息可轉印至 Python Terminal。
+        self.web_view.setPage(EchoesWebPage(self.web_view))
+
         self.setCentralWidget(self.web_view)
 
         settings = self.web_view.settings()
         settings.setAttribute(QWebEngineSettings.PlaybackRequiresUserGesture, False)
         settings.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
+        settings.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, True)
+        settings.setAttribute(QWebEngineSettings.AllowRunningInsecureContent, True)
         settings.setAttribute(QWebEngineSettings.WebGLEnabled, True)
         settings.setAttribute(QWebEngineSettings.Accelerated2dCanvasEnabled, True)
 
@@ -417,6 +437,15 @@ class TransparentWindow(QMainWindow):
         should_loop = not MOTION_MAP.get(motion_key, {}).get("play_once", True)
         self.change_video(motion_path, loop=should_loop)
 
+    def play_resolved_motion(self, motion_key: str, motion_path: str, loop: bool | None = None) -> bool:
+        should_loop = (
+            not MOTION_MAP.get(motion_key, {}).get("play_once", True)
+            if loop is None
+            else bool(loop)
+        )
+        print(f"[ECHOES] 播放已解析動作 `{motion_key}`: {motion_path}")
+        return self.change_video(motion_path, loop=should_loop)
+
     def play_action_motion(self, motion_key: str) -> bool:
         should_loop = not MOTION_MAP.get(motion_key, {}).get("play_once", True)
         current_character_id = self._library.get_current_character_id()
@@ -426,16 +455,14 @@ class TransparentWindow(QMainWindow):
                 motion_path = self._library.get_motion_path(current_character_id, motion_key)
             if motion_path:
                 print(f"[ECHOES] 播放角色動作 `{motion_key}`: {motion_path}")
-                self.change_video(motion_path, loop=should_loop)
-                return True
+                return self.change_video(motion_path, loop=should_loop)
 
         demo_filename = self.DEMO_MOTION_MAPPING.get(motion_key)
         if demo_filename:
             demo_path = os.path.join(self.DEMO_ANIMATIONS_DIR, demo_filename)
             if os.path.isfile(demo_path):
                 print(f"[ECHOES] 播放示範動作 `{motion_key}`: {demo_path}")
-                self.change_video(demo_path, loop=should_loop)
-                return True
+                return self.change_video(demo_path, loop=should_loop)
 
         print(f"[ECHOES] 警告: 找不到可播放的 action 動作 {motion_key}。")
         return False
@@ -445,21 +472,18 @@ class TransparentWindow(QMainWindow):
         if current_character_id:
             idle_path = self._library.get_motion_path(current_character_id, "idle")
             if idle_path:
-                self.change_video(idle_path, loop=True)
-                return True
+                return self.change_video(idle_path, loop=True)
 
         demo_idle_path = os.path.join(
             self.DEMO_ANIMATIONS_DIR,
             self.DEMO_MOTION_MAPPING["idle"],
         )
         if os.path.isfile(demo_idle_path):
-            self.change_video(demo_idle_path, loop=True)
-            return True
+            return self.change_video(demo_idle_path, loop=True)
 
         fallback_idle = os.path.join(ASSETS_WEBM_DIR, "idle.webm")
         if os.path.isfile(fallback_idle):
-            self.change_video(fallback_idle, loop=True)
-            return True
+            return self.change_video(fallback_idle, loop=True)
         return False
 
     def dispatch_action(self, directive: str) -> bool:
@@ -516,7 +540,7 @@ class TransparentWindow(QMainWindow):
             print(f"[ECHOES] 警告: 音訊不存在，略過播放: {filename}")
             return False
 
-        source_url = QUrl.fromLocalFile(absolute_path).toString()
+        source_url = QUrl.fromLocalFile(absolute_path).toString(QUrl.FullyEncoded)
         self._run_javascript("playRoomAudio", source_url, title, update_status)
         return True
 
@@ -550,23 +574,45 @@ class TransparentWindow(QMainWindow):
 
     # ── Python → JS 橋接 ───────────────────────────────────
 
-    def change_video(self, filename, loop=True):
+    def change_video(self, filename, loop=True) -> bool:
         """
         呼叫前端 JS 的 changeVideo() 切換影片。
         :param filename: 絕對路徑、相對路徑或舊版純檔名
         """
         absolute_path = self._resolve_media_path(filename)
-        if not absolute_path or not os.path.isfile(absolute_path):
-            print(f"[ECHOES] 警告: 影片不存在，略過切換: {filename}")
+        if not absolute_path or not os.path.exists(absolute_path):
+            print(f"[ECHOES ERROR] WebM 檔案不存在: {absolute_path or filename}")
+            return False
+
+        source_url = QUrl.fromLocalFile(absolute_path).toString(QUrl.FullyEncoded)
+        print(f"[ECHOES] 送出影片 URL: {source_url}")
+        if loop:
+            self._run_javascript("setIdleVideo", source_url)
+            return True
+
+        safe_url = self._escape_javascript_single_quoted_string(source_url)
+        self._run_raw_javascript(
+            "if (window.playTemporaryVideo) { "
+            f"window.playTemporaryVideo('{safe_url}');"
+            " } else { console.error('[ECHOES] playTemporaryVideo bridge 不存在'); }"
+        )
+        return True
+
+    def _run_raw_javascript(self, script: str):
+        if not self._webview_ready:
+            self._pending_javascript_calls.append((self.RAW_JAVASCRIPT_MARKER, (script,)))
             return
 
-        source_url = QUrl.fromLocalFile(absolute_path).toString()
-        function_name = "setIdleVideo" if loop else "playTemporaryVideo"
-        self._run_javascript(function_name, source_url)
+        self.web_view.page().runJavaScript(script)
 
     def _run_javascript(self, function_name: str, *args):
         if not self._webview_ready:
             self._pending_javascript_calls.append((function_name, args))
+            return
+
+        if function_name == self.RAW_JAVASCRIPT_MARKER:
+            script = str(args[0]) if args else ""
+            self.web_view.page().runJavaScript(script)
             return
 
         self.web_view.page().runJavaScript(self._build_javascript_bridge_call(function_name, *args))
@@ -598,21 +644,34 @@ class TransparentWindow(QMainWindow):
             return None
 
         if os.path.isabs(filename):
-            return filename
+            return self._normalize_absolute_path(filename)
 
         root_relative = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             filename,
         )
         if os.path.isfile(root_relative):
-            return root_relative
+            return self._normalize_absolute_path(root_relative)
 
         demo_relative = os.path.join(
             self.DEMO_ANIMATIONS_DIR,
             os.path.basename(filename),
         )
         if os.path.isfile(demo_relative):
-            return demo_relative
+            return self._normalize_absolute_path(demo_relative)
 
         legacy_relative = os.path.join(ASSETS_WEBM_DIR, filename)
-        return legacy_relative
+        return self._normalize_absolute_path(legacy_relative)
+
+    @staticmethod
+    def _normalize_absolute_path(path: str) -> str:
+        return os.path.abspath(os.path.normpath(path))
+
+    @staticmethod
+    def _escape_javascript_single_quoted_string(value: str) -> str:
+        return (
+            value.replace("\\", "\\\\")
+            .replace("'", "\\'")
+            .replace("\r", "\\r")
+            .replace("\n", "\\n")
+        )

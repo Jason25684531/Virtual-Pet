@@ -69,7 +69,7 @@ sudo apt install -y python3-venv python3-pip
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python3 tests/verify_linux_env.py
+python3 scripts/verify_linux_env.py
 python3 main.py
 ```
 
@@ -118,7 +118,7 @@ ECHOES 的透明背景、無邊框視窗與 QWebEngine WebGL 會依賴 composito
 
 ### 通用排錯
 
-- 使用 `python3 tests/verify_linux_env.py` 檢查缺少哪些共享庫、WebGL renderer 是否退回 `llvmpipe` / `SwiftShader`。
+- 使用 `python3 scripts/verify_linux_env.py` 檢查缺少哪些共享庫、WebGL renderer 是否退回 `llvmpipe` / `SwiftShader`。
 - 使用 `glxinfo -B` 檢查 OpenGL renderer，若出現 `llvmpipe`，代表目前不是硬體加速路徑。
 - 不要為了視窗拖曳而停用 GPU；ECHOES 的 Linux 拖曳已經改用 Qt event filter 與 drag surface，不需要靠關閉 WebGL 換取拖曳。
 
@@ -129,7 +129,7 @@ ECHOES 的透明背景、無邊框視窗與 QWebEngine WebGL 會依賴 composito
 - 優先使用 Ubuntu「額外驅動程式」或發行版官方建議版本安裝 NVIDIA 驅動。
 - 使用 `nvidia-smi` 確認驅動是否正確載入。
 - CUDA toolkit 只在你需要本機 CUDA 工作流時再安裝；若只是執行 Host UI，不必為了 ECHOES 視窗本身強制安裝 CUDA。
-- 若 `tests/verify_linux_env.py` 顯示 WebGL renderer 為 `llvmpipe`，先檢查顯示驅動，再檢查 compositor 與目前登入 session（Wayland/Xorg）。
+- 若 `scripts/verify_linux_env.py` 顯示 WebGL renderer 為 `llvmpipe`，先檢查顯示驅動，再檢查 compositor 與目前登入 session（Wayland/Xorg）。
 - 若要讓 ComfyUI 與 UI 共用 GPU，請避免同時開啟過多瀏覽器 / Electron 應用造成 VRAM 碎片化。
 
 ## 7. 常見錯誤
@@ -139,7 +139,7 @@ ECHOES 的透明背景、無邊框視窗與 QWebEngine WebGL 會依賴 composito
 通常代表 `libxcb-*`、`libx11-xcb1` 或 `libxkbcommon-x11-0` 缺漏。先重新執行本文件的 `apt install` 指令，再跑一次：
 
 ```bash
-python3 tests/verify_linux_env.py
+python3 scripts/verify_linux_env.py
 ```
 
 ### `WebGL unavailable` 或 renderer 顯示 `llvmpipe`
@@ -161,7 +161,7 @@ python3 tests/verify_linux_env.py
 每次在新 Linux 環境安裝完成後，建議依序執行：
 
 ```bash
-python3 tests/verify_linux_env.py
+python3 scripts/verify_linux_env.py
 python3 main.py
 ```
 

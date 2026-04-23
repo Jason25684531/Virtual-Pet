@@ -22,12 +22,23 @@
             return;
         }
 
+        video.muted = true;
+        video.defaultMuted = true;
+        video.playsInline = true;
+        video.autoplay = true;
+        video.setAttribute('muted', '');
+        video.setAttribute('playsinline', '');
         video.loop = Boolean(shouldLoop);
         video.src = source;
         video.load();
-        video.play().catch(function (err) {
-            console.warn('[ECHOES] 播放失敗:', err.message);
-        });
+        var playPromise = video.play();
+        if (playPromise !== undefined) {
+            playPromise.then(function () {
+                console.log('[JS] 影片開始播放:', source);
+            }).catch(function (error) {
+                console.error('[JS] 播放被 Chromium 阻擋, Reason:', error.name, error.message);
+            });
+        }
     }
 
     function setStatus(message, tone, timeoutMs) {
@@ -46,9 +57,12 @@
         }
     }
 
-    video.addEventListener('error', function () {
-        console.warn('[ECHOES] 影片載入失敗:', video.src);
-    });
+    video.onerror = function (event) {
+        var err = video.error;
+        var errCode = err ? err.code : 'unknown';
+        var errMsg = err ? err.message : '(no details)';
+        console.error('[ECHOES] 影片載入失敗 src=' + video.src + ' code=' + errCode + ' msg=' + errMsg);
+    };
 
     video.addEventListener('ended', function () {
         if (!video.loop && idleSource) {
@@ -82,8 +96,33 @@
      * @param {string} source - 影片來源 URL
      */
     window.playTemporaryVideo = function (source) {
-        console.log('[ECHOES] 播放單次動作:', source);
-        setSource(source, false);
+        var targetVideo = document.getElementById('pet-video');
+        if (!targetVideo) {
+            console.error('[JS ERROR] 找不到影片元素 #pet-video，無法播放動作');
+            return;
+        }
+
+        targetVideo.muted = true;
+        targetVideo.defaultMuted = true;
+        targetVideo.playsInline = true;
+        targetVideo.autoplay = true;
+        targetVideo.setAttribute('muted', '');
+        targetVideo.setAttribute('playsinline', '');
+        targetVideo.loop = false;
+
+        console.log('[JS] 準備切換動作:', source);
+        targetVideo.pause();
+        targetVideo.src = source;
+        targetVideo.load();
+
+        var playPromise = targetVideo.play();
+        if (playPromise !== undefined) {
+            playPromise.then(function () {
+                console.log('[JS] 動作播放成功:', source);
+            }).catch(function (error) {
+                console.error('[JS ERROR] 動作切換失敗:', error.name, error.message);
+            });
+        }
     };
 
     window.moveCharacter = function (x, y) {

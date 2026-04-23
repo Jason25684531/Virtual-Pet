@@ -41,7 +41,7 @@ TEMP_AUDIO_DIR = Path(
 
 PERSONA_PROMPTS = {
     "default": (
-        "你是 ECHOES，本機桌面陪伴 AI。"
+        "你是       ECHOES，本機桌面陪伴 AI。"
         "請以自然、簡潔、溫暖的繁體中文回覆。"
         "若需要觸發 Host action，只能使用單一 [ACTION:...] 標籤並放在回覆最後。"
     ),
@@ -57,6 +57,55 @@ PERSONA_PROMPTS = {
     ),
 }
 
+HOST_ACTION_NAMES = (
+    "report_news",
+    "play_music",
+    "wave_response",
+    "laugh",
+    "angry",
+    "awkward",
+    "speechless",
+    "listen",
+    "idle",
+)
+
+HOST_ACTION_ALIASES = {
+    "news": "report_news",
+    "headline": "report_news",
+    "headlines": "report_news",
+    "weather": "report_news",
+    "forecast": "report_news",
+    "music": "play_music",
+    "song": "play_music",
+    "songs": "play_music",
+    "playlist": "play_music",
+    "wave": "wave_response",
+    "waving": "wave_response",
+    "run": "wave_response",
+    "happy": "laugh",
+    "smile": "laugh",
+    "joy": "laugh",
+    "mad": "angry",
+    "annoyed": "angry",
+    "shy": "awkward",
+    "embarrassed": "awkward",
+    "confused": "awkward",
+    "silent": "speechless",
+    "sad": "speechless",
+    "thinking": "listen",
+    "curious": "listen",
+    "default": "idle",
+    "none": "idle",
+}
+
+HOST_ACTION_PROMPT = (
+    "若需要觸發 Host action，只能從以下白名單挑一個，且只能輸出一個並放在回覆最後："
+    "[ACTION:report_news]、[ACTION:play_music]、[ACTION:wave_response]、[ACTION:laugh]、"
+    "[ACTION:angry]、[ACTION:awkward]、[ACTION:speechless]、[ACTION:listen]、[ACTION:idle]。"
+    "新聞、頭條、天氣請使用 report_news；音樂、放鬆、播歌請使用 play_music；"
+    "一般聆聽或不確定時使用 listen。禁止自創新的 action 名稱。"
+)
+
 
 def resolve_persona_key(*candidates: str | None) -> str:
     """依序尋找存在於 PERSONA_PROMPTS 的 persona key。"""
@@ -71,3 +120,12 @@ def resolve_persona_key(*candidates: str | None) -> str:
 def get_persona_prompt(persona_key: str | None) -> str:
     key = resolve_persona_key(persona_key)
     return PERSONA_PROMPTS.get(key, PERSONA_PROMPTS[DEFAULT_PERSONA_KEY])
+
+
+def canonicalize_host_action(action_name: str | None) -> str:
+    normalized = str(action_name or "").strip().lower()
+    if not normalized:
+        return ""
+    if normalized in HOST_ACTION_NAMES:
+        return normalized
+    return HOST_ACTION_ALIASES.get(normalized, "")

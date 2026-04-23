@@ -108,7 +108,10 @@ class WaveSensorTests(unittest.TestCase):
     def test_camera_unavailable_only_warns(self):
         warnings: list[str] = []
         capture = FakeCapture([], opened=False)
-        sensor = WaveSensor(capture_factory=lambda _index: capture)
+        sensor = WaveSensor(
+            config=WaveDetectionConfig(detection_enabled=True),
+            capture_factory=lambda _index: capture,
+        )
         sensor.sensor_warning.connect(warnings.append)
         sensor.run()
         self.assertTrue(capture.released)
@@ -124,6 +127,7 @@ class WaveSensorTests(unittest.TestCase):
         directives: list[str] = []
         sensor = WaveSensor(
             config=WaveDetectionConfig(
+                detection_enabled=True,
                 min_contour_area=1000,
                 min_displacement_px=18,
                 required_direction_changes=2,
@@ -147,6 +151,7 @@ class WaveSensorTests(unittest.TestCase):
         preview_calls: list[tuple[int | None, float, bool]] = []
         sensor = WaveSensor(
             config=WaveDetectionConfig(
+                detection_enabled=True,
                 show_debug_window=True,
                 loop_sleep_ms=0,
             ),
