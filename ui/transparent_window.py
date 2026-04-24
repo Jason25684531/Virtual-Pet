@@ -636,9 +636,6 @@ class TransparentWindow(QMainWindow):
     def set_action_status(self, message: str, tone: str = "idle", timeout_ms: int = 0):
         self._run_javascript("setActionStatus", message, tone, timeout_ms)
 
-    def clear_action_status(self):
-        self._run_javascript("clearActionStatus")
-
     def set_room_character(self, name: str):
         self._run_javascript("setRoomCharacter", name)
 
@@ -657,17 +654,6 @@ class TransparentWindow(QMainWindow):
 
     def shutdown_background_tasks(self):
         self._action_dispatcher.shutdown()
-
-    def get_render_diagnostics(self) -> dict[str, object]:
-        settings = self.web_view.settings()
-        return {
-            "configured_width": self.WINDOW_WIDTH,
-            "configured_height": self.WINDOW_HEIGHT,
-            "current_width": self.width(),
-            "current_height": self.height(),
-            "webgl_enabled": settings.testAttribute(QWebEngineSettings.WebGLEnabled),
-            "accelerated_2d_canvas_enabled": settings.testAttribute(QWebEngineSettings.Accelerated2dCanvasEnabled),
-        }
 
     def apply_character_position(self):
         """套用目前由 Python 管理的角色位移設定。"""

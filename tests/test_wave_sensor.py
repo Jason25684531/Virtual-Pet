@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import sys
 from pathlib import Path
 import unittest
@@ -8,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from action_dispatcher import run_wave_response_debug_probe
+from action_dispatcher import ActionDispatcher
 from character_library import CharacterLibrary
 from sensors.camera_vision import (
     WAVE_RESPONSE_DIRECTIVE,
@@ -40,6 +41,80 @@ class FakeCapture:
 
     def release(self):
         self.released = True
+
+
+class _WaveProbeWindow:
+    def __init__(self):
+        self.status_calls: list[tuple[str, str, int]] = []
+        self.motion_calls: list[str] = []
+        self.motion_asset_calls: list[tuple[str, str, bool]] = []
+        self.restore_idle_calls = 0
+        self._pending_play_once = False
+
+    def set_action_status(self, message: str, tone: str = "idle", timeout_ms: int = 0):
+        self.status_calls.append((message, tone, timeout_ms))
+
+    def play_resolved_motion(self, motion_key: str, motion_path: str, loop: bool = False) -> bool:
+        self.motion_calls.append(motion_key)
+        self.motion_asset_calls.append((motion_key, motion_path, loop))
+        self._pending_play_once = not bool(loop)
+        return True
+
+    def restore_idle_video(self) -> bool:
+        self.restore_idle_calls += 1
+        return True
+
+    def play_music(self, filename: str, title: str = "", update_status: bool = True) -> bool:
+        del filename, title, update_status
+        return True
+
+    def stop_music(self):
+        return None
+
+    def simulate_motion_end(self) -> bool:
+        if not self._pending_play_once:
+            return False
+        self._pending_play_once = False
+        return self.restore_idle_video()
+
+
+def run_wave_response_debug_probe() -> dict[str, object]:
+    directive = "[ACTION:wave_response]"
+    with tempfile.TemporaryDirectory(prefix="echoes-debug-webm-") as temp_dir:
+        wave_path = Path(temp_dir) / "running_forward.webm"
+        idle_path = Path(temp_dir) / "Idle.webm"
+        wave_path.write_bytes(b"debug")
+        idle_path.write_bytes(b"debug")
+        resolver = lambda motion_key: str({"wave_response": wave_path, "idle": idle_path}.get(motion_key, ""))
+        window = _WaveProbeWindow()
+        dispatcher = ActionDispatcher(
+            window,
+            library=object(),
+            motion_path_resolver=resolver,
+            tts_enabled=False,
+        )
+        dispatched = dispatcher.dispatch(directive)
+        idle_restored = window.simulate_motion_end()
+
+        return {
+            "directive": directive,
+            "dispatched": dispatched,
+            "status_calls": window.status_calls,
+            "motion_calls": window.motion_calls,
+            "motion_asset_calls": window.motion_asset_calls,
+            "idle_restored": idle_restored,
+            "restore_idle_calls": window.restore_idle_calls,
+            "ok": (
+                dispatched
+                and bool(window.status_calls)
+                and window.status_calls[0][0] == "正在回應揮手"
+                and window.motion_calls == ["wave_response"]
+                and bool(window.motion_asset_calls)
+                and window.motion_asset_calls[0][1].endswith("running_forward.webm")
+                and idle_restored
+                and window.restore_idle_calls == 1
+            ),
+        }
 
 class WaveSensorTests(unittest.TestCase):
     def test_disabled_detection_skips_camera_capture(self):

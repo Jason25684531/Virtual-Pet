@@ -12,9 +12,6 @@ import os
 import queue
 import re
 import threading
-import warnings
-
-warnings.filterwarnings("ignore", category=DeprecationWarning)
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,14 +23,12 @@ from character_library import CHARACTER_LIBRARY_DIR, CharacterLibrary, PROJECT_R
 from interaction_trace import InteractionLatencyTracker
 
 try:
-    from langchain.memory import ConversationBufferMemory
-    from langchain.prompts import PromptTemplate
-    from langchain_core.messages import SystemMessage
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     from langchain_openai import ChatOpenAI
     LANGCHAIN_IMPORT_ERROR = None
 except ModuleNotFoundError as exc:  # pragma: no cover - 允許在依賴缺失時安全降級
-    ConversationBufferMemory = None  # type: ignore[assignment]
-    PromptTemplate = None  # type: ignore[assignment]
+    AIMessage = None  # type: ignore[assignment]
+    HumanMessage = None  # type: ignore[assignment]
     SystemMessage = None  # type: ignore[assignment]
     ChatOpenAI = None  # type: ignore[assignment]
     LANGCHAIN_IMPORT_ERROR = exc
@@ -228,6 +223,32 @@ class StreamedReplyParser:
         return outputs
 
 
+class _ConversationTurnMemory:
+    """以 message history 保存最近幾輪對話，避免使用已棄用的 classic memory。"""
+
+    def __init__(self, max_turns: int = 6):
+        self._max_turns = max(1, int(max_turns))
+        self._messages: list[object] = []
+
+    def load_messages(self) -> list[object]:
+        return list(self._messages)
+
+    def append_exchange(self, user_input: str, assistant_reply: str):
+        human_text = str(user_input or "").strip()
+        ai_text = str(assistant_reply or "").strip()
+        if not human_text or not ai_text:
+            return
+
+        self._messages.append(_build_human_message(human_text))
+        self._messages.append(_build_ai_message(ai_text))
+        overflow = len(self._messages) - (self._max_turns * 2)
+        if overflow > 0:
+            self._messages = self._messages[overflow:]
+
+    def clear(self):
+        self._messages = []
+
+
 class BrainEngine(QThread):
     """在背景執行緒中執行 OpenAI 串流推論；本機大腦已完成與 OpenClaw 解耦。"""
 
@@ -253,6 +274,7 @@ class BrainEngine(QThread):
         self._latency_tracker = latency_tracker
 
     def run(self):
+        self._prewarm_active_profile()
         while True:
             queued_item = self._request_queue.get()
             if queued_item is None:
@@ -277,23 +299,6 @@ class BrainEngine(QThread):
             self._latency_tracker.mark_brain_queued(trace_id)
         self._request_queue.put((message, profile, trace_id))
         return True
-
-    def send_message(
-        self,
-        message: str,
-        profile: BrainProfile | None = None,
-        trace_id: str | None = None,
-    ) -> bool:
-        return self.send_to_brain(message, profile=profile, trace_id=trace_id)
-
-    def send_query(
-        self,
-        text: str,
-        profile: BrainProfile | None = None,
-        trace_id: str | None = None,
-    ) -> bool:
-        """提供 UI Dev Mode 使用的查詢入口，內部仍走同一條背景推論管線。"""
-        return self.send_to_brain(text, profile=profile, trace_id=trace_id)
 
     def set_active_profile(self, profile: BrainProfile):
         with self._lock:
@@ -373,10 +378,10 @@ class BrainEngine(QThread):
 
             memory_reply = parser.build_memory_reply()
             if memory_reply:
-                memory.save_context({"input": prompt_text}, {"response": memory_reply})
+                self._remember_exchange(memory, prompt_text, memory_reply)
             elif not emitted_anything:
                 fallback = "我剛剛有點恍神了，請再說一次。"
-                memory.save_context({"input": prompt_text}, {"response": fallback})
+                self._remember_exchange(memory, prompt_text, fallback)
                 self._emit_fragment(fallback, trace_id)
             if self._latency_tracker is not None:
                 self._latency_tracker.mark_brain_completed(trace_id)
@@ -403,30 +408,14 @@ class BrainEngine(QThread):
         system_prompt: str,
         knowledge_context: str,
         memory,
-    ) -> str:
+    ):
         del profile
-        history = memory.load_memory_variables({}).get("history", "")
-        if history is None:
-            history = ""
-        history_text = str(history)
-        prompt = PromptTemplate(
-            input_variables=["history", "input", "system_prompt", "knowledge_context", "host_action_prompt"],
-            template=(
-                "{system_prompt}\n\n"
-                "{host_action_prompt}\n\n"
-                "{knowledge_context}"
-                "以下是你與使用者的對話歷史：\n{history}\n\n"
-                "使用者：{input}\n"
-                "請直接輸出回覆內容。若需要 Host 執行動作，必須先輸出單一 [ACTION:...] 前綴，"
-                "而且它必須是整段回覆的第一句第一個有效字元；後面才能接自然語言內容。\n"
-                "ECHOES："
-            ),
-        ).partial(
-            system_prompt=system_prompt,
-            knowledge_context=knowledge_context,
-            host_action_prompt=config.HOST_ACTION_PROMPT,
-        )
-        return prompt.format(history=history_text, input=user_input)
+        messages = [_build_system_message(system_prompt), _build_system_message(config.HOST_ACTION_PROMPT)]
+        if knowledge_context:
+            messages.append(_build_system_message(knowledge_context.strip()))
+        messages.extend(self._load_memory_messages(memory))
+        messages.append(_build_human_message(user_input))
+        return messages
 
     def _stream_llm_tokens(self, profile: BrainProfile, prompt: str):
         llm = self._get_or_create_llm(profile)
@@ -461,13 +450,48 @@ class BrainEngine(QThread):
         if memory is not None:
             return memory
 
-        memory = ConversationBufferMemory(
-            memory_key="history",
-            ai_prefix="ECHOES",
-            human_prefix="使用者",
+        memory = _ConversationTurnMemory(
+            max_turns=max(1, int(os.getenv("BRAIN_MEMORY_MAX_TURNS", "6"))),
         )
         self._memory_registry[profile_id] = memory
         return memory
+
+    def _prewarm_active_profile(self):
+        try:
+            profile = self._get_active_profile()
+            self._get_or_create_memory(profile.profile_id)
+            if config.OPENAI_API_KEY:
+                self._get_or_create_llm(profile)
+        except Exception:
+            return
+
+    @staticmethod
+    def _load_memory_messages(memory) -> list[object]:
+        load_messages = getattr(memory, "load_messages", None)
+        if callable(load_messages):
+            try:
+                return list(load_messages())
+            except Exception:
+                return []
+
+        load_memory_variables = getattr(memory, "load_memory_variables", None)
+        if callable(load_memory_variables):
+            history = load_memory_variables({}).get("history", "")
+            history_text = str(history or "").strip()
+            if history_text:
+                return [_build_system_message(f"以下是你與使用者的對話歷史摘要：\n{history_text}")]
+        return []
+
+    @staticmethod
+    def _remember_exchange(memory, user_input: str, assistant_reply: str):
+        append_exchange = getattr(memory, "append_exchange", None)
+        if callable(append_exchange):
+            append_exchange(user_input, assistant_reply)
+            return
+
+        save_context = getattr(memory, "save_context", None)
+        if callable(save_context):
+            save_context({"input": user_input}, {"response": assistant_reply})
 
     def _get_active_profile(self) -> BrainProfile:
         with self._lock:
@@ -498,26 +522,6 @@ class BrainEngine(QThread):
         return f"目前可用知識庫內容如下：\n{truncated}\n\n", None
 
     @staticmethod
-    def _normalize_reply(reply: str) -> str:
-        text = (reply or "").strip()
-        if not text:
-            return "[ACTION:listen] 我剛剛有點恍神了，請再說一次。"
-
-        match = ACTION_DIRECTIVE_PATTERN.search(text)
-        raw_action_name = ""
-        if match:
-            raw_action_name = (match.group("bracket") or match.group("bare") or "").lower()
-        action_name = config.canonicalize_host_action(raw_action_name)
-        natural_text = sanitize_tts_text(text)
-        if not action_name:
-            if raw_action_name:
-                return natural_text or "[ACTION:listen] 我有聽見你，繼續說吧。"
-            return natural_text or "[ACTION:listen] 我有聽見你，繼續說吧。"
-        if not natural_text:
-            return f"[ACTION:{action_name}]"
-        return f"[ACTION:{action_name}] {natural_text}"
-
-    @staticmethod
     def _coerce_stream_chunk(chunk: object) -> str:
         if chunk is None:
             return ""
@@ -537,20 +541,27 @@ def sanitize_tts_text(text: str) -> str:
     return stripped
 
 
-def build_active_profile_snapshot(character_id: str | None = None) -> dict[str, str]:
-    """供 debug probe / smoke test 使用的可序列化 profile 快照。"""
+def _build_system_message(content: str) -> object:
+    text = str(content or "").strip()
+    if SystemMessage is None:
+        return SimpleNamespace(role="system", content=text)
+    return SystemMessage(content=text)
 
-    library = CharacterLibrary()
-    profile = BrainProfile.from_character_library(library, character_id=character_id)
-    return {
-        "profile_id": profile.profile_id,
-        "character_id": profile.character_id or "",
-        "persona_key": profile.persona_key,
-        "knowledge_base_id": profile.knowledge_base_id,
-        "model_name": profile.model_name,
-        "knowledge_path": profile.knowledge_path,
-        "voice_id": profile.voice_id,
-    }
+
+def _build_human_message(content: str) -> object:
+    text = str(content or "").strip()
+    if HumanMessage is None:
+        return SimpleNamespace(role="user", content=text)
+    return HumanMessage(content=text)
+
+
+def _build_ai_message(content: str) -> object:
+    text = str(content or "").strip()
+    if AIMessage is None:
+        return SimpleNamespace(role="assistant", content=text)
+    return AIMessage(content=text)
+
+
 def _build_profile_id(character_id: str | None, knowledge_base_id: str | None) -> str:
     return f"{character_id or 'default'}::{knowledge_base_id or 'default'}"
 

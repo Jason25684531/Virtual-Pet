@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from api_client.brain_engine import BrainEngine
+from api_client.brain_engine import BrainEngine, _ConversationTurnMemory
 from interaction_trace import InteractionLatencyTracker
 
 
@@ -55,6 +55,19 @@ class _FailingBrainEngine(_TestBrainEngine):
 
 
 class BrainStreamingTests(unittest.TestCase):
+    def test_conversation_turn_memory_keeps_recent_turns_only(self):
+        memory = _ConversationTurnMemory(max_turns=2)
+        memory.append_exchange("第一句", "第一答")
+        memory.append_exchange("第二句", "第二答")
+        memory.append_exchange("第三句", "第三答")
+
+        messages = memory.load_messages()
+        self.assertEqual(len(messages), 4)
+        self.assertEqual(messages[0].content, "第二句")
+        self.assertEqual(messages[1].content, "第二答")
+        self.assertEqual(messages[2].content, "第三句")
+        self.assertEqual(messages[3].content, "第三答")
+
     def test_handle_prompt_emits_action_before_sentence_chunks_and_saves_memory(self):
         engine = _TestBrainEngine(
             [

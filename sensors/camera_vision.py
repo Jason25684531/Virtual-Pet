@@ -319,39 +319,3 @@ class WaveSensor(QThread):
 
         if key in (27, ord("q"), ord("Q")):
             self.stop()
-
-
-def run_wave_sequence_probe(sequence: list[tuple[float, int | None]], config: WaveDetectionConfig | None = None) -> dict[str, object]:
-    """用純座標序列快速驗證揮手演算法，不需啟動攝影機。"""
-
-    sensor = WaveSensor(config=config)
-    detections = []
-    for timestamp, center_x in sequence:
-        detections.append(sensor._register_horizontal_motion(center_x, timestamp))
-
-    return {
-        "sequence": sequence,
-        "detections": detections,
-        "trigger_count": sum(1 for detected in detections if detected),
-        "ok": any(detections),
-    }
-
-
-def run_camera_unavailable_probe() -> dict[str, object]:
-    """驗證攝影機開啟失敗時只發出警告、不拋出例外。"""
-
-    class _ClosedCapture:
-        def isOpened(self):
-            return False
-
-        def release(self):
-            return None
-
-    warnings: list[str] = []
-    sensor = WaveSensor(capture_factory=lambda _index: _ClosedCapture())
-    sensor.sensor_warning.connect(warnings.append)
-    sensor.run()
-    return {
-        "warnings": warnings,
-        "ok": bool(warnings) and "攝影機無法開啟" in warnings[0],
-    }

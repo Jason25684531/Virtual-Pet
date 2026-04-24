@@ -157,7 +157,3 @@ def canonicalize_host_action(action_name: str | None) -> str:
     if normalized in HOST_ACTION_NAMES:
         return normalized
     return HOST_ACTION_ALIASES.get(normalized, "")
-
-
-def azure_stt_is_configured() -> bool:
-    return bool(AZURE_STT_API_KEY and AZURE_STT_REGION)

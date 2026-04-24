@@ -17,13 +17,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from action_dispatcher import (
     ActionDispatcher,
-    _DebugSignal,
-    _ImmediateTTSWorker,
-    _ImmediateServiceWorker,
-    run_streamed_action_first_debug_probe,
-    run_tts_dispatch_debug_probe,
 )
-from api_client.brain_engine import BrainEngine, StreamedReplyParser
+from api_client.brain_engine import StreamedReplyParser
 from interaction_trace import InteractionLatencyTracker
 
 
@@ -62,6 +57,51 @@ class _DispatchProbeWindow:
 
     def stop_music(self):
         return None
+
+
+class _DebugProbeWindow:
+    def __init__(self):
+        self.status_calls: list[tuple[str, str, int]] = []
+        self.motion_calls: list[str] = []
+        self.motion_asset_calls: list[tuple[str, str, bool]] = []
+        self.audio_calls: list[tuple[str, str, bool]] = []
+        self.restore_idle_calls = 0
+        self._pending_play_once = False
+        self.call_order: list[tuple[str, str]] = []
+
+    def set_action_status(self, message: str, tone: str = "idle", timeout_ms: int = 0):
+        self.status_calls.append((message, tone, timeout_ms))
+        self.call_order.append(("status", message))
+
+    def play_action_motion(self, motion_key: str) -> bool:
+        self.motion_calls.append(motion_key)
+        self.call_order.append(("motion", motion_key))
+        return True
+
+    def play_resolved_motion(self, motion_key: str, motion_path: str, loop: bool = False) -> bool:
+        self.motion_calls.append(motion_key)
+        self.motion_asset_calls.append((motion_key, motion_path, loop))
+        self.call_order.append(("motion", motion_key))
+        self._pending_play_once = not bool(loop)
+        return True
+
+    def restore_idle_video(self) -> bool:
+        self.restore_idle_calls += 1
+        return True
+
+    def play_music(self, filename: str, title: str = "", update_status: bool = True) -> bool:
+        self.audio_calls.append((filename, title, update_status))
+        self.call_order.append(("audio", title or filename))
+        return True
+
+    def stop_music(self):
+        return None
+
+    def simulate_motion_end(self) -> bool:
+        if not self._pending_play_once:
+            return False
+        self._pending_play_once = False
+        return self.restore_idle_video()
 
 
 class _FakePage:
@@ -197,6 +237,149 @@ class _ManualQueuedTTSWorker:
         return None
 
 
+class _DebugSignal:
+    def __init__(self):
+        self._callbacks: list[object] = []
+
+    def connect(self, callback):
+        self._callbacks.append(callback)
+
+    def emit(self, *args):
+        for callback in list(self._callbacks):
+            callback(*args)
+
+
+class _ImmediateTTSWorker:
+    def __init__(
+        self,
+        text: str,
+        reply_id: str | None = None,
+        trace_id: str | None = None,
+        parent=None,
+    ):
+        del parent
+        self._text = text
+        self._reply_id = reply_id or "debug-reply"
+        self._trace_id = trace_id or ""
+        self.finished_signal = _DebugSignal()
+        self.progress_signal = _DebugSignal()
+        self.finished = _DebugSignal()
+
+    def start(self):
+        self.progress_signal.emit(
+            "stream_started",
+            {
+                "reply_id": self._reply_id,
+                "trace_id": self._trace_id,
+                "bytes_forwarded": len(self._text.encode("utf-8")),
+            },
+        )
+        payload = {
+            "reply_id": self._reply_id,
+            "trace_id": self._trace_id,
+            "text": self._text,
+        }
+        self.finished_signal.emit(True, "語音生成完成。", payload)
+        self.finished.emit()
+
+    def deleteLater(self):
+        return None
+
+
+class _ImmediateServiceWorker:
+    def __init__(self, success: bool = True, message: str = "", payload: object | None = None, parent=None):
+        del parent
+        self._success = success
+        self._message = message
+        self._payload = payload
+        self.finished_signal = _DebugSignal()
+        self.finished = _DebugSignal()
+
+    def start(self):
+        self.finished_signal.emit(self._success, self._message, self._payload)
+        self.finished.emit()
+
+    def deleteLater(self):
+        return None
+
+
+def run_tts_dispatch_debug_probe() -> dict[str, object]:
+    with tempfile.TemporaryDirectory(prefix="echoes-debug-webm-") as temp_dir:
+        listen_path = Path(temp_dir) / "listen.webm"
+        idle_path = Path(temp_dir) / "Idle.webm"
+        listen_path.write_bytes(b"debug")
+        idle_path.write_bytes(b"debug")
+        resolver = lambda motion_key: str({"listen": listen_path, "idle": idle_path}.get(motion_key, ""))
+        window = _DebugProbeWindow()
+        dispatcher = ActionDispatcher(
+            window,
+            library=object(),
+            tts_worker_factory=_ImmediateTTSWorker,
+            motion_path_resolver=resolver,
+            tts_enabled=True,
+        )
+        dispatched = dispatcher.dispatch("這是一段測試語音。[ACTION:listen]")
+
+        return {
+            "dispatched": dispatched,
+            "status_calls": window.status_calls,
+            "motion_calls": window.motion_calls,
+            "motion_asset_calls": window.motion_asset_calls,
+            "audio_calls": window.audio_calls,
+            "call_order": window.call_order,
+            "ok": (
+                dispatched
+                and not window.audio_calls
+                and window.motion_calls == ["listen"]
+                and bool(window.motion_asset_calls)
+                and window.motion_asset_calls[0][1].endswith("listen.webm")
+                and len(window.call_order) >= 2
+                and window.call_order[0] == ("status", "這是一段測試語音。")
+                and window.call_order[1] == ("motion", "listen")
+            ),
+        }
+
+
+def run_streamed_action_first_debug_probe() -> dict[str, object]:
+    with tempfile.TemporaryDirectory(prefix="echoes-debug-webm-") as temp_dir:
+        listen_path = Path(temp_dir) / "listen.webm"
+        idle_path = Path(temp_dir) / "Idle.webm"
+        listen_path.write_bytes(b"debug")
+        idle_path.write_bytes(b"debug")
+        resolver = lambda motion_key: str({"listen": listen_path, "idle": idle_path}.get(motion_key, ""))
+        window = _DebugProbeWindow()
+        dispatcher = ActionDispatcher(
+            window,
+            library=object(),
+            tts_worker_factory=_ImmediateTTSWorker,
+            motion_path_resolver=resolver,
+            tts_enabled=True,
+        )
+
+        dispatched_action = dispatcher.dispatch("[ACTION:listen]")
+        dispatched_chunk = dispatcher.dispatch("第一句測試語音。")
+
+        return {
+            "dispatched_action": dispatched_action,
+            "dispatched_chunk": dispatched_chunk,
+            "status_calls": window.status_calls,
+            "motion_calls": window.motion_calls,
+            "motion_asset_calls": window.motion_asset_calls,
+            "audio_calls": window.audio_calls,
+            "call_order": window.call_order,
+            "ok": (
+                dispatched_action
+                and dispatched_chunk
+                and window.motion_calls == ["listen"]
+                and not window.audio_calls
+                and len(window.call_order) >= 3
+                and window.call_order[0] == ("status", "正在專心聆聽")
+                and window.call_order[1] == ("motion", "listen")
+                and window.call_order[2] == ("status", "第一句測試語音。")
+            ),
+        }
+
+
 class ActionPlaybackTests(unittest.TestCase):
     def setUp(self):
         _ManualQueuedTTSWorker.instances.clear()
@@ -225,9 +408,11 @@ class ActionPlaybackTests(unittest.TestCase):
         result = run_tts_dispatch_debug_probe()
         self.assertTrue(result["ok"], result)
 
-    def test_brain_engine_normalizes_alias_action_to_supported_action(self):
-        normalized = BrainEngine._normalize_reply("我來幫你看今天重點。 [ACTION:news]")
-        self.assertEqual(normalized, "[ACTION:report_news] 我來幫你看今天重點。")
+    def test_streamed_reply_parser_normalizes_alias_action_to_supported_action(self):
+        parser = StreamedReplyParser()
+        outputs = parser.feed("[ACTION:news]我來幫你看今天重點。")
+        outputs.extend(parser.flush())
+        self.assertEqual(outputs, ["[ACTION:report_news]", "我來幫你看今天重點。"])
 
     def test_streamed_reply_parser_emits_action_then_sentence_chunks(self):
         parser = StreamedReplyParser()

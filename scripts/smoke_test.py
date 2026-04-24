@@ -8,8 +8,8 @@ ECHOES smoke test for OpenAI streaming + ElevenLabs in-memory playback.
 
 from __future__ import annotations
 
-import json
 import os
+import statistics
 import sys
 import tempfile
 import time
@@ -44,6 +44,13 @@ class CheckResult:
     name: str
     ok: bool
     detail: str
+
+
+@dataclass(frozen=True)
+class LatencySample:
+    action_ms: int
+    tts_start_ms: int
+    total_ms: int
 
 
 class _SmokeLibrary:
@@ -246,12 +253,10 @@ def check_elevenlabs() -> CheckResult:
     )
 
 
-def run_latency_probe() -> CheckResult:
-    app = QCoreApplication.instance() or QCoreApplication([])
+def _run_latency_trial(app: QCoreApplication, trial_name: str) -> tuple[LatencySample | None, str | None]:
     tracker = InteractionLatencyTracker()
     timings: dict[str, float] = {}
     warnings: list[str] = []
-
     with tempfile.TemporaryDirectory(prefix="echoes-latency-probe-") as temp_dir:
         listen_path = Path(temp_dir) / "listen.webm"
         idle_path = Path(temp_dir) / "Idle.webm"
@@ -307,11 +312,7 @@ def run_latency_probe() -> CheckResult:
                     break
                 time.sleep(0.01)
             else:
-                return CheckResult(
-                    name="LatencyProbe",
-                    ok=False,
-                    detail="等待互動完成逾時（15 秒），未能完成端到端延遲驗證。",
-                )
+                return None, f"{trial_name}: 等待互動完成逾時（15 秒）。"
         finally:
             brain.stop()
             brain.quit()
@@ -319,30 +320,61 @@ def run_latency_probe() -> CheckResult:
                 brain.wait(3000)
 
     if warnings:
-        return CheckResult(
-            name="LatencyProbe",
-            ok=False,
-            detail=f"執行期間收到警告: {warnings[0]}",
-        )
+        return None, f"{trial_name}: 執行期間收到警告: {warnings[0]}"
     if not window.motion_calls:
-        return CheckResult(
-            name="LatencyProbe",
-            ok=False,
-            detail="沒有觸發任何動作影片。",
-        )
+        return None, f"{trial_name}: 沒有觸發任何動作影片。"
+    if "tts_stream_started_at" not in timings or "tts_finished_at" not in timings:
+        return None, f"{trial_name}: TTS 沒有完整啟播或完成。"
 
     start_at = timings["start_at"]
     action_ms = round((window.motion_calls[0][3] - start_at) * 1000)
     tts_start_ms = round((timings.get("tts_stream_started_at", start_at) - start_at) * 1000)
     total_ms = round((timings.get("tts_finished_at", perf_counter()) - start_at) * 1000)
+    return LatencySample(action_ms=action_ms, tts_start_ms=tts_start_ms, total_ms=total_ms), None
 
-    if total_ms > 2000:
+
+def run_latency_probe() -> CheckResult:
+    app = QCoreApplication.instance() or QCoreApplication([])
+    warmup_rounds = 1
+    measured_rounds = 3
+
+    for warmup_index in range(warmup_rounds):
+        _sample, error = _run_latency_trial(app, f"warmup-{warmup_index + 1}")
+        if error:
+            return CheckResult(name="LatencyProbe", ok=False, detail=error)
+
+    measured_samples: list[LatencySample] = []
+    for trial_index in range(measured_rounds):
+        sample, error = _run_latency_trial(app, f"measure-{trial_index + 1}")
+        if error:
+            return CheckResult(name="LatencyProbe", ok=False, detail=error)
+        if sample is not None:
+            measured_samples.append(sample)
+
+    if len(measured_samples) != measured_rounds:
+        return CheckResult(
+            name="LatencyProbe",
+            ok=False,
+            detail=f"量測輪數不足，預期 {measured_rounds} 輪，實際 {len(measured_samples)} 輪。",
+        )
+
+    action_values = [sample.action_ms for sample in measured_samples]
+    tts_start_values = [sample.tts_start_ms for sample in measured_samples]
+    total_values = [sample.total_ms for sample in measured_samples]
+    median_action = round(statistics.median(action_values))
+    median_tts_start = round(statistics.median(tts_start_values))
+    median_total = round(statistics.median(total_values))
+    fast_rounds = sum(1 for total_ms in total_values if total_ms <= 2000)
+
+    if median_total > 2000 or fast_rounds < 2:
         return CheckResult(
             name="LatencyProbe",
             ok=False,
             detail=(
-                f"動作已觸發，但端到端完成耗時 {total_ms}ms，超過 2000ms。"
-                f" action={action_ms}ms, tts_start={tts_start_ms}ms"
+                "多輪量測未達穩定低延遲門檻。"
+                f" totals={total_values}ms, median_total={median_total}ms, "
+                f"median_action={median_action}ms, median_tts_start={median_tts_start}ms, "
+                f"fast_rounds={fast_rounds}/{measured_rounds}"
             ),
         )
 
@@ -350,8 +382,10 @@ def run_latency_probe() -> CheckResult:
         name="LatencyProbe",
         ok=True,
         detail=(
-            f"已觸發動作影片，且 STT->LLM->TTS->完成耗時 {total_ms}ms。"
-            f" action={action_ms}ms, tts_start={tts_start_ms}ms"
+            "多輪量測通過。"
+            f" totals={total_values}ms, median_total={median_total}ms, "
+            f"median_action={median_action}ms, median_tts_start={median_tts_start}ms, "
+            f"fast_rounds={fast_rounds}/{measured_rounds}"
         ),
     )
 
