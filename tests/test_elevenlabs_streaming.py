@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 from pathlib import Path
 import unittest
@@ -9,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
+from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker, PygameInMemoryAudioPlayer
 
 
 class _SignalCollector:
@@ -48,39 +49,81 @@ class FakeResponse:
         self.closed = True
 
 
-class FakeStdin(io.BytesIO):
-    def close(self):
-        self.was_closed = True
-        super().close()
+class FakeAudioPlayer:
+    def __init__(self):
+        self.played_bytes: list[bytes] = []
+
+    def play(self, audio_buffer: io.BytesIO):
+        self.played_bytes.append(audio_buffer.read())
 
 
-class FakePopen:
-    def __init__(self, *_args, **_kwargs):
-        self.stdin = FakeStdin()
-        self.stderr = io.BytesIO()
-        self.killed = False
-        self.wait_called = False
-        self._return_code = 0
+class RaisingAudioPlayer:
+    def play(self, _audio_buffer: io.BytesIO):
+        raise RuntimeError("audio backend unavailable")
 
-    def wait(self, timeout: int | None = None):
-        del timeout
-        self.wait_called = True
-        return self._return_code
 
-    def poll(self):
-        return self._return_code if self.wait_called else None
+class _FakeMusic:
+    def __init__(self):
+        self.loaded_bytes = b""
+        self.play_calls = 0
+        self._busy_reads = 0
 
-    def kill(self):
-        self.killed = True
+    def stop(self):
+        return None
+
+    def unload(self):
+        return None
+
+    def load(self, audio_buffer: io.BytesIO, namehint: str | None = None):
+        self.loaded_bytes = audio_buffer.read()
+        self.namehint = namehint
+
+    def play(self):
+        self.play_calls += 1
+        self._busy_reads = 0
+
+    def get_busy(self):
+        self._busy_reads += 1
+        return self._busy_reads == 1
+
+
+class _FakeMixer:
+    def __init__(self):
+        self.music = _FakeMusic()
+        self.init_calls = 0
+        self._initialized = False
+
+    def get_init(self):
+        return self._initialized
+
+    def init(self, **_kwargs):
+        self._initialized = True
+        self.init_calls += 1
 
 
 class ElevenLabsStreamingWorkerTests(unittest.TestCase):
-    def test_missing_ffplay_emits_safe_fallback(self):
+    def setUp(self):
+        self._original_api_key = os.environ.get("ELEVENLABS_API_KEY")
+        self._original_voice_id = os.environ.get("ELEVENLABS_VOICE_ID")
+
+    def tearDown(self):
+        if self._original_api_key is None:
+            os.environ.pop("ELEVENLABS_API_KEY", None)
+        else:
+            os.environ["ELEVENLABS_API_KEY"] = self._original_api_key
+        if self._original_voice_id is None:
+            os.environ.pop("ELEVENLABS_VOICE_ID", None)
+        else:
+            os.environ["ELEVENLABS_VOICE_ID"] = self._original_voice_id
+
+    def test_missing_credentials_emit_safe_fallback(self):
         collector = _SignalCollector()
+        os.environ.pop("ELEVENLABS_API_KEY", None)
+
         worker = ElevenLabsStreamingTTSWorker(
             text="測試語音",
             voice_id="voice",
-            which_resolver=lambda _name: None,
+            audio_player=FakeAudioPlayer(),
         )
         worker.finished_signal.connect(collector)
 
@@ -88,12 +131,12 @@ class ElevenLabsStreamingWorkerTests(unittest.TestCase):
 
         self.assertEqual(len(collector.events), 1)
         self.assertFalse(collector.events[0][0])
-        self.assertIn("找不到 ffplay", collector.events[0][1])
+        self.assertIn("缺少 ElevenLabs API Key", collector.events[0][1])
 
-    def test_streaming_success_forwards_audio_bytes_without_temp_file(self):
+    def test_streaming_success_buffers_audio_in_memory_and_plays_it(self):
         collector = _SignalCollector()
         progress = _ProgressCollector()
-        popen = FakePopen()
+        player = FakeAudioPlayer()
 
         def fake_post(*_args, **_kwargs):
             return FakeResponse(chunks=[b"abc", b"def"])
@@ -103,27 +146,13 @@ class ElevenLabsStreamingWorkerTests(unittest.TestCase):
             voice_id="voice",
             trace_id="trace-1234",
             requests_post=fake_post,
-            popen_factory=lambda *_args, **_kwargs: popen,
-            which_resolver=lambda _name: "/usr/bin/ffplay",
+            audio_player=player,
         )
         worker.finished_signal.connect(collector)
         worker.progress_signal.connect(progress)
+        os.environ["ELEVENLABS_API_KEY"] = "test-key"
 
-        original_environ = dict()
-        for key in ("ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID"):
-            original_environ[key] = __import__("os").environ.get(key)
-        __import__("os").environ["ELEVENLABS_API_KEY"] = "test-key"
-
-        try:
-            worker.run()
-        finally:
-            import os
-
-            for key, value in original_environ.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
+        worker.run()
 
         self.assertEqual(len(collector.events), 1)
         success, message, payload = collector.events[0]
@@ -132,7 +161,7 @@ class ElevenLabsStreamingWorkerTests(unittest.TestCase):
         self.assertIsInstance(payload, dict)
         self.assertEqual(payload["bytes_forwarded"], 6)
         self.assertEqual(payload["trace_id"], "trace-1234")
-        self.assertTrue(popen.wait_called)
+        self.assertEqual(player.played_bytes, [b"abcdef"])
         self.assertEqual(progress.events[0][0], "stream_started")
         self.assertEqual(progress.events[0][1]["trace_id"], "trace-1234")
 
@@ -146,26 +175,48 @@ class ElevenLabsStreamingWorkerTests(unittest.TestCase):
             text="測試",
             voice_id="voice",
             requests_post=fake_post,
-            popen_factory=lambda *_args, **_kwargs: FakePopen(),
-            which_resolver=lambda _name: "/usr/bin/ffplay",
+            audio_player=FakeAudioPlayer(),
         )
         worker.finished_signal.connect(collector)
-
-        import os
-
-        original_api_key = os.environ.get("ELEVENLABS_API_KEY")
         os.environ["ELEVENLABS_API_KEY"] = "test-key"
-        try:
-            worker.run()
-        finally:
-            if original_api_key is None:
-                os.environ.pop("ELEVENLABS_API_KEY", None)
-            else:
-                os.environ["ELEVENLABS_API_KEY"] = original_api_key
+
+        worker.run()
 
         self.assertEqual(len(collector.events), 1)
         self.assertFalse(collector.events[0][0])
         self.assertIn("無效音訊格式", collector.events[0][1])
+
+    def test_audio_player_failure_emits_warning(self):
+        collector = _SignalCollector()
+
+        def fake_post(*_args, **_kwargs):
+            return FakeResponse(chunks=[b"abc"])
+
+        worker = ElevenLabsStreamingTTSWorker(
+            text="測試",
+            voice_id="voice",
+            requests_post=fake_post,
+            audio_player=RaisingAudioPlayer(),
+        )
+        worker.finished_signal.connect(collector)
+        os.environ["ELEVENLABS_API_KEY"] = "test-key"
+
+        worker.run()
+
+        self.assertEqual(len(collector.events), 1)
+        self.assertFalse(collector.events[0][0])
+        self.assertIn("audio backend unavailable", collector.events[0][1])
+
+    def test_pygame_audio_player_loads_mp3_from_memory(self):
+        mixer = _FakeMixer()
+        player = PygameInMemoryAudioPlayer(mixer_module=mixer, poll_interval=0)
+
+        player.play(io.BytesIO(b"fake-mp3-bytes"))
+
+        self.assertEqual(mixer.init_calls, 1)
+        self.assertEqual(mixer.music.loaded_bytes, b"fake-mp3-bytes")
+        self.assertEqual(mixer.music.namehint, "mp3")
+        self.assertEqual(mixer.music.play_calls, 1)
 
 
 if __name__ == "__main__":

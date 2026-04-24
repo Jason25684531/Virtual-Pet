@@ -1,5 +1,5 @@
 """
-ECHOES smoke test for LangChain + ElevenLabs environment.
+ECHOES smoke test for OpenAI streaming + ElevenLabs in-memory playback.
 
 請務必先進入 Ubuntu 24.04 專案虛擬環境後再執行：
     source venv/bin/activate
@@ -11,23 +11,32 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import requests
 from dotenv import load_dotenv
+from PyQt5.QtCore import QCoreApplication
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import config
-from api_client.brain_engine import BrainEngine
+from action_dispatcher import ActionDispatcher
+from api_client.brain_engine import BrainEngine, StreamedReplyParser
+from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
+from interaction_trace import InteractionLatencyTracker
+from langchain_openai import ChatOpenAI
 
 
 ENV_PATH = PROJECT_ROOT / ".env"
-TEMP_AUDIO_DIR = config.TEMP_AUDIO_DIR
-DEFAULT_OLLAMA_MODEL = config.DEFAULT_OLLAMA_MODEL
 
 
 @dataclass
@@ -35,6 +44,39 @@ class CheckResult:
     name: str
     ok: bool
     detail: str
+
+
+class _SmokeLibrary:
+    def get_current_character_id(self):
+        return None
+
+    def get_character(self, _character_id):
+        return None
+
+
+class _SmokeWindow:
+    def __init__(self):
+        self.status_calls: list[tuple[str, str, int]] = []
+        self.motion_calls: list[tuple[str, str, bool, float]] = []
+        self.restore_idle_calls = 0
+
+    def set_action_status(self, message: str, tone: str = "idle", timeout_ms: int = 0):
+        self.status_calls.append((message, tone, timeout_ms))
+
+    def play_resolved_motion(self, motion_key: str, motion_path: str, loop: bool = False) -> bool:
+        self.motion_calls.append((motion_key, motion_path, loop, perf_counter()))
+        return True
+
+    def restore_idle_video(self) -> bool:
+        self.restore_idle_calls += 1
+        return True
+
+    def play_music(self, filename: str, title: str = "", update_status: bool = True) -> bool:
+        del filename, title, update_status
+        return True
+
+    def stop_music(self):
+        return None
 
 
 def load_env_values() -> dict[str, str]:
@@ -58,10 +100,10 @@ def load_env_values() -> dict[str, str]:
 
 def check_env(env_map: dict[str, str]) -> CheckResult:
     required_keys = [
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
         "ELEVENLABS_API_KEY",
         "ELEVENLABS_VOICE_ID",
-        "OLLAMA_BASE_URL",
-        "OLLAMA_MODEL",
     ]
     missing = []
     for key in required_keys:
@@ -79,113 +121,48 @@ def check_env(env_map: dict[str, str]) -> CheckResult:
     return CheckResult(
         name=".env",
         ok=True,
-        detail="已讀取到必要欄位（已隱藏敏感值）。",
+        detail="已讀取到 OPENAI / ElevenLabs 必要欄位（已隱藏敏感值）。",
     )
 
 
-def check_temp_audio_dir() -> CheckResult:
-    try:
-        TEMP_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
-        probe_path = TEMP_AUDIO_DIR / ".smoke_write_test.tmp"
-        probe_path.write_text("ok", encoding="utf-8")
-        probe_path.unlink()
-    except OSError as exc:
-        return CheckResult(
-            name="assets/temp_audio",
-            ok=False,
-            detail=f"無法建立或寫入暫存音訊目錄: {exc}",
-        )
+def check_openai() -> CheckResult:
+    if not config.OPENAI_API_KEY:
+        return CheckResult(name="OpenAI", ok=False, detail="缺少 OPENAI_API_KEY")
 
-    return CheckResult(
-        name="assets/temp_audio",
-        ok=True,
-        detail=f"可寫入: {TEMP_AUDIO_DIR}",
+    llm = ChatOpenAI(
+        api_key=config.OPENAI_API_KEY,
+        model=config.OPENAI_MODEL,
+        temperature=0,
+        streaming=True,
+        max_retries=1,
+        timeout=(5, 30),
     )
-
-
-def check_ollama() -> CheckResult:
-    base_url = (os.getenv("OLLAMA_BASE_URL", config.OLLAMA_BASE_URL).strip() or config.OLLAMA_BASE_URL).rstrip("/")
-    model_name = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL
-    endpoint = f"{base_url}/api/chat"
-    payload = {
-        "model": model_name,
-        "messages": [
-            {
-                "role": "system",
-                "content": "你是測試助手。請只輸出：測試成功 [ACTION:listen]",
-            },
-            {
-                "role": "user",
-                "content": "請照做",
-            },
-        ],
-        "stream": False,
-    }
+    parser = StreamedReplyParser()
+    seen_chunks: list[str] = []
 
     try:
-        response = requests.post(endpoint, json=payload, timeout=(5, 40))
-    except requests.RequestException as exc:
-        return CheckResult(
-            name="Ollama",
-            ok=False,
-            detail=f"連線失敗: {exc}。請確認 Ollama 服務已啟動，且位址為 {base_url}",
-        )
+        for chunk in llm.stream(
+            "你是測試助手。請嚴格只輸出：[ACTION:listen] 好。不要多說任何字。"
+        ):
+            outputs = parser.feed(str(getattr(chunk, "content", "") or ""))
+            seen_chunks.extend(outputs)
+        seen_chunks.extend(parser.flush())
+    except Exception as exc:
+        return CheckResult(name="OpenAI", ok=False, detail=f"串流請求失敗: {exc}")
 
-    if response.status_code == 404:
+    if not seen_chunks:
+        return CheckResult(name="OpenAI", ok=False, detail="OpenAI 有回應，但沒有切出任何片段。")
+    if seen_chunks[0] != "[ACTION:listen]":
         return CheckResult(
-            name="Ollama",
+            name="OpenAI",
             ok=False,
-            detail=(
-                "收到 404。請檢查 Ollama 服務狀態，並確認模型 "
-                f"`{model_name}` 已存在（例如先執行 `ollama pull {model_name}`）。"
-            ),
-        )
-
-    if not response.ok:
-        return CheckResult(
-            name="Ollama",
-            ok=False,
-            detail=f"HTTP {response.status_code}: {response.text[:200]}",
-        )
-
-    try:
-        data = response.json()
-    except json.JSONDecodeError as exc:
-        return CheckResult(
-            name="Ollama",
-            ok=False,
-            detail=f"回應不是有效 JSON: {exc}",
-        )
-
-    message = data.get("message") if isinstance(data, dict) else None
-    reply = str((message or {}).get("content", "")).strip()
-    if not reply:
-        return CheckResult(
-            name="Ollama",
-            ok=False,
-            detail="回應成功，但沒有拿到模型輸出。",
-        )
-
-    normalized_reply = BrainEngine._normalize_reply(reply)
-    action_detected = "[ACTION:" in normalized_reply
-    if not action_detected:
-        return CheckResult(
-            name="Ollama",
-            ok=False,
-            detail=(
-                f"模型 `{model_name}` 有回應，但現有正規化後未偵測到 action 標籤。"
-                f" 原始輸出片段: {reply[:80]!r}"
-            ),
+            detail=f"第一個片段不是 action 前綴，實際為: {seen_chunks[0]!r}",
         )
 
     return CheckResult(
-        name="Ollama",
+        name="OpenAI",
         ok=True,
-        detail=(
-            f"模型 `{model_name}` 可回應，"
-            f"原始輸出片段: {reply[:80]!r}；"
-            f"正規化結果: {normalized_reply[:80]!r}"
-        ),
+        detail=f"已成功串流並切出 action-first 片段: {seen_chunks[:3]!r}",
     )
 
 
@@ -204,24 +181,25 @@ def check_elevenlabs() -> CheckResult:
             detail=f"缺少必要欄位或值: {', '.join(missing)}",
         )
 
-    endpoint = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    endpoint = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
     headers = {
         "xi-api-key": api_key,
         "Accept": "audio/mpeg",
         "Content-Type": "application/json",
     }
     payload = {
-        "text": "測試。",
-        "model_id": "eleven_multilingual_v2",
+        "text": "好。",
+        "model_id": config.DEFAULT_TTS_MODEL_ID,
     }
 
     try:
         response = requests.post(
             endpoint,
-            params={"output_format": "mp3_22050_32"},
             headers=headers,
+            params={"output_format": "mp3_22050_32", "optimize_streaming_latency": "3"},
             json=payload,
-            timeout=(5, 40),
+            timeout=(5, 30),
+            stream=True,
         )
     except requests.RequestException as exc:
         return CheckResult(
@@ -230,39 +208,151 @@ def check_elevenlabs() -> CheckResult:
             detail=f"連線失敗: {exc}。請確認網路狀態與 ElevenLabs 服務可用。",
         )
 
-    if response.status_code == 401:
-        return CheckResult(
-            name="ElevenLabs",
-            ok=False,
-            detail="收到 401。請檢查 `ELEVENLABS_API_KEY` 是否有效、是否過期，或是否有多餘空白。",
-        )
+    try:
+        if response.status_code == 401:
+            return CheckResult(
+                name="ElevenLabs",
+                ok=False,
+                detail="收到 401。請檢查 `ELEVENLABS_API_KEY` 是否有效。",
+            )
+        if response.status_code == 404:
+            return CheckResult(
+                name="ElevenLabs",
+                ok=False,
+                detail="收到 404。請檢查 `ELEVENLABS_VOICE_ID` 是否正確。",
+            )
+        if not response.ok:
+            return CheckResult(
+                name="ElevenLabs",
+                ok=False,
+                detail=f"HTTP {response.status_code}: {response.text[:200]}",
+            )
 
-    if response.status_code == 404:
-        return CheckResult(
-            name="ElevenLabs",
-            ok=False,
-            detail="收到 404。請檢查 `ELEVENLABS_VOICE_ID` 是否正確，並確認 ElevenLabs TTS 端點可用。",
-        )
-
-    if not response.ok:
-        return CheckResult(
-            name="ElevenLabs",
-            ok=False,
-            detail=f"HTTP {response.status_code}: {response.text[:200]}",
-        )
-
-    content_type = response.headers.get("content-type", "").lower()
-    if "audio" not in content_type or not response.content:
-        return CheckResult(
-            name="ElevenLabs",
-            ok=False,
-            detail="API 有回應，但不是有效音訊資料。",
-        )
+        content_type = response.headers.get("content-type", "").lower()
+        received = b"".join(chunk for chunk in response.iter_content(chunk_size=4096) if chunk)
+        if "audio" not in content_type or not received:
+            return CheckResult(
+                name="ElevenLabs",
+                ok=False,
+                detail="API 有回應，但不是有效音訊資料。",
+            )
+    finally:
+        response.close()
 
     return CheckResult(
         name="ElevenLabs",
         ok=True,
-        detail=f"已成功取得測試音訊，大小 {len(response.content)} bytes。",
+        detail=f"已成功取得串流測試音訊，大小 {len(received)} bytes。",
+    )
+
+
+def run_latency_probe() -> CheckResult:
+    app = QCoreApplication.instance() or QCoreApplication([])
+    tracker = InteractionLatencyTracker()
+    timings: dict[str, float] = {}
+    warnings: list[str] = []
+
+    with tempfile.TemporaryDirectory(prefix="echoes-latency-probe-") as temp_dir:
+        listen_path = Path(temp_dir) / "listen.webm"
+        idle_path = Path(temp_dir) / "Idle.webm"
+        listen_path.write_bytes(b"listen")
+        idle_path.write_bytes(b"idle")
+
+        window = _SmokeWindow()
+
+        def tracked_worker_factory(*args, **kwargs):
+            worker = ElevenLabsStreamingTTSWorker(*args, **kwargs)
+            worker.progress_signal.connect(
+                lambda event_name, payload: timings.setdefault(
+                    "tts_stream_started_at",
+                    perf_counter(),
+                )
+                if event_name == "stream_started"
+                else None
+            )
+            worker.finished_signal.connect(
+                lambda success, _message, _payload: timings.setdefault(
+                    "tts_finished_at",
+                    perf_counter(),
+                )
+                if success
+                else None
+            )
+            return worker
+
+        dispatcher = ActionDispatcher(
+            window,
+            library=_SmokeLibrary(),
+            motion_path_resolver=lambda motion_key: str(
+                {"listen": listen_path, "idle": idle_path}.get(motion_key, "")
+            ),
+            tts_worker_factory=tracked_worker_factory,
+            latency_tracker=tracker,
+        )
+        brain = BrainEngine(library=_SmokeLibrary(), latency_tracker=tracker)
+        brain.warning_emitted.connect(warnings.append)
+        brain.streamed_fragment.connect(lambda fragment, trace_id: dispatcher.dispatch(fragment, trace_id=trace_id))
+        brain.start()
+
+        input_text = "請嚴格只回：[ACTION:listen] 好。不要多說。"
+        trace_id = tracker.begin_interaction("stt-smoke", input_text)
+        timings["start_at"] = perf_counter()
+        brain.send_to_brain(input_text, trace_id=trace_id)
+
+        try:
+            deadline = perf_counter() + 15
+            while perf_counter() < deadline:
+                app.processEvents()
+                if tracker.snapshot(trace_id) is None and "tts_finished_at" in timings:
+                    break
+                time.sleep(0.01)
+            else:
+                return CheckResult(
+                    name="LatencyProbe",
+                    ok=False,
+                    detail="等待互動完成逾時（15 秒），未能完成端到端延遲驗證。",
+                )
+        finally:
+            brain.stop()
+            brain.quit()
+            if brain.isRunning():
+                brain.wait(3000)
+
+    if warnings:
+        return CheckResult(
+            name="LatencyProbe",
+            ok=False,
+            detail=f"執行期間收到警告: {warnings[0]}",
+        )
+    if not window.motion_calls:
+        return CheckResult(
+            name="LatencyProbe",
+            ok=False,
+            detail="沒有觸發任何動作影片。",
+        )
+
+    start_at = timings["start_at"]
+    action_ms = round((window.motion_calls[0][3] - start_at) * 1000)
+    tts_start_ms = round((timings.get("tts_stream_started_at", start_at) - start_at) * 1000)
+    total_ms = round((timings.get("tts_finished_at", perf_counter()) - start_at) * 1000)
+
+    if total_ms > 2000:
+        return CheckResult(
+            name="LatencyProbe",
+            ok=False,
+            detail=(
+                f"動作已觸發，但端到端完成耗時 {total_ms}ms，超過 2000ms。"
+                f" action={action_ms}ms, tts_start={tts_start_ms}ms"
+            ),
+        )
+
+    return CheckResult(
+        name="LatencyProbe",
+        ok=True,
+        detail=(
+            f"已觸發動作影片，且 STT->LLM->TTS->完成耗時 {total_ms}ms。"
+            f" action={action_ms}ms, tts_start={tts_start_ms}ms"
+        ),
     )
 
 
@@ -270,9 +360,9 @@ def main() -> int:
     env_map = load_env_values()
     results = [
         check_env(env_map),
-        check_temp_audio_dir(),
-        check_ollama(),
+        check_openai(),
         check_elevenlabs(),
+        run_latency_probe(),
     ]
 
     print("== ECHOES Smoke Test ==")

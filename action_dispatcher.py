@@ -6,9 +6,9 @@ ECHOES — Centralized action binding dispatcher
 from __future__ import annotations
 
 import os
+import queue
 import re
 import tempfile
-from collections import deque
 from uuid import uuid4
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,7 +73,7 @@ class ActionDispatcher(QObject):
         self._tts_enabled = tts_enabled
         self._latency_tracker = latency_tracker
         self._active_tts_worker: object | None = None
-        self._pending_tts_chunks: deque[tuple[str, str, str | None]] = deque()
+        self._pending_tts_chunks: "queue.Queue[tuple[str, str, str | None]]" = queue.Queue()
         self._bindings = {
             "report_news": ActionBinding(
                 name="report_news",
@@ -365,16 +365,16 @@ class ActionDispatcher(QObject):
             self._tts_worker_factory = ElevenLabsStreamingTTSWorker
 
         reply_id = uuid4().hex
-        self._pending_tts_chunks.append((reply_id, speech_text, trace_id))
+        self._pending_tts_chunks.put((reply_id, speech_text, trace_id))
         if self._latency_tracker is not None:
             self._latency_tracker.mark_tts_enqueued(trace_id, reply_id, speech_text)
         self._start_next_tts_worker()
 
     def _start_next_tts_worker(self):
-        if self._active_tts_worker is not None or not self._pending_tts_chunks:
+        if self._active_tts_worker is not None or self._pending_tts_chunks.empty():
             return
 
-        reply_id, speech_text, trace_id = self._pending_tts_chunks.popleft()
+        reply_id, speech_text, trace_id = self._pending_tts_chunks.get_nowait()
         worker = self._tts_worker_factory(
             text=speech_text,
             reply_id=reply_id,
@@ -424,6 +424,39 @@ class ActionDispatcher(QObject):
             return
 
         print(f"[ECHOES] 提示: 串流語音片段播放完成。{message}")
+
+    def shutdown(self, wait_ms: int = 5000):
+        while not self._pending_tts_chunks.empty():
+            try:
+                self._pending_tts_chunks.get_nowait()
+            except queue.Empty:
+                break
+
+        workers = list(self._workers)
+        active_worker = self._active_tts_worker
+        if active_worker is not None and active_worker not in workers:
+            workers.append(active_worker)
+
+        for worker in workers:
+            try:
+                if hasattr(worker, "quit"):
+                    worker.quit()
+            except Exception:
+                pass
+
+            is_running = getattr(worker, "isRunning", None)
+            wait = getattr(worker, "wait", None)
+            terminate = getattr(worker, "terminate", None)
+            if callable(is_running) and callable(wait) and is_running():
+                if not wait(wait_ms) and callable(terminate):
+                    try:
+                        terminate()
+                        wait(1000)
+                    except Exception:
+                        pass
+
+        self._active_tts_worker = None
+        self._workers = []
 
     def _on_news_finished(
         self,

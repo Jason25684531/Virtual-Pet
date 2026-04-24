@@ -12,9 +12,70 @@
     var roomCharacterName = document.getElementById('room-character-name');
     var actionStatus = document.getElementById('action-status');
     var actionStatusText = document.getElementById('action-status-text');
+    var conversationList = document.getElementById('conversation-list');
+    var conversationQueueText = document.getElementById('conversation-queue-text');
     var idleSource = '';
     var statusTimer = null;
     var defaultStatusText = '房間待命中';
+    var conversationTurns = new Map();
+    var maxConversationTurns = 3;
+
+    function ensureConversationTurn(turnId, sourceLabel) {
+        var existing = conversationTurns.get(turnId);
+        if (existing) {
+            return existing;
+        }
+
+        var article = document.createElement('article');
+        article.className = 'conversation-turn';
+        article.dataset.turnId = turnId;
+        article.dataset.state = 'active';
+
+        var userRow = document.createElement('div');
+        userRow.className = 'conversation-turn__row';
+        var userLabel = document.createElement('p');
+        userLabel.className = 'conversation-turn__label';
+        userLabel.textContent = sourceLabel || '使用者';
+        var userText = document.createElement('p');
+        userText.className = 'conversation-turn__text';
+        userRow.appendChild(userLabel);
+        userRow.appendChild(userText);
+
+        var assistantRow = document.createElement('div');
+        assistantRow.className = 'conversation-turn__row';
+        var assistantLabel = document.createElement('p');
+        assistantLabel.className = 'conversation-turn__label';
+        assistantLabel.textContent = 'ECHOES';
+        var assistantText = document.createElement('p');
+        assistantText.className = 'conversation-turn__text conversation-turn__text--muted';
+        assistantText.textContent = '等待回應中...';
+        assistantRow.appendChild(assistantLabel);
+        assistantRow.appendChild(assistantText);
+
+        article.appendChild(userRow);
+        article.appendChild(assistantRow);
+        conversationList.appendChild(article);
+
+        var turn = {
+            root: article,
+            userText: userText,
+            assistantText: assistantText
+        };
+        conversationTurns.set(turnId, turn);
+        trimConversationTurns();
+        return turn;
+    }
+
+    function trimConversationTurns() {
+        while (conversationList.children.length > maxConversationTurns) {
+            var firstChild = conversationList.firstElementChild;
+            if (!firstChild) {
+                break;
+            }
+            conversationTurns.delete(firstChild.dataset.turnId);
+            conversationList.removeChild(firstChild);
+        }
+    }
 
     function setSource(source, shouldLoop) {
         if (!source || typeof source !== 'string') {
@@ -149,6 +210,48 @@
         roomCharacterName.textContent = name || '未選擇角色';
     };
 
+    window.beginConversationTurn = function (turnId, sourceLabel, userText) {
+        if (!turnId) {
+            return;
+        }
+        var turn = ensureConversationTurn(String(turnId), sourceLabel || '使用者');
+        turn.root.dataset.state = 'active';
+        turn.userText.textContent = userText || '';
+        turn.assistantText.textContent = '等待回應中...';
+        turn.assistantText.classList.add('conversation-turn__text--muted');
+        conversationList.appendChild(turn.root);
+        trimConversationTurns();
+    };
+
+    window.appendConversationAssistant = function (turnId, fragment) {
+        if (!turnId || !fragment) {
+            return;
+        }
+        var turn = ensureConversationTurn(String(turnId), '使用者');
+        if (turn.assistantText.classList.contains('conversation-turn__text--muted')) {
+            turn.assistantText.textContent = '';
+            turn.assistantText.classList.remove('conversation-turn__text--muted');
+        }
+        turn.assistantText.textContent += String(fragment);
+    };
+
+    window.finishConversationTurn = function (turnId) {
+        if (!turnId) {
+            return;
+        }
+        var turn = ensureConversationTurn(String(turnId), '使用者');
+        turn.root.dataset.state = 'done';
+        if (!turn.assistantText.textContent) {
+            turn.assistantText.textContent = '本輪沒有可顯示的回覆。';
+            turn.assistantText.classList.add('conversation-turn__text--muted');
+        }
+    };
+
+    window.setConversationQueueDepth = function (queueDepth) {
+        var depth = Number(queueDepth) || 0;
+        conversationQueueText.textContent = '佇列 ' + depth;
+    };
+
     window.playRoomAudio = function (source, title, updateStatus) {
         if (!source || typeof source !== 'string') {
             console.warn('[ECHOES] 無效的音訊來源:', source);
@@ -202,4 +305,5 @@
     };
 
     setStatus('', 'idle', 0);
+    window.setConversationQueueDepth(0);
 })();

@@ -10,9 +10,10 @@ import signal
 def main():
     from PyQt5.QtWidgets import QApplication
     from PyQt5.QtCore import QTimer
-    from api_client.brain_engine import BrainEngine
+    from api_client.brain_engine import BrainEngine, sanitize_tts_text
     import config
     from interaction_trace import InteractionLatencyTracker
+    from interaction_turn_manager import InteractionTurnManager
     from sensors.camera_vision import (
         OPENCV_DEBUG_WINDOW_ENABLED,
         OPENCV_WAVE_DETECTION_ENABLED,
@@ -34,9 +35,10 @@ def main():
     latency_tracker = InteractionLatencyTracker()
     window = TransparentWindow(latency_tracker=latency_tracker)
     window.show()
-    window.set_action_status("正在預熱本地 Ollama 大腦...", tone="working", timeout_ms=2500)
+    window.set_action_status("正在預熱 OpenAI 大腦...", tone="working", timeout_ms=2500)
 
     brain_engine = BrainEngine(latency_tracker=latency_tracker, parent=app)
+    turn_manager = InteractionTurnManager(brain_engine, latency_tracker, parent=app)
     stt_controller = STTSessionController(parent=app)
     original_apply_character = window.apply_character
 
@@ -50,11 +52,18 @@ def main():
 
     def handle_developer_query(text: str):
         preview = text if len(text) <= 24 else f"{text[:24]}..."
-        trace_id = latency_tracker.begin_interaction("developer-input", text)
-        window.set_action_status(f"Dev Query 已送出: {preview}", tone="working", timeout_ms=2800)
-        if not brain_engine.send_query(text, trace_id=trace_id):
-            latency_tracker.abort(trace_id, "developer query 未送入 BrainEngine")
+        result = turn_manager.submit("developer-input", text)
+        if not result["accepted"]:
             window.set_action_status("Dev Query 送出失敗：請輸入非空白文字。", tone="warn", timeout_ms=3200)
+            return
+        if result["started"]:
+            window.set_action_status(f"Dev Query 已送出: {preview}", tone="working", timeout_ms=0)
+            return
+        window.set_action_status(
+            f"上一輪尚未完成，Dev Query 已加入佇列（待處理 {int(result['queue_position'])} 則）。",
+            tone="working",
+            timeout_ms=0,
+        )
 
     window.developer_query_submitted.connect(handle_developer_query)
 
@@ -66,6 +75,10 @@ def main():
     window.set_stt_available(config.AZURE_STT_ENABLED)
 
     def handle_brain_fragment(fragment: str, trace_id: str | None):
+        if trace_id:
+            visible_text = sanitize_tts_text(fragment)
+            if visible_text:
+                window.append_conversation_assistant(trace_id, visible_text)
         window.dispatch_action(fragment, trace_id=trace_id)
 
     brain_engine.streamed_fragment.connect(handle_brain_fragment)
@@ -73,6 +86,33 @@ def main():
         lambda message: window.set_action_status(message, tone="warn", timeout_ms=4800)
     )
     brain_engine.start()
+
+    def _source_label(source: str) -> str:
+        if source == "stt":
+            return "使用者語音"
+        if source == "developer-input":
+            return "Dev Query"
+        return "使用者"
+
+    def handle_turn_started(trace_id: str, source: str, text: str):
+        preview = text if len(text) <= 40 else f"{text[:40]}..."
+        window.begin_conversation_turn(trace_id, _source_label(source), text)
+        window.set_action_status(f"正在回應：{preview}", tone="working", timeout_ms=0)
+
+    def handle_turn_completed(trace_id: str, _source: str, _text: str):
+        window.finish_conversation_turn(trace_id)
+        if turn_manager.pending_count() > 0:
+            window.set_action_status(
+                f"本輪回應完成，下一輪待處理 {turn_manager.pending_count()} 則。",
+                tone="working",
+                timeout_ms=0,
+            )
+            return
+        window.set_action_status("本輪互動完成。", tone="idle", timeout_ms=5200)
+
+    turn_manager.turn_started.connect(handle_turn_started)
+    turn_manager.turn_completed.connect(handle_turn_completed)
+    turn_manager.queue_depth_changed.connect(window.set_conversation_queue_depth)
 
     def handle_stt_status(message: str):
         window.set_action_status(message, tone="working", timeout_ms=2400)
@@ -90,13 +130,23 @@ def main():
         window.set_action_status("STT 已停止收音", tone="idle", timeout_ms=2200)
 
     def handle_stt_preview(text: str):
-        trace_id = latency_tracker.begin_interaction("stt", text)
         preview = text if len(text) <= 24 else f"{text[:24]}..."
-        print(f"[ECHOES][STT] 將辨識文字送入 BrainEngine: {preview} | trace={trace_id}")
-        window.set_action_status(f"STT 已送出: {preview}", tone="working", timeout_ms=2800)
-        if not brain_engine.send_to_brain(text, trace_id=trace_id):
-            latency_tracker.abort(trace_id, "STT 文字未送入 BrainEngine")
+        result = turn_manager.submit("stt", text)
+        if not result["accepted"]:
             window.set_action_status("STT 文字送出失敗。", tone="warn", timeout_ms=2800)
+            return
+        trace_id = result["trace_id"]
+        if trace_id:
+            print(f"[ECHOES][STT] 將辨識文字送入 BrainEngine: {preview} | trace={trace_id}")
+        if result["started"]:
+            window.set_action_status(f"STT 已送出: {preview}", tone="working", timeout_ms=0)
+            return
+        print(f"[ECHOES][STT] 已排入互動佇列: {preview} | waiting={int(result['queue_position'])}")
+        window.set_action_status(
+            f"上一輪回應中，已排入新句子（待處理 {int(result['queue_position'])} 則）。",
+            tone="working",
+            timeout_ms=0,
+        )
 
     stt_controller.status_changed.connect(handle_stt_status)
     stt_controller.warning_emitted.connect(handle_stt_warning)
@@ -120,6 +170,7 @@ def main():
         print("[ECHOES] 提示: OpenCV 揮手偵測已關閉，可到 sensors/camera_vision.py 將 boolean 改為 True。")
 
     def shutdown_brain_engine():
+        turn_manager.shutdown()
         brain_engine.stop()
         brain_engine.quit()
         if brain_engine.isRunning():
@@ -136,9 +187,13 @@ def main():
     def shutdown_stt_worker():
         stt_controller.shutdown()
 
+    def shutdown_window_workers():
+        window.shutdown_background_tasks()
+
     app.aboutToQuit.connect(shutdown_brain_engine)
     app.aboutToQuit.connect(shutdown_wave_sensor)
     app.aboutToQuit.connect(shutdown_stt_worker)
+    app.aboutToQuit.connect(shutdown_window_workers)
 
     sys.exit(app.exec_())
 

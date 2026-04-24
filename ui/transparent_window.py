@@ -568,6 +568,18 @@ class TransparentWindow(QMainWindow):
     def dispatch_action(self, directive: str, trace_id: str | None = None) -> bool:
         return self._action_dispatcher.dispatch(directive, trace_id=trace_id)
 
+    def begin_conversation_turn(self, trace_id: str, source_label: str, user_text: str):
+        self._run_javascript("beginConversationTurn", trace_id, source_label, user_text)
+
+    def append_conversation_assistant(self, trace_id: str, fragment: str):
+        self._run_javascript("appendConversationAssistant", trace_id, fragment)
+
+    def finish_conversation_turn(self, trace_id: str):
+        self._run_javascript("finishConversationTurn", trace_id)
+
+    def set_conversation_queue_depth(self, queue_depth: int):
+        self._run_javascript("setConversationQueueDepth", int(queue_depth))
+
     def set_stt_listening(self, active: bool):
         self._stt_listening = bool(active)
         self._apply_stt_button_state()
@@ -642,6 +654,9 @@ class TransparentWindow(QMainWindow):
 
     def stop_music(self):
         self._run_javascript("stopRoomAudio")
+
+    def shutdown_background_tasks(self):
+        self._action_dispatcher.shutdown()
 
     def get_render_diagnostics(self) -> dict[str, object]:
         settings = self.web_view.settings()

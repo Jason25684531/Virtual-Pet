@@ -145,6 +145,10 @@ class AzureSTTWorker(QThread):
         self._stop_requested.set()
 
     def _handle_recognized_event(self, event):
+        if self._stop_requested.is_set():
+            _log_stt("收到停止請求後的 Recognized 事件，已忽略。")
+            return
+
         result = getattr(event, "result", None)
         if result is None:
             _log_stt("收到空的 Recognized 事件，已忽略。")
@@ -172,6 +176,10 @@ class AzureSTTWorker(QThread):
         self._emit_recognized_text(getattr(result, "text", ""))
 
     def _emit_recognized_text(self, text: str) -> bool:
+        if self._stop_requested.is_set():
+            _log_stt("停止中，略過辨識文字輸出。")
+            return False
+
         normalized = str(text or "").strip()
         if not normalized:
             _log_stt("忽略空白辨識結果。")

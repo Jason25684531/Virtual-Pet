@@ -163,6 +163,24 @@ class AzureSTTWorkerTests(unittest.TestCase):
 
         self.assertEqual(brain_input.messages, ["直接送進 BrainEngine"])
 
+    def test_stop_requested_suppresses_late_recognized_events(self):
+        speech_sdk = FakeSpeechSDK()
+        recognized: list[str] = []
+        worker = AzureSTTWorker(api_key="key", region="eastus", speech_sdk=speech_sdk)
+        worker.recognized_text.connect(recognized.append)
+
+        worker.stop()
+        worker._handle_recognized_event(
+            SimpleNamespace(
+                result=SimpleNamespace(
+                    reason=speech_sdk.ResultReason.RecognizedSpeech,
+                    text="停止後不應送出",
+                )
+            )
+        )
+
+        self.assertEqual(recognized, [])
+
     def test_run_starts_and_stops_continuous_recognition_safely(self):
         speech_sdk = FakeSpeechSDK()
         recognized: list[str] = []

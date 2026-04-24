@@ -2,8 +2,8 @@
 ECHOES — Host 端本地大腦串流推論 worker。
 
 開發提醒：
-- 請先進入專案虛擬環境再執行，並安裝 `langchain`、`langchain-community`、`python-dotenv`。
-- 本模組刻意把 Ollama 推論與 ElevenLabs HTTP 呼叫都放在 `QThread` 中，避免阻塞 PyQt UI。
+- 請先進入專案虛擬環境再執行，並安裝 `langchain`、`langchain-openai`、`python-dotenv`。
+- 本模組刻意把 OpenAI 推論放在 `QThread` 中，避免阻塞 PyQt UI。
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import queue
 import re
 import threading
 import warnings
+
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,14 +28,14 @@ from interaction_trace import InteractionLatencyTracker
 try:
     from langchain.memory import ConversationBufferMemory
     from langchain.prompts import PromptTemplate
-    from langchain_community.llms import Ollama
     from langchain_core.messages import SystemMessage
+    from langchain_openai import ChatOpenAI
     LANGCHAIN_IMPORT_ERROR = None
 except ModuleNotFoundError as exc:  # pragma: no cover - 允許在依賴缺失時安全降級
     ConversationBufferMemory = None  # type: ignore[assignment]
     PromptTemplate = None  # type: ignore[assignment]
-    Ollama = None  # type: ignore[assignment]
     SystemMessage = None  # type: ignore[assignment]
+    ChatOpenAI = None  # type: ignore[assignment]
     LANGCHAIN_IMPORT_ERROR = exc
 
 ACTION_DIRECTIVE_PATTERN = re.compile(
@@ -51,10 +52,9 @@ class BrainProfile:
     character_id: str | None = None
     persona_key: str = config.DEFAULT_PERSONA_KEY
     knowledge_base_id: str = "default"
-    model_name: str = config.OLLAMA_MODEL
+    model_name: str = config.OPENAI_MODEL
     knowledge_path: str = ""
     voice_id: str = ""
-    temp_audio_dir: str = str(config.TEMP_AUDIO_DIR)
 
     @classmethod
     def from_character_library(
@@ -81,12 +81,10 @@ class BrainProfile:
             or config.ELEVENLABS_VOICE_ID
         )
         model_name = (
-            str((manifest or {}).get("ollama_model") or "").strip()
-            or config.OLLAMA_MODEL
-        )
-        temp_audio_dir = (
-            str((manifest or {}).get("temp_audio_dir") or "").strip()
-            or str(config.TEMP_AUDIO_DIR)
+            str((manifest or {}).get("openai_model") or "").strip()
+            or str((manifest or {}).get("model_name") or "").strip()
+            or str((manifest or {}).get("ollama_model") or "").strip()
+            or config.OPENAI_MODEL
         )
 
         return cls(
@@ -101,7 +99,6 @@ class BrainProfile:
                 character_dir / "knowledge.md",
             ),
             voice_id=voice_id,
-            temp_audio_dir=temp_audio_dir,
         )
 
 
@@ -123,7 +120,7 @@ class SoulLoader:
         return SystemMessage(content=content)
 
 
-SENTENCE_BOUNDARY_PATTERN = re.compile(r"[，。！？]")
+SENTENCE_BOUNDARY_PATTERN = re.compile(r"[，。！？,!?\n]")
 ACTION_PREFIX_PATTERN = re.compile(
     r"^\s*(\[\s*ACTION\s*:\s*(?P<action>[A-Za-z0-9_-]+)\s*\])",
     re.IGNORECASE,
@@ -232,7 +229,7 @@ class StreamedReplyParser:
 
 
 class BrainEngine(QThread):
-    """在背景執行緒中執行本地 Ollama 推論；本機大腦已完成與 OpenClaw 解耦。"""
+    """在背景執行緒中執行 OpenAI 串流推論；本機大腦已完成與 OpenClaw 解耦。"""
 
     message_received = pyqtSignal(str)
     streamed_fragment = pyqtSignal(str, object)
@@ -335,7 +332,7 @@ class BrainEngine(QThread):
         if LANGCHAIN_IMPORT_ERROR is not None:
             warning = (
                 "警告: 尚未安裝 LangChain 相關套件，請先在虛擬環境安裝 "
-                "`langchain`、`langchain-community`、`python-dotenv`。"
+                "`langchain`、`langchain-openai`、`python-dotenv`。"
             )
             self.warning_emitted.emit(warning)
             if self._latency_tracker is not None:
@@ -384,11 +381,11 @@ class BrainEngine(QThread):
             if self._latency_tracker is not None:
                 self._latency_tracker.mark_brain_completed(trace_id)
         except Exception as exc:
-            warning = f"警告: 本地 Ollama 推論失敗，已改用安全回覆。({exc})"
+            warning = f"警告: OpenAI 推論失敗，已改用安全回覆。({exc})"
             self.warning_emitted.emit(warning)
             if self._latency_tracker is not None:
                 self._latency_tracker.mark_failure(trace_id, "brain", warning)
-            self._emit_fragment("[ACTION:listen] 抱歉，我現在無法順利連線本地大腦，請稍後再試。", trace_id)
+            self._emit_fragment("[ACTION:listen] 抱歉，我現在無法順利連線 OpenAI 大腦，請稍後再試。", trace_id)
             if self._latency_tracker is not None:
                 self._latency_tracker.mark_brain_completed(trace_id)
             return
@@ -407,8 +404,7 @@ class BrainEngine(QThread):
         knowledge_context: str,
         memory,
     ) -> str:
-        llm = self._get_or_create_llm(profile)
-        del llm
+        del profile
         history = memory.load_memory_variables({}).get("history", "")
         if history is None:
             history = ""
@@ -422,7 +418,7 @@ class BrainEngine(QThread):
                 "以下是你與使用者的對話歷史：\n{history}\n\n"
                 "使用者：{input}\n"
                 "請直接輸出回覆內容。若需要 Host 執行動作，必須先輸出單一 [ACTION:...] 前綴，"
-                "而且它必須是整段回覆的第一個有效字元；後面才能接自然語言內容。\n"
+                "而且它必須是整段回覆的第一句第一個有效字元；後面才能接自然語言內容。\n"
                 "ECHOES："
             ),
         ).partial(
@@ -440,16 +436,22 @@ class BrainEngine(QThread):
                 yield text
 
     def _get_or_create_llm(self, profile: BrainProfile):
-        base_url = config.OLLAMA_BASE_URL
-        cache_key = f"{base_url}|{profile.model_name}"
+        if not config.OPENAI_API_KEY:
+            raise RuntimeError("缺少 OPENAI_API_KEY")
+
+        model_name = profile.model_name or config.DEFAULT_OPENAI_MODEL
+        cache_key = f"{model_name}|{os.getenv('OPENAI_TEMPERATURE', '0.4')}"
         cached = self._llm_cache.get(cache_key)
         if cached is not None:
             return cached
 
-        llm = Ollama(
-            base_url=base_url,
-            model=profile.model_name or config.DEFAULT_OLLAMA_MODEL,
-            temperature=float(os.getenv("OLLAMA_TEMPERATURE", "0.4")),
+        llm = ChatOpenAI(
+            api_key=config.OPENAI_API_KEY,
+            model=model_name,
+            temperature=float(os.getenv("OPENAI_TEMPERATURE", "0.4")),
+            streaming=True,
+            max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "2")),
+            timeout=(5, 45),
         )
         self._llm_cache[cache_key] = llm
         return llm
@@ -548,7 +550,6 @@ def build_active_profile_snapshot(character_id: str | None = None) -> dict[str, 
         "model_name": profile.model_name,
         "knowledge_path": profile.knowledge_path,
         "voice_id": profile.voice_id,
-        "temp_audio_dir": profile.temp_audio_dir,
     }
 def _build_profile_id(character_id: str | None, knowledge_base_id: str | None) -> str:
     return f"{character_id or 'default'}::{knowledge_base_id or 'default'}"

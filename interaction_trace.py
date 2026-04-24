@@ -99,6 +99,7 @@ class InteractionLatencyTracker:
             if state is None:
                 return
             state.tts_enqueued += 1
+            chunk_index = state.tts_enqueued
             if "first_tts_enqueued" not in state.stages:
                 state.stages["first_tts_enqueued"] = perf_counter()
                 state.notes["first_tts_enqueued"] = f"第一段 TTS 已排入佇列：{_preview_text(text)}"
@@ -106,7 +107,8 @@ class InteractionLatencyTracker:
             else:
                 elapsed_ms = self._elapsed_ms(state, "first_tts_enqueued")
         if elapsed_ms is not None:
-            self._log(trace_id, f"第一段 TTS 已排入佇列 (+{elapsed_ms}ms)")
+            ordinal = "第一" if chunk_index == 1 else f"第{chunk_index}"
+            self._log(trace_id, f"{ordinal}段 TTS 已排入佇列 (+{elapsed_ms}ms)")
 
     def mark_tts_stream_started(self, trace_id: str | None, reply_id: str, bytes_forwarded: int):
         detail = f"TTS 開始送入播放器，reply={reply_id[:8]}，bytes={bytes_forwarded}"

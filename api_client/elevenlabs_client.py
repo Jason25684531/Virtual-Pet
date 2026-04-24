@@ -1,15 +1,16 @@
 """
-ECHOES — Python 端 ElevenLabs 串流 TTS 與背景音訊播放。
+ECHOES — Python 端 ElevenLabs 串流 TTS 與記憶體音訊播放。
 
-將句讀級文字片段送往 ElevenLabs 串流 API，並把回傳音訊直接 pipe 給
-本地 `ffplay` 背景播放器，避免先寫入暫存 MP3 再交由前端播放。
+將句讀級文字片段送往 ElevenLabs 串流 API，將回傳音訊累積在記憶體中，
+再交給 `pygame` 背景播放器直接播放，避免暫存 MP3 與硬碟 I/O。
 """
 
 from __future__ import annotations
 
+import io
 import os
-import shutil
-import subprocess
+import threading
+import time
 from uuid import uuid4
 
 import requests
@@ -17,9 +18,65 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 import config
 
+try:
+    import pygame
+except ModuleNotFoundError:  # pragma: no cover - 允許依賴未安裝時安全降級
+    pygame = None  # type: ignore[assignment]
+
 
 def _sanitize_stream_tts_text(text: str) -> str:
     return str(text or "").strip()
+
+
+class PygameInMemoryAudioPlayer:
+    """以 `pygame.mixer.music` 從記憶體播放單段 MP3 音訊。"""
+
+    _global_lock = threading.Lock()
+
+    def __init__(self, mixer_module=None, poll_interval: float = 0.02):
+        self._mixer = mixer_module or (pygame.mixer if pygame is not None else None)
+        self._poll_interval = poll_interval
+        self._initialized = False
+
+    def play(self, audio_buffer: io.BytesIO):
+        if self._mixer is None:
+            raise RuntimeError("pygame 尚未安裝，無法播放記憶體音訊。")
+
+        with self._global_lock:
+            self._ensure_initialized()
+            audio_buffer.seek(0)
+            try:
+                self._mixer.music.stop()
+            except Exception:
+                pass
+            try:
+                self._mixer.music.unload()
+            except Exception:
+                pass
+
+            # `namehint=\"mp3\"` 可幫助 pygame 在 file-like object 上正確判斷格式。
+            self._mixer.music.load(audio_buffer, "mp3")
+            self._mixer.music.play()
+            while self._mixer.music.get_busy():
+                time.sleep(self._poll_interval)
+
+    def _ensure_initialized(self):
+        get_init = getattr(self._mixer, "get_init", None)
+        if callable(get_init) and get_init():
+            self._initialized = True
+            return
+
+        init = getattr(self._mixer, "init", None)
+        if not callable(init):
+            raise RuntimeError("pygame mixer 無法初始化。")
+
+        init(
+            frequency=int(os.getenv("PYGAME_MIXER_FREQUENCY", "22050")),
+            size=int(os.getenv("PYGAME_MIXER_SIZE", "-16")),
+            channels=int(os.getenv("PYGAME_MIXER_CHANNELS", "2")),
+            buffer=int(os.getenv("PYGAME_MIXER_BUFFER", "4096")),
+        )
+        self._initialized = True
 
 
 class ElevenLabsStreamingTTSWorker(QThread):
@@ -35,8 +92,7 @@ class ElevenLabsStreamingTTSWorker(QThread):
         trace_id: str | None = None,
         voice_id: str | None = None,
         requests_post=None,
-        popen_factory=None,
-        which_resolver=None,
+        audio_player=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -45,8 +101,7 @@ class ElevenLabsStreamingTTSWorker(QThread):
         self._trace_id = (trace_id or "").strip()
         self._voice_id = (voice_id or "").strip()
         self._requests_post = requests_post or requests.post
-        self._popen_factory = popen_factory or subprocess.Popen
-        self._which_resolver = which_resolver or shutil.which
+        self._audio_player = audio_player or PygameInMemoryAudioPlayer()
 
     def run(self):
         speech_text = _sanitize_stream_tts_text(self._text)
@@ -58,11 +113,6 @@ class ElevenLabsStreamingTTSWorker(QThread):
         voice_id = self._voice_id or config.ELEVENLABS_VOICE_ID
         if not api_key or not voice_id:
             self.finished_signal.emit(False, "略過串流 TTS：缺少 ElevenLabs API Key 或 Voice ID。", None)
-            return
-
-        ffplay_binary = self._which_resolver("ffplay")
-        if not ffplay_binary:
-            self.finished_signal.emit(False, "略過串流 TTS：系統找不到 ffplay。", None)
             return
 
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
@@ -77,17 +127,25 @@ class ElevenLabsStreamingTTSWorker(QThread):
             or config.DEFAULT_TTS_MODEL_ID,
             "voice_settings": {
                 "stability": float(os.getenv("ELEVENLABS_STABILITY", "0.45")),
-                "similarity_boost": float(os.getenv("ELEVENLABS_SIMILARITY_BOOST", "0.8")),
+                "similarity_boost": float(os.getenv("ELEVENLABS_SIMILARITY_BOOST", "0.75")),
+                "use_speaker_boost": os.getenv("ELEVENLABS_USE_SPEAKER_BOOST", "false").strip().lower()
+                not in {"0", "false", "no", "off"},
+                "style": float(os.getenv("ELEVENLABS_STYLE", "0.0")),
+                "speed": float(os.getenv("ELEVENLABS_SPEED", "1.15")),
             },
         }
 
-        player = None
         response = None
         bytes_forwarded = 0
+        audio_buffer = io.BytesIO()
         try:
             response = self._requests_post(
                 url,
                 headers=headers,
+                params={
+                    "output_format": os.getenv("ELEVENLABS_OUTPUT_FORMAT", "mp3_22050_32"),
+                    "optimize_streaming_latency": os.getenv("ELEVENLABS_OPTIMIZE_STREAMING_LATENCY", "3"),
+                },
                 json=payload,
                 timeout=config.DEFAULT_TTS_TIMEOUT,
                 stream=True,
@@ -97,25 +155,6 @@ class ElevenLabsStreamingTTSWorker(QThread):
             content_type = str(response.headers.get("content-type", "") or "").lower()
             if "audio" not in content_type:
                 self.finished_signal.emit(False, "ElevenLabs 串流回傳了無效音訊格式。", None)
-                return
-
-            player = self._popen_factory(
-                [
-                    ffplay_binary,
-                    "-nodisp",
-                    "-autoexit",
-                    "-loglevel",
-                    "error",
-                    "-i",
-                    "pipe:0",
-                ],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-            )
-
-            if player.stdin is None:
-                self.finished_signal.emit(False, "串流播放器無法建立 stdin pipe。", None)
                 return
 
             for chunk in response.iter_content(chunk_size=4096):
@@ -131,23 +170,14 @@ class ElevenLabsStreamingTTSWorker(QThread):
                         },
                     )
                 bytes_forwarded += len(chunk)
-                player.stdin.write(chunk)
-                player.stdin.flush()
+                audio_buffer.write(chunk)
 
             if bytes_forwarded <= 0:
                 self.finished_signal.emit(False, "ElevenLabs 串流未收到可播放音訊資料。", None)
                 return
 
-            player.stdin.close()
-            player.stdin = None
-            return_code = player.wait(timeout=120)
-            if return_code != 0:
-                stderr_text = ""
-                if getattr(player, "stderr", None) is not None:
-                    stderr_text = (player.stderr.read() or b"").decode("utf-8", errors="ignore").strip()
-                detail = stderr_text or f"ffplay 結束代碼 {return_code}"
-                self.finished_signal.emit(False, f"串流播放器播放失敗：{detail}", None)
-                return
+            audio_buffer.seek(0)
+            self._audio_player.play(audio_buffer)
 
             payload = {
                 "reply_id": self._reply_id,
@@ -158,19 +188,8 @@ class ElevenLabsStreamingTTSWorker(QThread):
             self.finished_signal.emit(True, "串流語音播放完成。", payload)
         except requests.RequestException as exc:
             self.finished_signal.emit(False, f"ElevenLabs 串流請求失敗: {exc}", None)
-        except Exception as exc:  # pragma: no cover - 依外部播放器與系統環境而定
+        except Exception as exc:  # pragma: no cover - 依外部音訊環境而定
             self.finished_signal.emit(False, f"串流語音播放失敗: {exc}", None)
         finally:
             if response is not None:
                 response.close()
-            if player is not None:
-                try:
-                    if getattr(player, "stdin", None) is not None:
-                        player.stdin.close()
-                except OSError:
-                    pass
-                if getattr(player, "poll", lambda: None)() is None:
-                    try:
-                        player.kill()
-                    except OSError:
-                        pass

@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from action_dispatcher import (
     ActionDispatcher,
+    _DebugSignal,
     _ImmediateTTSWorker,
     _ImmediateServiceWorker,
     run_streamed_action_first_debug_probe,
@@ -152,7 +153,54 @@ class _ChangeVideoHarness:
         return os.path.abspath(os.path.normpath(filename))
 
 
+class _ManualQueuedTTSWorker:
+    instances: list["_ManualQueuedTTSWorker"] = []
+
+    def __init__(
+        self,
+        text: str,
+        reply_id: str | None = None,
+        trace_id: str | None = None,
+        parent=None,
+    ):
+        del parent
+        self.text = text
+        self.reply_id = reply_id or "manual-reply"
+        self.trace_id = trace_id or ""
+        self.finished_signal = _DebugSignal()
+        self.progress_signal = _DebugSignal()
+        self.finished = _DebugSignal()
+        self.started = False
+        _ManualQueuedTTSWorker.instances.append(self)
+
+    def start(self):
+        self.started = True
+        self.progress_signal.emit(
+            "stream_started",
+            {
+                "reply_id": self.reply_id,
+                "trace_id": self.trace_id,
+                "bytes_forwarded": len(self.text.encode("utf-8")),
+            },
+        )
+
+    def complete(self):
+        payload = {
+            "reply_id": self.reply_id,
+            "trace_id": self.trace_id,
+            "text": self.text,
+        }
+        self.finished_signal.emit(True, "語音生成完成。", payload)
+        self.finished.emit()
+
+    def deleteLater(self):
+        return None
+
+
 class ActionPlaybackTests(unittest.TestCase):
+    def setUp(self):
+        _ManualQueuedTTSWorker.instances.clear()
+
     def test_missing_motion_falls_back_to_idle_with_warning(self):
         with tempfile.TemporaryDirectory(prefix="echoes-action-fallback-") as temp_dir:
             idle_path = Path(temp_dir) / "Idle.webm"
@@ -200,6 +248,16 @@ class ActionPlaybackTests(unittest.TestCase):
         outputs.extend(parser.flush())
 
         self.assertEqual(outputs, ["這是一段還沒結尾"])
+
+    def test_streamed_reply_parser_splits_on_ascii_punctuation_and_newline(self):
+        parser = StreamedReplyParser()
+
+        outputs = []
+        outputs.extend(parser.feed("[ACTION:listen]Hi,"))
+        outputs.extend(parser.feed("next line\n"))
+        outputs.extend(parser.flush())
+
+        self.assertEqual(outputs, ["[ACTION:listen]", "Hi,", "next line"])
 
     def test_dispatcher_accepts_alias_action_name(self):
         with tempfile.TemporaryDirectory(prefix="echoes-action-alias-") as temp_dir:
@@ -282,6 +340,33 @@ class ActionPlaybackTests(unittest.TestCase):
             self.assertTrue(dispatched)
             self.assertEqual(window.played_assets[0][0], "listen")
             self.assertIsNone(tracker.snapshot(trace_id))
+
+    def test_dispatcher_serializes_tts_queue_without_overlap(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-queue-") as temp_dir:
+            listen_path = Path(temp_dir) / "listen.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            listen_path.write_bytes(b"listen")
+            idle_path.write_bytes(b"idle")
+
+            window = _DispatchProbeWindow(temp_dir)
+            dispatcher = ActionDispatcher(
+                window,
+                library=_NoopLibrary(),
+                motion_path_resolver=lambda motion_key: str(
+                    {"listen": listen_path, "idle": idle_path}.get(motion_key, "")
+                ),
+                tts_worker_factory=_ManualQueuedTTSWorker,
+            )
+
+            self.assertTrue(dispatcher.dispatch("[ACTION:listen] 第一段。"))
+            self.assertTrue(dispatcher.dispatch("第二段。"))
+            self.assertEqual(len(_ManualQueuedTTSWorker.instances), 1)
+            self.assertTrue(_ManualQueuedTTSWorker.instances[0].started)
+
+            _ManualQueuedTTSWorker.instances[0].complete()
+
+            self.assertEqual(len(_ManualQueuedTTSWorker.instances), 2)
+            self.assertTrue(_ManualQueuedTTSWorker.instances[1].started)
 
 
 if __name__ == "__main__":

@@ -8,5 +8,7 @@ websockets==16.0
 cryptography==46.0.7
 langchain==0.3.27
 langchain-community==0.3.31
+langchain-openai==0.3.35
 python-dotenv==1.2.2
 azure-cognitiveservices-speech==1.46.0
+pygame==2.6.1

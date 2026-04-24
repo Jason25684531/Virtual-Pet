@@ -1,7 +1,7 @@
 """
 ECHOES — 集中式設定中心。
 
-本機大腦已完成與 OpenClaw 解耦；LangChain / Ollama / ElevenLabs 的
+本機大腦已完成與 OpenClaw 解耦；LangChain / OpenAI / ElevenLabs 的
 非敏感預設值與 persona prompt 由此集中管理，敏感資訊仍只從 `.env` 讀取。
 """
 
@@ -24,20 +24,22 @@ load_dotenv(ENV_PATH, override=False)
 DEFAULT_PERSONA_KEY = "default"
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 DEFAULT_OLLAMA_MODEL = "minimax-m2.7:cloud"
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_ELEVENLABS_VOICE_ID = "zENt0ljwLXypGqHDsdzz"
-DEFAULT_TTS_MODEL_ID = "eleven_multilingual_v2"
+DEFAULT_TTS_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_TTS_TIMEOUT = (5, 45)
-DEFAULT_TEMP_AUDIO_DIR = PROJECT_ROOT / "assets" / "temp_audio"
 DEFAULT_AZURE_STT_LANGUAGE = "zh-TW"
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL).strip() or DEFAULT_OLLAMA_BASE_URL
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL
+OPENAI_API_KEY = (
+    os.getenv("OPENAI_API_KEY", "").strip()
+    or os.getenv("CHATGPT_API_KEY", "").strip()
+)
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", DEFAULT_OPENAI_MODEL).strip() or DEFAULT_OPENAI_MODEL
 ELEVENLABS_VOICE_ID = (
     os.getenv("ELEVENLABS_VOICE_ID", DEFAULT_ELEVENLABS_VOICE_ID).strip()
     or DEFAULT_ELEVENLABS_VOICE_ID
-)
-TEMP_AUDIO_DIR = Path(
-    os.getenv("ELEVENLABS_TEMP_AUDIO_DIR", "").strip() or str(DEFAULT_TEMP_AUDIO_DIR)
 )
 
 
@@ -60,20 +62,23 @@ PERSONA_PROMPTS = {
     "default": (
         "你是       ECHOES，本機桌面陪伴 AI。"
         "請以自然、簡潔、溫暖的繁體中文回覆。"
-        "若需要觸發 Host action，只能使用單一 [ACTION:...] 標籤，"
-        "且必須放在回覆最前面、作為第一個有效字元。"
+        "若需要觸發 Host action，你必須把單一 [ACTION:...] 標籤放在回覆的第一句第一個字，"
+        "不能先輸出任何空白、說明、標點或寒暄。"
+        "若不需要動作，就直接輸出自然語言。"
     ),
     "初音 (正式版)": (
         "你是 ECHOES 的初音系桌面角色。"
         "語氣清亮、活潑、友善，保持簡潔，不要過度冗長。"
-        "若需要觸發 Host action，只能使用單一 [ACTION:...] 標籤，"
-        "且必須放在回覆最前面、作為第一個有效字元。"
+        "若需要觸發 Host action，你必須把單一 [ACTION:...] 標籤放在回覆的第一句第一個字，"
+        "不能先輸出任何空白、說明、標點或寒暄。"
+        "若不需要動作，就直接輸出自然語言。"
     ),
     "20260415_168888_初音": (
         "你是 ECHOES 的初音系桌面角色。"
         "語氣清亮、活潑、友善，保持簡潔，不要過度冗長。"
-        "若需要觸發 Host action，只能使用單一 [ACTION:...] 標籤，"
-        "且必須放在回覆最前面、作為第一個有效字元。"
+        "若需要觸發 Host action，你必須把單一 [ACTION:...] 標籤放在回覆的第一句第一個字，"
+        "不能先輸出任何空白、說明、標點或寒暄。"
+        "若不需要動作，就直接輸出自然語言。"
     ),
 }
 
@@ -120,12 +125,13 @@ HOST_ACTION_ALIASES = {
 
 HOST_ACTION_PROMPT = (
     "若需要觸發 Host action，只能從以下白名單挑一個，且只能輸出一個，"
-    "並且必須放在整段回覆最前面、作為第一個有效字元："
+    "並且必須放在整段回覆的第一句第一個字，前面不允許有空白、換行、引號或任何其他字元："
     "[ACTION:report_news]、[ACTION:play_music]、[ACTION:wave_response]、[ACTION:laugh]、"
     "[ACTION:angry]、[ACTION:awkward]、[ACTION:speechless]、[ACTION:listen]、[ACTION:idle]。"
     "新聞、頭條、天氣請使用 report_news；音樂、放鬆、播歌請使用 play_music；"
     "一般聆聽或不確定時使用 listen。禁止自創新的 action 名稱。"
     "除了最前面的 action 前綴外，後續內容只能是自然語言回覆。"
+    "若有 action，請在 action 後立刻接自然語言第一句，讓系統可以依標點即時切句播放。"
 )
 
 

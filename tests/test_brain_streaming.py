@@ -49,6 +49,11 @@ class _TestBrainEngine(BrainEngine):
             yield token
 
 
+class _FailingBrainEngine(_TestBrainEngine):
+    def _stream_llm_tokens(self, _profile, _prompt):
+        raise RuntimeError("openai unavailable")
+
+
 class BrainStreamingTests(unittest.TestCase):
     def test_handle_prompt_emits_action_before_sentence_chunks_and_saves_memory(self):
         engine = _TestBrainEngine(
@@ -89,6 +94,24 @@ class BrainStreamingTests(unittest.TestCase):
             saved_outputs,
             {"response": "[ACTION:listen] 哈囉，今天天氣很好。一起加油"},
         )
+        self.assertIsNone(engine._tracker.snapshot(trace_id))
+
+    def test_handle_prompt_degrades_safely_when_openai_streaming_fails(self):
+        engine = _FailingBrainEngine(["unused"])
+        emitted: list[str] = []
+        warnings: list[str] = []
+        engine.message_received.connect(emitted.append)
+        engine.warning_emitted.connect(warnings.append)
+
+        trace_id = engine._tracker.begin_interaction("test", "測試輸入")
+        engine._handle_prompt("測試輸入", trace_id=trace_id)
+
+        self.assertEqual(
+            emitted,
+            ["[ACTION:listen] 抱歉，我現在無法順利連線 OpenAI 大腦，請稍後再試。"],
+        )
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("OpenAI 推論失敗", warnings[0])
         self.assertIsNone(engine._tracker.snapshot(trace_id))
 
 
