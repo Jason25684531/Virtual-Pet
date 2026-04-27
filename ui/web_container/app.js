@@ -281,6 +281,16 @@
         audio.load();
     };
 
+    window.setRoomBackground = function (source) {
+        if (!source) {
+            return;
+        }
+        var bg = document.querySelector('img.room-background');
+        if (bg) {
+            bg.src = source;
+        }
+    };
+
     // 舊版橋接函式保留，避免其他模組呼叫失敗。
     window.changeVideo = function (source) {
         window.setIdleVideo(source);

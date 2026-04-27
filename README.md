@@ -15,7 +15,8 @@
 延伸架構文件：
 
 - [現階段 ArchViz（Phase 1 / Phase 2）](/home/norlan/projecgt/Virtual-Pet/docs/current_stage_archviz.md)
-- [執行緒 / Worker 拓樸圖](/home/norlan/projecgt/Virtual-Pet/docs/thread_worker_topology.md)
+- [執行緒 / Worker 拓樸圖](/hom
+e/norlan/projecgt/Virtual-Pet/docs/thread_worker_topology.md)
 
 ## 架構概覽
 

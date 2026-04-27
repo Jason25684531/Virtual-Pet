@@ -154,6 +154,18 @@ class CharacterLibrary:
             return None
         return self.get_motion_path(character_id, action_key)
 
+    def get_background_path(self, character_id: str) -> str | None:
+        manifest = self.get_character(character_id)
+        if not manifest:
+            return None
+        relative_path = manifest.get("background_image")
+        if not relative_path:
+            return None
+        absolute_path = PROJECT_ROOT / relative_path
+        if not absolute_path.is_file():
+            return None
+        return str(absolute_path)
+
     def get_character_name(self, character_id: str | None) -> str | None:
         manifest = self.get_character(character_id)
         if not manifest:

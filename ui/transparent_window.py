@@ -481,10 +481,16 @@ class TransparentWindow(QMainWindow):
         if event.button() == Qt.LeftButton:
             self._drag_pos = None
 
+    _FALLBACK_CHARACTER_IDS = ("miku", "Choppr")
+
     def _restore_current_character(self):
         current_character_id = self._library.get_current_character_id()
         if current_character_id and self.apply_character(current_character_id):
             return
+
+        for fallback_id in self._FALLBACK_CHARACTER_IDS:
+            if self.apply_character(fallback_id):
+                return
 
         if self.restore_idle_video():
             self.set_room_character("訪客模式")
@@ -504,6 +510,12 @@ class TransparentWindow(QMainWindow):
         self.apply_character_position()
         self.set_room_character(character_name)
         self.set_action_status(f"{character_name} 已待命", tone="idle", timeout_ms=2200)
+
+        bg_path = self._library.get_background_path(character_id)
+        if bg_path and os.path.isfile(bg_path):
+            bg_url = QUrl.fromLocalFile(bg_path).toString()
+            self._run_javascript("setRoomBackground", bg_url)
+
         return True
 
     def preview_character_motion(self, character_id: str, motion_key: str):
