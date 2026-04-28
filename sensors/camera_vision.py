@@ -20,8 +20,8 @@ except ImportError:  # pragma: no cover - 依安裝環境決定
 
 WAVE_RESPONSE_DIRECTIVE = "[ACTION:wave_response]"
 # 直接改這兩個 boolean，就能控制是否啟用 OpenCV 揮手偵測與預覽視窗。
-OPENCV_WAVE_DETECTION_ENABLED = False
-OPENCV_DEBUG_WINDOW_ENABLED = False
+OPENCV_WAVE_DETECTION_ENABLED = True
+OPENCV_DEBUG_WINDOW_ENABLED = True
 
 
 @dataclass(frozen=True)

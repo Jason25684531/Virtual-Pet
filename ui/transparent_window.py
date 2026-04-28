@@ -577,6 +577,10 @@ class TransparentWindow(QMainWindow):
             return self.change_video(fallback_idle, loop=True)
         return False
 
+    @property
+    def is_busy(self) -> bool:
+        return self._stt_listening or self._action_dispatcher.is_tts_busy
+
     def dispatch_action(self, directive: str, trace_id: str | None = None) -> bool:
         return self._action_dispatcher.dispatch(directive, trace_id=trace_id)
 

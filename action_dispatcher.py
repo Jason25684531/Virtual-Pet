@@ -132,6 +132,10 @@ class ActionDispatcher(QObject):
             ),
         }
 
+    @property
+    def is_tts_busy(self) -> bool:
+        return self._active_tts_worker is not None
+
     def dispatch(self, directive: str, trace_id: str | None = None) -> bool:
         raw_action_name, display_message = self._parse_directive(directive)
         action_name = config.canonicalize_host_action(raw_action_name)
