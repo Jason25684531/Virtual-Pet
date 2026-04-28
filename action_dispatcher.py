@@ -12,7 +12,7 @@ from uuid import uuid4
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from PyQt5.QtCore import QObject
+from PyQt5.QtCore import QObject, QTimer
 
 from action_services import MusicSelectionWorker, NewsFetchWorker
 from api_client.brain_engine import sanitize_tts_text
@@ -72,6 +72,9 @@ class ActionDispatcher(QObject):
         self._latency_tracker = latency_tracker
         self._active_tts_worker: object | None = None
         self._pending_tts_chunks: "queue.Queue[tuple[str, str, str | None]]" = queue.Queue()
+        self._current_loop_action_key: str | None = None
+        self._loop_action_tts_queued: bool = False
+        self._loop_cleanup_timer: QTimer | None = None
         self._bindings = {
             "report_news": ActionBinding(
                 name="report_news",
@@ -223,10 +226,20 @@ class ActionDispatcher(QObject):
         return "working" if has_action else "idle"
 
     def _handle_report_news(self, binding: ActionBinding, motion_found: bool):
+        current_character_id = self._call_library_method("get_current_character_id")
+        if current_character_id:
+            panel_path = self._call_library_method("get_panel_motion_path", current_character_id, "report_news")
+            if panel_path and hasattr(self._window, "play_panel_video"):
+                self._window.play_panel_video(panel_path)
         worker = self._news_worker_factory(parent=self)
         self._start_worker(worker, lambda success, message, payload: self._on_news_finished(binding, motion_found, success, message, payload))
 
     def _handle_play_music(self, binding: ActionBinding, motion_found: bool):
+        current_character_id = self._call_library_method("get_current_character_id")
+        if current_character_id:
+            panel_path = self._call_library_method("get_panel_motion_path", current_character_id, "play_music")
+            if panel_path and hasattr(self._window, "play_panel_video"):
+                self._window.play_panel_video(panel_path)
         worker = self._music_worker_factory(parent=self)
         self._start_worker(worker, lambda success, message, payload: self._on_music_finished(binding, motion_found, success, message, payload))
 
@@ -234,12 +247,30 @@ class ActionDispatcher(QObject):
         if not motion_found:
             self._window.restore_idle_video()
 
+    _LOOP_ACTION_KEYS = frozenset({"report_news", "play_music"})
+
     def _play_binding_motion(self, binding: ActionBinding) -> bool:
         motion_path, used_idle_fallback = self._resolve_action_motion_path(binding.motion_key)
         if not motion_path:
+            self._current_loop_action_key = None
             return False
 
-        should_loop = True if used_idle_fallback else not MOTION_MAP.get(binding.motion_key, {}).get("play_once", True)
+        is_loop_action = binding.motion_key in self._LOOP_ACTION_KEYS
+        should_loop = True if (used_idle_fallback or is_loop_action) else not MOTION_MAP.get(binding.motion_key, {}).get("play_once", True)
+
+        if is_loop_action:
+            self._current_loop_action_key = binding.motion_key
+            self._loop_action_tts_queued = False
+            if hasattr(self._window, "start_motion_loop"):
+                self._window.start_motion_loop(motion_path, 300)
+                return True
+            # fallback: native loop
+            if hasattr(self._window, "play_resolved_motion"):
+                return bool(self._window.play_resolved_motion(binding.motion_key, motion_path, loop=True))
+            return bool(self._window.change_video(motion_path, loop=True))
+        else:
+            self._current_loop_action_key = None
+
         if hasattr(self._window, "play_resolved_motion"):
             return bool(self._window.play_resolved_motion(binding.motion_key, motion_path, loop=should_loop))
 
@@ -364,12 +395,22 @@ class ActionDispatcher(QObject):
 
         reply_id = uuid4().hex
         self._pending_tts_chunks.put((reply_id, speech_text, trace_id))
+        if self._current_loop_action_key is not None:
+            self._loop_action_tts_queued = True
+            if self._loop_cleanup_timer is not None:
+                self._loop_cleanup_timer.stop()
+                self._loop_cleanup_timer = None
         if self._latency_tracker is not None:
             self._latency_tracker.mark_tts_enqueued(trace_id, reply_id, speech_text)
         self._start_next_tts_worker()
 
     def _start_next_tts_worker(self):
         if self._active_tts_worker is not None or self._pending_tts_chunks.empty():
+            if (self._active_tts_worker is None
+                    and self._pending_tts_chunks.empty()
+                    and self._loop_action_tts_queued
+                    and self._current_loop_action_key is not None):
+                self._finish_loop_action()
             return
 
         reply_id, speech_text, trace_id = self._pending_tts_chunks.get_nowait()
@@ -467,6 +508,7 @@ class ActionDispatcher(QObject):
         if success:
             headline = payload.get("headline") if isinstance(payload, dict) else message
             self._window.set_action_status(f"新聞焦點: {headline}", tone="news", timeout_ms=9000)
+            self._schedule_loop_cleanup(8000)
             return
 
         self._handle_failure(binding, motion_found, message)
@@ -479,15 +521,45 @@ class ActionDispatcher(QObject):
         message: str,
         payload: object,
     ):
+        has_audio = False
         if success and isinstance(payload, dict):
             if self._window.play_music(payload.get("path", ""), payload.get("title", "")):
                 self._window.set_action_status(f"正在播放: {payload.get('title', message)}", tone="music")
-                return
+                has_audio = True
 
-        self._window.stop_music()
-        self._handle_failure(binding, motion_found, message)
+        if not has_audio:
+            self._window.stop_music()
+            print(f"[ECHOES] 提示: 無可播放音樂（{message}），動畫繼續顯示。")
+            self._window.set_action_status("音樂播放中", tone="music")
+
+        self._schedule_loop_cleanup(8000)
+
+    def _schedule_loop_cleanup(self, delay_ms: int = 8000):
+        if self._loop_cleanup_timer is not None:
+            self._loop_cleanup_timer.stop()
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._finish_loop_action)
+        timer.start(delay_ms)
+        self._loop_cleanup_timer = timer
+
+    def _finish_loop_action(self):
+        if self._current_loop_action_key is None:
+            return
+        print(f"[ECHOES] loop action '{self._current_loop_action_key}' 完成，清理動畫")
+        if self._loop_cleanup_timer is not None:
+            self._loop_cleanup_timer.stop()
+            self._loop_cleanup_timer = None
+        self._current_loop_action_key = None
+        self._loop_action_tts_queued = False
+        if hasattr(self._window, "stop_motion_loop"):
+            self._window.stop_motion_loop()
+        if hasattr(self._window, "clear_panel_video"):
+            self._window.clear_panel_video()
+        self._window.restore_idle_video()
 
     def _handle_failure(self, binding: ActionBinding, motion_found: bool, message: str):
         print(f"[ECHOES] 警告: action {binding.name} 執行失敗: {message}")
+        self._finish_loop_action()
         self._window.set_action_status(message, tone="error", timeout_ms=6000)
         self._window.restore_idle_video()

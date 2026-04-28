@@ -154,6 +154,26 @@ class CharacterLibrary:
             return None
         return self.get_motion_path(character_id, action_key)
 
+    _PANEL_MOTION_FILENAMES: dict[str, str] = {
+        "report_news": "News_Panel.webm",
+        "play_music": "Play_Music_Panel.webm",
+    }
+
+    def get_panel_motion_path(self, character_id: str, action_key: str) -> str | None:
+        manifest = self.get_character(character_id)
+        if not manifest:
+            return None
+        filename = manifest.get("panel_motions", {}).get(action_key) or self._PANEL_MOTION_FILENAMES.get(action_key)
+        if not filename:
+            return None
+        motions_dir = manifest.get("motions_dir")
+        if not motions_dir:
+            return None
+        absolute_path = PROJECT_ROOT / motions_dir / filename
+        if not absolute_path.is_file():
+            return None
+        return str(absolute_path)
+
     def get_background_path(self, character_id: str) -> str | None:
         manifest = self.get_character(character_id)
         if not manifest:

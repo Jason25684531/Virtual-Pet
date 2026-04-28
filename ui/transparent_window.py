@@ -651,6 +651,20 @@ class TransparentWindow(QMainWindow):
     def set_room_character(self, name: str):
         self._run_javascript("setRoomCharacter", name)
 
+    def play_panel_video(self, path: str):
+        bg_url = QUrl.fromLocalFile(path).toString()
+        self._run_javascript("playPanelVideo", bg_url, True)
+
+    def clear_panel_video(self):
+        self._run_javascript("clearPanelVideo")
+
+    def start_motion_loop(self, path: str, interval_ms: int = 1000):
+        url = QUrl.fromLocalFile(path).toString()
+        self._run_javascript("startMotionLoop", url, interval_ms)
+
+    def stop_motion_loop(self):
+        self._run_javascript("stopMotionLoop")
+
     def play_music(self, filename: str, title: str = "", update_status: bool = True) -> bool:
         absolute_path = self._resolve_media_path(filename)
         if not absolute_path or not os.path.isfile(absolute_path):

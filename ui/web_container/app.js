@@ -7,6 +7,7 @@
     'use strict';
 
     var video = document.getElementById('pet-video');
+    var panelVideo = document.getElementById('panel-video');
     var character = document.getElementById('pet-character');
     var audio = document.getElementById('room-audio');
     var roomCharacterName = document.getElementById('room-character-name');
@@ -16,6 +17,9 @@
     var conversationQueueText = document.getElementById('conversation-queue-text');
     var idleSource = '';
     var statusTimer = null;
+    var motionLoopTimer = null;
+    var motionLoopSource = null;
+    var motionLoopActive = false;
     var defaultStatusText = '房間待命中';
     var conversationTurns = new Map();
     var maxConversationTurns = 3;
@@ -126,7 +130,7 @@
     };
 
     video.addEventListener('ended', function () {
-        if (!video.loop && idleSource) {
+        if (!video.loop && idleSource && !motionLoopActive) {
             setSource(idleSource, true);
         }
     });
@@ -279,6 +283,54 @@
         audio.dataset.statusManaged = 'false';
         audio.removeAttribute('src');
         audio.load();
+    };
+
+    window.playPanelVideo = function (source, shouldLoop) {
+        if (!source || !panelVideo) {
+            return;
+        }
+        panelVideo.muted = true;
+        panelVideo.loop = shouldLoop !== false;
+        panelVideo.src = source;
+        panelVideo.load();
+        panelVideo.style.display = 'block';
+        panelVideo.play().catch(function (err) {
+            console.warn('[ECHOES] panel video 播放失敗:', err.message);
+        });
+    };
+
+    window.clearPanelVideo = function () {
+        if (!panelVideo) {
+            return;
+        }
+        panelVideo.pause();
+        panelVideo.removeAttribute('src');
+        panelVideo.load();
+        panelVideo.style.display = 'none';
+    };
+
+    window.startMotionLoop = function (source, intervalMs) {
+        window.stopMotionLoop();
+        if (!source) { return; }
+        motionLoopSource = source;
+        motionLoopActive = true;
+        window.playTemporaryVideo(source);
+        motionLoopTimer = setInterval(function () {
+            if (motionLoopActive && motionLoopSource && (video.ended || video.paused)) {
+                window.playTemporaryVideo(motionLoopSource);
+            }
+        }, intervalMs || 1000);
+        console.log('[ECHOES] motionLoop 啟動:', source, 'interval=', intervalMs || 1000);
+    };
+
+    window.stopMotionLoop = function () {
+        if (motionLoopTimer) {
+            clearInterval(motionLoopTimer);
+            motionLoopTimer = null;
+        }
+        motionLoopSource = null;
+        motionLoopActive = false;
+        console.log('[ECHOES] motionLoop 停止');
     };
 
     window.setRoomBackground = function (source) {
