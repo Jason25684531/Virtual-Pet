@@ -655,9 +655,9 @@ class TransparentWindow(QMainWindow):
     def set_room_character(self, name: str):
         self._run_javascript("setRoomCharacter", name)
 
-    def play_panel_video(self, path: str):
+    def play_panel_video(self, path: str, muted: bool = True):
         bg_url = QUrl.fromLocalFile(path).toString()
-        self._run_javascript("playPanelVideo", bg_url, True)
+        self._run_javascript("playPanelVideo", bg_url, True, muted)
 
     def clear_panel_video(self):
         self._run_javascript("clearPanelVideo")
@@ -712,6 +712,7 @@ class TransparentWindow(QMainWindow):
             return False
 
         source_url = QUrl.fromLocalFile(absolute_path).toString(QUrl.FullyEncoded)
+        source_url = f"{source_url}?v={int(os.path.getmtime(absolute_path))}"
         print(f"[ECHOES] 送出影片 URL: {source_url}")
         if loop:
             self._run_javascript("setIdleVideo", source_url)

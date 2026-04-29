@@ -43,7 +43,7 @@ class WaveDetectionConfig:
     min_displacement_px: int = 24
     required_direction_changes: int = 2
     observation_window_seconds: float = 1.4
-    cooldown_ms: int = 2200
+    cooldown_ms: int = 5000
     loop_sleep_ms: int = 35
 
 

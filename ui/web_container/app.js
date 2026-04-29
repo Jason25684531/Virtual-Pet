@@ -285,11 +285,11 @@
         audio.load();
     };
 
-    window.playPanelVideo = function (source, shouldLoop) {
+    window.playPanelVideo = function (source, shouldLoop, muted) {
         if (!source || !panelVideo) {
             return;
         }
-        panelVideo.muted = true;
+        panelVideo.muted = (muted !== false);
         panelVideo.loop = shouldLoop !== false;
         panelVideo.src = source;
         panelVideo.load();

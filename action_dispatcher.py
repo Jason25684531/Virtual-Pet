@@ -243,7 +243,7 @@ class ActionDispatcher(QObject):
         if current_character_id:
             panel_path = self._call_library_method("get_panel_motion_path", current_character_id, "play_music")
             if panel_path and hasattr(self._window, "play_panel_video"):
-                self._window.play_panel_video(panel_path)
+                self._window.play_panel_video(panel_path, muted=False)
         worker = self._music_worker_factory(parent=self)
         self._start_worker(worker, lambda success, message, payload: self._on_music_finished(binding, motion_found, success, message, payload))
 
