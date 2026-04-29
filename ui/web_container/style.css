@@ -31,14 +31,19 @@ body {
 .room-chrome,
 .room-floor-glow,
 .room-atmosphere,
-.room-background {
+.room-background,
+.conversation-panel,
+.conversation-list,
+.conversation-turn,
+.conversation-turn__row,
+.conversation-turn__copy {
     pointer-events: none;
 }
 
 .room-shell {
     width: 100vw;
     height: 100vh;
-    padding: 34px 30px 30px;
+    padding: 0;
 }
 
 .room-scene {
@@ -110,13 +115,21 @@ body {
     z-index: 2;
 }
 
+#panel-video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: center bottom;
+    display: none;
+    z-index: 1;
+}
+
 .room-character-anchor {
     position: absolute;
-    left: 50%;
-    top: 50%;
-    width: min(50vw, 900px);
-    height: min(78vh, 860px);
-    transform: translate(-50%, -50%);
+    inset: 0;
+    z-index: 2;
 }
 
 .room-character {
@@ -142,15 +155,14 @@ body {
 
 #pet-video {
     position: absolute;
-    left: 50%;
+    left: 0;
     bottom: 0;
     z-index: 2;
-    width: min(100%, 820px);
-    max-height: 100%;
+    width: 100%;
+    height: 100%;
     object-fit: contain;
     object-position: center bottom;
     display: block;
-    transform: translateX(-50%);
     transform-origin: center bottom;
     filter: drop-shadow(0 18px 28px rgba(60, 34, 21, 0.22));
 }
@@ -158,7 +170,7 @@ body {
 .action-status {
     position: absolute;
     left: 26px;
-    right: 26px;
+    right: 360px;
     bottom: 26px;
     z-index: 4;
     display: flex;
@@ -170,6 +182,82 @@ body {
     background: linear-gradient(135deg, rgba(60, 38, 27, 0.62), rgba(24, 18, 25, 0.56));
     box-shadow: 0 14px 28px rgba(18, 10, 12, 0.24);
     backdrop-filter: blur(10px);
+}
+
+.conversation-panel {
+    position: absolute;
+    right: 26px;
+    bottom: 26px;
+    z-index: 4;
+    width: min(320px, calc(100vw - 52px));
+    padding: 16px 16px 14px;
+    border: 1px solid rgba(255, 247, 241, 0.16);
+    border-radius: 22px;
+    background: linear-gradient(150deg, rgba(36, 25, 22, 0.7), rgba(20, 17, 25, 0.62));
+    box-shadow: 0 16px 30px rgba(18, 10, 12, 0.22);
+    backdrop-filter: blur(10px);
+}
+
+.conversation-panel__header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+.conversation-panel__eyebrow,
+.conversation-panel__queue {
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: rgba(255, 240, 233, 0.7);
+}
+
+.conversation-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.conversation-turn {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 12px 11px;
+    border-radius: 16px;
+    background: rgba(255, 248, 241, 0.08);
+    border: 1px solid rgba(255, 246, 240, 0.08);
+    transition: border-color 180ms ease, background 180ms ease;
+}
+
+.conversation-turn[data-state="active"] {
+    background: rgba(255, 248, 241, 0.13);
+    border-color: rgba(255, 239, 229, 0.22);
+}
+
+.conversation-turn__row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.conversation-turn__label {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: rgba(255, 240, 233, 0.58);
+}
+
+.conversation-turn__text {
+    font-size: 13px;
+    line-height: 1.45;
+    color: #fff7f1;
+    word-break: break-word;
+}
+
+.conversation-turn__text--muted {
+    color: rgba(255, 247, 241, 0.55);
 }
 
 .action-status__dot {
@@ -241,19 +329,6 @@ body {
         border-radius: 26px;
     }
 
-    .room-stage {
-        padding: 118px 18px 90px;
-    }
-
-    .room-character-anchor {
-        width: min(78vw, 420px);
-        height: min(68vh, 520px);
-    }
-
-    #pet-video {
-        width: min(100%, 420px);
-    }
-
     .action-status {
         left: 16px;
         right: 16px;
@@ -267,5 +342,12 @@ body {
         line-clamp: 2;
         -webkit-line-clamp: 2;
         -webkit-box-orient: vertical;
+    }
+
+    .conversation-panel {
+        left: 16px;
+        right: 16px;
+        bottom: 94px;
+        width: auto;
     }
 }

@@ -7,6 +7,7 @@ openspec/
 .github/
 # .gitignore
 .vscode/
+.codex/
 
 # 日誌檔案 (保留目錄結構)
 logs/*.log
@@ -27,3 +28,5 @@ AIA_2026_動態生成Only.json
 
 assets/webm
 ui/assets/
+assets/
+docs/

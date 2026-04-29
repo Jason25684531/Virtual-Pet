@@ -11,7 +11,7 @@
         <section class="room-scene">
             <img
                 class="room-background"
-                src="../assets/backgrounds/%E5%88%9D%E9%9F%B3%E6%88%BF3%202.jpg"
+                src="../../assets/webm/characters/miku/BG_Final.png"
                 alt="房間背景"
             >
             <div class="room-atmosphere"></div>
@@ -21,6 +21,7 @@
             </div>
             <div class="room-floor-glow"></div>
             <div class="room-stage">
+                <video id="panel-video" muted playsinline></video>
                 <div class="room-character-anchor">
                     <div id="pet-character" class="room-character">
                         <div class="room-character-shadow"></div>
@@ -34,6 +35,13 @@
                     <p class="action-status__label">行動狀態</p>
                     <p id="action-status-text" class="action-status__text">房間待命中</p>
                 </div>
+            </section>
+            <section id="conversation-panel" class="conversation-panel" aria-live="polite">
+                <div class="conversation-panel__header">
+                    <p class="conversation-panel__eyebrow">最近互動</p>
+                    <p id="conversation-queue-text" class="conversation-panel__queue">佇列 0</p>
+                </div>
+                <div id="conversation-list" class="conversation-list"></div>
             </section>
         </section>
     </main>

@@ -36,6 +36,7 @@ MOTION_SPECS = [
 ACTION_MOTION_SPECS = [
     {"key": "report_news", "title": "新聞播報", "filename": "report_news.webm", "play_once": True},
     {"key": "play_music", "title": "音樂播放", "filename": "play_music.webm", "play_once": True},
+    {"key": "wave_response", "title": "揮手回應", "filename": "running_forward.webm", "play_once": True},
 ]
 ACTION_MOTION_KEYS = {spec["key"] for spec in ACTION_MOTION_SPECS}
 MOTION_MAP = {spec["key"]: spec for spec in [*MOTION_SPECS, *ACTION_MOTION_SPECS]}
@@ -152,6 +153,38 @@ class CharacterLibrary:
         if action_key not in ACTION_MOTION_KEYS:
             return None
         return self.get_motion_path(character_id, action_key)
+
+    _PANEL_MOTION_FILENAMES: dict[str, str] = {
+        "report_news": "News_Panel.webm",
+        "play_music": "Play_Music_Panel.webm",
+    }
+
+    def get_panel_motion_path(self, character_id: str, action_key: str) -> str | None:
+        manifest = self.get_character(character_id)
+        if not manifest:
+            return None
+        filename = manifest.get("panel_motions", {}).get(action_key) or self._PANEL_MOTION_FILENAMES.get(action_key)
+        if not filename:
+            return None
+        motions_dir = manifest.get("motions_dir")
+        if not motions_dir:
+            return None
+        absolute_path = PROJECT_ROOT / motions_dir / filename
+        if not absolute_path.is_file():
+            return None
+        return str(absolute_path)
+
+    def get_background_path(self, character_id: str) -> str | None:
+        manifest = self.get_character(character_id)
+        if not manifest:
+            return None
+        relative_path = manifest.get("background_image")
+        if not relative_path:
+            return None
+        absolute_path = PROJECT_ROOT / relative_path
+        if not absolute_path.is_file():
+            return None
+        return str(absolute_path)
 
     def get_character_name(self, character_id: str | None) -> str | None:
         manifest = self.get_character(character_id)

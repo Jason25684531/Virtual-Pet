@@ -1,201 +1,334 @@
-# ECHOES — 次世代虛擬室友 (AR 視覺共感版)
+# ECHOES Virtual Pet
 
-結合生成式 AI 與電腦視覺的桌面陪伴數位生命體。透過本機感知使用者行為，在虛擬機中進行大腦運算，最終在桌面渲染具備 Alpha 透明通道的動態精靈。
+以 `PyQt5 + QWebEngine` 為外殼、`Azure STT` 為語音輸入、`OpenAI GPT-4o-mini` 為串流大腦、`ElevenLabs + pygame` 為記憶體語音播放、`WebM` 為角色動作載體的桌面虛擬寵物專案。
 
----
+目前主線已完成：
 
-## 系統架構
+- Azure STT 背景收音與開始 / 停止控制
+- `InteractionTurnManager` 單輪互動序列化，避免上一輪還沒播完就插入下一輪
+- `BrainEngine` 的 OpenAI 串流回覆、action-first prompt、句讀切塊、bounded message memory
+- `ActionDispatcher` 的動作前置、TTS queue 與背景 worker 收尾
+- `TransparentWindow + app.js` 的 WebM 動作切換、狀態列與 conversation panel
+- `InteractionLatencyTracker` 的 STT / LLM / Action / TTS 延遲追蹤
+- OpenCV `wave_response` 揮手感測
 
+延伸架構文件：
+
+- [現階段 ArchViz（Phase 1 / Phase 2）](/home/norlan/projecgt/Virtual-Pet/docs/current_stage_archviz.md)
+- [執行緒 / Worker 拓樸圖](/hom
+e/norlan/projecgt/Virtual-Pet/docs/thread_worker_topology.md)
+
+## 架構概覽
+
+```mermaid
+flowchart LR
+    U[使用者語音] --> STT[Azure STT]
+    D[Dev Query] --> TURN[InteractionTurnManager]
+    W[WaveSensor] --> DISP[ActionDispatcher]
+
+    STT --> TURN
+    TURN --> BRAIN[BrainEngine\nChatOpenAI streaming]
+    BRAIN --> PARSER[Action-first parser\nSentence chunking]
+    PARSER --> DISP
+
+    DISP --> MOTION[TransparentWindow\nWebM motion bridge]
+    DISP --> TTSQ[TTS Queue]
+    TTSQ --> TTS[ElevenLabs stream]
+    TTS --> PLAY[pygame in-memory playback]
+
+    TURN --> CHAT[Conversation Panel]
+    BRAIN --> CHAT
 ```
-┌─────────────────── Host (本機 Windows) ───────────────────┐
-│                                                            │
-│  main.py                                                   │
-│    └── TransparentWindow (PyQt5 QMainWindow)               │
-│          ├── SettingsDialog (非阻塞角色控制面板)            │
-│          │     ├── 角色庫選擇 / 動作預覽                    │
-│          │     └── 背景算圖 Worker (QThread)               │
-│          ├── QWebEngineView ──→ index.html                 │
-│          │     背景透明 (page.setBackgroundColor α=0)      │
-│          │     ├── style.css   (滿版、透明、無邊距)        │
-│          │     └── app.js      (idle / 單次動作切換)       │
-│          │           ↕ file:// absolute video url          │
-│          │     assets/webm/characters/<角色>/motions/      │
-│          │                                                 │
-│          ├── 無邊框 + 永遠置頂 + 不佔工作列               │
-│          ├── 滑鼠拖曳移動                                  │
-│          └── 透明區域點擊穿透 (WM_NCHITTEST)              │
-│                                                            │
-│  sensors/          (Week 2+: psutil / OpenCV / MediaPipe)  │
-│  api_client/       (Week 2+: VM FastAPI / ComfyUI 通訊)   │
-│                                                            │
-└────────── HTTP REST API (JSON) ──────────┐                 │
-                                           ▼                 │
-┌──────── VM (Linux 虛擬機) ─────────┐                       │
-│  FastAPI  →  OpenClaw  →  SQLite   │                       │
-│  (API)      (大腦)       (記憶庫)  │                       │
-└────────────────────────────────────┘                       │
-                                                             │
-```
 
-## 目錄結構
+目前系統的重點已不是單純的 `STT -> LLM -> TTS`，而是：
 
-```
-. (Virtual-Pet/)
-├── main.py                    # 程式進入點
-├── requirements.txt           # Python 依賴
-├── character_library.py       # 角色資產索引與 manifest 管理
-├── action_dispatcher.py       # [ACTION:*] 綁定表與執行協調器
-├── action_services.py         # 新聞抓取 / 音樂挑選背景 worker
+- 多輸入源整合
+- 一輪一輪的互動序列化
+- 動作與語句拆分後的低延遲回應
+- UI 狀態、對話文字、語音播放的同步完成
+
+## 目前目錄
+
+```text
+Virtual-Pet/
+├── main.py
+├── config.py
+├── interaction_trace.py
+├── interaction_turn_manager.py
+├── action_dispatcher.py
+├── action_services.py
+├── character_library.py
+├── api_client/
+│   ├── brain_engine.py
+│   ├── elevenlabs_client.py
+│   └── comfyui_client.py
+├── sensors/
+│   ├── microphone_stt.py
+│   ├── stt_session_controller.py
+│   └── camera_vision.py
 ├── ui/
-│   ├── assets/
-│   │   ├── backgrounds/       # 房間背景圖
-│   │   └── music/             # 本地音樂資料夾
-│   ├── transparent_window.py  # PyQt5 透明視窗 + WebEngine
-│   ├── settings_dialog.py     # 非阻塞角色設定 / 算圖面板
+│   ├── transparent_window.py
+│   ├── settings_dialog.py
 │   └── web_container/
-│       ├── index.html         # 房間場景骨架
-│       ├── style.css          # 房間背景 / 角色貼地樣式
-│       └── app.js             # WebM、狀態列與音訊橋接控制器
-├── sensors/                   # 感知模組 (Week 2+)
-│   ├── window_monitor.py      # psutil 活躍視窗監聽
-│   └── camera_vision.py       # OpenCV + MediaPipe
-├── api_client/                # 對外通訊 (Week 2+)
-│   ├── vm_connector.py        # FastAPI Client
-│   └── comfyui_client.py      # ComfyUI Client
-├── assets/
-│   └── webm/
-│       ├── idle.webm          # 舊版 fallback 影片
-│       └── characters/        # 每個角色獨立資料夾與動作資產
-├── docs/                      # 專案文件
-├── openspec/                  # 架構規格文件
-└── venv/                      # Python 虛擬環境
+│       ├── index.html
+│       ├── style.css
+│       └── app.js
+├── scripts/
+│   ├── smoke_test.py
+│   └── verify_linux_env.py
+├── tests/
+│   ├── test_action_playback.py
+│   ├── test_brain_streaming.py
+│   ├── test_elevenlabs_streaming.py
+│   ├── test_interaction_turn_manager.py
+│   ├── test_microphone_stt.py
+│   ├── test_stt_controls_and_trace.py
+│   └── test_wave_sensor.py
+├── docs/
+│   ├── current_stage_archviz.md
+│   ├── thread_worker_topology.md
+│   ├── linux_deployment.md
+│   ├── STTTTS.md
+│   └── archive/
+├── legacy/
+│   └── openclaw/
+└── openspec/
 ```
 
-## 技術棧
+## 核心模組
 
-| 層級 | 技術 | 用途 |
-|---|---|---|
-| UI 容器 | PyQt5 + QWebEngineView | 透明無邊框桌面視窗 |
-| 前端播放器 | 原生 HTML5 / CSS3 / JavaScript | WebM 影片循環播放與熱切換 |
-| 感知 | OpenCV + MediaPipe + psutil | 表情偵測、視窗監聽 (Week 2+) |
-| 通訊 | Python requests ↔ FastAPI | Host ↔ VM JSON API (Week 2+) |
-| 渲染 | ComfyUI (LayerDiffuse) | 去背算圖 (Week 2+) |
+- `main.py`
+  啟動 `QApplication`、`TransparentWindow`、`BrainEngine`、`InteractionTurnManager`、`STTSessionController`、`WaveSensor`，並管理整體關閉流程。
 
-> **技術戒律：** 禁止使用 QMediaPlayer、禁止使用前端框架 (React/Vue/Tailwind)
+- `interaction_turn_manager.py`
+  把 STT 與 Dev Query 序列化成一輪一輪互動。上一輪尚未完成時，下一輪只會排隊，不會插隊。
 
-## 透明渲染原理
+- `api_client/brain_engine.py`
+  使用 `ChatOpenAI(model="gpt-4o-mini", streaming=True)`。以 message history 保存最近幾輪對話，避免使用已棄用的 classic memory；同時在背景執行緒預熱 active profile，並先解析最前面的 `[ACTION:tag]`，再依標點切出第一句與後續句子，讓 TTS 可以提早開始。
 
-要讓桌面精靈「浮在桌面上」且背景完全透明，需要**四層透明設定同時生效**：
+- `action_dispatcher.py`
+  統一處理 action alias、白名單、WebM 動作切換、TTS queue 與背景 worker 收尾。
 
-1. **QApplication：** `--disable-gpu` (避免部分 Windows GPU 合成器干擾)
-2. **QMainWindow：** `Qt.WA_TranslucentBackground` + `FramelessWindowHint`
-3. **QWebEngineView：** `page().setBackgroundColor(QColor(0, 0, 0, 0))` ← 最關鍵
-4. **HTML/CSS：** `background-color: transparent`
+- `api_client/elevenlabs_client.py`
+  以 `stream=True` 向 ElevenLabs 收音訊 byte stream，直接進 `BytesIO`，再由 `pygame` 從記憶體播放，不再寫入 `assets/temp_audio/`。
 
-## 快速開始
+- `ui/transparent_window.py`
+  管理透明桌面視窗與 Python -> JS bridge，負責狀態列、對話卡片、WebM 動作切換。
 
-### 環境需求
+- `ui/web_container/app.js`
+  控制 idle / temporary motion、conversation panel、queue depth 顯示與前端狀態更新。
 
-- Python 3.10+
-- Windows 10/11 (目前僅支援 Windows)
+- `interaction_trace.py`
+  追蹤每一輪互動的 `brain_queue_wait`、`llm_to_first_output`、`tts_startup`、`tts_tail` 與 bottleneck。
 
-### 安裝
+## 互動流程
+
+```text
+使用者輸入
+-> Azure STT finalized text
+-> InteractionTurnManager
+-> BrainEngine(OpenAI streaming)
+-> [ACTION:*] 立即觸發 WebM
+-> 第一個句讀片段送入 TTS queue
+-> ElevenLabs stream -> pygame playback
+-> 對話卡片完成
+-> 下一輪開始
+```
+
+補充：
+
+- `wave_response` 可直接走 `ActionDispatcher`，不需經過大腦與 TTS。
+- STT 停止後的晚到辨識事件會被忽略，避免停止收音後又偷偷塞進新互動。
+- 關閉程式時會先 shutdown 背景 worker，避免 `QThread: Destroyed while thread is still running`。
+
+## Action 白名單
+
+目前 Host 支援的 action：
+
+- `report_news`
+- `play_music`
+- `wave_response`
+- `laugh`
+- `angry`
+- `awkward`
+- `speechless`
+- `listen`
+- `idle`
+
+常見 alias 會自動正規化，例如：
+
+- `news` -> `report_news`
+- `music` -> `play_music`
+- `happy` -> `laugh`
+- `mad` -> `angry`
+- `thinking` -> `listen`
+
+## 資產規則
+
+角色資產放在：
+
+```text
+assets/webm/characters/<character_id>/
+├── manifest.json
+├── source/
+└── motions/
+```
+
+`manifest.json` 內的 `motions` 建議至少包含：
+
+- `idle`
+- `report_news`
+- `play_music`
+- `wave_response`
+- `laugh`
+- `angry`
+- `awkward`
+- `speechless`
+- `listen`
+
+缺少 action 專用 WebM 時，系統會安全退回 idle。
+
+## 安裝
+
+以下指令都假設在專案根目錄，並且先進入虛擬環境。
+
+### 1. 建立並啟用虛擬環境
 
 ```bash
-# 1. 建立虛擬環境（若尚未建立）
 python -m venv venv
+```
 
-# 2. 啟用虛擬環境
-# Windows PowerShell:
+Linux / macOS：
+
+```bash
+source venv/bin/activate
+```
+
+Windows PowerShell：
+
+```bash
 .\venv\Scripts\Activate.ps1
-# Windows CMD:
-.\venv\Scripts\activate.bat
+```
 
-# 3. 安裝依賴
+### 2. 安裝依賴
+
+```bash
 pip install -r requirements.txt
 ```
 
-### 啟動
+### 3. 設定 `.env`
+
+建議至少提供：
 
 ```bash
-# 確保虛擬環境已啟用
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-4o-mini
+ELEVENLABS_API_KEY=your_elevenlabs_api_key
+ELEVENLABS_VOICE_ID=your_voice_id
+AZURE_STT_API_KEY=your_azure_speech_key
+AZURE_STT_REGION=eastus
+AZURE_STT_LANGUAGE=zh-TW
+AZURE_STT_ENABLED=true
+```
+
+可選欄位：
+
+```bash
+ELEVENLABS_MODEL_ID=eleven_flash_v2_5
+ELEVENLABS_SPEED=1.15
+CHATGPT_API_KEY=your_openai_api_key_fallback
+BRAIN_MEMORY_MAX_TURNS=6
+OPENAI_TEMPERATURE=0.4
+```
+
+說明：
+
+- `OPENAI_API_KEY` 是目前主線必填。
+- `CHATGPT_API_KEY` 只作為 `OPENAI_API_KEY` 的 fallback。
+- `BRAIN_MEMORY_MAX_TURNS` 用來限制保留的最近對話輪數，避免上下文無限制膨脹而拖慢延遲。
+- 舊的 `OLLAMA_*` 設定仍留在 `config.py` 內做相容保留，但已不是目前互動主路徑。
+
+## 啟動
+
+```bash
 python main.py
 ```
 
-### 預期結果
+Linux 若遇到 Qt / WebEngine / WebGL 問題，請參考 [linux_deployment.md](/home/norlan/projecgt/Virtual-Pet/docs/linux_deployment.md)。
 
-1. 桌面右下角出現房間場景視窗，顯示固定背景、角色舞台與狀態列
-2. 若已有角色 manifest，會自動載入上次套用角色的 `idle.webm`
-3. 若沒有角色 manifest，但 `assets/webm/idle.webm` 存在，會使用舊版 fallback idle
-4. 右鍵桌面角色可開啟「ECHOES — 角色設定」，該視窗不會鎖住桌面角色拖曳
-5. 右鍵選單新增「功能動作 → 播報新聞 / 播放音樂 / 停止音樂」
-6. 在角色設定中可選擇既有角色、播放既有動作，或上傳新圖片重新生成 6 個動作
-7. 非 idle 動作播放完會自動回到 idle；若 action 專用動畫缺失，仍會執行功能並保持 idle
-8. 狀態列會顯示目前 action，例如新聞標題、目前播放曲目或錯誤訊息
-9. 若 `ui/assets/music/` 沒有可播放檔案，播放音樂 action 會顯示 warning，但不會讓 UI 卡住
-10. 若新聞來源暫時無法存取，新聞 action 會顯示 warning 並回到安全狀態
-11. 可用滑鼠拖曳移動視窗位置
-12. 視窗外圈透明區域的點擊會穿透至底下的視窗
-13. 5 秒後 console 會印出 `[ECHOES] 測試: 更新房間狀態文字`
+## 測試與驗證
 
-## 角色資產流程
-
-1. 在角色設定中選擇一張角色圖片。
-2. 系統會建立 `assets/webm/characters/<timestamp>_<角色名>/`。
-3. 原始圖片會複製到 `source/`，生成出的 6 支 WebM 會存到 `motions/`。
-4. 同層會建立 `manifest.json`，記錄角色名稱、來源圖、動作檔與 prompt。
-5. 之後可從角色下拉選單直接套用歷史角色，並選擇任一已生成動作預覽。
-
-### Action 動作檔命名
-
-若要讓角色在功能動作時切換專屬動畫，可在角色 `manifest.json` 的 `motions` 裡加入以下可選鍵值：
-
-- `report_news`: 對應新聞播報動畫，例如 `assets/webm/characters/<角色>/motions/report_news.webm`
-- `play_music`: 對應播放音樂動畫，例如 `assets/webm/characters/<角色>/motions/play_music.webm`
-
-若這兩支影片不存在，系統會保留或回退到 `idle.webm`，但仍會繼續執行 action handler。
-
-## 房間模式資產
-
-- 房間背景預設讀取 `ui/assets/backgrounds/初音房3 2.jpg`
-- 本地音樂 action 會掃描 `ui/assets/music/`，支援 `.mp3`、`.wav`、`.ogg`、`.m4a`、`.aac`、`.flac`
-- 新聞 action 預設抓取 BBC World RSS；若網路或來源失敗，只會在狀態列與 console 顯示警告
-
-### 準備測試用 WebM
-
-若要沿用舊版 fallback 流程，可將任意含 Alpha 通道的 WebM 影片放入 `assets/webm/` 並命名為 `idle.webm`。
-
-如果暫時沒有素材，可使用 FFmpeg 從帶透明的 PNG 序列生成測試用 WebM：
+### 單元測試
 
 ```bash
-ffmpeg -framerate 24 -i frame_%04d.png -c:v libvpx-vp9 -pix_fmt yuva420p idle.webm
+python -m unittest discover -s tests -v
 ```
 
-## JavaScript API
+目前測試涵蓋：
 
-前端提供以下函式，可由 Python 透過 `page().runJavaScript()` 呼叫：
+- action / motion / TTS queue 播放順序
+- OpenAI 串流切片與安全降級
+- ElevenLabs 記憶體播放
+- interaction turn 排隊與完成順序
+- STT 控制與延遲追蹤
+- wave sensor 整合
 
-| 函式 | 參數 | 說明 |
-|---|---|---|
-| `setIdleVideo(source)` | `string` 影片 URL | 設定目前角色 idle 動畫 |
-| `playTemporaryVideo(source)` | `string` 影片 URL | 播放單次動作，結束後回到 idle |
-| `setActionStatus(message, tone, timeoutMs)` | `string`, `string`, `number` | 更新房間狀態列文字與 tone |
-| `clearActionStatus()` | 無 | 將狀態列回復待命狀態 |
-| `setRoomCharacter(name)` | `string` | 更新房間場景左上角角色名稱 |
-| `playRoomAudio(source, title)` | `string`, `string` | 播放本地音訊並更新狀態列 |
-| `stopRoomAudio()` | 無 | 停止目前播放中的音訊 |
-| `changeVideo(source)` | `string` 影片 URL | 舊版相容別名，等同 `setIdleVideo` |
-| `getVideoStatus()` | 無 | 回傳目前播放狀態 (src, paused, currentTime 等) |
+### 冒煙測試
 
-Python 端呼叫範例：
-
-```python
-window.change_video("happy.webm")  # 切換到開心動畫
+```bash
+python scripts/smoke_test.py
 ```
 
-## 開發階段
+用途：
 
-- [x] **Week 1：** 基礎渲染與前端容器 (目前)
-- [ ] **Week 2：** 感知模組 (psutil + OpenCV)
-- [ ] **Week 3：** VM API 橋接 (FastAPI + OpenClaw)
-- [ ] **Week 4：** ComfyUI 算圖整合
+- 檢查 `.env` 主要欄位
+- 檢查 OpenAI 串流是否能產出 action-first 片段
+- 檢查 ElevenLabs 串流是否能回傳有效音訊
+- 先 warmup 1 輪，再量測 3 輪 latency probe，用中位數與 `fast_rounds` 檢查整體流程是否穩定
+
+### 建議驗證流程
+
+1. 先啟用 `venv`
+2. 跑單元測試
+3. 跑 `python scripts/smoke_test.py`
+4. 啟動 `python main.py`
+5. 點 `開始收音`，說一句短句，例如：`請先聽我說，再鼓勵我一句。`
+6. 觀察是否依序出現：
+   - STT finalized text
+   - 新的 conversation turn
+   - `[ACTION:listen]` 先觸發 WebM
+   - 第一個句讀片段開始 TTS
+   - 本輪完成後才進下一輪
+
+### 延遲摘要判讀
+
+每輪互動完成後，terminal 會輸出摘要，例如：
+
+```text
+[ECHOES][TRACE][abcd1234] 互動完成摘要 source=stt total=1870ms | stages: brain_queue_wait=0ms; llm_to_first_output=930ms; tts_startup=556ms; tts_tail=384ms | bottleneck=llm_to_first_output(930ms)
+```
+
+可快速判讀：
+
+- `brain_queue_wait`: 進入腦引擎佇列後，真正開始處理前等待多久
+- `llm_to_first_output`: OpenAI 從開始推論到第一個片段輸出的時間
+- `tts_startup`: 第一段 TTS 進佇列到開始送入播放器的時間
+- `tts_tail`: TTS 開始後到整輪完成還花了多久
+- `bottleneck`: 這輪最慢的階段
+
+`scripts/smoke_test.py` 則會另外輸出多輪摘要，例如：
+
+```text
+[PASS] LatencyProbe: 多輪量測通過。 totals=[1861, 2405, 1489]ms, median_total=1861ms, median_action=914ms, median_tts_start=1138ms, fast_rounds=2/3
+```
+
+可快速判讀：
+
+- `median_total`: 3 輪量測的端到端中位數，用來抗單輪 jitter
+- `fast_rounds`: 3 輪內有幾輪壓在 2000ms 內；目前 smoke 預設至少要 `2/3`
+
+## 開發備註
+
+- `legacy/openclaw/` 是封存區，不是目前主流程依賴。
+- `docs/archive/` 存放歷史文件，不影響主流程。
+- 若要理解目前程式真實結構，請優先看本 README 與 `docs/current_stage_archviz.md`，不要以舊提交內的 Ollama 流程為準。
