@@ -201,6 +201,7 @@ class _ManualQueuedTTSWorker:
         text: str,
         reply_id: str | None = None,
         trace_id: str | None = None,
+        voice_id: str | None = None,
         parent=None,
     ):
         del parent
@@ -209,6 +210,7 @@ class _ManualQueuedTTSWorker:
         self.trace_id = trace_id or ""
         self.finished_signal = _DebugSignal()
         self.progress_signal = _DebugSignal()
+        self.audio_ready_signal = _DebugSignal()
         self.finished = _DebugSignal()
         self.started = False
         _ManualQueuedTTSWorker.instances.append(self)
@@ -255,6 +257,7 @@ class _ImmediateTTSWorker:
         text: str,
         reply_id: str | None = None,
         trace_id: str | None = None,
+        voice_id: str | None = None,
         parent=None,
     ):
         del parent
@@ -263,6 +266,7 @@ class _ImmediateTTSWorker:
         self._trace_id = trace_id or ""
         self.finished_signal = _DebugSignal()
         self.progress_signal = _DebugSignal()
+        self.audio_ready_signal = _DebugSignal()
         self.finished = _DebugSignal()
 
     def start(self):

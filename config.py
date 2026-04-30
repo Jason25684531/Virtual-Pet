@@ -42,6 +42,40 @@ ELEVENLABS_VOICE_ID = (
     or DEFAULT_ELEVENLABS_VOICE_ID
 )
 
+# --- i18n 語系設定 ---
+CURRENT_LANG: str = os.getenv("CURRENT_LANG", "zh-TW").strip() or "zh-TW"
+
+LANG_PROFILES: dict[str, dict] = {
+    "zh-TW": {"stt_language": "zh-TW"},
+    "en-US": {"stt_language": "en-US"},
+}
+
+# --- 多語系 TTS 聲線 ---
+# 英文預設聲線（Rachel）；在 .env 設定 ELEVENLABS_VOICE_ID_EN 可覆蓋
+ELEVENLABS_VOICE_ID_EN: str = (
+    os.getenv("ELEVENLABS_VOICE_ID_EN", "21m00Tcm4TlvDq8ikWAM").strip()
+    or "21m00Tcm4TlvDq8ikWAM"
+)
+
+# 各角色專屬聲線映射（從 .env 解析，缺少時回退全域預設）
+CHARACTER_VOICE_IDS: dict[str, str] = {
+    "miku": (
+        os.getenv("ELEVENLABS_VOICE_ID", DEFAULT_ELEVENLABS_VOICE_ID).strip()
+        or DEFAULT_ELEVENLABS_VOICE_ID
+    ),
+    "Choppr": (
+        os.getenv("CHOPPER_VOICE_ID", DEFAULT_ELEVENLABS_VOICE_ID).strip()
+        or DEFAULT_ELEVENLABS_VOICE_ID
+    ),
+}
+
+# VoAI 角色聲音設定
+_DEFAULT_VOAI_CONFIG: dict = {"speaker": "柔洢", "version": "Classic", "pitch_shift": 0}
+CHARACTER_VOAI_CONFIGS: dict[str, dict] = {
+    "miku":   {"speaker": "柔洢", "version": "Classic", "pitch_shift": 1},
+    "Choppr": {"speaker": "阿皮",  "version": "Neo",     "pitch_shift": 1.5},
+}
+
 
 def _read_bool_env(name: str, default: bool) -> bool:
     value = os.getenv(name, "").strip().lower()
@@ -171,3 +205,19 @@ def canonicalize_host_action(action_name: str | None) -> str:
     if normalized in HOST_ACTION_NAMES:
         return normalized
     return HOST_ACTION_ALIASES.get(normalized, "")
+
+
+def get_voice_id_for_character(character_id: str | None) -> str:
+    """回傳角色對應的 ElevenLabs Voice ID。
+    優先順序：CHARACTER_VOICE_IDS[character_id] → ELEVENLABS_VOICE_ID（全域預設）。
+    """
+    cid = str(character_id or "").strip()
+    return CHARACTER_VOICE_IDS.get(cid) or ELEVENLABS_VOICE_ID
+
+
+def get_voai_config_for_character(character_id: str | None) -> dict:
+    """回傳角色對應的 VoAI 聲音設定 dict（speaker、version、pitch_shift）。
+    找不到時回傳預設設定。
+    """
+    cid = str(character_id or "").strip()
+    return dict(CHARACTER_VOAI_CONFIGS.get(cid) or _DEFAULT_VOAI_CONFIG)

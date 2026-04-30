@@ -1,8 +1,8 @@
 """
-ECHOES — Python 端 ElevenLabs 串流 TTS 與記憶體音訊播放。
+ECHOES — Python 端 ElevenLabs 串流 TTS。
 
 將句讀級文字片段送往 ElevenLabs 串流 API，將回傳音訊累積在記憶體中，
-再交給 `pygame` 背景播放器直接播放，避免暫存 MP3 與硬碟 I/O。
+透過 audio_ready_signal 通知 AudioStreamWorker 播放，實現 Producer-Consumer 無縫銜接。
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ class PygameInMemoryAudioPlayer:
             except Exception:
                 pass
 
-            # `namehint=\"mp3\"` 可幫助 pygame 在 file-like object 上正確判斷格式。
+            # `namehint="mp3"` 可幫助 pygame 在 file-like object 上正確判斷格式。
             self._mixer.music.load(audio_buffer, "mp3")
             self._mixer.music.play()
             while self._mixer.music.get_busy():
@@ -80,10 +80,15 @@ class PygameInMemoryAudioPlayer:
 
 
 class ElevenLabsStreamingTTSWorker(QThread):
-    """以串流方式取得 ElevenLabs 音訊，並由 Python 背景直接播放。"""
+    """以串流方式取得 ElevenLabs 音訊位元組，不負責播放。
+
+    音訊取得完畢後 emit audio_ready_signal，由 AudioStreamWorker 負責排隊播放。
+    """
 
     finished_signal = pyqtSignal(bool, str, object)
     progress_signal = pyqtSignal(str, object)
+    # (BytesIO audio_buffer, reply_id, trace_id)
+    audio_ready_signal = pyqtSignal(object, str, str)
 
     def __init__(
         self,
@@ -92,7 +97,6 @@ class ElevenLabsStreamingTTSWorker(QThread):
         trace_id: str | None = None,
         voice_id: str | None = None,
         requests_post=None,
-        audio_player=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -101,7 +105,6 @@ class ElevenLabsStreamingTTSWorker(QThread):
         self._trace_id = (trace_id or "").strip()
         self._voice_id = (voice_id or "").strip()
         self._requests_post = requests_post or requests.post
-        self._audio_player = audio_player or PygameInMemoryAudioPlayer()
 
     def run(self):
         speech_text = _sanitize_stream_tts_text(self._text)
@@ -177,19 +180,19 @@ class ElevenLabsStreamingTTSWorker(QThread):
                 return
 
             audio_buffer.seek(0)
-            self._audio_player.play(audio_buffer)
+            self.audio_ready_signal.emit(audio_buffer, self._reply_id, self._trace_id)
 
-            payload = {
+            result_payload = {
                 "reply_id": self._reply_id,
                 "trace_id": self._trace_id,
                 "text": speech_text,
                 "bytes_forwarded": bytes_forwarded,
             }
-            self.finished_signal.emit(True, "串流語音播放完成。", payload)
+            self.finished_signal.emit(True, "TTS 音訊取得完成，已送入播放佇列。", result_payload)
         except requests.RequestException as exc:
             self.finished_signal.emit(False, f"ElevenLabs 串流請求失敗: {exc}", None)
         except Exception as exc:  # pragma: no cover - 依外部音訊環境而定
-            self.finished_signal.emit(False, f"串流語音播放失敗: {exc}", None)
+            self.finished_signal.emit(False, f"TTS 音訊取得失敗: {exc}", None)
         finally:
             if response is not None:
                 response.close()

@@ -16,7 +16,9 @@ from PyQt5.QtCore import QObject, QTimer
 
 from action_services import MusicSelectionWorker, NewsFetchWorker
 from api_client.brain_engine import sanitize_tts_text
-from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
+from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker  # noqa: F401 — 保留供降級使用
+from api_client.voai_client import VoAIStreamingTTSWorker
+from audio_worker import AudioStreamWorker
 from character_library import ASSETS_WEBM_DIR, MOTION_MAP
 import config
 from interaction_trace import InteractionLatencyTracker
@@ -46,7 +48,7 @@ class ActionDispatcher(QObject):
         self,
         window: "TransparentWindow",
         library: "CharacterLibrary",
-        tts_worker_factory=ElevenLabsStreamingTTSWorker,
+        tts_worker_factory=VoAIStreamingTTSWorker,
         news_worker_factory=NewsFetchWorker,
         music_worker_factory=MusicSelectionWorker,
         motion_path_resolver=None,
@@ -59,7 +61,7 @@ class ActionDispatcher(QObject):
         self._library = library
         self._workers: list[object] = []
         self._tts_worker_factory = (
-            tts_worker_factory if callable(tts_worker_factory) else ElevenLabsStreamingTTSWorker
+            tts_worker_factory if callable(tts_worker_factory) else VoAIStreamingTTSWorker
         )
         self._news_worker_factory = (
             news_worker_factory if callable(news_worker_factory) else NewsFetchWorker
@@ -75,6 +77,10 @@ class ActionDispatcher(QObject):
         self._current_loop_action_key: str | None = None
         self._loop_action_tts_queued: bool = False
         self._loop_cleanup_timer: QTimer | None = None
+        # AudioStreamWorker：Consumer，持續從佇列取出 BytesIO 並播放
+        self._audio_worker = AudioStreamWorker(parent=self)
+        self._audio_worker.queue_drained.connect(self._on_audio_queue_drained)
+        self._audio_worker.start()
         self._bindings = {
             "report_news": ActionBinding(
                 name="report_news",
@@ -134,7 +140,11 @@ class ActionDispatcher(QObject):
 
     @property
     def is_tts_busy(self) -> bool:
-        return self._active_tts_worker is not None
+        return (
+            self._active_tts_worker is not None
+            or not self._pending_tts_chunks.empty()
+            or self._audio_worker.is_busy()
+        )
 
     def dispatch(self, directive: str, trace_id: str | None = None) -> bool:
         raw_action_name, display_message = self._parse_directive(directive)
@@ -394,8 +404,8 @@ class ActionDispatcher(QObject):
             return
 
         if not callable(self._tts_worker_factory):
-            print("[ECHOES] 警告: TTS worker factory 無效，已回退到 ElevenLabsStreamingTTSWorker。")
-            self._tts_worker_factory = ElevenLabsStreamingTTSWorker
+            print("[ECHOES] 警告: TTS worker factory 無效，已回退到 VoAIStreamingTTSWorker。")
+            self._tts_worker_factory = VoAIStreamingTTSWorker
 
         reply_id = uuid4().hex
         self._pending_tts_chunks.put((reply_id, speech_text, trace_id))
@@ -410,22 +420,25 @@ class ActionDispatcher(QObject):
 
     def _start_next_tts_worker(self):
         if self._active_tts_worker is not None or self._pending_tts_chunks.empty():
-            if (self._active_tts_worker is None
-                    and self._pending_tts_chunks.empty()
-                    and self._loop_action_tts_queued
-                    and self._current_loop_action_key is not None):
-                self._finish_loop_action()
             return
 
         reply_id, speech_text, trace_id = self._pending_tts_chunks.get_nowait()
+
+        current_character_id = self._call_library_method("get_current_character_id")
+        voice_id = config.get_voice_id_for_character(current_character_id)
+
         worker = self._tts_worker_factory(
             text=speech_text,
             reply_id=reply_id,
             trace_id=trace_id,
+            voice_id=voice_id,
             parent=self,
         )
         self._active_tts_worker = worker
         self._workers.append(worker)
+
+        def handle_audio_ready(audio_bytes, r_id: str, t_id: str):
+            self._audio_worker.enqueue(audio_bytes, r_id, t_id)
 
         def handle_result(success: bool, result_message: str, payload: object, current_reply_id=reply_id):
             self._on_tts_finished(current_reply_id, success, result_message, payload)
@@ -434,6 +447,8 @@ class ActionDispatcher(QObject):
             self._on_tts_progress(event_name, payload)
 
         def on_thread_finished(current_worker=worker):
+            # HTTP 取音訊完成（非播放完成），立即啟動下一個 HTTP 取音訊
+            # AudioStreamWorker 負責按序播放，不再等待音訊播完才取下一句
             if current_worker in self._workers:
                 self._workers.remove(current_worker)
             if self._active_tts_worker is current_worker:
@@ -442,11 +457,21 @@ class ActionDispatcher(QObject):
                 current_worker.deleteLater()
             self._start_next_tts_worker()
 
+        if hasattr(worker, "audio_ready_signal"):
+            worker.audio_ready_signal.connect(handle_audio_ready)
         worker.finished_signal.connect(handle_result)
         if hasattr(worker, "progress_signal"):
             worker.progress_signal.connect(handle_progress)
         worker.finished.connect(on_thread_finished)
         worker.start()
+
+    def _on_audio_queue_drained(self):
+        """AudioStreamWorker 播放佇列清空時觸發。用於 loop action 的 TTS 完成偵測。"""
+        if (self._loop_action_tts_queued
+                and self._current_loop_action_key is not None
+                and self._pending_tts_chunks.empty()
+                and self._active_tts_worker is None):
+            self._finish_loop_action()
 
     def _on_tts_progress(self, event_name: str, payload: object):
         if event_name != "stream_started" or not isinstance(payload, dict):
@@ -474,6 +499,11 @@ class ActionDispatcher(QObject):
                 self._pending_tts_chunks.get_nowait()
             except queue.Empty:
                 break
+
+        # 停止 AudioStreamWorker（清空佇列後送 sentinel 正常退出）
+        self._audio_worker.clear_queue()
+        self._audio_worker.stop()
+        self._audio_worker.wait(wait_ms)
 
         workers = list(self._workers)
         active_worker = self._active_tts_worker

@@ -1,0 +1,150 @@
+"""
+ECHOES — VoAI TTS 整合。
+
+以 VoAI TTS API（https://connect.voai.ai/TTS/Speech）取得 MP3 音訊，
+完成後透過 audio_ready_signal 通知 AudioStreamWorker 播放。
+介面與 ElevenLabsStreamingTTSWorker 相容，可直接替換。
+"""
+
+from __future__ import annotations
+
+import io
+import os
+from uuid import uuid4
+
+import requests
+from PyQt5.QtCore import QThread, pyqtSignal
+
+import config
+
+_VOAI_TTS_URL = "https://connect.voai.ai/TTS/Speech"
+_DEFAULT_STYLE = "預設"
+_DEFAULT_SPEED = 1.2
+_DEFAULT_STYLE_WEIGHT = 0.0
+_DEFAULT_BREATH_PAUSE = 0.0
+
+
+def _get_api_key() -> str:
+    return (
+        os.getenv("VOAI_API_KEY", "").strip()
+        or os.getenv("VoAI_API_KEY", "").strip()
+    )
+
+
+class VoAIStreamingTTSWorker(QThread):
+    """呼叫 VoAI TTS API 取得 MP3 音訊，完成後 emit audio_ready_signal。
+
+    介面與 ElevenLabsStreamingTTSWorker 相容：
+      - 相同建構子參數：text, reply_id, trace_id, voice_id, parent
+      - 相同 signals：finished_signal, progress_signal, audio_ready_signal
+    """
+
+    finished_signal = pyqtSignal(bool, str, object)
+    progress_signal = pyqtSignal(str, object)
+    # (BytesIO audio_buffer, reply_id, trace_id)
+    audio_ready_signal = pyqtSignal(object, str, str)
+
+    def __init__(
+        self,
+        text: str,
+        reply_id: str | None = None,
+        trace_id: str | None = None,
+        voice_id: str | None = None,
+        requests_post=None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._text = str(text or "").strip()
+        self._reply_id = (reply_id or uuid4().hex).strip()
+        self._trace_id = (trace_id or "").strip()
+        self._voice_id = (voice_id or "").strip()
+        self._requests_post = requests_post or requests.post
+
+    def run(self):
+        if not self._text:
+            self.finished_signal.emit(False, "略過 VoAI TTS：沒有可朗讀的文字。", None)
+            return
+
+        api_key = _get_api_key()
+        if not api_key:
+            self.finished_signal.emit(False, "略過 VoAI TTS：缺少 VOAI_API_KEY。", None)
+            return
+
+        voice_cfg = config.get_voai_config_for_character(self._voice_id)
+        payload = {
+            "version": voice_cfg.get("version", "Classic"),
+            "text": self._text,
+            "speaker": voice_cfg.get("speaker", "柔洢"),
+            "style": voice_cfg.get("style", _DEFAULT_STYLE),
+            "speed": float(voice_cfg.get("speed", _DEFAULT_SPEED)),
+            "pitch_shift": float(voice_cfg.get("pitch_shift", 0)),
+            "style_weight": float(voice_cfg.get("style_weight", _DEFAULT_STYLE_WEIGHT)),
+            "breath_pause": float(voice_cfg.get("breath_pause", _DEFAULT_BREATH_PAUSE)),
+        }
+        headers = {
+            "x-api-key": api_key,
+            "x-output-format": "mp3",
+            "Content-Type": "application/json",
+        }
+
+        response = None
+        try:
+            response = self._requests_post(
+                _VOAI_TTS_URL,
+                headers=headers,
+                json=payload,
+                timeout=(5, 45),
+            )
+            response.raise_for_status()
+
+            content_type = str(response.headers.get("content-type", "") or "").lower()
+            if "audio" not in content_type and "octet-stream" not in content_type:
+                self.finished_signal.emit(
+                    False,
+                    f"VoAI 回傳非音訊格式：{content_type}",
+                    None,
+                )
+                return
+
+            audio_bytes = response.content
+            if not audio_bytes:
+                self.finished_signal.emit(False, "VoAI 回傳空音訊。", None)
+                return
+
+            self.progress_signal.emit(
+                "stream_started",
+                {
+                    "reply_id": self._reply_id,
+                    "trace_id": self._trace_id,
+                    "bytes_received": len(audio_bytes),
+                },
+            )
+
+            audio_buffer = io.BytesIO(audio_bytes)
+            audio_buffer.seek(0)
+            self.audio_ready_signal.emit(audio_buffer, self._reply_id, self._trace_id)
+
+            self.finished_signal.emit(
+                True,
+                "VoAI TTS 音訊取得完成，已送入播放佇列。",
+                {
+                    "reply_id": self._reply_id,
+                    "trace_id": self._trace_id,
+                    "text": self._text,
+                    "bytes_received": len(audio_bytes),
+                },
+            )
+        except requests.HTTPError as exc:
+            body = ""
+            try:
+                body = exc.response.text[:200] if exc.response is not None else ""
+            except Exception:
+                pass
+            self.finished_signal.emit(False, f"VoAI API 請求失敗 ({exc}): {body}", None)
+        except requests.RequestException as exc:
+            self.finished_signal.emit(False, f"VoAI 網路錯誤: {exc}", None)
+        except Exception as exc:
+            self.finished_signal.emit(False, f"VoAI TTS 取得失敗: {exc}", None)
+        finally:
+            if response is not None:
+                response.close()

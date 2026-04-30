@@ -164,16 +164,16 @@ def main():
 
     def _on_wave_detected(directive: str):
         nonlocal _last_wave_time
-        if window.is_busy:
-            print("[ECHOES] Wave response 略過：STT 或 TTS 進行中")
-            return
         now = time.monotonic()
         elapsed = now - _last_wave_time
+        _last_wave_time = now  # 無論如何先更新計時器，避免 is_busy 期間計時器凍結
         if elapsed < WAVE_RESPONSE_COOLDOWN_S:
             remaining = WAVE_RESPONSE_COOLDOWN_S - elapsed
             print(f"[ECHOES] Wave response 略過：冷卻中（剩餘 {remaining:.1f}s）")
             return
-        _last_wave_time = now
+        if window.is_busy:
+            print("[ECHOES] Wave response 略過：STT 或 TTS 進行中")
+            return
         window.dispatch_action(directive)
 
     if wave_sensor_config.detection_enabled:

@@ -29,6 +29,16 @@ class _ProgressCollector:
         self.events.append((event_name, payload))
 
 
+class _AudioReadyCollector:
+    """收集 audio_ready_signal(BytesIO, reply_id, trace_id) 的 emit。"""
+    def __init__(self):
+        self.events: list[tuple[bytes, str, str]] = []
+
+    def __call__(self, audio_buffer: io.BytesIO, reply_id: str, trace_id: str):
+        audio_buffer.seek(0)
+        self.events.append((audio_buffer.read(), reply_id, trace_id))
+
+
 class FakeResponse:
     def __init__(self, chunks=None, headers=None, error: Exception | None = None):
         self._chunks = list(chunks or [])
@@ -47,19 +57,6 @@ class FakeResponse:
 
     def close(self):
         self.closed = True
-
-
-class FakeAudioPlayer:
-    def __init__(self):
-        self.played_bytes: list[bytes] = []
-
-    def play(self, audio_buffer: io.BytesIO):
-        self.played_bytes.append(audio_buffer.read())
-
-
-class RaisingAudioPlayer:
-    def play(self, _audio_buffer: io.BytesIO):
-        raise RuntimeError("audio backend unavailable")
 
 
 class _FakeMusic:
@@ -117,13 +114,13 @@ class ElevenLabsStreamingWorkerTests(unittest.TestCase):
             os.environ["ELEVENLABS_VOICE_ID"] = self._original_voice_id
 
     def test_missing_credentials_emit_safe_fallback(self):
+        """缺少 API Key 時應 emit finished_signal(False, ...)。"""
         collector = _SignalCollector()
         os.environ.pop("ELEVENLABS_API_KEY", None)
 
         worker = ElevenLabsStreamingTTSWorker(
             text="測試語音",
             voice_id="voice",
-            audio_player=FakeAudioPlayer(),
         )
         worker.finished_signal.connect(collector)
 
@@ -133,10 +130,11 @@ class ElevenLabsStreamingWorkerTests(unittest.TestCase):
         self.assertFalse(collector.events[0][0])
         self.assertIn("缺少 ElevenLabs API Key", collector.events[0][1])
 
-    def test_streaming_success_buffers_audio_in_memory_and_plays_it(self):
-        collector = _SignalCollector()
-        progress = _ProgressCollector()
-        player = FakeAudioPlayer()
+    def test_streaming_success_emits_audio_ready_signal(self):
+        """串流成功時應 emit audio_ready_signal(BytesIO, reply_id, trace_id)。"""
+        finish_collector = _SignalCollector()
+        progress_collector = _ProgressCollector()
+        audio_collector = _AudioReadyCollector()
 
         def fake_post(*_args, **_kwargs):
             return FakeResponse(chunks=[b"abc", b"def"])
@@ -146,26 +144,34 @@ class ElevenLabsStreamingWorkerTests(unittest.TestCase):
             voice_id="voice",
             trace_id="trace-1234",
             requests_post=fake_post,
-            audio_player=player,
         )
-        worker.finished_signal.connect(collector)
-        worker.progress_signal.connect(progress)
+        worker.finished_signal.connect(finish_collector)
+        worker.progress_signal.connect(progress_collector)
+        worker.audio_ready_signal.connect(audio_collector)
         os.environ["ELEVENLABS_API_KEY"] = "test-key"
 
         worker.run()
 
-        self.assertEqual(len(collector.events), 1)
-        success, message, payload = collector.events[0]
+        # audio_ready_signal 應被 emit 一次，包含完整音訊 bytes
+        self.assertEqual(len(audio_collector.events), 1)
+        audio_bytes, reply_id, trace_id = audio_collector.events[0]
+        self.assertEqual(audio_bytes, b"abcdef")
+        self.assertEqual(trace_id, "trace-1234")
+
+        # finished_signal 應 emit 成功
+        self.assertEqual(len(finish_collector.events), 1)
+        success, message, payload = finish_collector.events[0]
         self.assertTrue(success)
-        self.assertIn("播放完成", message)
-        self.assertIsInstance(payload, dict)
+        self.assertIn("已送入播放佇列", message)
         self.assertEqual(payload["bytes_forwarded"], 6)
         self.assertEqual(payload["trace_id"], "trace-1234")
-        self.assertEqual(player.played_bytes, [b"abcdef"])
-        self.assertEqual(progress.events[0][0], "stream_started")
-        self.assertEqual(progress.events[0][1]["trace_id"], "trace-1234")
+
+        # progress_signal stream_started 應被 emit
+        self.assertEqual(progress_collector.events[0][0], "stream_started")
+        self.assertEqual(progress_collector.events[0][1]["trace_id"], "trace-1234")
 
     def test_invalid_audio_payload_emits_warning(self):
+        """回傳非 audio content-type 時應 emit finished_signal(False, ...)。"""
         collector = _SignalCollector()
 
         def fake_post(*_args, **_kwargs):
@@ -175,7 +181,6 @@ class ElevenLabsStreamingWorkerTests(unittest.TestCase):
             text="測試",
             voice_id="voice",
             requests_post=fake_post,
-            audio_player=FakeAudioPlayer(),
         )
         worker.finished_signal.connect(collector)
         os.environ["ELEVENLABS_API_KEY"] = "test-key"
@@ -186,17 +191,17 @@ class ElevenLabsStreamingWorkerTests(unittest.TestCase):
         self.assertFalse(collector.events[0][0])
         self.assertIn("無效音訊格式", collector.events[0][1])
 
-    def test_audio_player_failure_emits_warning(self):
+    def test_empty_audio_response_emits_warning(self):
+        """收到空音訊 bytes 時應 emit finished_signal(False, ...)。"""
         collector = _SignalCollector()
 
         def fake_post(*_args, **_kwargs):
-            return FakeResponse(chunks=[b"abc"])
+            return FakeResponse(chunks=[])  # 沒有任何 chunk
 
         worker = ElevenLabsStreamingTTSWorker(
             text="測試",
             voice_id="voice",
             requests_post=fake_post,
-            audio_player=RaisingAudioPlayer(),
         )
         worker.finished_signal.connect(collector)
         os.environ["ELEVENLABS_API_KEY"] = "test-key"
@@ -205,9 +210,9 @@ class ElevenLabsStreamingWorkerTests(unittest.TestCase):
 
         self.assertEqual(len(collector.events), 1)
         self.assertFalse(collector.events[0][0])
-        self.assertIn("audio backend unavailable", collector.events[0][1])
 
     def test_pygame_audio_player_loads_mp3_from_memory(self):
+        """PygameInMemoryAudioPlayer 應正確透過 mixer.music 播放 BytesIO。"""
         mixer = _FakeMixer()
         player = PygameInMemoryAudioPlayer(mixer_module=mixer, poll_interval=0)
 

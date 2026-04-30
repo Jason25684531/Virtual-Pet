@@ -23,6 +23,13 @@ from character_library import CHARACTER_LIBRARY_DIR, CharacterLibrary, PROJECT_R
 from interaction_trace import InteractionLatencyTracker
 
 try:
+    from database import SQLiteMemoryManager as _SQLiteMemoryManager
+    _DB_MEMORY_IMPORT_ERROR = None
+except Exception as _exc:  # pragma: no cover
+    _SQLiteMemoryManager = None  # type: ignore[assignment,misc]
+    _DB_MEMORY_IMPORT_ERROR = _exc
+
+try:
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     from langchain_openai import ChatOpenAI
     LANGCHAIN_IMPORT_ERROR = None
@@ -71,9 +78,12 @@ class BrainProfile:
             active_character_id,
             (manifest or {}).get("name"),
         )
+        _manifest_voice_id = str((manifest or {}).get("voice_id") or "").strip()
+        _env_key = str((manifest or {}).get("voice_id_env_key") or "").strip()
         voice_id = (
-            str((manifest or {}).get("voice_id") or "").strip()
-            or config.ELEVENLABS_VOICE_ID
+            _manifest_voice_id
+            or (os.getenv(_env_key, "").strip() if _env_key else "")
+            or config.get_voice_id_for_character(active_character_id)
         )
         model_name = (
             str((manifest or {}).get("openai_model") or "").strip()
@@ -249,6 +259,27 @@ class _ConversationTurnMemory:
         self._messages = []
 
 
+class _SQLiteMemoryAdapter:
+    """將 SQLiteMemoryManager 適配為 _ConversationTurnMemory 的介面。
+
+    讓 _load_memory_messages / _remember_exchange 無需感知底層儲存。
+    """
+
+    def __init__(self, db_memory, character_id: str | None, limit: int = 20):
+        self._db = db_memory
+        self._character_id = character_id
+        self._limit = limit
+
+    def load_messages(self) -> list:
+        return self._db.get_recent_messages(self._character_id, self._limit)
+
+    def append_exchange(self, user_input: str, assistant_reply: str) -> None:
+        self._db.add_exchange(self._character_id, user_input, assistant_reply)
+
+    def clear(self) -> None:
+        self._db.clear_session(self._character_id)
+
+
 class BrainEngine(QThread):
     """在背景執行緒中執行 OpenAI 串流推論；本機大腦已完成與 OpenClaw 解耦。"""
 
@@ -272,6 +303,8 @@ class BrainEngine(QThread):
         self._active_profile = BrainProfile.from_character_library(self._library)
         self._llm_cache: dict[str, object] = {}
         self._latency_tracker = latency_tracker
+        # SQLite 持久記憶（可用時）；降級時自動回退 in-memory
+        self._db_memory = _SQLiteMemoryManager() if _SQLiteMemoryManager is not None else None
 
     def run(self):
         self._prewarm_active_profile()
@@ -320,7 +353,11 @@ class BrainEngine(QThread):
 
     def clear_memory(self, profile_id: str | None = None):
         target_profile_id = profile_id or self._active_profile.profile_id
-        self._memory_registry.pop(target_profile_id, None)
+        # 從 adapter registry 中取得 character_id 並清除 SQLite session
+        adapter = self._memory_registry.pop(target_profile_id, None)
+        clear = getattr(adapter, "clear", None)
+        if callable(clear):
+            clear()
 
     def _handle_prompt(
         self,
@@ -355,7 +392,7 @@ class BrainEngine(QThread):
         if knowledge_warning:
             self.warning_emitted.emit(knowledge_warning)
 
-        memory = self._get_or_create_memory(profile.profile_id)
+        memory = self._get_or_create_memory(profile.profile_id, profile.character_id)
         try:
             prompt = self._build_stream_prompt(
                 profile=profile,
@@ -445,21 +482,29 @@ class BrainEngine(QThread):
         self._llm_cache[cache_key] = llm
         return llm
 
-    def _get_or_create_memory(self, profile_id: str):
+    def _get_or_create_memory(self, profile_id: str, character_id: str | None = None):
         memory = self._memory_registry.get(profile_id)
         if memory is not None:
             return memory
 
-        memory = _ConversationTurnMemory(
-            max_turns=max(1, int(os.getenv("BRAIN_MEMORY_MAX_TURNS", "6"))),
-        )
+        if self._db_memory is not None:
+            limit = max(1, int(os.getenv("BRAIN_MEMORY_MAX_TURNS", "10"))) * 2
+            memory = _SQLiteMemoryAdapter(
+                db_memory=self._db_memory,
+                character_id=character_id,
+                limit=limit,
+            )
+        else:
+            memory = _ConversationTurnMemory(
+                max_turns=max(1, int(os.getenv("BRAIN_MEMORY_MAX_TURNS", "10"))),
+            )
         self._memory_registry[profile_id] = memory
         return memory
 
     def _prewarm_active_profile(self):
         try:
             profile = self._get_active_profile()
-            self._get_or_create_memory(profile.profile_id)
+            self._get_or_create_memory(profile.profile_id, profile.character_id)
             if config.OPENAI_API_KEY:
                 self._get_or_create_llm(profile)
         except Exception:

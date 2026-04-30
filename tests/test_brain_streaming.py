@@ -38,7 +38,7 @@ class _TestBrainEngine(BrainEngine):
         self._streamed_tokens = list(streamed_tokens)
         self._dummy_memory = _DummyMemory()
 
-    def _get_or_create_memory(self, _profile_id):
+    def _get_or_create_memory(self, _profile_id, _character_id=None):
         return self._dummy_memory
 
     def _build_stream_prompt(self, **_kwargs):
