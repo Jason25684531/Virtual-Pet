@@ -26,9 +26,15 @@ class EchoesWebPage(QWebEnginePage):
         QWebEnginePage.ErrorMessageLevel: "ERROR",
     }
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.panel_ended_callback = None
+
     def javaScriptConsoleMessage(self, level, message, line_number, source_id):
         label = self._LEVEL_LABELS.get(level, "LOG")
         print(f"[JS {label}] {message}  (line {line_number}, {source_id})")
+        if message == "[ECHOES:PANEL_ENDED]" and callable(self.panel_ended_callback):
+            self.panel_ended_callback()
 
 
 class DeveloperInputLineEdit(QLineEdit):
@@ -106,6 +112,10 @@ class TransparentWindow(QMainWindow):
             latency_tracker=self._latency_tracker,
             parent=self,
         )
+        # 將 panel video 結束回調掛上 web page（JS → Python 通知）
+        web_page = self.web_view.page()
+        if isinstance(web_page, EchoesWebPage):
+            web_page.panel_ended_callback = self._action_dispatcher._on_panel_video_ended
         self._move_to_bottom_right()
         self._init_tray()
 
@@ -657,7 +667,7 @@ class TransparentWindow(QMainWindow):
 
     def play_panel_video(self, path: str, muted: bool = True):
         bg_url = QUrl.fromLocalFile(path).toString()
-        self._run_javascript("playPanelVideo", bg_url, True, muted)
+        self._run_javascript("playPanelVideo", bg_url, False, muted)
 
     def clear_panel_video(self):
         self._run_javascript("clearPanelVideo")

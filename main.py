@@ -159,14 +159,13 @@ def main():
     if not config.AZURE_STT_ENABLED:
         print("[ECHOES][STT] 提示: Azure STT 設定尚未完成；收音按鈕會顯示為不可用。")
 
-    WAVE_RESPONSE_COOLDOWN_S = 2.0  # 揮手動作結束後的冷卻秒數，可直接修改此值
+    WAVE_RESPONSE_COOLDOWN_S = 8.0  # 揮手動作結束後的冷卻秒數（兩次 dispatch 最短間隔）
     _last_wave_time = float("-inf")
 
     def _on_wave_detected(directive: str):
         nonlocal _last_wave_time
         now = time.monotonic()
         elapsed = now - _last_wave_time
-        _last_wave_time = now  # 無論如何先更新計時器，避免 is_busy 期間計時器凍結
         if elapsed < WAVE_RESPONSE_COOLDOWN_S:
             remaining = WAVE_RESPONSE_COOLDOWN_S - elapsed
             print(f"[ECHOES] Wave response 略過：冷卻中（剩餘 {remaining:.1f}s）")
@@ -174,6 +173,7 @@ def main():
         if window.is_busy:
             print("[ECHOES] Wave response 略過：STT 或 TTS 進行中")
             return
+        _last_wave_time = now  # 只在實際 dispatch 時更新計時器
         window.dispatch_action(directive)
 
     if wave_sensor_config.detection_enabled:

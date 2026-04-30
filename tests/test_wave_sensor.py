@@ -48,8 +48,8 @@ class _WaveProbeWindow:
         self.status_calls: list[tuple[str, str, int]] = []
         self.motion_calls: list[str] = []
         self.motion_asset_calls: list[tuple[str, str, bool]] = []
+        self.motion_loop_calls: list[tuple[str, int]] = []
         self.restore_idle_calls = 0
-        self._pending_play_once = False
 
     def set_action_status(self, message: str, tone: str = "idle", timeout_ms: int = 0):
         self.status_calls.append((message, tone, timeout_ms))
@@ -57,8 +57,13 @@ class _WaveProbeWindow:
     def play_resolved_motion(self, motion_key: str, motion_path: str, loop: bool = False) -> bool:
         self.motion_calls.append(motion_key)
         self.motion_asset_calls.append((motion_key, motion_path, loop))
-        self._pending_play_once = not bool(loop)
         return True
+
+    def start_motion_loop(self, motion_path: str, interval_ms: int = 300):
+        self.motion_loop_calls.append((motion_path, interval_ms))
+
+    def stop_motion_loop(self):
+        pass
 
     def restore_idle_video(self) -> bool:
         self.restore_idle_calls += 1
@@ -71,14 +76,10 @@ class _WaveProbeWindow:
     def stop_music(self):
         return None
 
-    def simulate_motion_end(self) -> bool:
-        if not self._pending_play_once:
-            return False
-        self._pending_play_once = False
-        return self.restore_idle_video()
-
 
 def run_wave_response_debug_probe() -> dict[str, object]:
+    """wave_response 現在統一走 start_motion_loop（循環），靠 fallback timer 清理。
+    測試直接呼叫 _finish_loop_action() 模擬 timer 觸發後的 restore idle 行為。"""
     directive = "[ACTION:wave_response]"
     with tempfile.TemporaryDirectory(prefix="echoes-debug-webm-") as temp_dir:
         wave_path = Path(temp_dir) / "running_forward.webm"
@@ -94,13 +95,16 @@ def run_wave_response_debug_probe() -> dict[str, object]:
             tts_enabled=False,
         )
         dispatched = dispatcher.dispatch(directive)
-        idle_restored = window.simulate_motion_end()
+        # 模擬 fallback timer 到期觸發 _finish_loop_action（無 TTS，3s 後 restore idle）
+        dispatcher._finish_loop_action()
+        idle_restored = window.restore_idle_calls >= 1
 
         return {
             "directive": directive,
             "dispatched": dispatched,
             "status_calls": window.status_calls,
             "motion_calls": window.motion_calls,
+            "motion_loop_calls": window.motion_loop_calls,
             "motion_asset_calls": window.motion_asset_calls,
             "idle_restored": idle_restored,
             "restore_idle_calls": window.restore_idle_calls,
@@ -108,9 +112,8 @@ def run_wave_response_debug_probe() -> dict[str, object]:
                 dispatched
                 and bool(window.status_calls)
                 and window.status_calls[0][0] == "正在回應揮手"
-                and window.motion_calls == ["wave_response"]
-                and bool(window.motion_asset_calls)
-                and window.motion_asset_calls[0][1].endswith("running_forward.webm")
+                and bool(window.motion_loop_calls)
+                and window.motion_loop_calls[0][0].endswith("running_forward.webm")
                 and idle_restored
                 and window.restore_idle_calls == 1
             ),

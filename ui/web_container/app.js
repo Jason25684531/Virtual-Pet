@@ -285,12 +285,16 @@
         audio.load();
     };
 
+    panelVideo.addEventListener('ended', function () {
+        console.log('[ECHOES:PANEL_ENDED]');
+    });
+
     window.playPanelVideo = function (source, shouldLoop, muted) {
         if (!source || !panelVideo) {
             return;
         }
         panelVideo.muted = (muted !== false);
-        panelVideo.loop = shouldLoop !== false;
+        panelVideo.loop = (shouldLoop === true);
         panelVideo.src = source;
         panelVideo.load();
         panelVideo.style.display = 'block';
