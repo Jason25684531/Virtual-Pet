@@ -29,12 +29,15 @@ class EchoesWebPage(QWebEnginePage):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.panel_ended_callback = None
+        self.main_video_ended_callback = None
 
     def javaScriptConsoleMessage(self, level, message, line_number, source_id):
         label = self._LEVEL_LABELS.get(level, "LOG")
         print(f"[JS {label}] {message}  (line {line_number}, {source_id})")
         if message == "[ECHOES:PANEL_ENDED]" and callable(self.panel_ended_callback):
             self.panel_ended_callback()
+        if message == "[ECHOES:MAIN_VIDEO_ENDED]" and callable(self.main_video_ended_callback):
+            self.main_video_ended_callback()
 
 
 class DeveloperInputLineEdit(QLineEdit):
@@ -71,6 +74,8 @@ class TransparentWindow(QMainWindow):
     # 角色預設位移（相對於視窗中心的像素偏移量）
     DEFAULT_CHARACTER_X_OFFSET = 0
     DEFAULT_CHARACTER_Y_OFFSET = 0
+    DEFAULT_CHARACTER_SCALE = 1.0
+    DEFAULT_CHARACTER_OBJECT_POSITION = "center bottom"
     DEMO_ANIMATIONS_DIR = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "assets",
@@ -95,6 +100,8 @@ class TransparentWindow(QMainWindow):
         self._settings_dialog = None
         self._character_x_offset = self.DEFAULT_CHARACTER_X_OFFSET
         self._character_y_offset = self.DEFAULT_CHARACTER_Y_OFFSET
+        self._character_scale = self.DEFAULT_CHARACTER_SCALE
+        self._character_object_position = self.DEFAULT_CHARACTER_OBJECT_POSITION
         self._webview_ready = False
         self._drag_pos = None
         self._stt_listening = False
@@ -116,6 +123,7 @@ class TransparentWindow(QMainWindow):
         web_page = self.web_view.page()
         if isinstance(web_page, EchoesWebPage):
             web_page.panel_ended_callback = self._action_dispatcher._on_panel_video_ended
+            web_page.main_video_ended_callback = self._action_dispatcher._on_main_video_ended
         self._move_to_bottom_right()
         self._init_tray()
 
@@ -517,7 +525,7 @@ class TransparentWindow(QMainWindow):
 
         self._library.set_current_character_id(character_id)
         self.change_video(idle_path, loop=True)
-        self.apply_character_position()
+        self.apply_character_layout(character_id)
         self.set_room_character(character_name)
         self.set_action_status(f"{character_name} 已待命", tone="idle", timeout_ms=2200)
 
@@ -589,10 +597,26 @@ class TransparentWindow(QMainWindow):
 
     @property
     def is_busy(self) -> bool:
-        return self._stt_listening or self._action_dispatcher.is_tts_busy
+        return (
+            self._stt_listening
+            or self._action_dispatcher.is_tts_busy
+            or self._action_dispatcher.has_active_motion
+        )
 
-    def dispatch_action(self, directive: str, trace_id: str | None = None) -> bool:
-        return self._action_dispatcher.dispatch(directive, trace_id=trace_id)
+    def dispatch_action(
+        self,
+        directive: str,
+        trace_id: str | None = None,
+        allow_tts: bool = True,
+    ) -> bool:
+        return self._action_dispatcher.dispatch(
+            directive,
+            trace_id=trace_id,
+            allow_tts=allow_tts,
+        )
+
+    def speak_text(self, message: str, trace_id: str | None = None, has_action: bool = False):
+        self._action_dispatcher.speak_text(message, trace_id=trace_id, has_action=has_action)
 
     def begin_conversation_turn(self, trace_id: str, source_label: str, user_text: str):
         self._run_javascript("beginConversationTurn", trace_id, source_label, user_text)
@@ -697,7 +721,12 @@ class TransparentWindow(QMainWindow):
 
     def apply_character_position(self):
         """套用目前由 Python 管理的角色位移設定。"""
-        self.move_character_to(self._character_x_offset, self._character_y_offset)
+        self.apply_character_transform(
+            self._character_x_offset,
+            self._character_y_offset,
+            self._character_scale,
+            self._character_object_position,
+        )
 
     def set_character_position(self, x_offset: int, y_offset: int):
         """更新角色位移設定並立即套用。"""
@@ -705,9 +734,68 @@ class TransparentWindow(QMainWindow):
         self._character_y_offset = y_offset
         self.apply_character_position()
 
+    def apply_character_layout(self, character_id: str | None = None):
+        layout = self._library.get_layout_config(character_id)
+        self._character_x_offset = self._coerce_int(
+            layout.get("character_x_offset"),
+            self.DEFAULT_CHARACTER_X_OFFSET,
+        )
+        self._character_y_offset = self._coerce_int(
+            layout.get("character_y_offset"),
+            self.DEFAULT_CHARACTER_Y_OFFSET,
+        )
+        self._character_scale = self._coerce_float(
+            layout.get("character_scale"),
+            self.DEFAULT_CHARACTER_SCALE,
+            minimum=0.1,
+            maximum=4.0,
+        )
+        self._character_object_position = self._coerce_object_position(
+            layout.get("object_position"),
+            self.DEFAULT_CHARACTER_OBJECT_POSITION,
+        )
+        self.apply_character_position()
+
     def move_character_to(self, x_offset: int, y_offset: int):
         """以左為正 x、以下為正 y 的像素偏移量移動角色。"""
-        self._run_javascript("moveCharacter", x_offset, y_offset)
+        self.apply_character_transform(
+            x_offset,
+            y_offset,
+            self._character_scale,
+            self._character_object_position,
+        )
+
+    def apply_character_transform(
+        self,
+        x_offset: int,
+        y_offset: int,
+        scale: float,
+        object_position: str,
+    ):
+        self._run_javascript("moveCharacter", x_offset, y_offset, scale)
+        self._run_javascript("setCharacterObjectPosition", object_position)
+
+    @staticmethod
+    def _coerce_int(value, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _coerce_float(value, default: float, minimum: float, maximum: float) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        return max(minimum, min(maximum, parsed))
+
+    @staticmethod
+    def _coerce_object_position(value, default: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return default
+        return normalized
 
     # ── Python → JS 橋接 ───────────────────────────────────
 

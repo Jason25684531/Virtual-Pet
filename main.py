@@ -8,6 +8,26 @@ import signal
 import time
 
 
+def connect_brain_output_handlers(window, brain_engine, sanitize_text):
+    def handle_brain_fragment(fragment: str, trace_id: str | None):
+        append_message = getattr(window, "append_conversation_assistant", None)
+        if trace_id:
+            visible_text = sanitize_text(fragment)
+            if visible_text and callable(append_message):
+                append_message(trace_id, visible_text)
+        dispatch_action = getattr(window, "dispatch_action", None)
+        if callable(dispatch_action):
+            dispatch_action(fragment, trace_id=trace_id, allow_tts=False)
+
+    def handle_speech_ready(reply_text: str, trace_id: str | None):
+        speak_text = getattr(window, "speak_text", None)
+        if callable(speak_text):
+            speak_text(reply_text, trace_id=trace_id)
+
+    brain_engine.streamed_fragment.connect(handle_brain_fragment)
+    brain_engine.speech_ready.connect(handle_speech_ready)
+
+
 def main():
     from PyQt5.QtWidgets import QApplication
     from PyQt5.QtCore import QTimer
@@ -40,7 +60,7 @@ def main():
 
     brain_engine = BrainEngine(latency_tracker=latency_tracker, parent=app)
     turn_manager = InteractionTurnManager(brain_engine, latency_tracker, parent=app)
-    stt_controller = STTSessionController(parent=app)
+    stt_controller = STTSessionController(latency_tracker=latency_tracker, parent=app)
     original_apply_character = window.apply_character
 
     def apply_character_and_sync(character_id: str) -> bool:
@@ -75,14 +95,7 @@ def main():
     wave_sensor = WaveSensor(config=wave_sensor_config, parent=app)
     window.set_stt_available(config.AZURE_STT_ENABLED)
 
-    def handle_brain_fragment(fragment: str, trace_id: str | None):
-        if trace_id:
-            visible_text = sanitize_tts_text(fragment)
-            if visible_text:
-                window.append_conversation_assistant(trace_id, visible_text)
-        window.dispatch_action(fragment, trace_id=trace_id)
-
-    brain_engine.streamed_fragment.connect(handle_brain_fragment)
+    connect_brain_output_handlers(window, brain_engine, sanitize_tts_text)
     brain_engine.warning_emitted.connect(
         lambda message: window.set_action_status(message, tone="warn", timeout_ms=4800)
     )
@@ -118,6 +131,10 @@ def main():
     def handle_stt_status(message: str):
         window.set_action_status(message, tone="working", timeout_ms=2400)
 
+    def handle_stt_partial_preview(text: str):
+        preview = text if len(text) <= 28 else f"{text[:28]}..."
+        window.set_action_status(f"STT 辨識中: {preview}", tone="working", timeout_ms=1200)
+
     def handle_stt_warning(message: str):
         window.set_action_status(message, tone="warn", timeout_ms=4800)
         if not config.AZURE_STT_ENABLED:
@@ -130,15 +147,15 @@ def main():
             return
         window.set_action_status("STT 已停止收音", tone="idle", timeout_ms=2200)
 
-    def handle_stt_preview(text: str):
+    def handle_stt_preview(text: str, trace_id: str | None):
         preview = text if len(text) <= 24 else f"{text[:24]}..."
-        result = turn_manager.submit("stt", text)
+        result = turn_manager.submit("stt", text, trace_id=trace_id)
         if not result["accepted"]:
             window.set_action_status("STT 文字送出失敗。", tone="warn", timeout_ms=2800)
             return
-        trace_id = result["trace_id"]
-        if trace_id:
-            print(f"[ECHOES][STT] 將辨識文字送入 BrainEngine: {preview} | trace={trace_id}")
+        queued_trace_id = result["trace_id"]
+        if queued_trace_id:
+            print(f"[ECHOES][STT] 將辨識文字送入 BrainEngine: {preview} | trace={queued_trace_id}")
         if result["started"]:
             window.set_action_status(f"STT 已送出: {preview}", tone="working", timeout_ms=0)
             return
@@ -150,9 +167,10 @@ def main():
         )
 
     stt_controller.status_changed.connect(handle_stt_status)
+    stt_controller.recognizing_text.connect(handle_stt_partial_preview)
     stt_controller.warning_emitted.connect(handle_stt_warning)
     stt_controller.session_state_changed.connect(handle_stt_session_state)
-    stt_controller.recognized_text.connect(handle_stt_preview)
+    stt_controller.recognized_result.connect(handle_stt_preview)
     window.stt_start_requested.connect(stt_controller.start_session)
     window.stt_stop_requested.connect(stt_controller.stop_session)
 

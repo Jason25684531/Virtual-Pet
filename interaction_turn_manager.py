@@ -12,6 +12,7 @@ from interaction_trace import InteractionLatencyTracker
 class PendingInteraction:
     source: str
     text: str
+    trace_id: str | None = None
 
 
 class InteractionTurnManager(QObject):
@@ -34,7 +35,7 @@ class InteractionTurnManager(QObject):
         self._monitor.timeout.connect(self._on_monitor_tick)
         self._monitor.start()
 
-    def submit(self, source: str, text: str) -> dict[str, object]:
+    def submit(self, source: str, text: str, trace_id: str | None = None) -> dict[str, object]:
         normalized_text = str(text or "").strip()
         normalized_source = str(source or "unknown").strip() or "unknown"
         if not normalized_text:
@@ -45,7 +46,14 @@ class InteractionTurnManager(QObject):
                 "queue_position": 0,
             }
 
-        self._pending_inputs.append(PendingInteraction(source=normalized_source, text=normalized_text))
+        normalized_trace_id = str(trace_id or "").strip() or None
+        self._pending_inputs.append(
+            PendingInteraction(
+                source=normalized_source,
+                text=normalized_text,
+                trace_id=normalized_trace_id,
+            )
+        )
         self.queue_depth_changed.emit(len(self._pending_inputs))
         started_trace_id = self._start_next_if_idle()
         return {
@@ -72,7 +80,10 @@ class InteractionTurnManager(QObject):
 
         while self._pending_inputs:
             pending = self._pending_inputs.popleft()
-            trace_id = self._latency_tracker.begin_interaction(pending.source, pending.text)
+            trace_id = pending.trace_id or self._latency_tracker.begin_interaction(
+                pending.source,
+                pending.text,
+            )
             if not self._brain_engine.send_to_brain(pending.text, trace_id=trace_id):
                 self._latency_tracker.abort(trace_id, "interaction turn manager 未送入 BrainEngine")
                 continue

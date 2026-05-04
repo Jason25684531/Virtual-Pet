@@ -29,6 +29,10 @@ DEFAULT_ELEVENLABS_VOICE_ID = "zENt0ljwLXypGqHDsdzz"
 DEFAULT_TTS_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_TTS_TIMEOUT = (5, 45)
 DEFAULT_AZURE_STT_LANGUAGE = "zh-TW"
+DEFAULT_AZURE_STT_INITIAL_SILENCE_TIMEOUT_MS = 5000
+DEFAULT_AZURE_STT_END_SILENCE_TIMEOUT_MS = 350
+DEFAULT_AZURE_STT_SEGMENTATION_SILENCE_TIMEOUT_MS = 300
+DEFAULT_AZURE_STT_SEGMENTATION_MAX_TIME_MS = 4000
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL).strip() or DEFAULT_OLLAMA_BASE_URL
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL
@@ -70,10 +74,34 @@ CHARACTER_VOICE_IDS: dict[str, str] = {
 }
 
 # VoAI 角色聲音設定
-_DEFAULT_VOAI_CONFIG: dict = {"speaker": "柔洢", "version": "Classic", "pitch_shift": 0}
+_DEFAULT_VOAI_CONFIG: dict = {
+    "speaker": "柔洢",
+    "version": "Classic",
+    "pitch_shift": 0,
+    "style": "預設",
+    "style_weight": 0,
+    "speed": 1.2,
+    "breath_pause": 0,
+}
 CHARACTER_VOAI_CONFIGS: dict[str, dict] = {
-    "miku":   {"speaker": "柔洢", "version": "Classic", "pitch_shift": 1},
-    "Choppr": {"speaker": "阿皮",  "version": "Neo",     "pitch_shift": 1.5},
+    "miku": {
+        "speaker": "柔洢",
+        "version": "Classic",
+        "pitch_shift": 1,
+        "style": "預設",
+        "style_weight": 0,
+        "speed": 1.2,
+        "breath_pause": 0,
+    },
+    "Choppr": {
+        "speaker": "阿皮",
+        "version": "Neo",
+        "pitch_shift": 1.5,
+        "style": "預設",
+        "style_weight": 0,
+        "speed": 1.3,
+        "breath_pause": 0,
+    },
 }
 
 
@@ -84,6 +112,16 @@ def _read_bool_env(name: str, default: bool) -> bool:
     return value not in {"0", "false", "no", "off"}
 
 
+def _read_int_env(name: str, default: int) -> int:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return int(default)
+    try:
+        return int(value)
+    except ValueError:
+        return int(default)
+
+
 AZURE_STT_API_KEY = os.getenv("AZURE_STT_API_KEY", "").strip()
 AZURE_STT_REGION = os.getenv("AZURE_STT_REGION", "").strip()
 AZURE_STT_LANGUAGE = (
@@ -91,6 +129,28 @@ AZURE_STT_LANGUAGE = (
     or DEFAULT_AZURE_STT_LANGUAGE
 )
 AZURE_STT_ENABLED = _read_bool_env("AZURE_STT_ENABLED", default=True)
+AZURE_STT_INITIAL_SILENCE_TIMEOUT_MS = _read_int_env(
+    "AZURE_STT_INITIAL_SILENCE_TIMEOUT_MS",
+    DEFAULT_AZURE_STT_INITIAL_SILENCE_TIMEOUT_MS,
+)
+AZURE_STT_END_SILENCE_TIMEOUT_MS = _read_int_env(
+    "AZURE_STT_END_SILENCE_TIMEOUT_MS",
+    DEFAULT_AZURE_STT_END_SILENCE_TIMEOUT_MS,
+)
+AZURE_STT_SEGMENTATION_SILENCE_TIMEOUT_MS = _read_int_env(
+    "AZURE_STT_SEGMENTATION_SILENCE_TIMEOUT_MS",
+    DEFAULT_AZURE_STT_SEGMENTATION_SILENCE_TIMEOUT_MS,
+)
+AZURE_STT_SEGMENTATION_MAX_TIME_MS = _read_int_env(
+    "AZURE_STT_SEGMENTATION_MAX_TIME_MS",
+    DEFAULT_AZURE_STT_SEGMENTATION_MAX_TIME_MS,
+)
+
+LOW_LATENCY_REPLY_POLICY = (
+    "即時互動請優先用 1 句短句完成回覆，只有必要時才允許第 2 句。"
+    "第一句要直接承載主要內容，不要先鋪陳或寒暄。"
+    "整體保持短而活潑，目標約 18 個中文字內，最多約 24 個中文字。"
+)
 
 PERSONA_PROMPTS = {
     "default": (
@@ -99,6 +159,7 @@ PERSONA_PROMPTS = {
         "若需要觸發 Host action，你必須把單一 [ACTION:...] 標籤放在回覆的第一句第一個字，"
         "不能先輸出任何空白、說明、標點或寒暄。"
         "若不需要動作，就直接輸出自然語言。"
+        f"{LOW_LATENCY_REPLY_POLICY}"
     ),
     "初音 (正式版)": (
         "你是 ECHOES 的初音系桌面角色。"
@@ -106,6 +167,7 @@ PERSONA_PROMPTS = {
         "若需要觸發 Host action，你必須把單一 [ACTION:...] 標籤放在回覆的第一句第一個字，"
         "不能先輸出任何空白、說明、標點或寒暄。"
         "若不需要動作，就直接輸出自然語言。"
+        f"{LOW_LATENCY_REPLY_POLICY}"
     ),
     "20260415_168888_初音": (
         "你是 ECHOES 的初音系桌面角色。"
@@ -113,6 +175,7 @@ PERSONA_PROMPTS = {
         "若需要觸發 Host action，你必須把單一 [ACTION:...] 標籤放在回覆的第一句第一個字，"
         "不能先輸出任何空白、說明、標點或寒暄。"
         "若不需要動作，就直接輸出自然語言。"
+        f"{LOW_LATENCY_REPLY_POLICY}"
     ),
     "miku": (
         "你是 ECHOES 的初音未來（miku）桌面角色。"
@@ -120,6 +183,7 @@ PERSONA_PROMPTS = {
         "若需要觸發 Host action，你必須把單一 [ACTION:...] 標籤放在回覆的第一句第一個字，"
         "不能先輸出任何空白、說明、標點或寒暄。"
         "若不需要動作，就直接輸出自然語言。"
+        f"{LOW_LATENCY_REPLY_POLICY}"
     ),
     "Choppr": (
         "你是 ECHOES 的喬巴（Choppr）桌面角色，是個活潑可愛的小鹿角色。"
@@ -127,6 +191,7 @@ PERSONA_PROMPTS = {
         "若需要觸發 Host action，你必須把單一 [ACTION:...] 標籤放在回覆的第一句第一個字，"
         "不能先輸出任何空白、說明、標點或寒暄。"
         "若不需要動作，就直接輸出自然語言。"
+        f"{LOW_LATENCY_REPLY_POLICY}"
     ),
 }
 
@@ -180,6 +245,8 @@ HOST_ACTION_PROMPT = (
     "一般聆聽或不確定時使用 listen。禁止自創新的 action 名稱。"
     "除了最前面的 action 前綴外，後續內容只能是自然語言回覆。"
     "若有 action，請在 action 後立刻接自然語言第一句，讓系統可以依標點即時切句播放。"
+    "即時互動請優先只回 1 句短句，只有必要時才允許第 2 句。"
+    "不要先寒暄、不要鋪陳，第一句就直接回答，整體保持短而活潑。"
 )
 
 

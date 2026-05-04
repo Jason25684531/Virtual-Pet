@@ -19,7 +19,7 @@ from sensors.camera_vision import (
 )
 
 
-TEST_CHARACTER_ID = "20260415_168888_初音"
+TEST_CHARACTER_ID = "miku"
 
 
 class FakeCapture:
@@ -78,11 +78,10 @@ class _WaveProbeWindow:
 
 
 def run_wave_response_debug_probe() -> dict[str, object]:
-    """wave_response 現在統一走 start_motion_loop（循環），靠 fallback timer 清理。
-    測試直接呼叫 _finish_loop_action() 模擬 timer 觸發後的 restore idle 行為。"""
+    """wave_response 應播放一次 greeting，等主影片 ended callback 再回 idle。"""
     directive = "[ACTION:wave_response]"
     with tempfile.TemporaryDirectory(prefix="echoes-debug-webm-") as temp_dir:
-        wave_path = Path(temp_dir) / "running_forward.webm"
+        wave_path = Path(temp_dir) / "Greeting.webm"
         idle_path = Path(temp_dir) / "Idle.webm"
         wave_path.write_bytes(b"debug")
         idle_path.write_bytes(b"debug")
@@ -95,8 +94,8 @@ def run_wave_response_debug_probe() -> dict[str, object]:
             tts_enabled=False,
         )
         dispatched = dispatcher.dispatch(directive)
-        # 模擬 fallback timer 到期觸發 _finish_loop_action（無 TTS，3s 後 restore idle）
-        dispatcher._finish_loop_action()
+        restore_before_ended = window.restore_idle_calls
+        dispatcher._on_main_video_ended()
         idle_restored = window.restore_idle_calls >= 1
 
         return {
@@ -106,14 +105,18 @@ def run_wave_response_debug_probe() -> dict[str, object]:
             "motion_calls": window.motion_calls,
             "motion_loop_calls": window.motion_loop_calls,
             "motion_asset_calls": window.motion_asset_calls,
+            "restore_before_ended": restore_before_ended,
             "idle_restored": idle_restored,
             "restore_idle_calls": window.restore_idle_calls,
             "ok": (
                 dispatched
                 and bool(window.status_calls)
                 and window.status_calls[0][0] == "正在回應揮手"
-                and bool(window.motion_loop_calls)
-                and window.motion_loop_calls[0][0].endswith("running_forward.webm")
+                and not window.motion_loop_calls
+                and bool(window.motion_asset_calls)
+                and window.motion_asset_calls[0][1].endswith("Greeting.webm")
+                and window.motion_asset_calls[0][2] is False
+                and restore_before_ended == 0
                 and idle_restored
                 and window.restore_idle_calls == 1
             ),
@@ -257,7 +260,7 @@ class WaveResponseIntegrationTests(unittest.TestCase):
         library = CharacterLibrary()
         motion_path = library.get_action_motion_path(TEST_CHARACTER_ID, "wave_response")
         self.assertIsNotNone(motion_path)
-        self.assertTrue(str(motion_path).endswith("running_forward.webm"))
+        self.assertTrue(str(motion_path).endswith("Greeting.webm"))
         self.assertTrue(Path(motion_path).is_file())
 
 

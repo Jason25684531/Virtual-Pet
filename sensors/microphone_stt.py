@@ -29,6 +29,9 @@ def _log_stt(message: str):
 class AzureSTTWorker(QThread):
     """在背景執行緒中執行 Azure 連續語音辨識。"""
 
+    speech_started = pyqtSignal()
+    speech_ended = pyqtSignal()
+    recognizing_text = pyqtSignal(str)
     recognized_text = pyqtSignal(str)
     warning_emitted = pyqtSignal(str)
     status_changed = pyqtSignal(str)
@@ -102,13 +105,41 @@ class AzureSTTWorker(QThread):
             region=self._region,
         )
         speech_config.speech_recognition_language = self._language
+        self._apply_endpointing_properties(speech_config)
         audio_config = self._speech_sdk.audio.AudioConfig(use_default_microphone=True)
         return self._speech_sdk.SpeechRecognizer(
             speech_config=speech_config,
             audio_config=audio_config,
         )
 
+    def _apply_endpointing_properties(self, speech_config):
+        set_property = getattr(speech_config, "set_property", None)
+        property_id = getattr(self._speech_sdk, "PropertyId", None)
+        if not callable(set_property) or property_id is None:
+            return
+
+        property_values = (
+            ("SpeechServiceConnection_InitialSilenceTimeoutMs", config.AZURE_STT_INITIAL_SILENCE_TIMEOUT_MS),
+            ("SpeechServiceConnection_EndSilenceTimeoutMs", config.AZURE_STT_END_SILENCE_TIMEOUT_MS),
+            ("Speech_SegmentationSilenceTimeoutMs", config.AZURE_STT_SEGMENTATION_SILENCE_TIMEOUT_MS),
+            ("Speech_SegmentationMaximumTimeMs", config.AZURE_STT_SEGMENTATION_MAX_TIME_MS),
+        )
+        for property_name, value in property_values:
+            property_key = getattr(property_id, property_name, None)
+            if property_key is None:
+                continue
+            set_property(property_key, str(int(value)))
+
     def _bind_events(self, recognizer):
+        recognizing = getattr(recognizer, "recognizing", None)
+        if recognizing is not None:
+            recognizing.connect(self._handle_recognizing_event)
+        speech_start_detected = getattr(recognizer, "speech_start_detected", None)
+        if speech_start_detected is not None:
+            speech_start_detected.connect(self._handle_speech_started_event)
+        speech_end_detected = getattr(recognizer, "speech_end_detected", None)
+        if speech_end_detected is not None:
+            speech_end_detected.connect(self._handle_speech_ended_event)
         recognizer.recognized.connect(self._handle_recognized_event)
         recognizer.canceled.connect(self._handle_canceled_event)
         recognizer.session_started.connect(self._handle_session_started_event)
@@ -144,6 +175,26 @@ class AzureSTTWorker(QThread):
         self.listening_state_changed.emit(False)
         self._stop_requested.set()
 
+    def _handle_speech_started_event(self, _event):
+        if self._stop_requested.is_set():
+            return
+        _log_stt("偵測到使用者開始說話。")
+        self.speech_started.emit()
+
+    def _handle_speech_ended_event(self, _event):
+        if self._stop_requested.is_set():
+            return
+        _log_stt("偵測到使用者停止說話。")
+        self.speech_ended.emit()
+
+    def _handle_recognizing_event(self, event):
+        if self._stop_requested.is_set():
+            return
+        result = getattr(event, "result", None)
+        if result is None:
+            return
+        self._emit_recognizing_text(getattr(result, "text", ""))
+
     def _handle_recognized_event(self, event):
         if self._stop_requested.is_set():
             _log_stt("收到停止請求後的 Recognized 事件，已忽略。")
@@ -174,6 +225,15 @@ class AzureSTTWorker(QThread):
             return
 
         self._emit_recognized_text(getattr(result, "text", ""))
+
+    def _emit_recognizing_text(self, text: str) -> bool:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return False
+        preview = normalized if len(normalized) <= 32 else f"{normalized[:32]}..."
+        _log_stt(f"Recognizing partial：{preview}")
+        self.recognizing_text.emit(normalized)
+        return True
 
     def _emit_recognized_text(self, text: str) -> bool:
         if self._stop_requested.is_set():

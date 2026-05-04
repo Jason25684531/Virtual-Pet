@@ -426,7 +426,7 @@ class ActionPlaybackTests(unittest.TestCase):
         outputs.extend(parser.feed("今天一起加油。"))
         outputs.extend(parser.flush())
 
-        self.assertEqual(outputs, ["[ACTION:listen]", "哈囉，", "今天一起加油。"])
+        self.assertEqual(outputs, ["[ACTION:listen]", "哈囉，今天一起加油。"])
 
     def test_streamed_reply_parser_flushes_trailing_text_without_punctuation(self):
         parser = StreamedReplyParser()
@@ -438,15 +438,16 @@ class ActionPlaybackTests(unittest.TestCase):
 
         self.assertEqual(outputs, ["這是一段還沒結尾"])
 
-    def test_streamed_reply_parser_splits_on_ascii_punctuation_and_newline(self):
+    def test_streamed_reply_parser_keeps_commas_and_normalizes_newlines_within_sentence(self):
         parser = StreamedReplyParser()
 
         outputs = []
         outputs.extend(parser.feed("[ACTION:listen]Hi,"))
-        outputs.extend(parser.feed("next line\n"))
+        outputs.extend(parser.feed(" next line\n"))
+        outputs.extend(parser.feed("still going."))
         outputs.extend(parser.flush())
 
-        self.assertEqual(outputs, ["[ACTION:listen]", "Hi,", "next line"])
+        self.assertEqual(outputs, ["[ACTION:listen]", "Hi, next line still going."])
 
     def test_dispatcher_accepts_alias_action_name(self):
         with tempfile.TemporaryDirectory(prefix="echoes-action-alias-") as temp_dir:
@@ -529,6 +530,29 @@ class ActionPlaybackTests(unittest.TestCase):
             self.assertTrue(dispatched)
             self.assertEqual(window.played_assets[0][0], "listen")
             self.assertIsNone(tracker.snapshot(trace_id))
+
+    def test_dispatch_can_skip_immediate_tts_for_streamed_fragments(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-no-tts-") as temp_dir:
+            listen_path = Path(temp_dir) / "listen.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            listen_path.write_bytes(b"listen")
+            idle_path.write_bytes(b"idle")
+
+            window = _DispatchProbeWindow(temp_dir)
+            dispatcher = ActionDispatcher(
+                window,
+                library=_NoopLibrary(),
+                motion_path_resolver=lambda motion_key: str(
+                    {"listen": listen_path, "idle": idle_path}.get(motion_key, "")
+                ),
+                tts_worker_factory=_ManualQueuedTTSWorker,
+            )
+
+            self.assertTrue(
+                dispatcher.dispatch("[ACTION:listen] 第一段測試語音。", allow_tts=False)
+            )
+            self.assertEqual(window.played_assets[0][0], "listen")
+            self.assertEqual(len(_ManualQueuedTTSWorker.instances), 0)
 
     def test_dispatcher_serializes_tts_queue_without_overlap(self):
         with tempfile.TemporaryDirectory(prefix="echoes-action-queue-") as temp_dir:

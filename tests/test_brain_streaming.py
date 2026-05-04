@@ -55,6 +55,16 @@ class _FailingBrainEngine(_TestBrainEngine):
 
 
 class BrainStreamingTests(unittest.TestCase):
+    @staticmethod
+    def _simulate_tts_completion(engine, trace_id: str | None, text: str):
+        if not trace_id:
+            return
+        reply_id = "reply-test"
+        engine._tracker.mark_tts_enqueued(trace_id, reply_id, text)
+        engine._tracker.mark_tts_stream_started(trace_id, reply_id, len(text.encode("utf-8")))
+        engine._tracker.mark_tts_playback_started(trace_id, reply_id)
+        engine._tracker.mark_tts_finished(trace_id, reply_id, True, "測試完成")
+
     def test_conversation_turn_memory_keeps_recent_turns_only(self):
         memory = _ConversationTurnMemory(max_turns=2)
         memory.append_exchange("第一句", "第一答")
@@ -78,9 +88,15 @@ class BrainStreamingTests(unittest.TestCase):
         )
         emitted: list[str] = []
         traced_fragments: list[tuple[str, str | None]] = []
+        speech_ready: list[tuple[str, str | None]] = []
         warnings: list[str] = []
         engine.message_received.connect(emitted.append)
         engine.streamed_fragment.connect(lambda fragment, trace_id: traced_fragments.append((fragment, trace_id)))
+        def handle_speech_ready(text, current_trace_id):
+            speech_ready.append((text, current_trace_id))
+            self._simulate_tts_completion(engine, current_trace_id, text)
+
+        engine.speech_ready.connect(handle_speech_ready)
         engine.warning_emitted.connect(warnings.append)
 
         trace_id = engine._tracker.begin_interaction("test", "測試輸入")
@@ -88,17 +104,20 @@ class BrainStreamingTests(unittest.TestCase):
 
         self.assertEqual(
             emitted,
-            ["[ACTION:listen]", "哈囉，", "今天天氣很好。", "一起加油"],
+            ["[ACTION:listen]", "哈囉，今天天氣很好。", "一起加油"],
         )
         self.assertEqual(warnings, [])
         self.assertEqual(
             traced_fragments,
             [
                 ("[ACTION:listen]", trace_id),
-                ("哈囉，", trace_id),
-                ("今天天氣很好。", trace_id),
+                ("哈囉，今天天氣很好。", trace_id),
                 ("一起加油", trace_id),
             ],
+        )
+        self.assertEqual(
+            speech_ready,
+            [("哈囉，今天天氣很好。一起加油", trace_id)],
         )
         self.assertEqual(len(engine._dummy_memory.saved_contexts), 1)
         saved_inputs, saved_outputs = engine._dummy_memory.saved_contexts[0]
@@ -112,8 +131,14 @@ class BrainStreamingTests(unittest.TestCase):
     def test_handle_prompt_degrades_safely_when_openai_streaming_fails(self):
         engine = _FailingBrainEngine(["unused"])
         emitted: list[str] = []
+        speech_ready: list[tuple[str, str | None]] = []
         warnings: list[str] = []
         engine.message_received.connect(emitted.append)
+        def handle_speech_ready(text, current_trace_id):
+            speech_ready.append((text, current_trace_id))
+            self._simulate_tts_completion(engine, current_trace_id, text)
+
+        engine.speech_ready.connect(handle_speech_ready)
         engine.warning_emitted.connect(warnings.append)
 
         trace_id = engine._tracker.begin_interaction("test", "測試輸入")
@@ -122,6 +147,10 @@ class BrainStreamingTests(unittest.TestCase):
         self.assertEqual(
             emitted,
             ["[ACTION:listen] 抱歉，我現在無法順利連線 OpenAI 大腦，請稍後再試。"],
+        )
+        self.assertEqual(
+            speech_ready,
+            [("抱歉，我現在無法順利連線 OpenAI 大腦，請稍後再試。", trace_id)],
         )
         self.assertEqual(len(warnings), 1)
         self.assertIn("OpenAI 推論失敗", warnings[0])

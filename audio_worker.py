@@ -2,7 +2,7 @@
 ECHOES — 音訊播放佇列 Worker。
 
 實作 Producer-Consumer 模式：
-- Producer (ElevenLabsStreamingTTSWorker) 將取得的 BytesIO 放入 queue
+- Producer (TTS worker) 將取得的 BytesIO 放入 queue
 - Consumer (AudioStreamWorker) 持續從 queue 取出並依序播放，消除句間停頓
 
 Thread-Safety 設計要點：
@@ -23,7 +23,7 @@ import threading
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
-from api_client.elevenlabs_client import PygameInMemoryAudioPlayer
+from audio_playback import PygameInMemoryAudioPlayer
 
 _SENTINEL = None
 
@@ -35,8 +35,8 @@ class AudioStreamWorker(QObject):
     Qt 的 'QThread: Destroyed while still running' 致命錯誤。
     """
 
-    playback_started = pyqtSignal(str)   # reply_id
-    playback_finished = pyqtSignal(str)  # reply_id
+    playback_started = pyqtSignal(str, str)   # reply_id, trace_id
+    playback_finished = pyqtSignal(str, str)  # reply_id, trace_id
     queue_drained = pyqtSignal()         # 佇列清空（TTS 全部播完）
 
     def __init__(self, audio_player=None, parent=None):
@@ -104,15 +104,15 @@ class AudioStreamWorker(QObject):
             if item is _SENTINEL:
                 return
 
-            audio_bytes, reply_id, _trace_id = item
+            audio_bytes, reply_id, trace_id = item
 
             with self._playing_lock:
                 self._current_reply_id = reply_id
 
             try:
-                self.playback_started.emit(reply_id)
+                self.playback_started.emit(reply_id, trace_id)
                 self._player.play(audio_bytes)
-                self.playback_finished.emit(reply_id)
+                self.playback_finished.emit(reply_id, trace_id)
             except Exception as exc:  # pragma: no cover
                 print(f"[AudioStreamWorker] 播放失敗 reply_id={reply_id}: {exc}")
             finally:

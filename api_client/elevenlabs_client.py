@@ -9,74 +9,16 @@ from __future__ import annotations
 
 import io
 import os
-import threading
-import time
 from uuid import uuid4
 
 import requests
 from PyQt5.QtCore import QThread, pyqtSignal
 
 import config
-
-try:
-    import pygame
-except ModuleNotFoundError:  # pragma: no cover - 允許依賴未安裝時安全降級
-    pygame = None  # type: ignore[assignment]
-
+from audio_playback import PygameInMemoryAudioPlayer
 
 def _sanitize_stream_tts_text(text: str) -> str:
     return str(text or "").strip()
-
-
-class PygameInMemoryAudioPlayer:
-    """以 `pygame.mixer.music` 從記憶體播放單段 MP3 音訊。"""
-
-    _global_lock = threading.Lock()
-
-    def __init__(self, mixer_module=None, poll_interval: float = 0.02):
-        self._mixer = mixer_module or (pygame.mixer if pygame is not None else None)
-        self._poll_interval = poll_interval
-        self._initialized = False
-
-    def play(self, audio_buffer: io.BytesIO):
-        if self._mixer is None:
-            raise RuntimeError("pygame 尚未安裝，無法播放記憶體音訊。")
-
-        with self._global_lock:
-            self._ensure_initialized()
-            audio_buffer.seek(0)
-            try:
-                self._mixer.music.stop()
-            except Exception:
-                pass
-            try:
-                self._mixer.music.unload()
-            except Exception:
-                pass
-
-            # `namehint="mp3"` 可幫助 pygame 在 file-like object 上正確判斷格式。
-            self._mixer.music.load(audio_buffer, "mp3")
-            self._mixer.music.play()
-            while self._mixer.music.get_busy():
-                time.sleep(self._poll_interval)
-
-    def _ensure_initialized(self):
-        get_init = getattr(self._mixer, "get_init", None)
-        if callable(get_init) and get_init():
-            self._initialized = True
-            return
-
-        init = getattr(self._mixer, "init", None)
-        if not callable(init):
-            raise RuntimeError("pygame mixer 無法初始化。")
-
-        init(
-            frequency=int(os.getenv("PYGAME_MIXER_FREQUENCY", "22050")),
-            size=int(os.getenv("PYGAME_MIXER_SIZE", "-16")),
-            channels=int(os.getenv("PYGAME_MIXER_CHANNELS", "2")),
-            buffer=int(os.getenv("PYGAME_MIXER_BUFFER", "4096")),
-        )
-        self._initialized = True
 
 
 class ElevenLabsStreamingTTSWorker(QThread):

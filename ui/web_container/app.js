@@ -23,6 +23,23 @@
     var defaultStatusText = '房間待命中';
     var conversationTurns = new Map();
     var maxConversationTurns = 3;
+    var characterOffsetX = 0;
+    var characterOffsetY = 0;
+    var characterScale = 1;
+
+    function updateCharacterTransform() {
+        var target = character || video;
+
+        if (!target) {
+            console.warn('[ECHOES] 找不到角色容器，無法更新角色 transform');
+            return;
+        }
+
+        target.style.transform = (
+            'translate3d(' + characterOffsetX + 'px, ' + characterOffsetY + 'px, 0) ' +
+            'scale(' + characterScale + ')'
+        );
+    }
 
     function ensureConversationTurn(turnId, sourceLabel) {
         var existing = conversationTurns.get(turnId);
@@ -130,6 +147,7 @@
     };
 
     video.addEventListener('ended', function () {
+        console.log('[ECHOES:MAIN_VIDEO_ENDED]');
         if (!video.loop && idleSource && !motionLoopActive) {
             setSource(idleSource, true);
         }
@@ -190,16 +208,18 @@
         }
     };
 
-    window.moveCharacter = function (x, y) {
-        var target = character || video;
+    window.moveCharacter = function (x, y, scale) {
+        characterOffsetX = Number(x) || 0;
+        characterOffsetY = Number(y) || 0;
+        characterScale = Number(scale) || 1;
+        updateCharacterTransform();
+        console.log('[ECHOES] 角色 transform:', { x: characterOffsetX, y: characterOffsetY, scale: characterScale });
+    };
 
-        if (!target) {
-            console.warn('[ECHOES] 找不到角色容器，無法移動角色');
-            return;
-        }
-
-        target.style.transform = 'translate3d(' + Number(x) + 'px, ' + Number(y) + 'px, 0)';
-        console.log('[ECHOES] 角色位移:', { x: Number(x), y: Number(y) });
+    window.setCharacterObjectPosition = function (objectPosition) {
+        var value = String(objectPosition || 'center bottom');
+        video.style.objectPosition = value;
+        console.log('[ECHOES] 角色 object-position:', value);
     };
 
     window.setActionStatus = function (message, tone, timeoutMs) {

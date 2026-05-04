@@ -61,6 +61,20 @@ class InteractionTurnManagerTests(unittest.TestCase):
         self.assertEqual(started[1][2], "第二句")
         manager.shutdown()
 
+    def test_submit_reuses_external_trace_id_when_provided(self):
+        tracker = InteractionLatencyTracker()
+        brain = _FakeBrainEngine()
+        manager = InteractionTurnManager(brain, tracker)
+        external_trace_id = tracker.begin_interaction("stt", "外部 trace")
+
+        result = manager.submit("stt", "第一句", trace_id=external_trace_id)
+
+        self.assertTrue(result["accepted"])
+        self.assertTrue(result["started"])
+        self.assertEqual(result["trace_id"], external_trace_id)
+        self.assertEqual(brain.sent_items[0][1], external_trace_id)
+        manager.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()

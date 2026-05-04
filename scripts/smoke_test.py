@@ -1,5 +1,5 @@
 """
-ECHOES smoke test for OpenAI streaming + ElevenLabs in-memory playback.
+ECHOES smoke test for OpenAI streaming + VoAI speech playback.
 
 請務必先進入 Ubuntu 24.04 專案虛擬環境後再執行：
     source venv/bin/activate
@@ -30,13 +30,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import config
 from action_dispatcher import ActionDispatcher
-from api_client.brain_engine import BrainEngine, StreamedReplyParser
-from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
+from api_client.brain_engine import BrainEngine, StreamedReplyParser, sanitize_tts_text
+from api_client.voai_client import VoAIStreamingTTSWorker
 from interaction_trace import InteractionLatencyTracker
 from langchain_openai import ChatOpenAI
+from main import connect_brain_output_handlers
 
 
 ENV_PATH = PROJECT_ROOT / ".env"
+LATENCY_SLA_MS = 1800
 
 
 @dataclass
@@ -106,17 +108,22 @@ def load_env_values() -> dict[str, str]:
 
 
 def check_env(env_map: dict[str, str]) -> CheckResult:
-    required_keys = [
-        "OPENAI_API_KEY",
-        "OPENAI_MODEL",
-        "ELEVENLABS_API_KEY",
-        "ELEVENLABS_VOICE_ID",
-    ]
     missing = []
-    for key in required_keys:
-        value = os.getenv(key, "").strip() or env_map.get(key, "").strip()
-        if not value:
-            missing.append(key)
+    openai_key = os.getenv("OPENAI_API_KEY", "").strip() or env_map.get("OPENAI_API_KEY", "").strip()
+    openai_model = os.getenv("OPENAI_MODEL", "").strip() or env_map.get("OPENAI_MODEL", "").strip()
+    voai_key = (
+        os.getenv("VOAI_API_KEY", "").strip()
+        or os.getenv("VoAI_API_KEY", "").strip()
+        or env_map.get("VOAI_API_KEY", "").strip()
+        or env_map.get("VoAI_API_KEY", "").strip()
+    )
+
+    if not openai_key:
+        missing.append("OPENAI_API_KEY")
+    if not openai_model:
+        missing.append("OPENAI_MODEL")
+    if not voai_key:
+        missing.append("VOAI_API_KEY or VoAI_API_KEY")
 
     if missing:
         return CheckResult(
@@ -128,7 +135,7 @@ def check_env(env_map: dict[str, str]) -> CheckResult:
     return CheckResult(
         name=".env",
         ok=True,
-        detail="已讀取到 OPENAI / ElevenLabs 必要欄位（已隱藏敏感值）。",
+        detail="已讀取到 OPENAI / VoAI 必要欄位（已隱藏敏感值）。",
     )
 
 
@@ -149,7 +156,7 @@ def check_openai() -> CheckResult:
 
     try:
         for chunk in llm.stream(
-            "你是測試助手。請嚴格只輸出：[ACTION:listen] 好。不要多說任何字。"
+            "你是測試助手。請嚴格只輸出：[ACTION:listen] 我在喔！只能這樣輸出。"
         ):
             outputs = parser.feed(str(getattr(chunk, "content", "") or ""))
             seen_chunks.extend(outputs)
@@ -173,64 +180,58 @@ def check_openai() -> CheckResult:
     )
 
 
-def check_elevenlabs() -> CheckResult:
-    api_key = os.getenv("ELEVENLABS_API_KEY", "").strip()
-    voice_id = os.getenv("ELEVENLABS_VOICE_ID", config.ELEVENLABS_VOICE_ID).strip() or config.ELEVENLABS_VOICE_ID
-    if not api_key or not voice_id:
-        missing = []
-        if not api_key:
-            missing.append("ELEVENLABS_API_KEY")
-        if not voice_id:
-            missing.append("ELEVENLABS_VOICE_ID")
+def check_voai() -> CheckResult:
+    api_key = os.getenv("VOAI_API_KEY", "").strip() or os.getenv("VoAI_API_KEY", "").strip()
+    if not api_key:
         return CheckResult(
-            name="ElevenLabs",
+            name="VoAI",
             ok=False,
-            detail=f"缺少必要欄位或值: {', '.join(missing)}",
+            detail="缺少必要欄位或值: VOAI_API_KEY",
         )
 
-    endpoint = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
+    endpoint = "https://connect.voai.ai/TTS/Speech"
     headers = {
-        "xi-api-key": api_key,
-        "Accept": "audio/mpeg",
+        "x-api-key": api_key,
+        "x-output-format": "pcm",
+        "x-sample-rate": "32000",
         "Content-Type": "application/json",
     }
     payload = {
+        "version": "Classic",
         "text": "好。",
-        "model_id": config.DEFAULT_TTS_MODEL_ID,
+        "speaker": "柔洢",
+        "style": "預設",
+        "speed": 1.2,
+        "pitch_shift": 0,
+        "style_weight": 0,
+        "breath_pause": 0,
     }
 
     try:
         response = requests.post(
             endpoint,
             headers=headers,
-            params={"output_format": "mp3_22050_32", "optimize_streaming_latency": "3"},
             json=payload,
             timeout=(5, 30),
             stream=True,
         )
     except requests.RequestException as exc:
         return CheckResult(
-            name="ElevenLabs",
+            name="VoAI",
             ok=False,
-            detail=f"連線失敗: {exc}。請確認網路狀態與 ElevenLabs 服務可用。",
+            detail=f"連線失敗: {exc}。請確認網路狀態與 VoAI 服務可用。",
         )
 
     try:
         if response.status_code == 401:
             return CheckResult(
-                name="ElevenLabs",
+                name="VoAI",
                 ok=False,
-                detail="收到 401。請檢查 `ELEVENLABS_API_KEY` 是否有效。",
-            )
-        if response.status_code == 404:
-            return CheckResult(
-                name="ElevenLabs",
-                ok=False,
-                detail="收到 404。請檢查 `ELEVENLABS_VOICE_ID` 是否正確。",
+                detail="收到 401。請檢查 `VOAI_API_KEY` 是否有效。",
             )
         if not response.ok:
             return CheckResult(
-                name="ElevenLabs",
+                name="VoAI",
                 ok=False,
                 detail=f"HTTP {response.status_code}: {response.text[:200]}",
             )
@@ -239,7 +240,7 @@ def check_elevenlabs() -> CheckResult:
         received = b"".join(chunk for chunk in response.iter_content(chunk_size=4096) if chunk)
         if "audio" not in content_type or not received:
             return CheckResult(
-                name="ElevenLabs",
+                name="VoAI",
                 ok=False,
                 detail="API 有回應，但不是有效音訊資料。",
             )
@@ -247,10 +248,18 @@ def check_elevenlabs() -> CheckResult:
         response.close()
 
     return CheckResult(
-        name="ElevenLabs",
+        name="VoAI",
         ok=True,
-        detail=f"已成功取得串流測試音訊，大小 {len(received)} bytes。",
+        detail=f"已成功取得 PCM 串流測試音訊，大小 {len(received)} bytes。",
     )
+
+
+class _SmokePcmPlayer:
+    def is_available(self):
+        return True
+
+    def play_chunks(self, chunks):
+        return sum(len(chunk) for chunk in chunks if chunk)
 
 
 def _run_latency_trial(app: QCoreApplication, trial_name: str) -> tuple[LatencySample | None, str | None]:
@@ -266,7 +275,16 @@ def _run_latency_trial(app: QCoreApplication, trial_name: str) -> tuple[LatencyS
         window = _SmokeWindow()
 
         def tracked_worker_factory(*args, **kwargs):
-            worker = ElevenLabsStreamingTTSWorker(*args, **kwargs)
+            worker = VoAIStreamingTTSWorker(
+                *args,
+                pcm_player_factory=_SmokePcmPlayer,
+                **kwargs,
+            )
+            def _record_finished(success, _message, payload):
+                if success:
+                    timings.setdefault("tts_finished_at", perf_counter())
+                    if isinstance(payload, dict):
+                        timings.setdefault("tts_format", str(payload.get("format", "")))
             worker.progress_signal.connect(
                 lambda event_name, payload: timings.setdefault(
                     "tts_stream_started_at",
@@ -275,14 +293,7 @@ def _run_latency_trial(app: QCoreApplication, trial_name: str) -> tuple[LatencyS
                 if event_name == "stream_started"
                 else None
             )
-            worker.finished_signal.connect(
-                lambda success, _message, _payload: timings.setdefault(
-                    "tts_finished_at",
-                    perf_counter(),
-                )
-                if success
-                else None
-            )
+            worker.finished_signal.connect(_record_finished)
             return worker
 
         dispatcher = ActionDispatcher(
@@ -294,12 +305,14 @@ def _run_latency_trial(app: QCoreApplication, trial_name: str) -> tuple[LatencyS
             tts_worker_factory=tracked_worker_factory,
             latency_tracker=tracker,
         )
+        window.dispatch_action = dispatcher.dispatch
+        window.speak_text = dispatcher.speak_text
         brain = BrainEngine(library=_SmokeLibrary(), latency_tracker=tracker)
         brain.warning_emitted.connect(warnings.append)
-        brain.streamed_fragment.connect(lambda fragment, trace_id: dispatcher.dispatch(fragment, trace_id=trace_id))
+        connect_brain_output_handlers(window, brain, sanitize_tts_text)
         brain.start()
 
-        input_text = "請嚴格只回：[ACTION:listen] 好。不要多說。"
+        input_text = "請嚴格只回：[ACTION:listen] 我在喔！只能這樣回。"
         trace_id = tracker.begin_interaction("stt-smoke", input_text)
         timings["start_at"] = perf_counter()
         brain.send_to_brain(input_text, trace_id=trace_id)
@@ -325,6 +338,8 @@ def _run_latency_trial(app: QCoreApplication, trial_name: str) -> tuple[LatencyS
         return None, f"{trial_name}: 沒有觸發任何動作影片。"
     if "tts_stream_started_at" not in timings or "tts_finished_at" not in timings:
         return None, f"{trial_name}: TTS 沒有完整啟播或完成。"
+    if timings.get("tts_format") != "pcm":
+        return None, f"{trial_name}: 未使用 PCM 主路徑，實際格式={timings.get('tts_format', '<unknown>')}。"
 
     start_at = timings["start_at"]
     action_ms = round((window.motion_calls[0][3] - start_at) * 1000)
@@ -364,9 +379,9 @@ def run_latency_probe() -> CheckResult:
     median_action = round(statistics.median(action_values))
     median_tts_start = round(statistics.median(tts_start_values))
     median_total = round(statistics.median(total_values))
-    fast_rounds = sum(1 for total_ms in total_values if total_ms <= 2000)
+    fast_rounds = sum(1 for total_ms in total_values if total_ms <= LATENCY_SLA_MS)
 
-    if median_total > 2000 or fast_rounds < 2:
+    if median_total > LATENCY_SLA_MS:
         return CheckResult(
             name="LatencyProbe",
             ok=False,
@@ -374,7 +389,7 @@ def run_latency_probe() -> CheckResult:
                 "多輪量測未達穩定低延遲門檻。"
                 f" totals={total_values}ms, median_total={median_total}ms, "
                 f"median_action={median_action}ms, median_tts_start={median_tts_start}ms, "
-                f"fast_rounds={fast_rounds}/{measured_rounds}"
+                f"fast_rounds={fast_rounds}/{measured_rounds}, sla_ms={LATENCY_SLA_MS}"
             ),
         )
 
@@ -385,7 +400,7 @@ def run_latency_probe() -> CheckResult:
             "多輪量測通過。"
             f" totals={total_values}ms, median_total={median_total}ms, "
             f"median_action={median_action}ms, median_tts_start={median_tts_start}ms, "
-            f"fast_rounds={fast_rounds}/{measured_rounds}"
+            f"fast_rounds={fast_rounds}/{measured_rounds}, sla_ms={LATENCY_SLA_MS}"
         ),
     )
 
@@ -395,7 +410,7 @@ def main() -> int:
     results = [
         check_env(env_map),
         check_openai(),
-        check_elevenlabs(),
+        check_voai(),
         run_latency_probe(),
     ]
 

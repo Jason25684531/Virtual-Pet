@@ -186,6 +186,13 @@ class CharacterLibrary:
             return None
         return str(absolute_path)
 
+    def get_layout_config(self, character_id: str | None) -> dict:
+        manifest = self.get_character(character_id)
+        if not manifest:
+            return {}
+        layout = manifest.get("layout")
+        return dict(layout) if isinstance(layout, dict) else {}
+
     def get_character_name(self, character_id: str | None) -> str | None:
         manifest = self.get_character(character_id)
         if not manifest:

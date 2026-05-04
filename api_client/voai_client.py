@@ -1,8 +1,8 @@
 """
 ECHOES — VoAI TTS 整合。
 
-以 VoAI TTS API（https://connect.voai.ai/TTS/Speech）取得 MP3 音訊，
-完成後透過 audio_ready_signal 通知 AudioStreamWorker 播放。
+以 VoAI TTS API（https://connect.voai.ai/TTS/Speech）優先取得 PCM 串流音訊，
+必要時回退 MP3 音訊並透過 audio_ready_signal 通知 AudioStreamWorker 播放。
 介面與 ElevenLabsStreamingTTSWorker 相容，可直接替換。
 """
 
@@ -16,12 +16,15 @@ import requests
 from PyQt5.QtCore import QThread, pyqtSignal
 
 import config
+from audio_playback import FfplayPcmAudioPlayer
 
 _VOAI_TTS_URL = "https://connect.voai.ai/TTS/Speech"
+_VOAI_HTTP_SESSION = requests.Session()
 _DEFAULT_STYLE = "預設"
 _DEFAULT_SPEED = 1.2
 _DEFAULT_STYLE_WEIGHT = 0.0
 _DEFAULT_BREATH_PAUSE = 0.0
+_PCM_SAMPLE_RATE = 32000
 
 
 def _get_api_key() -> str:
@@ -32,7 +35,7 @@ def _get_api_key() -> str:
 
 
 class VoAIStreamingTTSWorker(QThread):
-    """呼叫 VoAI TTS API 取得 MP3 音訊，完成後 emit audio_ready_signal。
+    """呼叫 VoAI TTS API，優先 PCM 即時播放，必要時回退 MP3 佇列播放。
 
     介面與 ElevenLabsStreamingTTSWorker 相容：
       - 相同建構子參數：text, reply_id, trace_id, voice_id, parent
@@ -51,6 +54,7 @@ class VoAIStreamingTTSWorker(QThread):
         trace_id: str | None = None,
         voice_id: str | None = None,
         requests_post=None,
+        pcm_player_factory=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -58,7 +62,10 @@ class VoAIStreamingTTSWorker(QThread):
         self._reply_id = (reply_id or uuid4().hex).strip()
         self._trace_id = (trace_id or "").strip()
         self._voice_id = (voice_id or "").strip()
-        self._requests_post = requests_post or requests.post
+        self._requests_post = requests_post or _VOAI_HTTP_SESSION.post
+        self._pcm_player_factory = pcm_player_factory or (
+            lambda: FfplayPcmAudioPlayer(sample_rate=_PCM_SAMPLE_RATE, channels=1)
+        )
 
     def run(self):
         if not self._text:
@@ -71,7 +78,17 @@ class VoAIStreamingTTSWorker(QThread):
             return
 
         voice_cfg = config.get_voai_config_for_character(self._voice_id)
-        payload = {
+        payload = self._build_payload(voice_cfg)
+        if self._pcm_streaming_enabled():
+            ok, fallback_reason = self._try_pcm_stream(api_key, payload)
+            if ok:
+                return
+            print(f"[ECHOES] 提示: VoAI PCM 串流不可用，改用 MP3 fallback。{fallback_reason}")
+
+        self._run_mp3_fallback(api_key, payload)
+
+    def _build_payload(self, voice_cfg: dict) -> dict:
+        return {
             "version": voice_cfg.get("version", "Classic"),
             "text": self._text,
             "speaker": voice_cfg.get("speaker", "柔洢"),
@@ -81,6 +98,91 @@ class VoAIStreamingTTSWorker(QThread):
             "style_weight": float(voice_cfg.get("style_weight", _DEFAULT_STYLE_WEIGHT)),
             "breath_pause": float(voice_cfg.get("breath_pause", _DEFAULT_BREATH_PAUSE)),
         }
+
+    @staticmethod
+    def _pcm_streaming_enabled() -> bool:
+        value = os.getenv("VOAI_PCM_STREAMING_ENABLED", "true").strip().lower()
+        return value not in {"0", "false", "no", "off"}
+
+    def _try_pcm_stream(self, api_key: str, payload: dict) -> tuple[bool, str]:
+        player = self._pcm_player_factory()
+        is_available = getattr(player, "is_available", None)
+        if callable(is_available) and not is_available():
+            return False, "ffplay backend unavailable"
+
+        headers = {
+            "x-api-key": api_key,
+            "x-output-format": "pcm",
+            "x-sample-rate": str(_PCM_SAMPLE_RATE),
+            "Content-Type": "application/json",
+        }
+
+        response = None
+        bytes_forwarded = 0
+        try:
+            response = self._requests_post(
+                _VOAI_TTS_URL,
+                headers=headers,
+                json=payload,
+                timeout=(5, 45),
+                stream=True,
+            )
+            response.raise_for_status()
+            content_type = str(response.headers.get("content-type", "") or "").lower()
+            if "audio" not in content_type and "octet-stream" not in content_type:
+                return False, f"VoAI PCM 回傳非音訊格式：{content_type}"
+
+            def iter_chunks():
+                nonlocal bytes_forwarded
+                for chunk in response.iter_content(chunk_size=4096):
+                    if not chunk:
+                        continue
+                    if bytes_forwarded <= 0:
+                        self.progress_signal.emit(
+                            "stream_started",
+                            {
+                                "reply_id": self._reply_id,
+                                "trace_id": self._trace_id,
+                                "bytes_forwarded": len(chunk),
+                                "format": "pcm",
+                            },
+                        )
+                        self.progress_signal.emit(
+                            "playback_started",
+                            {
+                                "reply_id": self._reply_id,
+                                "trace_id": self._trace_id,
+                                "format": "pcm",
+                            },
+                        )
+                    bytes_forwarded += len(chunk)
+                    yield chunk
+
+            played_bytes = int(player.play_chunks(iter_chunks()) or 0)
+            if bytes_forwarded <= 0 and played_bytes <= 0:
+                return False, "VoAI PCM 回傳空音訊。"
+
+            self.finished_signal.emit(
+                True,
+                "VoAI PCM 串流播放完成。",
+                {
+                    "reply_id": self._reply_id,
+                    "trace_id": self._trace_id,
+                    "text": self._text,
+                    "bytes_forwarded": bytes_forwarded or played_bytes,
+                    "format": "pcm",
+                },
+            )
+            return True, ""
+        except requests.RequestException as exc:
+            return False, f"VoAI PCM 網路錯誤: {exc}"
+        except Exception as exc:
+            return False, f"VoAI PCM 播放失敗: {exc}"
+        finally:
+            if response is not None:
+                response.close()
+
+    def _run_mp3_fallback(self, api_key: str, payload: dict):
         headers = {
             "x-api-key": api_key,
             "x-output-format": "mp3",
@@ -132,6 +234,7 @@ class VoAIStreamingTTSWorker(QThread):
                     "trace_id": self._trace_id,
                     "text": self._text,
                     "bytes_received": len(audio_bytes),
+                    "format": "mp3",
                 },
             )
         except requests.HTTPError as exc:

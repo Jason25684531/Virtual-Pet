@@ -125,7 +125,7 @@ class SoulLoader:
         return SystemMessage(content=content)
 
 
-SENTENCE_BOUNDARY_PATTERN = re.compile(r"[，。！？,!?\n]")
+SENTENCE_BOUNDARY_PATTERN = re.compile(r"[。！？.!?]")
 ACTION_PREFIX_PATTERN = re.compile(
     r"^\s*(\[\s*ACTION\s*:\s*(?P<action>[A-Za-z0-9_-]+)\s*\])",
     re.IGNORECASE,
@@ -285,6 +285,7 @@ class BrainEngine(QThread):
 
     message_received = pyqtSignal(str)
     streamed_fragment = pyqtSignal(str, object)
+    speech_ready = pyqtSignal(str, object)
     warning_emitted = pyqtSignal(str)
     profile_changed = pyqtSignal(str)
 
@@ -414,12 +415,20 @@ class BrainEngine(QThread):
                 self._emit_fragment(fragment, trace_id)
 
             memory_reply = parser.build_memory_reply()
+            speech_reply = sanitize_tts_text(memory_reply)
             if memory_reply:
                 self._remember_exchange(memory, prompt_text, memory_reply)
+                if speech_reply:
+                    if self._latency_tracker is not None:
+                        self._latency_tracker.mark_tts_expected(trace_id, speech_reply)
+                    self.speech_ready.emit(speech_reply, trace_id)
             elif not emitted_anything:
                 fallback = "我剛剛有點恍神了，請再說一次。"
                 self._remember_exchange(memory, prompt_text, fallback)
                 self._emit_fragment(fallback, trace_id)
+                if self._latency_tracker is not None:
+                    self._latency_tracker.mark_tts_expected(trace_id, fallback)
+                self.speech_ready.emit(fallback, trace_id)
             if self._latency_tracker is not None:
                 self._latency_tracker.mark_brain_completed(trace_id)
         except Exception as exc:
@@ -427,7 +436,11 @@ class BrainEngine(QThread):
             self.warning_emitted.emit(warning)
             if self._latency_tracker is not None:
                 self._latency_tracker.mark_failure(trace_id, "brain", warning)
-            self._emit_fragment("[ACTION:listen] 抱歉，我現在無法順利連線 OpenAI 大腦，請稍後再試。", trace_id)
+            fallback = "抱歉，我現在無法順利連線 OpenAI 大腦，請稍後再試。"
+            self._emit_fragment(f"[ACTION:listen] {fallback}", trace_id)
+            if self._latency_tracker is not None:
+                self._latency_tracker.mark_tts_expected(trace_id, fallback)
+            self.speech_ready.emit(fallback, trace_id)
             if self._latency_tracker is not None:
                 self._latency_tracker.mark_brain_completed(trace_id)
             return
@@ -582,7 +595,7 @@ def sanitize_tts_text(text: str) -> str:
     """移除控制標記，保留可朗讀文字。"""
 
     stripped = ACTION_DIRECTIVE_PATTERN.sub("", text or "")
-    stripped = re.sub(r"\s{2,}", " ", stripped).strip()
+    stripped = re.sub(r"\s+", " ", stripped).strip()
     return stripped
 
 

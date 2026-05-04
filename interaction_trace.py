@@ -27,6 +27,7 @@ class InteractionTraceState:
     started_at: float
     stages: dict[str, float] = field(default_factory=dict)
     notes: dict[str, str] = field(default_factory=dict)
+    tts_expected: int = 0
     tts_enqueued: int = 0
     tts_finished: int = 0
     tts_failures: int = 0
@@ -40,6 +41,7 @@ class InteractionLatencyTracker:
     def __init__(self):
         self._lock = Lock()
         self._traces: dict[str, InteractionTraceState] = {}
+        self._completed_traces: dict[str, dict[str, object]] = {}
 
     def begin_interaction(self, source: str, text: str) -> str:
         trace_id = uuid4().hex[:8]
@@ -56,14 +58,48 @@ class InteractionLatencyTracker:
         self._log(trace_id, f"收到文字，source={state.source}，text={_preview_text(state.input_text)}")
         return trace_id
 
+    def get_completed_trace(self, trace_id: str) -> dict[str, object] | None:
+        with self._lock:
+            completed = self._completed_traces.get(trace_id)
+            if completed is None:
+                return None
+            return dict(completed)
+
     def abort(self, trace_id: str | None, reason: str):
         if not trace_id:
             return
         with self._lock:
             state = self._traces.pop(trace_id, None)
+            self._completed_traces.pop(trace_id, None)
         if state is None:
             return
         self._log(trace_id, f"追蹤已中止：{reason}")
+
+    def mark_stt_speech_started(self, trace_id: str | None):
+        self._record(trace_id, "stt_speech_started", "STT 偵測到開始說話", first_only=True)
+
+    def mark_stt_speech_ended(self, trace_id: str | None):
+        self._record(trace_id, "stt_speech_ended", "STT 偵測到停止說話", first_only=True)
+
+    def mark_stt_finalized(self, trace_id: str | None, text: str):
+        if not trace_id:
+            return
+        normalized = str(text or "").strip()
+        with self._lock:
+            state = self._traces.get(trace_id)
+            if state is None:
+                return
+            if normalized:
+                state.input_text = normalized
+            if "stt_finalized" in state.stages:
+                return
+            now = perf_counter()
+            state.stages["stt_finalized"] = now
+            preview = _preview_text(normalized) if normalized else "(空白)"
+            state.notes["stt_finalized"] = f"STT finalized：{preview}"
+            elapsed_ms = self._elapsed_from(state, now)
+        if elapsed_ms is not None:
+            self._log(trace_id, f"STT finalized：{preview} (+{elapsed_ms}ms)")
 
     def mark_brain_queued(self, trace_id: str | None):
         self._record(trace_id, "brain_queued", "已送入 BrainEngine 佇列")
@@ -102,17 +138,40 @@ class InteractionLatencyTracker:
             chunk_index = state.tts_enqueued
             if "first_tts_enqueued" not in state.stages:
                 state.stages["first_tts_enqueued"] = perf_counter()
-                state.notes["first_tts_enqueued"] = f"第一段 TTS 已排入佇列：{_preview_text(text)}"
+                state.notes["first_tts_enqueued"] = f"TTS 已排入佇列：{_preview_text(text)}"
                 elapsed_ms = self._elapsed_ms(state, "first_tts_enqueued")
             else:
                 elapsed_ms = self._elapsed_ms(state, "first_tts_enqueued")
         if elapsed_ms is not None:
-            ordinal = "第一" if chunk_index == 1 else f"第{chunk_index}"
-            self._log(trace_id, f"{ordinal}段 TTS 已排入佇列 (+{elapsed_ms}ms)")
+            if chunk_index == 1:
+                self._log(trace_id, f"TTS 已排入佇列 (+{elapsed_ms}ms)")
+            else:
+                self._log(trace_id, f"第{chunk_index}段 TTS 已排入佇列 (+{elapsed_ms}ms)")
+
+    def mark_tts_expected(self, trace_id: str | None, text: str):
+        if not trace_id:
+            return
+        with self._lock:
+            state = self._traces.get(trace_id)
+            if state is None:
+                return
+            state.tts_expected += 1
+            if "tts_expected" in state.stages:
+                return
+            now = perf_counter()
+            state.stages["tts_expected"] = now
+            state.notes["tts_expected"] = f"TTS 待輸出：{_preview_text(text)}"
+            elapsed_ms = self._elapsed_from(state, now)
+        if elapsed_ms is not None:
+            self._log(trace_id, f"TTS 待輸出 (+{elapsed_ms}ms)")
 
     def mark_tts_stream_started(self, trace_id: str | None, reply_id: str, bytes_forwarded: int):
         detail = f"TTS 開始送入播放器，reply={reply_id[:8]}，bytes={bytes_forwarded}"
         self._record(trace_id, "first_tts_stream_started", detail, first_only=True)
+
+    def mark_tts_playback_started(self, trace_id: str | None, reply_id: str):
+        detail = f"TTS 開始播放，reply={reply_id[:8]}"
+        self._record(trace_id, "first_tts_playback_started", detail, first_only=True)
 
     def mark_tts_finished(self, trace_id: str | None, reply_id: str, success: bool, message: str):
         if not trace_id:
@@ -132,7 +191,7 @@ class InteractionLatencyTracker:
             elapsed_ms = self._elapsed_from(state, now)
             should_finalize = self._should_finalize(state)
         if elapsed_ms is not None:
-            self._log(trace_id, f"TTS 片段已完成 (+{elapsed_ms}ms) {note}")
+            self._log(trace_id, f"TTS 已完成 (+{elapsed_ms}ms) {note}")
         if should_finalize:
             self._finalize(trace_id)
 
@@ -170,6 +229,7 @@ class InteractionLatencyTracker:
                 "input_text": state.input_text,
                 "stages": dict(state.stages),
                 "notes": dict(state.notes),
+                "tts_expected": state.tts_expected,
                 "tts_enqueued": state.tts_enqueued,
                 "tts_finished": state.tts_finished,
                 "brain_completed": state.brain_completed,
@@ -195,7 +255,8 @@ class InteractionLatencyTracker:
     def _should_finalize(self, state: InteractionTraceState) -> bool:
         if state.finalized or not state.brain_completed:
             return False
-        return state.tts_finished >= state.tts_enqueued
+        required_tts = max(state.tts_expected, state.tts_enqueued)
+        return state.tts_finished >= required_tts
 
     def _finalize(self, trace_id: str):
         with self._lock:
@@ -206,7 +267,9 @@ class InteractionLatencyTracker:
             end_time = perf_counter()
             state.stages["interaction_completed"] = end_time
             state.notes["interaction_completed"] = "整段互動已完成"
-            summary = self._build_summary(state)
+            summary_payload = self._build_summary_payload(state)
+            self._completed_traces[trace_id] = summary_payload
+            summary = self._build_summary_text(summary_payload)
             self._traces.pop(trace_id, None)
         self._log(trace_id, summary)
 
@@ -221,7 +284,7 @@ class InteractionLatencyTracker:
             return None
         return _ms(timestamp - state.started_at)
 
-    def _build_summary(self, state: InteractionTraceState) -> str:
+    def _build_summary_payload(self, state: InteractionTraceState) -> dict[str, object]:
         stage_durations: list[tuple[str, int]] = []
 
         def add_delta(label: str, start_stage: str, end_stage: str):
@@ -240,12 +303,17 @@ class InteractionLatencyTracker:
                 first_output_stage = candidate
                 break
 
+        add_delta("stt_tail", "stt_speech_ended", "stt_finalized")
         add_delta("brain_queue_wait", "brain_queued", "brain_started")
         if first_output_stage is not None:
             add_delta("llm_to_first_output", "brain_started", first_output_stage)
+        add_delta("eos_to_first_action", "stt_speech_ended", "first_action_dispatched")
         add_delta("tts_startup", "first_tts_enqueued", "first_tts_stream_started")
+        add_delta("tts_to_playback", "first_tts_stream_started", "first_tts_playback_started")
+        add_delta("eos_to_first_audio", "stt_speech_ended", "first_tts_playback_started")
         add_delta("tts_tail", "first_tts_stream_started", "interaction_completed")
         add_delta("post_brain_tail", "brain_completed", "interaction_completed")
+        add_delta("eos_to_complete", "stt_speech_ended", "interaction_completed")
 
         bottleneck_label = "n/a"
         bottleneck_ms = 0
@@ -259,6 +327,7 @@ class InteractionLatencyTracker:
             "first_text_fragment",
             "first_action_dispatched",
             "first_tts_stream_started",
+            "first_tts_playback_started",
             "brain_completed",
         ):
             stage_ms = self._elapsed_ms(state, stage)
@@ -276,12 +345,42 @@ class InteractionLatencyTracker:
         if state.tts_failures:
             failure_suffix = f" | tts_failures={state.tts_failures}"
 
+        missing_stt = [
+            stage_name
+            for stage_name in ("stt_speech_started", "stt_speech_ended", "stt_finalized")
+            if stage_name not in state.stages
+        ]
+        return {
+            "trace_id": state.trace_id,
+            "source": state.source,
+            "input_text": state.input_text,
+            "total_ms": total_ms,
+            "stage_durations": dict(stage_durations),
+            "bottleneck_label": bottleneck_label,
+            "bottleneck_ms": bottleneck_ms,
+            "milestones": milestones,
+            "tts_failures": state.tts_failures,
+            "missing_stt_milestones": missing_stt,
+            "failure_suffix": failure_suffix,
+            "stage_parts": stage_parts,
+        }
+
+    @staticmethod
+    def _build_summary_text(summary_payload: dict[str, object]) -> str:
+        stage_parts = list(summary_payload.get("stage_parts", []))
+        milestones = list(summary_payload.get("milestones", []))
+        failure_suffix = str(summary_payload.get("failure_suffix", ""))
+        missing_stt = list(summary_payload.get("missing_stt_milestones", []))
+        stt_suffix = ""
+        if missing_stt:
+            stt_suffix = f" | missing_stt={','.join(missing_stt)}"
         return (
             "互動完成摘要 "
-            f"source={state.source} total={total_ms}ms | "
+            f"source={summary_payload.get('source', 'unknown')} "
+            f"total={summary_payload.get('total_ms', 0)}ms | "
             f"stages: {'; '.join(stage_parts)} | "
-            f"bottleneck={bottleneck_label}({bottleneck_ms}ms) | "
-            f"milestones: {'; '.join(milestones)}{failure_suffix}"
+            f"bottleneck={summary_payload.get('bottleneck_label', 'n/a')}({summary_payload.get('bottleneck_ms', 0)}ms) | "
+            f"milestones: {'; '.join(milestones)}{failure_suffix}{stt_suffix}"
         )
 
     @staticmethod
