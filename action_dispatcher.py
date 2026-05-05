@@ -9,6 +9,7 @@ import os
 import queue
 import re
 import inspect
+from collections import deque
 from uuid import uuid4
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -34,6 +35,7 @@ ACTION_DIRECTIVE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 NON_REPEATABLE_LOOP_ACTIONS = {"report_news", "play_music"}
+WAIT_MAIN_VIDEO_BEFORE_FINISH_ACTIONS = {"report_news", "play_music"}
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,13 @@ class PendingActionState:
     has_tts: bool = False
     timeout_timer: QTimer | None = None
     fallback_grace_applied: bool = False
+
+
+@dataclass(frozen=True)
+class DeferredDispatch:
+    directive: str
+    trace_id: str | None
+    allow_tts: bool
 
 
 class ActionDispatcher(QObject):
@@ -94,6 +103,7 @@ class ActionDispatcher(QObject):
         self._trace_tts_providers: dict[str, str] = {}
         self._trace_pending_tts_counts: dict[str, int] = {}
         self._completed_tts_traces: set[str] = set()
+        self._deferred_dispatches: deque[DeferredDispatch] = deque()
         self._active_action_trace_id: str | None = None
         self._action_sync_timeout_ms = max(500, int(getattr(config, "ACTION_SYNC_TIMEOUT_MS", 6000))) #VOAI Timeout 約 5-6 秒，ElevenLabs Timeout 約 3-4 秒，綜合考量後設定為 6 秒以兼顧兩者並留有緩衝
         self._fallback_timeout_grace_ms = 500
@@ -186,6 +196,20 @@ class ActionDispatcher(QObject):
     ) -> bool:
         raw_action_name, display_message = self._parse_directive(directive)
         action_name = config.canonicalize_host_action(raw_action_name)
+        normalized_trace_id = str(trace_id or "").strip()
+        if self._should_defer_dispatch(action_name, normalized_trace_id):
+            self._deferred_dispatches.append(
+                DeferredDispatch(
+                    directive=directive,
+                    trace_id=trace_id,
+                    allow_tts=allow_tts,
+                )
+            )
+            print(
+                "[ECHOES] 提示: "
+                f"loop action `{self._current_loop_action_key}` 尚未播完，已暫存後續任務。"
+            )
+            return True
         if raw_action_name and action_name and raw_action_name != action_name:
             print(f"[ECHOES] 提示: action alias `{raw_action_name}` 已正規化為 `{action_name}`。")
 
@@ -257,8 +281,13 @@ class ActionDispatcher(QObject):
             except Exception as exc:  # pragma: no cover - 防止 TTS 異常阻斷動作播放
                 print(f"[ECHOES] 警告: TTS 背景啟動失敗，但動作已照常執行。({exc})")
         elif motion_found and self._current_loop_action_key is not None:
-            # 無 TTS 動作等待播放完成；timer 只作為 ended callback 失效時的保護。
-            self._schedule_loop_cleanup(12000 if self._wait_for_main_video_ended else 3000)
+            # 無 TTS 動作仍需等主 WebM / panel lifecycle 收尾；timer 只作為 ended callback 失效時的保護。
+            if binding.name in WAIT_MAIN_VIDEO_BEFORE_FINISH_ACTIONS:
+                if not self._panel_video_started:
+                    self._wait_for_main_video_ended = True
+                self._schedule_loop_cleanup(12000, wait_for_main_video_end=True)
+            else:
+                self._schedule_loop_cleanup(12000 if self._wait_for_main_video_ended else 3000)
         return True
 
     @staticmethod
@@ -314,6 +343,22 @@ class ActionDispatcher(QObject):
         if self._current_loop_action_key == binding.motion_key:
             return True
         return any(state.binding.name == binding.name for state in self._pending_actions.values())
+
+    def _should_defer_dispatch(self, action_name: str | None, trace_id: str | None) -> bool:
+        if self._current_loop_action_key not in WAIT_MAIN_VIDEO_BEFORE_FINISH_ACTIONS:
+            return False
+        normalized_trace_id = str(trace_id or "").strip()
+        active_trace_id = str(self._active_action_trace_id or "").strip()
+        if action_name and action_name == self._current_loop_action_key and not normalized_trace_id:
+            return False
+        if normalized_trace_id and (
+            (active_trace_id and normalized_trace_id == active_trace_id)
+            or normalized_trace_id in self._pending_actions
+        ):
+            return False
+        if not normalized_trace_id and not action_name:
+            return False
+        return True
 
     def _handle_report_news(self, binding: ActionBinding, motion_found: bool):
         current_character_id = self._call_library_method("get_current_character_id")
@@ -715,6 +760,10 @@ class ActionDispatcher(QObject):
         # panel video 尚未結束時，等待 JS 的 _on_panel_video_ended 回調再 finish
         if self._panel_video_started and not self._panel_video_ended:
             return
+        if self._current_loop_action_key in WAIT_MAIN_VIDEO_BEFORE_FINISH_ACTIONS:
+            self._wait_for_main_video_ended = True
+            self._schedule_loop_cleanup(12000, wait_for_main_video_end=True)
+            return
         self._finish_loop_action()
 
     def _on_panel_video_ended(self):
@@ -729,6 +778,10 @@ class ActionDispatcher(QObject):
                 and not self._audio_worker.is_busy())
         )
         if tts_idle:
+            if self._current_loop_action_key in WAIT_MAIN_VIDEO_BEFORE_FINISH_ACTIONS:
+                self._wait_for_main_video_ended = True
+                self._schedule_loop_cleanup(12000, wait_for_main_video_end=True)
+                return
             self._finish_loop_action()
 
     def _on_main_video_ended(self):
@@ -888,6 +941,7 @@ class ActionDispatcher(QObject):
         self._trace_tts_providers.clear()
         self._trace_pending_tts_counts.clear()
         self._completed_tts_traces.clear()
+        self._deferred_dispatches.clear()
         while not self._pending_tts_chunks.empty():
             try:
                 self._pending_tts_chunks.get_nowait()
@@ -959,16 +1013,29 @@ class ActionDispatcher(QObject):
             print(f"[ECHOES] 提示: 無可播放音樂（{message}），動畫繼續顯示。")
             self._window.set_action_status("音樂播放中", tone="music")
 
-    def _schedule_loop_cleanup(self, delay_ms: int = 8000):
+    def _schedule_loop_cleanup(self, delay_ms: int = 8000, wait_for_main_video_end: bool = False):
         if QCoreApplication.instance() is None:
             return
         if self._loop_cleanup_timer is not None:
             self._loop_cleanup_timer.stop()
         timer = QTimer(self)
         timer.setSingleShot(True)
-        timer.timeout.connect(self._finish_loop_action)
+        if wait_for_main_video_end:
+            timer.timeout.connect(self._on_loop_cleanup_timeout)
+        else:
+            timer.timeout.connect(self._finish_loop_action)
         timer.start(delay_ms)
         self._loop_cleanup_timer = timer
+
+    def _on_loop_cleanup_timeout(self):
+        if self._current_loop_action_key is None:
+            return
+        if self._wait_for_main_video_ended and self._current_loop_action_key in WAIT_MAIN_VIDEO_BEFORE_FINISH_ACTIONS:
+            print(
+                "[ECHOES] 警告: "
+                f"loop action `{self._current_loop_action_key}` 等不到 main video ended，改用保護性 cleanup。"
+            )
+        self._finish_loop_action()
 
     def _finish_loop_action(self):
         if self._current_loop_action_key is None:
@@ -992,6 +1059,19 @@ class ActionDispatcher(QObject):
         if hasattr(self._window, "clear_panel_video"):
             self._window.clear_panel_video()
         self._window.restore_idle_video()
+        self._drain_deferred_dispatches()
+
+    def _drain_deferred_dispatches(self):
+        while self._deferred_dispatches and self._current_loop_action_key is None:
+            pending = self._deferred_dispatches.popleft()
+            print("[ECHOES] 提示: 已恢復執行先前暫存的任務。")
+            self.dispatch(
+                pending.directive,
+                trace_id=pending.trace_id,
+                allow_tts=pending.allow_tts,
+            )
+            if self._current_loop_action_key in WAIT_MAIN_VIDEO_BEFORE_FINISH_ACTIONS:
+                return
 
     def _handle_failure(self, binding: ActionBinding, motion_found: bool, message: str):
         print(f"[ECHOES] 警告: action {binding.name} 執行失敗: {message}")

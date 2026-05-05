@@ -1171,6 +1171,179 @@ class ActionPlaybackTests(unittest.TestCase):
 
             dispatcher.shutdown()
 
+    def test_play_music_without_tts_waits_for_main_video_end_before_idle(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-play-music-no-tts-") as temp_dir:
+            play_music_path = Path(temp_dir) / "play_music.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            panel_path = Path(temp_dir) / "Play_Music_Panel.webm"
+            play_music_path.write_bytes(b"music")
+            idle_path.write_bytes(b"idle")
+            panel_path.write_bytes(b"panel")
+
+            window = _LoopActionProbeWindow(temp_dir)
+            library = _PanelLibrary({"play_music": str(panel_path)})
+            dispatcher = ActionDispatcher(
+                window,
+                library=library,
+                music_worker_factory=lambda parent=None: _ManualServiceWorker(
+                    success=True,
+                    message="音樂已完成",
+                    payload={"path": "song.mp3", "title": "Test Song"},
+                    parent=parent,
+                ),
+                motion_path_resolver=lambda motion_key: str(
+                    {"play_music": play_music_path, "idle": idle_path}.get(motion_key, "")
+                ),
+                tts_enabled=False,
+            )
+
+            self.assertTrue(dispatcher.dispatch("[ACTION:play_music]"))
+            self.assertIsNotNone(dispatcher._loop_cleanup_timer)
+            self.assertEqual(dispatcher._current_loop_action_key, "play_music")
+
+            deadline = time.time() + 3.4
+            while time.time() < deadline:
+                QCoreApplication.processEvents()
+                time.sleep(0.02)
+
+            self.assertEqual(dispatcher._current_loop_action_key, "play_music")
+            self.assertEqual(window.stop_motion_loop_calls, 0)
+            self.assertEqual(window.restore_idle_calls, 0)
+
+            dispatcher._on_panel_video_ended()
+            self.assertTrue(dispatcher._wait_for_main_video_ended)
+            dispatcher._on_main_video_ended()
+
+            self.assertIsNone(dispatcher._current_loop_action_key)
+            self.assertEqual(window.stop_motion_loop_calls, 1)
+            self.assertGreaterEqual(window.restore_idle_calls, 1)
+
+            dispatcher.shutdown()
+
+    def test_next_action_waits_for_play_music_main_video_end(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-play-music-queue-") as temp_dir:
+            play_music_path = Path(temp_dir) / "play_music.webm"
+            listen_path = Path(temp_dir) / "listen.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            panel_path = Path(temp_dir) / "Play_Music_Panel.webm"
+            play_music_path.write_bytes(b"music")
+            listen_path.write_bytes(b"listen")
+            idle_path.write_bytes(b"idle")
+            panel_path.write_bytes(b"panel")
+
+            window = _LoopActionProbeWindow(temp_dir)
+            library = _PanelLibrary({"play_music": str(panel_path)})
+            dispatcher = ActionDispatcher(
+                window,
+                library=library,
+                music_worker_factory=lambda parent=None: _ManualServiceWorker(
+                    success=True,
+                    message="音樂已完成",
+                    payload={"path": "song.mp3", "title": "Test Song"},
+                    parent=parent,
+                ),
+                motion_path_resolver=lambda motion_key: str(
+                    {
+                        "play_music": play_music_path,
+                        "listen": listen_path,
+                        "idle": idle_path,
+                    }.get(motion_key, "")
+                ),
+                tts_enabled=False,
+            )
+
+            self.assertTrue(dispatcher.dispatch("[ACTION:play_music]"))
+            self.assertTrue(dispatcher.dispatch("[ACTION:listen] 下一個任務"))
+
+            self.assertEqual(dispatcher._current_loop_action_key, "play_music")
+            self.assertEqual(len(window.motion_loop_calls), 1)
+            self.assertEqual(len(dispatcher._deferred_dispatches), 1)
+
+            dispatcher._on_panel_video_ended()
+            dispatcher._on_main_video_ended()
+
+            self.assertEqual(dispatcher._current_loop_action_key, "listen")
+            self.assertEqual(len(window.motion_loop_calls), 2)
+            self.assertEqual(len(dispatcher._deferred_dispatches), 0)
+
+            dispatcher.shutdown()
+
+    def test_play_music_waits_for_main_video_end_after_tts_idle(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-play-music-main-ended-") as temp_dir:
+            play_music_path = Path(temp_dir) / "play_music.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            panel_path = Path(temp_dir) / "Play_Music_Panel.webm"
+            play_music_path.write_bytes(b"music")
+            idle_path.write_bytes(b"idle")
+            panel_path.write_bytes(b"panel")
+
+            window = _LoopActionProbeWindow(temp_dir)
+            library = _PanelLibrary({"play_music": str(panel_path)})
+            dispatcher = ActionDispatcher(
+                window,
+                library=library,
+                music_worker_factory=lambda parent=None: _ManualServiceWorker(
+                    success=True,
+                    message="音樂已完成",
+                    payload={"path": "song.mp3", "title": "Test Song"},
+                    parent=parent,
+                ),
+                motion_path_resolver=lambda motion_key: str(
+                    {"play_music": play_music_path, "idle": idle_path}.get(motion_key, "")
+                ),
+                tts_worker_factory=_ManualQueuedTTSWorker,
+            )
+
+            self.assertTrue(dispatcher.dispatch("[ACTION:play_music] 第一段語音。"))
+            self.assertEqual(len(_ManualQueuedTTSWorker.instances), 1)
+            _ManualQueuedTTSWorker.instances[0].complete()
+
+            dispatcher._on_panel_video_ended()
+
+            self.assertEqual(dispatcher._current_loop_action_key, "play_music")
+            self.assertTrue(dispatcher._wait_for_main_video_ended)
+            self.assertEqual(window.stop_motion_loop_calls, 0)
+            deadline = time.time() + 2.6
+            while time.time() < deadline:
+                QCoreApplication.processEvents()
+                time.sleep(0.02)
+            self.assertEqual(dispatcher._current_loop_action_key, "play_music")
+
+            dispatcher._on_main_video_ended()
+
+            self.assertIsNone(dispatcher._current_loop_action_key)
+            self.assertEqual(window.stop_motion_loop_calls, 1)
+            self.assertGreaterEqual(window.restore_idle_calls, 1)
+
+            dispatcher.shutdown()
+
+    def test_non_news_music_action_still_finishes_immediately_on_tts_idle(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-listen-tts-idle-") as temp_dir:
+            listen_path = Path(temp_dir) / "listen.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            listen_path.write_bytes(b"listen")
+            idle_path.write_bytes(b"idle")
+
+            window = _LoopActionProbeWindow(temp_dir)
+            dispatcher = ActionDispatcher(
+                window,
+                library=_NoopLibrary(),
+                motion_path_resolver=lambda motion_key: str(
+                    {"listen": listen_path, "idle": idle_path}.get(motion_key, "")
+                ),
+                tts_worker_factory=_ManualQueuedTTSWorker,
+            )
+
+            self.assertTrue(dispatcher.dispatch("[ACTION:listen] 第一段語音。"))
+            self.assertEqual(len(_ManualQueuedTTSWorker.instances), 1)
+            _ManualQueuedTTSWorker.instances[0].complete()
+
+            self.assertIsNone(dispatcher._current_loop_action_key)
+            self.assertEqual(window.stop_motion_loop_calls, 1)
+            self.assertGreaterEqual(window.restore_idle_calls, 1)
+
+            dispatcher.shutdown()
+
     def test_critical_tts_failure_cleans_pending_action_and_keeps_text_only_trace(self):
         with tempfile.TemporaryDirectory(prefix="echoes-action-critical-fail-") as temp_dir:
             listen_path = Path(temp_dir) / "listen.webm"
