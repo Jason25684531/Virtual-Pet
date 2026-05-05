@@ -34,6 +34,16 @@ def _get_api_key() -> str:
     )
 
 
+def _classify_fast_fail(exc: Exception) -> tuple[str, str, bool]:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code == 529:
+        return "http_529", "VoAI concurrency limit exceeded", True
+    if isinstance(exc, requests.ConnectionError):
+        return "connection_error", "VoAI connection failed before playback", True
+    return "request_error", str(exc), False
+
+
 class VoAIStreamingTTSWorker(QThread):
     """呼叫 VoAI TTS API，優先 PCM 即時播放，必要時回退 MP3 佇列播放。
 
@@ -56,6 +66,7 @@ class VoAIStreamingTTSWorker(QThread):
         requests_post=None,
         pcm_player_factory=None,
         playback_guard=None,
+        adaptive_fallback_enabled: bool = False,
         parent=None,
     ):
         super().__init__(parent)
@@ -68,6 +79,7 @@ class VoAIStreamingTTSWorker(QThread):
             lambda: FfplayPcmAudioPlayer(sample_rate=_PCM_SAMPLE_RATE, channels=1)
         )
         self._playback_guard = playback_guard
+        self._adaptive_fallback_enabled = bool(adaptive_fallback_enabled)
 
     def run(self):
         if not self._text:
@@ -82,8 +94,11 @@ class VoAIStreamingTTSWorker(QThread):
         voice_cfg = config.get_voai_config_for_character(self._voice_id)
         payload = self._build_payload(voice_cfg)
         if self._pcm_streaming_enabled():
-            ok, fallback_reason = self._try_pcm_stream(api_key, payload)
+            ok, fallback_reason, result_payload = self._try_pcm_stream(api_key, payload)
             if ok:
+                return
+            if isinstance(result_payload, dict) and result_payload.get("fast_fail") and self._adaptive_fallback_enabled:
+                self.finished_signal.emit(False, fallback_reason, result_payload)
                 return
             print(f"[ECHOES] 提示: VoAI PCM 串流不可用，改用 MP3 fallback。{fallback_reason}")
 
@@ -106,20 +121,38 @@ class VoAIStreamingTTSWorker(QThread):
             "reply_id": self._reply_id,
             "trace_id": self._trace_id,
             "text": self._text,
+            "provider": "voai",
         }
         payload.update(extra)
         return payload
+
+    def _build_fast_fail_payload(
+        self,
+        *,
+        stage: str,
+        reason_code: str,
+        detail: str,
+        audio_format: str,
+    ) -> dict:
+        return self._build_result_payload(
+            fast_fail=True,
+            definitive=True,
+            stage=stage,
+            failure_code=reason_code,
+            failure_detail=detail,
+            format=audio_format,
+        )
 
     @staticmethod
     def _pcm_streaming_enabled() -> bool:
         value = os.getenv("VOAI_PCM_STREAMING_ENABLED", "true").strip().lower()
         return value not in {"0", "false", "no", "off"}
 
-    def _try_pcm_stream(self, api_key: str, payload: dict) -> tuple[bool, str]:
+    def _try_pcm_stream(self, api_key: str, payload: dict) -> tuple[bool, str, dict | None]:
         player = self._pcm_player_factory()
         is_available = getattr(player, "is_available", None)
         if callable(is_available) and not is_available():
-            return False, "ffplay backend unavailable"
+            return False, "ffplay backend unavailable", None
 
         headers = {
             "x-api-key": api_key,
@@ -141,7 +174,7 @@ class VoAIStreamingTTSWorker(QThread):
             response.raise_for_status()
             content_type = str(response.headers.get("content-type", "") or "").lower()
             if "audio" not in content_type and "octet-stream" not in content_type:
-                return False, f"VoAI PCM 回傳非音訊格式：{content_type}"
+                return False, f"VoAI PCM 回傳非音訊格式：{content_type}", None
 
             def iter_chunks():
                 nonlocal bytes_forwarded
@@ -175,7 +208,7 @@ class VoAIStreamingTTSWorker(QThread):
 
             played_bytes = int(player.play_chunks(iter_chunks(), before_start=before_start) or 0)
             if bytes_forwarded <= 0 and played_bytes <= 0:
-                return False, "VoAI PCM 回傳空音訊。"
+                return False, "VoAI PCM 回傳空音訊。", None
 
             self.finished_signal.emit(
                 True,
@@ -186,9 +219,10 @@ class VoAIStreamingTTSWorker(QThread):
                     "text": self._text,
                     "bytes_forwarded": bytes_forwarded or played_bytes,
                     "format": "pcm",
+                    "selected_provider": "voai",
                 },
             )
-            return True, ""
+            return True, "", None
         except PlaybackStartSuppressed:
             self.finished_signal.emit(
                 False,
@@ -201,11 +235,20 @@ class VoAIStreamingTTSWorker(QThread):
                     "suppressed": True,
                 },
             )
-            return True, ""
+            return True, "", None
         except requests.RequestException as exc:
-            return False, f"VoAI PCM 網路錯誤: {exc}"
+            reason_code, detail, definitive = _classify_fast_fail(exc)
+            payload = None
+            if definitive:
+                payload = self._build_fast_fail_payload(
+                    stage="pcm",
+                    reason_code=reason_code,
+                    detail=detail,
+                    audio_format="pcm",
+                )
+            return False, f"VoAI PCM 網路錯誤: {exc}", payload
         except Exception as exc:
-            return False, f"VoAI PCM 播放失敗: {exc}"
+            return False, f"VoAI PCM 播放失敗: {exc}", None
         finally:
             if response is not None:
                 response.close()
@@ -264,6 +307,8 @@ class VoAIStreamingTTSWorker(QThread):
                     "text": self._text,
                     "bytes_received": len(audio_bytes),
                     "format": "mp3",
+                    "selected_provider": "voai",
+                    "queued_playback": True,
                 },
             )
         except requests.HTTPError as exc:
@@ -272,12 +317,38 @@ class VoAIStreamingTTSWorker(QThread):
                 body = exc.response.text[:200] if exc.response is not None else ""
             except Exception:
                 pass
+            reason_code, detail, definitive = _classify_fast_fail(exc)
+            if definitive and self._adaptive_fallback_enabled:
+                self.finished_signal.emit(
+                    False,
+                    f"VoAI API 請求失敗 ({exc}): {body}",
+                    self._build_fast_fail_payload(
+                        stage="mp3",
+                        reason_code=reason_code,
+                        detail=detail,
+                        audio_format="mp3",
+                    ),
+                )
+                return
             self.finished_signal.emit(
                 False,
                 f"VoAI API 請求失敗 ({exc}): {body}",
                 self._build_result_payload(format="mp3"),
             )
         except requests.RequestException as exc:
+            reason_code, detail, definitive = _classify_fast_fail(exc)
+            if definitive and self._adaptive_fallback_enabled:
+                self.finished_signal.emit(
+                    False,
+                    f"VoAI 網路錯誤: {exc}",
+                    self._build_fast_fail_payload(
+                        stage="mp3",
+                        reason_code=reason_code,
+                        detail=detail,
+                        audio_format="mp3",
+                    ),
+                )
+                return
             self.finished_signal.emit(
                 False,
                 f"VoAI 網路錯誤: {exc}",

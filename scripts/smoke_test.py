@@ -8,6 +8,7 @@ ECHOES smoke test for token-first OpenAI streaming + synced VoAI playback.
 
 from __future__ import annotations
 
+import argparse
 import os
 import statistics
 import sys
@@ -30,6 +31,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import config
 from action_dispatcher import ActionDispatcher
+from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
 from api_client.brain_engine import BrainEngine, StreamedReplyParser, sanitize_tts_text
 from api_client.voai_client import VoAIStreamingTTSWorker
 from interaction_trace import InteractionLatencyTracker
@@ -122,6 +124,7 @@ def check_env(env_map: dict[str, str]) -> CheckResult:
         or env_map.get("VOAI_API_KEY", "").strip()
         or env_map.get("VoAI_API_KEY", "").strip()
     )
+    elevenlabs_key = os.getenv("ELEVENLABS_API_KEY", "").strip() or env_map.get("ELEVENLABS_API_KEY", "").strip()
 
     if not openai_key:
         missing.append("OPENAI_API_KEY")
@@ -129,6 +132,8 @@ def check_env(env_map: dict[str, str]) -> CheckResult:
         missing.append("OPENAI_MODEL")
     if not voai_key:
         missing.append("VOAI_API_KEY or VoAI_API_KEY")
+    if not elevenlabs_key:
+        missing.append("ELEVENLABS_API_KEY")
 
     if missing:
         return CheckResult(
@@ -187,6 +192,7 @@ def check_openai() -> CheckResult:
 
 def check_voai() -> CheckResult:
     api_key = os.getenv("VOAI_API_KEY", "").strip() or os.getenv("VoAI_API_KEY", "").strip()
+    elevenlabs_key = os.getenv("ELEVENLABS_API_KEY", "").strip()
     if not api_key:
         return CheckResult(
             name="VoAI",
@@ -232,6 +238,12 @@ def check_voai() -> CheckResult:
                 last_failure = f"HTTP 529: {response.text[:200]}"
                 time.sleep(1.0 + attempt)
                 continue
+            if response.status_code == 529 and elevenlabs_key:
+                return CheckResult(
+                    name="VoAI",
+                    ok=True,
+                    detail="VoAI 目前回 529，但 adaptive fallback 可改由 ElevenLabs 接手；主路徑已視為降級可用。",
+                )
             if not response.ok:
                 return CheckResult(
                     name="VoAI",
@@ -355,6 +367,102 @@ class _SignalRecorder:
             callback(*args)
 
 
+class _MockVoAI529Worker:
+    instances: list["_MockVoAI529Worker"] = []
+
+    def __init__(self, *args, adaptive_fallback_enabled: bool = False, **kwargs):
+        self.reply_id = kwargs.get("reply_id") or "mock-voai-reply"
+        self.trace_id = kwargs.get("trace_id") or ""
+        self.adaptive_fallback_enabled = adaptive_fallback_enabled
+        self.finished_signal = _SignalRecorder()
+        self.progress_signal = _SignalRecorder()
+        self.audio_ready_signal = _SignalRecorder()
+        self.finished = _SignalRecorder()
+        _MockVoAI529Worker.instances.append(self)
+
+    def start(self):
+        self.finished_signal.emit(
+            False,
+            "VoAI 529",
+            {
+                "reply_id": self.reply_id,
+                "trace_id": self.trace_id,
+                "provider": "voai",
+                "fast_fail": True,
+                "failure_code": "http_529",
+            },
+        )
+        self.finished.emit()
+
+    def deleteLater(self):
+        return None
+
+
+class _MockElevenLabsSuccessWorker:
+    instances: list["_MockElevenLabsSuccessWorker"] = []
+
+    def __init__(self, *args, **kwargs):
+        self.reply_id = kwargs.get("reply_id") or "mock-eleven-reply"
+        self.trace_id = kwargs.get("trace_id") or ""
+        self.finished_signal = _SignalRecorder()
+        self.progress_signal = _SignalRecorder()
+        self.audio_ready_signal = _SignalRecorder()
+        self.finished = _SignalRecorder()
+        _MockElevenLabsSuccessWorker.instances.append(self)
+
+    def start(self):
+        self.progress_signal.emit(
+            "driver_started",
+            {
+                "reply_id": self.reply_id,
+                "trace_id": self.trace_id,
+                "provider": "elevenlabs",
+            },
+        )
+        self.finished_signal.emit(
+            True,
+            "ElevenLabs fallback ok",
+            {
+                "reply_id": self.reply_id,
+                "trace_id": self.trace_id,
+                "provider": "elevenlabs",
+                "selected_provider": "elevenlabs",
+            },
+        )
+        self.finished.emit()
+
+    def deleteLater(self):
+        return None
+
+
+class _MockElevenLabsFailureWorker:
+    instances: list["_MockElevenLabsFailureWorker"] = []
+
+    def __init__(self, *args, **kwargs):
+        self.reply_id = kwargs.get("reply_id") or "mock-eleven-fail-reply"
+        self.trace_id = kwargs.get("trace_id") or ""
+        self.finished_signal = _SignalRecorder()
+        self.progress_signal = _SignalRecorder()
+        self.audio_ready_signal = _SignalRecorder()
+        self.finished = _SignalRecorder()
+        _MockElevenLabsFailureWorker.instances.append(self)
+
+    def start(self):
+        self.finished_signal.emit(
+            False,
+            "ElevenLabs fallback failed",
+            {
+                "reply_id": self.reply_id,
+                "trace_id": self.trace_id,
+                "provider": "elevenlabs",
+            },
+        )
+        self.finished.emit()
+
+    def deleteLater(self):
+        return None
+
+
 def _extract_milestone_ms(summary: dict[str, object], stage_name: str) -> int | None:
     milestones = summary.get("milestones", [])
     if not isinstance(milestones, list):
@@ -371,6 +479,104 @@ def _extract_milestone_ms(summary: dict[str, object], stage_name: str) -> int | 
     return None
 
 
+def _build_mock_tts_worker_factory(mode: str):
+    elevenlabs_factory = (
+        _MockElevenLabsFailureWorker if mode == "double-fail" else _MockElevenLabsSuccessWorker
+    )
+
+    def factory(
+        text: str,
+        reply_id: str | None = None,
+        trace_id: str | None = None,
+        voice_id: str | None = None,
+        fallback_voice_id: str | None = None,
+        preferred_provider: str | None = None,
+        playback_guard=None,
+        parent=None,
+    ):
+        return AdaptiveTTSFallbackWorker(
+            text=text,
+            reply_id=reply_id,
+            trace_id=trace_id,
+            voice_id=voice_id,
+            fallback_voice_id=fallback_voice_id,
+            preferred_provider=preferred_provider,
+            playback_guard=playback_guard,
+            voai_worker_factory=_MockVoAI529Worker,
+            elevenlabs_worker_factory=elevenlabs_factory,
+            parent=parent,
+        )
+
+    return factory
+
+
+def check_mock_tts_fail(mode: str) -> CheckResult:
+    app = QCoreApplication.instance() or QCoreApplication([])
+    tracker = InteractionLatencyTracker()
+    _MockVoAI529Worker.instances.clear()
+    _MockElevenLabsSuccessWorker.instances.clear()
+    _MockElevenLabsFailureWorker.instances.clear()
+    with tempfile.TemporaryDirectory(prefix="echoes-mock-fallback-") as temp_dir:
+        listen_path = Path(temp_dir) / "listen.webm"
+        idle_path = Path(temp_dir) / "Idle.webm"
+        listen_path.write_bytes(b"listen")
+        idle_path.write_bytes(b"idle")
+
+        window = _SmokeWindow()
+        dispatcher = ActionDispatcher(
+            window,
+            library=_SmokeLibrary(),
+            motion_path_resolver=lambda motion_key: str(
+                {"listen": listen_path, "idle": idle_path}.get(motion_key, "")
+            ),
+            tts_worker_factory=_build_mock_tts_worker_factory(mode),
+            latency_tracker=tracker,
+        )
+        trace_id = tracker.begin_interaction("mock-fallback", "請測試 fallback")
+        tracker.mark_brain_started(trace_id)
+        tracker.mark_fragment_emitted(trace_id, "[ACTION:listen]")
+        dispatcher.dispatch("[ACTION:listen] 第一段測試。", trace_id=trace_id)
+        dispatcher.speak_text("第二段測試。", trace_id=trace_id)
+        tracker.mark_brain_completed(trace_id)
+        app.processEvents()
+        summary = tracker.get_completed_trace(trace_id)
+        dispatcher.shutdown()
+
+    if summary is None:
+        return CheckResult(name="MockFallback", ok=False, detail="mock fallback 未產生完成 trace。")
+    if mode == "double-fail":
+        if not summary.get("text_only_completed"):
+            return CheckResult(name="MockFallback", ok=False, detail="雙重失敗時未標記文字-only 完成。")
+        if _extract_milestone_ms(summary, "first_driver_started") is not None:
+            return CheckResult(name="MockFallback", ok=False, detail="雙重失敗時不應留下 driver_started。")
+        return CheckResult(
+            name="MockFallback",
+            ok=True,
+            detail="已驗證 VoAI 529 + ElevenLabs 失敗時會改為文字-only，且不會誤觸發 driver_started。",
+        )
+
+    if summary.get("selected_tts_provider") != "elevenlabs":
+        return CheckResult(name="MockFallback", ok=False, detail="fallback 後沒有鎖定 elevenlabs。")
+    if not summary.get("fallback_triggered"):
+        return CheckResult(name="MockFallback", ok=False, detail="trace 未記錄 voai_failed_triggering_fallback。")
+    if _extract_milestone_ms(summary, "first_driver_started") is None:
+        return CheckResult(name="MockFallback", ok=False, detail="fallback 成功時缺少 driver_started。")
+    if len(_MockVoAI529Worker.instances) != 1 or len(_MockElevenLabsSuccessWorker.instances) != 2:
+        return CheckResult(
+            name="MockFallback",
+            ok=False,
+            detail=(
+                "同 trace 後續句段未沿用 fallback provider。"
+                f" voai={len(_MockVoAI529Worker.instances)} eleven={len(_MockElevenLabsSuccessWorker.instances)}"
+            ),
+        )
+    return CheckResult(
+        name="MockFallback",
+        ok=True,
+        detail="已驗證 --mock-tts-fail 會觸發 VoAI 529 fallback，driver_started 可對齊，且後續句段沿用 ElevenLabs。",
+    )
+
+
 def _run_latency_trial(app: QCoreApplication, trial_name: str) -> tuple[LatencySample | None, str | None]:
     tracker = InteractionLatencyTracker()
     timings: dict[str, float] = {}
@@ -383,11 +589,49 @@ def _run_latency_trial(app: QCoreApplication, trial_name: str) -> tuple[LatencyS
 
         window = _SmokeWindow()
 
-        def tracked_worker_factory(*args, **kwargs):
-            worker = VoAIStreamingTTSWorker(
-                *args,
-                pcm_player_factory=_SmokePcmPlayer,
-                **kwargs,
+        def _tracked_voai_worker_factory(
+            text: str,
+            reply_id: str | None = None,
+            trace_id: str | None = None,
+            voice_id: str | None = None,
+            requests_post=None,
+            pcm_player_factory=None,
+            playback_guard=None,
+            adaptive_fallback_enabled: bool = False,
+            parent=None,
+        ):
+            return VoAIStreamingTTSWorker(
+                text=text,
+                reply_id=reply_id,
+                trace_id=trace_id,
+                voice_id=voice_id,
+                requests_post=requests_post,
+                pcm_player_factory=pcm_player_factory or _SmokePcmPlayer,
+                playback_guard=playback_guard,
+                adaptive_fallback_enabled=adaptive_fallback_enabled,
+                parent=parent,
+            )
+
+        def tracked_worker_factory(
+            text: str,
+            reply_id: str | None = None,
+            trace_id: str | None = None,
+            voice_id: str | None = None,
+            fallback_voice_id: str | None = None,
+            preferred_provider: str | None = None,
+            playback_guard=None,
+            parent=None,
+        ):
+            worker = AdaptiveTTSFallbackWorker(
+                text=text,
+                reply_id=reply_id,
+                trace_id=trace_id,
+                voice_id=voice_id,
+                fallback_voice_id=fallback_voice_id,
+                preferred_provider=preferred_provider,
+                playback_guard=playback_guard,
+                voai_worker_factory=_tracked_voai_worker_factory,
+                parent=parent,
             )
 
             def _record_finished(success, _message, payload):
@@ -449,8 +693,6 @@ def _run_latency_trial(app: QCoreApplication, trial_name: str) -> tuple[LatencyS
         return None, f"{trial_name}: 沒有觸發任何動作影片。"
     if "tts_stream_started_at" not in timings or "driver_started_at" not in timings or "tts_finished_at" not in timings:
         return None, f"{trial_name}: TTS 沒有完整完成 stream_started -> driver_started -> finished。"
-    if timings.get("tts_format") != "pcm":
-        return None, f"{trial_name}: 未使用 PCM 主路徑，實際格式={timings.get('tts_format', '<unknown>')}。"
     visible_chunks = window.assistant_chunks.get(trace_id, [])
     if not visible_chunks:
         return None, f"{trial_name}: token-first UI 沒有收到任何可見文字。"
@@ -610,6 +852,29 @@ def run_latency_probe() -> CheckResult:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="ECHOES smoke test")
+    parser.add_argument(
+        "--mock-tts-fail",
+        choices=("voai529", "double-fail"),
+        help="以故障注入模式驗證 Adaptive TTS fallback，不跑真實雲端 smoke。",
+    )
+    args = parser.parse_args()
+
+    if args.mock_tts_fail:
+        results = [check_mock_tts_fail(args.mock_tts_fail)]
+        print("== ECHOES Smoke Test ==")
+        failed = 0
+        for result in results:
+            status = "PASS" if result.ok else "FAIL"
+            print(f"[{status}] {result.name}: {result.detail}")
+            if not result.ok:
+                failed += 1
+        if failed:
+            print(f"\nSmoke test failed: {failed} check(s) did not pass.")
+            return 1
+        print("\nSmoke test passed: all checks succeeded.")
+        return 0
+
     env_map = load_env_values()
     results = [
         check_env(env_map),

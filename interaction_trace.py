@@ -32,6 +32,9 @@ class InteractionTraceState:
     tts_finished: int = 0
     tts_failures: int = 0
     timeout_promoted: bool = False
+    fallback_triggered: bool = False
+    selected_tts_provider: str = ""
+    text_only_completed: bool = False
     brain_completed: bool = False
     finalized: bool = False
 
@@ -205,6 +208,53 @@ class InteractionLatencyTracker:
             first_only=True,
         )
 
+    def mark_tts_provider_selected(self, trace_id: str | None, provider: str, reason: str = ""):
+        normalized_provider = str(provider or "").strip()
+        if not trace_id or not normalized_provider:
+            return
+        with self._lock:
+            state = self._traces.get(trace_id)
+            if state is None:
+                return
+            state.selected_tts_provider = normalized_provider
+        detail = f"TTS provider 已選定：{normalized_provider}"
+        if reason:
+            detail = f"{detail} ({reason})"
+        self._record(trace_id, "tts_provider_selected", detail, first_only=False)
+
+    def mark_tts_fallback_triggered(
+        self,
+        trace_id: str | None,
+        from_provider: str,
+        to_provider: str,
+        reason_code: str = "",
+    ):
+        if not trace_id:
+            return
+        with self._lock:
+            state = self._traces.get(trace_id)
+            if state is None:
+                return
+            state.fallback_triggered = True
+            state.selected_tts_provider = str(to_provider or "").strip() or state.selected_tts_provider
+        detail = f"voai_failed_triggering_fallback：{from_provider}->{to_provider}"
+        if reason_code:
+            detail = f"{detail} ({reason_code})"
+        self._record(trace_id, "voai_failed_triggering_fallback", detail, first_only=True)
+
+    def mark_text_only_completed(self, trace_id: str | None, provider_chain: str = ""):
+        if not trace_id:
+            return
+        with self._lock:
+            state = self._traces.get(trace_id)
+            if state is None:
+                return
+            state.text_only_completed = True
+        detail = "TTS 全部失敗，改為文字-only 完成"
+        if provider_chain:
+            detail = f"{detail} ({provider_chain})"
+        self._record(trace_id, "text_only_completed", detail, first_only=True)
+
     def mark_tts_finished(self, trace_id: str | None, reply_id: str, success: bool, message: str):
         if not trace_id:
             return
@@ -264,7 +314,11 @@ class InteractionLatencyTracker:
                 "tts_expected": state.tts_expected,
                 "tts_enqueued": state.tts_enqueued,
                 "tts_finished": state.tts_finished,
+                "tts_failures": state.tts_failures,
                 "timeout_promoted": state.timeout_promoted,
+                "fallback_triggered": state.fallback_triggered,
+                "selected_tts_provider": state.selected_tts_provider,
+                "text_only_completed": state.text_only_completed,
                 "brain_completed": state.brain_completed,
                 "finalized": state.finalized,
             }
@@ -380,6 +434,7 @@ class InteractionLatencyTracker:
         failure_suffix = ""
         if state.tts_failures:
             failure_suffix = f" | tts_failures={state.tts_failures}"
+        provider_label = state.selected_tts_provider or "unknown"
 
         missing_stt = [
             stage_name
@@ -397,6 +452,9 @@ class InteractionLatencyTracker:
             "milestones": milestones,
             "tts_failures": state.tts_failures,
             "timeout_promoted": state.timeout_promoted,
+            "fallback_triggered": state.fallback_triggered,
+            "selected_tts_provider": provider_label,
+            "text_only_completed": state.text_only_completed,
             "missing_stt_milestones": missing_stt,
             "failure_suffix": failure_suffix,
             "stage_parts": stage_parts,
@@ -413,6 +471,11 @@ class InteractionLatencyTracker:
         stt_suffix = ""
         if missing_stt:
             stt_suffix = f" | missing_stt={','.join(missing_stt)}"
+        provider_suffix = (
+            f" | provider={summary_payload.get('selected_tts_provider', 'unknown')}"
+            f" fallback_triggered={summary_payload.get('fallback_triggered', False)}"
+            f" text_only={summary_payload.get('text_only_completed', False)}"
+        )
         legacy_suffix = (
             f" | driver_start={summary_payload.get('driver_start_stage')} "
             f"legacy_audio_start={summary_payload.get('legacy_audio_start_stage')}"
@@ -423,7 +486,7 @@ class InteractionLatencyTracker:
             f"total={summary_payload.get('total_ms', 0)}ms | "
             f"stages: {'; '.join(stage_parts)} | "
             f"bottleneck={summary_payload.get('bottleneck_label', 'n/a')}({summary_payload.get('bottleneck_ms', 0)}ms) | "
-            f"milestones: {'; '.join(milestones)}{failure_suffix}{stt_suffix}{legacy_suffix}"
+            f"milestones: {'; '.join(milestones)}{failure_suffix}{stt_suffix}{provider_suffix}{legacy_suffix}"
         )
 
     @staticmethod

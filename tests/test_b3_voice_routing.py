@@ -95,11 +95,32 @@ class BrainProfileVoiceResolutionTests(unittest.TestCase):
 class ConfigVoiceRoutingTests(unittest.TestCase):
     def test_get_voice_id_for_choppr_uses_chopper_env(self):
         """config.get_voice_id_for_character('Choppr') 應讀取 CHOPPER_VOICE_ID。"""
-        with patch.dict(os.environ, {"CHOPPER_VOICE_ID": FAKE_CHOPPER_VOICE}):
+        with patch.dict(
+            os.environ,
+            {
+                "CHOPPER_VOICE_ID": FAKE_CHOPPER_VOICE,
+                "ELEVENLABS_CHOPPR_VOICE_ID": "",
+                "ELEVENLABS_CHOPPER_VOICE_ID": "",
+            },
+        ):
             import importlib
             importlib.reload(config)
             result = config.get_voice_id_for_character("Choppr")
         self.assertEqual(result, FAKE_CHOPPER_VOICE)
+
+    def test_get_elevenlabs_voice_id_for_choppr_prefers_provider_specific_env(self):
+        """provider-aware fallback 應優先使用 ELEVENLABS_CHOPPR_VOICE_ID。"""
+        with patch.dict(
+            os.environ,
+            {
+                "ELEVENLABS_CHOPPR_VOICE_ID": "FAKE_PROVIDER_SPECIFIC_CHOPPR",
+                "CHOPPER_VOICE_ID": FAKE_CHOPPER_VOICE,
+            },
+        ):
+            import importlib
+            importlib.reload(config)
+            result = config.get_elevenlabs_voice_id_for_character("Choppr")
+        self.assertEqual(result, "FAKE_PROVIDER_SPECIFIC_CHOPPR")
 
     def test_get_voice_id_for_unknown_character_falls_back(self):
         """未知 character_id 應 fallback 至全域 ELEVENLABS_VOICE_ID。"""
@@ -110,6 +131,10 @@ class ConfigVoiceRoutingTests(unittest.TestCase):
         """None character_id 應 fallback 至全域 ELEVENLABS_VOICE_ID。"""
         result = config.get_voice_id_for_character(None)
         self.assertEqual(result, config.ELEVENLABS_VOICE_ID)
+
+    def test_read_news_alias_canonicalizes_to_report_news(self):
+        """read_news alias 應保持對齊既有 report_news runtime token。"""
+        self.assertEqual(config.canonicalize_host_action("read_news"), "report_news")
 
 
 if __name__ == "__main__":

@@ -129,6 +129,7 @@ class ElevenLabsStreamingTTSWorker(QThread):
                 "trace_id": self._trace_id,
                 "text": speech_text,
                 "bytes_forwarded": bytes_forwarded,
+                "queued_playback": True,
             }
             self.finished_signal.emit(True, "TTS 音訊取得完成，已送入播放佇列。", result_payload)
         except requests.RequestException as exc:

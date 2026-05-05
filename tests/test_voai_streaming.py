@@ -5,6 +5,7 @@ import os
 import sys
 from pathlib import Path
 import unittest
+import requests
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -164,6 +165,34 @@ class VoAIStreamingTests(unittest.TestCase):
 
         self.assertFalse(finished.events[0][0])
         self.assertIn("缺少 VOAI_API_KEY", finished.events[0][1])
+
+    def test_http_529_emits_structured_fast_fail_when_adaptive_enabled(self):
+        finished = _SignalCollector()
+
+        class _FakeHttpError(requests.HTTPError):
+            def __init__(self):
+                super().__init__("529 Server Busy")
+                self.response = type("Resp", (), {"status_code": 529, "text": "busy"})()
+
+        def fake_post(*_args, **_kwargs):
+            return _FakeResponse(error=_FakeHttpError())
+
+        worker = VoAIStreamingTTSWorker(
+            text="測試",
+            trace_id="trace-fast-fail",
+            requests_post=fake_post,
+            pcm_player_factory=lambda: _FakePcmPlayer(),
+            adaptive_fallback_enabled=True,
+        )
+        worker.finished_signal.connect(finished)
+
+        worker.run()
+
+        self.assertFalse(finished.events[0][0])
+        payload = finished.events[0][2]
+        self.assertTrue(payload["fast_fail"])
+        self.assertEqual(payload["failure_code"], "http_529")
+        self.assertEqual(payload["provider"], "voai")
 
 
 if __name__ == "__main__":

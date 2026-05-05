@@ -381,6 +381,173 @@ class _ImmediateServiceWorker:
         return None
 
 
+class _StickyFallbackTTSWorker:
+    preferred_providers: list[str] = []
+    started_count = 0
+
+    def __init__(
+        self,
+        text: str,
+        reply_id: str | None = None,
+        trace_id: str | None = None,
+        voice_id: str | None = None,
+        fallback_voice_id: str | None = None,
+        preferred_provider: str | None = None,
+        playback_guard=None,
+        parent=None,
+    ):
+        del text, voice_id, fallback_voice_id, playback_guard, parent
+        self.reply_id = reply_id or "sticky-reply"
+        self.trace_id = trace_id or ""
+        self.preferred_provider = preferred_provider or ""
+        self.finished_signal = _DebugSignal()
+        self.progress_signal = _DebugSignal()
+        self.audio_ready_signal = _DebugSignal()
+        self.finished = _DebugSignal()
+        _StickyFallbackTTSWorker.preferred_providers.append(self.preferred_provider)
+
+    def start(self):
+        _StickyFallbackTTSWorker.started_count += 1
+        if _StickyFallbackTTSWorker.started_count == 1 and not self.preferred_provider:
+            self.progress_signal.emit(
+                "provider_selected",
+                {
+                    "reply_id": self.reply_id,
+                    "trace_id": self.trace_id,
+                    "provider": "voai",
+                    "reason": "initial",
+                },
+            )
+            self.progress_signal.emit(
+                "fallback_triggered",
+                {
+                    "reply_id": self.reply_id,
+                    "trace_id": self.trace_id,
+                    "from_provider": "voai",
+                    "to_provider": "elevenlabs",
+                    "failure_code": "http_529",
+                },
+            )
+            self.progress_signal.emit(
+                "provider_selected",
+                {
+                    "reply_id": self.reply_id,
+                    "trace_id": self.trace_id,
+                    "provider": "elevenlabs",
+                    "reason": "fast_fail",
+                    "fallback_locked": True,
+                },
+            )
+        else:
+            self.progress_signal.emit(
+                "provider_selected",
+                {
+                    "reply_id": self.reply_id,
+                    "trace_id": self.trace_id,
+                    "provider": self.preferred_provider or "elevenlabs",
+                    "reason": "trace_locked",
+                    "fallback_locked": True,
+                },
+            )
+        self.progress_signal.emit(
+            "driver_started",
+            {
+                "reply_id": self.reply_id,
+                "trace_id": self.trace_id,
+            },
+        )
+        self.finished_signal.emit(
+            True,
+            "fallback ok",
+            {
+                "reply_id": self.reply_id,
+                "trace_id": self.trace_id,
+                "provider": "elevenlabs",
+                "selected_provider": "elevenlabs",
+            },
+        )
+        self.finished.emit()
+
+    def deleteLater(self):
+        return None
+
+
+class _CriticalFailureTTSWorker:
+    def __init__(
+        self,
+        text: str,
+        reply_id: str | None = None,
+        trace_id: str | None = None,
+        voice_id: str | None = None,
+        fallback_voice_id: str | None = None,
+        preferred_provider: str | None = None,
+        playback_guard=None,
+        parent=None,
+    ):
+        del text, reply_id, voice_id, fallback_voice_id, preferred_provider, playback_guard, parent
+        self.trace_id = trace_id or ""
+        self.finished_signal = _DebugSignal()
+        self.progress_signal = _DebugSignal()
+        self.audio_ready_signal = _DebugSignal()
+        self.finished = _DebugSignal()
+
+    def start(self):
+        self.progress_signal.emit(
+            "provider_selected",
+            {
+                "reply_id": "critical-reply",
+                "trace_id": self.trace_id,
+                "provider": "voai",
+                "reason": "initial",
+            },
+        )
+        self.progress_signal.emit(
+            "fallback_triggered",
+            {
+                "reply_id": "critical-reply",
+                "trace_id": self.trace_id,
+                "from_provider": "voai",
+                "to_provider": "elevenlabs",
+                "failure_code": "http_529",
+            },
+        )
+        self.progress_signal.emit(
+            "provider_selected",
+            {
+                "reply_id": "critical-reply",
+                "trace_id": self.trace_id,
+                "provider": "elevenlabs",
+                "reason": "fast_fail",
+                "fallback_locked": True,
+            },
+        )
+        self.progress_signal.emit(
+            "critical_tts_failure",
+            {
+                "reply_id": "critical-reply",
+                "trace_id": self.trace_id,
+                "provider_chain": ["voai", "elevenlabs"],
+            },
+        )
+        self.finished_signal.emit(
+            False,
+            "雙 provider TTS 都失敗，已改為文字回覆。",
+            {
+                "reply_id": "critical-reply",
+                "trace_id": self.trace_id,
+                "provider": "elevenlabs",
+                "selected_provider": "elevenlabs",
+                "critical_tts_failure": True,
+                "text_only": True,
+                "provider_chain": ["voai", "elevenlabs"],
+            },
+        )
+        self.finished.emit()
+
+    def deleteLater(self):
+        return None
+
+
 def run_tts_dispatch_debug_probe() -> dict[str, object]:
     with tempfile.TemporaryDirectory(prefix="echoes-debug-webm-") as temp_dir:
         listen_path = Path(temp_dir) / "listen.webm"
@@ -466,6 +633,8 @@ class ActionPlaybackTests(unittest.TestCase):
     def setUp(self):
         _ManualQueuedTTSWorker.instances.clear()
         _GuardedQueuedTTSWorker.instances.clear()
+        _StickyFallbackTTSWorker.preferred_providers.clear()
+        _StickyFallbackTTSWorker.started_count = 0
 
     def test_missing_motion_falls_back_to_idle_with_warning(self):
         with tempfile.TemporaryDirectory(prefix="echoes-action-fallback-") as temp_dir:
@@ -703,6 +872,80 @@ class ActionPlaybackTests(unittest.TestCase):
             self.assertEqual(completed["tts_failures"], 1)
             self.assertEqual(len(window.played_assets), 1)
             self.assertNotIn("first_driver_started", " ".join(completed["milestones"]))
+
+            dispatcher.shutdown()
+
+    def test_dispatcher_locks_fallback_provider_for_later_chunks_in_same_trace(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-provider-lock-") as temp_dir:
+            listen_path = Path(temp_dir) / "listen.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            listen_path.write_bytes(b"listen")
+            idle_path.write_bytes(b"idle")
+
+            tracker = InteractionLatencyTracker()
+            trace_id = tracker.begin_interaction("test", "provider lock")
+            tracker.mark_brain_started(trace_id)
+            tracker.mark_fragment_emitted(trace_id, "[ACTION:listen]")
+
+            window = _DispatchProbeWindow(temp_dir)
+            dispatcher = ActionDispatcher(
+                window,
+                library=_NoopLibrary(),
+                motion_path_resolver=lambda motion_key: str(
+                    {"listen": listen_path, "idle": idle_path}.get(motion_key, "")
+                ),
+                tts_worker_factory=_StickyFallbackTTSWorker,
+                latency_tracker=tracker,
+            )
+
+            self.assertTrue(dispatcher.dispatch("[ACTION:listen] 第一段。", trace_id=trace_id))
+            self.assertTrue(dispatcher.dispatch("第二段。", trace_id=trace_id))
+            tracker.mark_brain_completed(trace_id)
+
+            self.assertEqual(_StickyFallbackTTSWorker.preferred_providers[0], "")
+            self.assertEqual(_StickyFallbackTTSWorker.preferred_providers[1], "elevenlabs")
+            completed = tracker.get_completed_trace(trace_id)
+            self.assertIsNotNone(completed)
+            assert completed is not None
+            self.assertTrue(completed["fallback_triggered"])
+            self.assertEqual(completed["selected_tts_provider"], "elevenlabs")
+
+            dispatcher.shutdown()
+
+    def test_critical_tts_failure_cleans_pending_action_and_keeps_text_only_trace(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-critical-fail-") as temp_dir:
+            listen_path = Path(temp_dir) / "listen.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            listen_path.write_bytes(b"listen")
+            idle_path.write_bytes(b"idle")
+
+            tracker = InteractionLatencyTracker()
+            trace_id = tracker.begin_interaction("test", "critical fail")
+            tracker.mark_brain_started(trace_id)
+            tracker.mark_fragment_emitted(trace_id, "[ACTION:listen]")
+
+            window = _DispatchProbeWindow(temp_dir)
+            dispatcher = ActionDispatcher(
+                window,
+                library=_NoopLibrary(),
+                motion_path_resolver=lambda motion_key: str(
+                    {"listen": listen_path, "idle": idle_path}.get(motion_key, "")
+                ),
+                tts_worker_factory=_CriticalFailureTTSWorker,
+                latency_tracker=tracker,
+            )
+
+            self.assertTrue(dispatcher.dispatch("[ACTION:listen] 只保留文字。", trace_id=trace_id))
+            tracker.mark_brain_completed(trace_id)
+
+            self.assertNotIn(trace_id, dispatcher._pending_actions)
+            completed = tracker.get_completed_trace(trace_id)
+            self.assertIsNotNone(completed)
+            assert completed is not None
+            self.assertTrue(completed["text_only_completed"])
+            self.assertEqual(completed["selected_tts_provider"], "elevenlabs")
+            self.assertEqual(completed["tts_failures"], 1)
+            self.assertGreaterEqual(window.restore_idle_calls, 1)
 
             dispatcher.shutdown()
 

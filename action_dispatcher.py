@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from PyQt5.QtCore import QCoreApplication, QObject, QTimer
 
 from action_services import MusicSelectionWorker, NewsFetchWorker
+from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
 from api_client.brain_engine import sanitize_tts_text
 from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker  # noqa: F401 — 保留供降級使用
 from api_client.voai_client import VoAIStreamingTTSWorker
@@ -49,6 +50,7 @@ class PendingActionState:
     status: str = "pending"
     has_tts: bool = False
     timeout_timer: QTimer | None = None
+    fallback_grace_applied: bool = False
 
 
 class ActionDispatcher(QObject):
@@ -58,7 +60,7 @@ class ActionDispatcher(QObject):
         self,
         window: "TransparentWindow",
         library: "CharacterLibrary",
-        tts_worker_factory=VoAIStreamingTTSWorker,
+        tts_worker_factory=AdaptiveTTSFallbackWorker,
         news_worker_factory=NewsFetchWorker,
         music_worker_factory=MusicSelectionWorker,
         motion_path_resolver=None,
@@ -71,7 +73,7 @@ class ActionDispatcher(QObject):
         self._library = library
         self._workers: list[object] = []
         self._tts_worker_factory = (
-            tts_worker_factory if callable(tts_worker_factory) else VoAIStreamingTTSWorker
+            tts_worker_factory if callable(tts_worker_factory) else AdaptiveTTSFallbackWorker
         )
         self._news_worker_factory = (
             news_worker_factory if callable(news_worker_factory) else NewsFetchWorker
@@ -87,8 +89,11 @@ class ActionDispatcher(QObject):
         self._pending_actions: dict[str, PendingActionState] = {}
         self._suppressed_traces: set[str] = set()
         self._driver_started_replies: set[str] = set()
+        self._queued_playback_results: dict[str, tuple[str | None, str]] = {}
+        self._trace_tts_providers: dict[str, str] = {}
         self._active_action_trace_id: str | None = None
         self._action_sync_timeout_ms = max(500, int(getattr(config, "ACTION_SYNC_TIMEOUT_MS", 3500)))
+        self._fallback_timeout_grace_ms = 500
         self._current_loop_action_key: str | None = None
         self._loop_action_tts_queued: bool = False
         self._loop_cleanup_timer: QTimer | None = None
@@ -98,6 +103,7 @@ class ActionDispatcher(QObject):
         # AudioStreamWorker：Consumer，持續從佇列取出 BytesIO 並播放
         self._audio_worker = AudioStreamWorker(parent=self)
         self._audio_worker.driver_started.connect(self._on_audio_driver_started)
+        self._audio_worker.playback_finished.connect(self._on_audio_playback_finished)
         self._audio_worker.queue_drained.connect(self._on_audio_queue_drained)
         self._audio_worker.start()
         self._bindings = {
@@ -562,8 +568,8 @@ class ActionDispatcher(QObject):
             return
 
         if not callable(self._tts_worker_factory):
-            print("[ECHOES] 警告: TTS worker factory 無效，已回退到 VoAIStreamingTTSWorker。")
-            self._tts_worker_factory = VoAIStreamingTTSWorker
+            print("[ECHOES] 警告: TTS worker factory 無效，已回退到 AdaptiveTTSFallbackWorker。")
+            self._tts_worker_factory = AdaptiveTTSFallbackWorker
 
         reply_id = uuid4().hex
         self._pending_tts_chunks.put((reply_id, speech_text, trace_id))
@@ -584,13 +590,29 @@ class ActionDispatcher(QObject):
             return
 
         reply_id, speech_text, trace_id = self._pending_tts_chunks.get_nowait()
+        normalized_trace_id = str(trace_id or "").strip()
+        if normalized_trace_id in self._suppressed_traces:
+            self._on_tts_finished(
+                reply_id,
+                False,
+                "因已改為文字-only 或 timeout_promoted，略過後續句段。",
+                {
+                    "reply_id": reply_id,
+                    "trace_id": normalized_trace_id,
+                    "text": speech_text,
+                    "suppressed": True,
+                },
+            )
+            self._start_next_tts_worker()
+            return
 
         current_character_id = self._call_library_method("get_current_character_id")
         factory_name = getattr(self._tts_worker_factory, "__name__", "")
-        if factory_name == "VoAIStreamingTTSWorker":
+        preferred_provider = self._trace_tts_providers.get(normalized_trace_id, "")
+        if factory_name in {"VoAIStreamingTTSWorker", "AdaptiveTTSFallbackWorker"}:
             voice_id = current_character_id or ""
         else:
-            voice_id = config.get_voice_id_for_character(current_character_id)
+            voice_id = config.get_elevenlabs_voice_id_for_character(current_character_id)
 
         worker_kwargs = {
             "text": speech_text,
@@ -603,6 +625,10 @@ class ActionDispatcher(QObject):
             signature = inspect.signature(self._tts_worker_factory)
             if "playback_guard" in signature.parameters:
                 worker_kwargs["playback_guard"] = self._can_start_trace_audio
+            if "fallback_voice_id" in signature.parameters:
+                worker_kwargs["fallback_voice_id"] = config.get_elevenlabs_voice_id_for_character(current_character_id)
+            if "preferred_provider" in signature.parameters and preferred_provider:
+                worker_kwargs["preferred_provider"] = preferred_provider
         except (TypeError, ValueError):
             pass
 
@@ -680,9 +706,43 @@ class ActionDispatcher(QObject):
     def _on_tts_progress(self, event_name: str, payload: object):
         if not isinstance(payload, dict):
             return
+        normalized_trace_id = str(payload.get("trace_id") or "").strip()
+        if event_name == "provider_selected":
+            provider = str(payload.get("provider") or "").strip()
+            if normalized_trace_id and provider:
+                self._trace_tts_providers[normalized_trace_id] = provider
+            if self._latency_tracker is not None:
+                self._latency_tracker.mark_tts_provider_selected(
+                    normalized_trace_id,
+                    provider,
+                    str(payload.get("reason") or ""),
+                )
+            if payload.get("fallback_locked"):
+                self._apply_fallback_timeout_grace(normalized_trace_id)
+            return
+        if event_name == "fallback_triggered":
+            target_provider = str(payload.get("to_provider") or "elevenlabs").strip() or "elevenlabs"
+            if normalized_trace_id:
+                self._trace_tts_providers[normalized_trace_id] = target_provider
+            if self._latency_tracker is not None:
+                self._latency_tracker.mark_tts_fallback_triggered(
+                    normalized_trace_id,
+                    str(payload.get("from_provider") or "voai"),
+                    target_provider,
+                    str(payload.get("failure_code") or ""),
+                )
+            self._apply_fallback_timeout_grace(normalized_trace_id)
+            return
+        if event_name == "critical_tts_failure":
+            if self._latency_tracker is not None:
+                self._latency_tracker.mark_text_only_completed(
+                    normalized_trace_id,
+                    str(payload.get("provider_chain") or ""),
+                )
+            return
         if event_name == "stream_started" and self._latency_tracker is not None:
             self._latency_tracker.mark_tts_stream_started(
-                payload.get("trace_id"),
+                normalized_trace_id,
                 str(payload.get("reply_id", "")),
                 int(payload.get("bytes_forwarded", payload.get("bytes_received", 0)) or 0),
             )
@@ -695,6 +755,14 @@ class ActionDispatcher(QObject):
 
     def _on_audio_driver_started(self, reply_id: str, trace_id: str):
         self._on_driver_started(reply_id, trace_id)
+
+    def _on_audio_playback_finished(self, reply_id: str, trace_id: str):
+        result = self._queued_playback_results.pop(reply_id, None)
+        message = result[1] if result is not None else "語音播放完成。"
+        normalized_trace_id = str(trace_id or "").strip()
+        if self._latency_tracker is not None:
+            self._latency_tracker.mark_tts_finished(normalized_trace_id, reply_id, True, message)
+        print(f"[ECHOES] 提示: 語音播放完成。{message}")
 
     def _on_driver_started(self, reply_id: str, trace_id: str | None):
         if not reply_id:
@@ -714,13 +782,55 @@ class ActionDispatcher(QObject):
             success = False
             if "抑制" not in message:
                 message = "因 timeout_promoted 抑制晚到音訊。"
+        if isinstance(payload, dict):
+            selected_provider = str(payload.get("selected_provider") or payload.get("provider") or "").strip()
+            if normalized_trace_id and selected_provider:
+                self._trace_tts_providers[normalized_trace_id] = selected_provider
+            if payload.get("critical_tts_failure"):
+                self._handle_critical_tts_failure(normalized_trace_id, message)
+        queued_playback = bool(isinstance(payload, dict) and payload.get("queued_playback"))
+        if queued_playback and success:
+            self._queued_playback_results[reply_id] = (trace_id, message)
+            return
         if self._latency_tracker is not None:
             self._latency_tracker.mark_tts_finished(trace_id, reply_id, success, message)
         if not success:
             print(f"[ECHOES] 提示: 串流 TTS 未播放，保留文字回覆。{message}")
             return
-
         print(f"[ECHOES] 提示: 語音播放完成。{message}")
+
+    def _apply_fallback_timeout_grace(self, trace_id: str | None):
+        normalized_trace_id = str(trace_id or "").strip()
+        if not normalized_trace_id:
+            return
+        state = self._pending_actions.get(normalized_trace_id)
+        if state is None or state.status != "pending" or state.fallback_grace_applied:
+            return
+        timer = state.timeout_timer
+        if timer is None:
+            return
+        remaining_ms = max(0, int(timer.remainingTime()))
+        timer.start(remaining_ms + self._fallback_timeout_grace_ms)
+        state.fallback_grace_applied = True
+
+    def _handle_critical_tts_failure(self, trace_id: str | None, message: str):
+        normalized_trace_id = str(trace_id or "").strip()
+        if not normalized_trace_id:
+            return
+        self._suppressed_traces.add(normalized_trace_id)
+        self._audio_worker.suppress_trace(normalized_trace_id)
+        self._clear_pending_action(normalized_trace_id)
+        if self._active_action_trace_id == normalized_trace_id and self._current_loop_action_key is not None:
+            self._finish_loop_action()
+            self._suppressed_traces.add(normalized_trace_id)
+            self._audio_worker.suppress_trace(normalized_trace_id)
+        else:
+            self._window.restore_idle_video()
+        self._window.set_action_status(
+            message or "語音服務暫時失敗，已保留文字回覆。",
+            tone="warn",
+            timeout_ms=4200,
+        )
 
     def _can_start_trace_audio(self, trace_id: str | None, _reply_id: str | None = None) -> bool:
         normalized_trace_id = str(trace_id or "").strip()
@@ -731,6 +841,8 @@ class ActionDispatcher(QObject):
             self._clear_pending_action(trace_id)
         self._pending_actions.clear()
         self._suppressed_traces.clear()
+        self._queued_playback_results.clear()
+        self._trace_tts_providers.clear()
         while not self._pending_tts_chunks.empty():
             try:
                 self._pending_tts_chunks.get_nowait()

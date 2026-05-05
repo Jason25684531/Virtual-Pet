@@ -61,17 +61,41 @@ ELEVENLABS_VOICE_ID_EN: str = (
     or "21m00Tcm4TlvDq8ikWAM"
 )
 
-# 各角色專屬聲線映射（從 .env 解析，缺少時回退全域預設）
-CHARACTER_VOICE_IDS: dict[str, str] = {
+CHARACTER_ELEVENLABS_VOICE_ENV_KEYS: dict[str, tuple[str, ...]] = {
     "miku": (
-        os.getenv("ELEVENLABS_VOICE_ID", DEFAULT_ELEVENLABS_VOICE_ID).strip()
-        or DEFAULT_ELEVENLABS_VOICE_ID
+        "ELEVENLABS_MIKU_VOICE_ID",
+        "MIKU_VOICE_ID",
+        "ELEVENLABS_VOICE_ID",
     ),
     "Choppr": (
-        os.getenv("CHOPPER_VOICE_ID", DEFAULT_ELEVENLABS_VOICE_ID).strip()
-        or DEFAULT_ELEVENLABS_VOICE_ID
+        "ELEVENLABS_CHOPPR_VOICE_ID",
+        "ELEVENLABS_CHOPPER_VOICE_ID",
+        "CHOPPER_VOICE_ID",
+        "ELEVENLABS_VOICE_ID",
     ),
 }
+
+
+def _read_first_non_empty_env(*names: str, default: str = "") -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return str(default or "").strip()
+
+
+def _build_character_elevenlabs_voice_ids() -> dict[str, str]:
+    resolved: dict[str, str] = {}
+    for character_id, env_keys in CHARACTER_ELEVENLABS_VOICE_ENV_KEYS.items():
+        resolved[character_id] = _read_first_non_empty_env(
+            *env_keys,
+            default=DEFAULT_ELEVENLABS_VOICE_ID,
+        ) or DEFAULT_ELEVENLABS_VOICE_ID
+    return resolved
+
+
+# 各角色專屬 ElevenLabs 聲線映射（從 .env 解析，缺少時回退全域預設）
+CHARACTER_VOICE_IDS: dict[str, str] = _build_character_elevenlabs_voice_ids()
 
 # VoAI 角色聲音設定
 _DEFAULT_VOAI_CONFIG: dict = {
@@ -210,6 +234,8 @@ HOST_ACTION_NAMES = (
 
 HOST_ACTION_ALIASES = {
     "news": "report_news",
+    "read_news": "report_news",
+    "readnews": "report_news",
     "headline": "report_news",
     "headlines": "report_news",
     "weather": "report_news",
@@ -277,6 +303,14 @@ def canonicalize_host_action(action_name: str | None) -> str:
 
 def get_voice_id_for_character(character_id: str | None) -> str:
     """回傳角色對應的 ElevenLabs Voice ID。
+    優先順序：CHARACTER_VOICE_IDS[character_id] → ELEVENLABS_VOICE_ID（全域預設）。
+    """
+    return get_elevenlabs_voice_id_for_character(character_id)
+
+
+def get_elevenlabs_voice_id_for_character(character_id: str | None) -> str:
+    """回傳角色對應的 ElevenLabs Voice ID。
+
     優先順序：CHARACTER_VOICE_IDS[character_id] → ELEVENLABS_VOICE_ID（全域預設）。
     """
     cid = str(character_id or "").strip()
