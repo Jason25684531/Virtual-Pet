@@ -126,10 +126,67 @@ class SoulLoader:
 
 
 SENTENCE_BOUNDARY_PATTERN = re.compile(r"[。！？.!?]")
+EXTENDED_SENTENCE_BOUNDARY_PATTERN = re.compile(r"[。！？.!?;；\n]")
 ACTION_PREFIX_PATTERN = re.compile(
     r"^\s*(\[\s*ACTION\s*:\s*(?P<action>[A-Za-z0-9_-]+)\s*\])",
     re.IGNORECASE,
 )
+SHORT_SENTENCE_MIN_CHARS = max(1, int(os.getenv("BRAIN_SHORT_SENTENCE_MIN_CHARS", "5")))
+
+
+class _TokenVisibilityFilter:
+    """遮掉前置 action directive，讓 UI 只看到可顯示文字。"""
+
+    def __init__(self):
+        self._prefix_decided = False
+        self._buffer = ""
+
+    def feed(self, token: str) -> str:
+        text = str(token or "")
+        if not text:
+            return ""
+        if self._prefix_decided:
+            return text
+
+        self._buffer += text
+        stripped = self._buffer.lstrip()
+        if not stripped:
+            return ""
+
+        if not stripped.startswith("["):
+            self._prefix_decided = True
+            visible = self._buffer
+            self._buffer = ""
+            return visible
+
+        if "]" not in stripped:
+            return ""
+
+        match = ACTION_PREFIX_PATTERN.match(self._buffer)
+        self._prefix_decided = True
+        if not match:
+            visible = self._buffer
+            self._buffer = ""
+            return visible
+
+        raw_action = (match.group("action") or "").lower()
+        action_name = config.canonicalize_host_action(raw_action)
+        if not action_name:
+            visible = self._buffer
+            self._buffer = ""
+            return visible
+
+        visible = self._buffer[match.end():]
+        self._buffer = ""
+        return visible
+
+    def flush(self) -> str:
+        if not self._buffer:
+            return ""
+        self._prefix_decided = True
+        visible = sanitize_tts_text(self._buffer)
+        self._buffer = ""
+        return visible
 
 
 class StreamedReplyParser:
@@ -141,6 +198,7 @@ class StreamedReplyParser:
         self._prefix_buffer = ""
         self._text_buffer = ""
         self._emitted_fragments: list[str] = []
+        self._sentence_count = 0
 
     def feed(self, token: str) -> list[str]:
         text = str(token or "")
@@ -163,6 +221,7 @@ class StreamedReplyParser:
         if trailing:
             outputs.append(trailing)
             self._emitted_fragments.append(trailing)
+            self._sentence_count += 1
         return outputs
 
     def build_memory_reply(self) -> str:
@@ -217,18 +276,24 @@ class StreamedReplyParser:
         self._text_buffer += text
 
         while True:
-            match = SENTENCE_BOUNDARY_PATTERN.search(self._text_buffer)
+            match = EXTENDED_SENTENCE_BOUNDARY_PATTERN.search(self._text_buffer)
             if not match:
                 break
 
             end_index = match.end()
             chunk = sanitize_tts_text(self._text_buffer[:end_index])
+            if not chunk:
+                self._text_buffer = self._text_buffer[end_index:]
+                self._text_buffer = self._text_buffer.lstrip()
+                continue
+            is_first_sentence = self._sentence_count == 0
+            if not is_first_sentence and len(chunk) < SHORT_SENTENCE_MIN_CHARS:
+                break
             self._text_buffer = self._text_buffer[end_index:]
             self._text_buffer = self._text_buffer.lstrip()
-            if not chunk:
-                continue
             outputs.append(chunk)
             self._emitted_fragments.append(chunk)
+            self._sentence_count += 1
 
         return outputs
 
@@ -284,7 +349,9 @@ class BrainEngine(QThread):
     """在背景執行緒中執行 OpenAI 串流推論；本機大腦已完成與 OpenClaw 解耦。"""
 
     message_received = pyqtSignal(str)
+    token_streamed = pyqtSignal(str, object)
     streamed_fragment = pyqtSignal(str, object)
+    sentence_ready = pyqtSignal(str, object)
     speech_ready = pyqtSignal(str, object)
     warning_emitted = pyqtSignal(str)
     profile_changed = pyqtSignal(str)
@@ -403,28 +470,43 @@ class BrainEngine(QThread):
                 memory=memory,
             )
             parser = StreamedReplyParser()
+            visibility_filter = _TokenVisibilityFilter()
             emitted_anything = False
+            emitted_sentence_any = False
 
             for token in self._stream_llm_tokens(profile, prompt):
+                visible_token = visibility_filter.feed(token)
+                if visible_token:
+                    self._emit_token(visible_token, trace_id)
                 for fragment in parser.feed(token):
                     emitted_anything = True
                     self._emit_fragment(fragment, trace_id)
+                    if not fragment.startswith("[ACTION:"):
+                        emitted_sentence_any = True
+                        self._emit_sentence_ready(fragment, trace_id)
 
+            trailing_visible = visibility_filter.flush()
+            if trailing_visible:
+                self._emit_token(trailing_visible, trace_id)
             for fragment in parser.flush():
                 emitted_anything = True
                 self._emit_fragment(fragment, trace_id)
+                if not fragment.startswith("[ACTION:"):
+                    emitted_sentence_any = True
+                    self._emit_sentence_ready(fragment, trace_id)
 
             memory_reply = parser.build_memory_reply()
             speech_reply = sanitize_tts_text(memory_reply)
             if memory_reply:
                 self._remember_exchange(memory, prompt_text, memory_reply)
-                if speech_reply:
+                if speech_reply and not emitted_sentence_any:
                     if self._latency_tracker is not None:
                         self._latency_tracker.mark_tts_expected(trace_id, speech_reply)
                     self.speech_ready.emit(speech_reply, trace_id)
             elif not emitted_anything:
                 fallback = "我剛剛有點恍神了，請再說一次。"
                 self._remember_exchange(memory, prompt_text, fallback)
+                self._emit_token(fallback, trace_id)
                 self._emit_fragment(fallback, trace_id)
                 if self._latency_tracker is not None:
                     self._latency_tracker.mark_tts_expected(trace_id, fallback)
@@ -437,6 +519,7 @@ class BrainEngine(QThread):
             if self._latency_tracker is not None:
                 self._latency_tracker.mark_failure(trace_id, "brain", warning)
             fallback = "抱歉，我現在無法順利連線 OpenAI 大腦，請稍後再試。"
+            self._emit_token(fallback, trace_id)
             self._emit_fragment(f"[ACTION:listen] {fallback}", trace_id)
             if self._latency_tracker is not None:
                 self._latency_tracker.mark_tts_expected(trace_id, fallback)
@@ -450,6 +533,22 @@ class BrainEngine(QThread):
             self._latency_tracker.mark_fragment_emitted(trace_id, fragment)
         self.message_received.emit(fragment)
         self.streamed_fragment.emit(fragment, trace_id)
+
+    def _emit_token(self, token: str, trace_id: str | None):
+        normalized = str(token or "")
+        if not normalized:
+            return
+        if self._latency_tracker is not None:
+            self._latency_tracker.mark_token_visible(trace_id, normalized)
+        self.token_streamed.emit(normalized, trace_id)
+
+    def _emit_sentence_ready(self, sentence: str, trace_id: str | None):
+        normalized = sanitize_tts_text(sentence)
+        if not normalized:
+            return
+        if self._latency_tracker is not None:
+            self._latency_tracker.mark_tts_expected(trace_id, normalized)
+        self.sentence_ready.emit(normalized, trace_id)
 
     def _build_stream_prompt(
         self,

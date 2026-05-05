@@ -31,6 +31,7 @@ class InteractionTraceState:
     tts_enqueued: int = 0
     tts_finished: int = 0
     tts_failures: int = 0
+    timeout_promoted: bool = False
     brain_completed: bool = False
     finalized: bool = False
 
@@ -124,6 +125,17 @@ class InteractionLatencyTracker:
             first_only=True,
         )
 
+    def mark_token_visible(self, trace_id: str | None, token: str):
+        normalized = str(token or "").strip()
+        if not normalized:
+            return
+        self._record(
+            trace_id,
+            "first_token_visible",
+            f"第一個可見 token：{_preview_text(normalized)}",
+            first_only=True,
+        )
+
     def mark_action_dispatched(self, trace_id: str | None, action_name: str):
         self._record(trace_id, "first_action_dispatched", f"ActionDispatcher 命中 `{action_name}`", first_only=True)
 
@@ -169,9 +181,29 @@ class InteractionLatencyTracker:
         detail = f"TTS 開始送入播放器，reply={reply_id[:8]}，bytes={bytes_forwarded}"
         self._record(trace_id, "first_tts_stream_started", detail, first_only=True)
 
-    def mark_tts_playback_started(self, trace_id: str | None, reply_id: str):
-        detail = f"TTS 開始播放，reply={reply_id[:8]}"
+    def mark_driver_started(self, trace_id: str | None, reply_id: str):
+        detail = f"播放驅動開始接手音訊，reply={reply_id[:8]}"
+        self._record(trace_id, "first_driver_started", detail, first_only=True)
+        # 保留舊欄位語意，方便既有摘要與工具兼容
         self._record(trace_id, "first_tts_playback_started", detail, first_only=True)
+
+    def mark_tts_playback_started(self, trace_id: str | None, reply_id: str):
+        self.mark_driver_started(trace_id, reply_id)
+
+    def mark_timeout_promoted(self, trace_id: str | None, action_name: str):
+        if not trace_id:
+            return
+        with self._lock:
+            state = self._traces.get(trace_id)
+            if state is None:
+                return
+            state.timeout_promoted = True
+        self._record(
+            trace_id,
+            "timeout_promoted",
+            f"Pending action 超時升級為正式動作：{action_name}",
+            first_only=True,
+        )
 
     def mark_tts_finished(self, trace_id: str | None, reply_id: str, success: bool, message: str):
         if not trace_id:
@@ -232,6 +264,7 @@ class InteractionLatencyTracker:
                 "tts_expected": state.tts_expected,
                 "tts_enqueued": state.tts_enqueued,
                 "tts_finished": state.tts_finished,
+                "timeout_promoted": state.timeout_promoted,
                 "brain_completed": state.brain_completed,
                 "finalized": state.finalized,
             }
@@ -298,7 +331,7 @@ class InteractionLatencyTracker:
             stage_durations.append((label, duration))
 
         first_output_stage = None
-        for candidate in ("first_action_fragment", "first_text_fragment", "first_brain_output"):
+        for candidate in ("first_token_visible", "first_action_fragment", "first_text_fragment", "first_brain_output"):
             if candidate in state.stages:
                 first_output_stage = candidate
                 break
@@ -309,8 +342,8 @@ class InteractionLatencyTracker:
             add_delta("llm_to_first_output", "brain_started", first_output_stage)
         add_delta("eos_to_first_action", "stt_speech_ended", "first_action_dispatched")
         add_delta("tts_startup", "first_tts_enqueued", "first_tts_stream_started")
-        add_delta("tts_to_playback", "first_tts_stream_started", "first_tts_playback_started")
-        add_delta("eos_to_first_audio", "stt_speech_ended", "first_tts_playback_started")
+        add_delta("tts_to_driver_start", "first_tts_stream_started", "first_driver_started")
+        add_delta("eos_to_first_audio", "stt_speech_ended", "first_driver_started")
         add_delta("tts_tail", "first_tts_stream_started", "interaction_completed")
         add_delta("post_brain_tail", "brain_completed", "interaction_completed")
         add_delta("eos_to_complete", "stt_speech_ended", "interaction_completed")
@@ -323,11 +356,14 @@ class InteractionLatencyTracker:
         total_ms = self._elapsed_ms(state, "interaction_completed") or 0
         milestones = []
         for stage in (
+            "first_token_visible",
             "first_action_fragment",
             "first_text_fragment",
             "first_action_dispatched",
             "first_tts_stream_started",
+            "first_driver_started",
             "first_tts_playback_started",
+            "timeout_promoted",
             "brain_completed",
         ):
             stage_ms = self._elapsed_ms(state, stage)
@@ -360,9 +396,12 @@ class InteractionLatencyTracker:
             "bottleneck_ms": bottleneck_ms,
             "milestones": milestones,
             "tts_failures": state.tts_failures,
+            "timeout_promoted": state.timeout_promoted,
             "missing_stt_milestones": missing_stt,
             "failure_suffix": failure_suffix,
             "stage_parts": stage_parts,
+            "legacy_audio_start_stage": "first_tts_playback_started",
+            "driver_start_stage": "first_driver_started",
         }
 
     @staticmethod
@@ -374,13 +413,17 @@ class InteractionLatencyTracker:
         stt_suffix = ""
         if missing_stt:
             stt_suffix = f" | missing_stt={','.join(missing_stt)}"
+        legacy_suffix = (
+            f" | driver_start={summary_payload.get('driver_start_stage')} "
+            f"legacy_audio_start={summary_payload.get('legacy_audio_start_stage')}"
+        )
         return (
             "互動完成摘要 "
             f"source={summary_payload.get('source', 'unknown')} "
             f"total={summary_payload.get('total_ms', 0)}ms | "
             f"stages: {'; '.join(stage_parts)} | "
             f"bottleneck={summary_payload.get('bottleneck_label', 'n/a')}({summary_payload.get('bottleneck_ms', 0)}ms) | "
-            f"milestones: {'; '.join(milestones)}{failure_suffix}{stt_suffix}"
+            f"milestones: {'; '.join(milestones)}{failure_suffix}{stt_suffix}{legacy_suffix}"
         )
 
     @staticmethod

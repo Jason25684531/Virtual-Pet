@@ -9,22 +9,36 @@ import time
 
 
 def connect_brain_output_handlers(window, brain_engine, sanitize_text):
-    def handle_brain_fragment(fragment: str, trace_id: str | None):
+    def handle_token_streamed(token: str, trace_id: str | None):
         append_message = getattr(window, "append_conversation_assistant", None)
-        if trace_id:
-            visible_text = sanitize_text(fragment)
-            if visible_text and callable(append_message):
-                append_message(trace_id, visible_text)
+        if not trace_id or not callable(append_message):
+            return
+        visible_text = sanitize_text(token)
+        if visible_text:
+            append_message(trace_id, visible_text)
+
+    def handle_brain_fragment(fragment: str, trace_id: str | None):
         dispatch_action = getattr(window, "dispatch_action", None)
         if callable(dispatch_action):
             dispatch_action(fragment, trace_id=trace_id, allow_tts=False)
+
+    def handle_sentence_ready(sentence_text: str, trace_id: str | None):
+        speak_text = getattr(window, "speak_text", None)
+        if callable(speak_text):
+            speak_text(sentence_text, trace_id=trace_id)
 
     def handle_speech_ready(reply_text: str, trace_id: str | None):
         speak_text = getattr(window, "speak_text", None)
         if callable(speak_text):
             speak_text(reply_text, trace_id=trace_id)
 
+    token_streamed = getattr(brain_engine, "token_streamed", None)
+    if token_streamed is not None:
+        token_streamed.connect(handle_token_streamed)
     brain_engine.streamed_fragment.connect(handle_brain_fragment)
+    sentence_ready = getattr(brain_engine, "sentence_ready", None)
+    if sentence_ready is not None:
+        sentence_ready.connect(handle_sentence_ready)
     brain_engine.speech_ready.connect(handle_speech_ready)
 
 

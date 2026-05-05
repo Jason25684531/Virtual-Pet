@@ -1,5 +1,5 @@
 """
-ECHOES smoke test for OpenAI streaming + VoAI speech playback.
+ECHOES smoke test for token-first OpenAI streaming + synced VoAI playback.
 
 請務必先進入 Ubuntu 24.04 專案虛擬環境後再執行：
     source venv/bin/activate
@@ -50,8 +50,9 @@ class CheckResult:
 
 @dataclass(frozen=True)
 class LatencySample:
+    token_visible_ms: int
     action_ms: int
-    tts_start_ms: int
+    driver_start_ms: int
     total_ms: int
 
 
@@ -67,6 +68,7 @@ class _SmokeWindow:
     def __init__(self):
         self.status_calls: list[tuple[str, str, int]] = []
         self.motion_calls: list[tuple[str, str, bool, float]] = []
+        self.assistant_chunks: dict[str, list[str]] = {}
         self.restore_idle_calls = 0
 
     def set_action_status(self, message: str, tone: str = "idle", timeout_ms: int = 0):
@@ -79,6 +81,9 @@ class _SmokeWindow:
     def restore_idle_video(self) -> bool:
         self.restore_idle_calls += 1
         return True
+
+    def append_conversation_assistant(self, trace_id: str, text: str):
+        self.assistant_chunks.setdefault(trace_id, []).append(text)
 
     def play_music(self, filename: str, title: str = "", update_status: bool = True) -> bool:
         del filename, title, update_status
@@ -206,60 +211,164 @@ def check_voai() -> CheckResult:
         "style_weight": 0,
         "breath_pause": 0,
     }
+    last_failure = "未知錯誤"
+    for attempt in range(3):
+        response = None
+        try:
+            response = requests.post(
+                endpoint,
+                headers=headers,
+                json=payload,
+                timeout=(5, 30),
+                stream=True,
+            )
+            if response.status_code == 401:
+                return CheckResult(
+                    name="VoAI",
+                    ok=False,
+                    detail="收到 401。請檢查 `VOAI_API_KEY` 是否有效。",
+                )
+            if response.status_code == 529 and attempt < 2:
+                last_failure = f"HTTP 529: {response.text[:200]}"
+                time.sleep(1.0 + attempt)
+                continue
+            if not response.ok:
+                return CheckResult(
+                    name="VoAI",
+                    ok=False,
+                    detail=f"HTTP {response.status_code}: {response.text[:200]}",
+                )
 
-    try:
-        response = requests.post(
-            endpoint,
-            headers=headers,
-            json=payload,
-            timeout=(5, 30),
-            stream=True,
-        )
-    except requests.RequestException as exc:
-        return CheckResult(
-            name="VoAI",
-            ok=False,
-            detail=f"連線失敗: {exc}。請確認網路狀態與 VoAI 服務可用。",
-        )
-
-    try:
-        if response.status_code == 401:
+            content_type = response.headers.get("content-type", "").lower()
+            received = b"".join(chunk for chunk in response.iter_content(chunk_size=4096) if chunk)
+            if "audio" not in content_type or not received:
+                return CheckResult(
+                    name="VoAI",
+                    ok=False,
+                    detail="API 有回應，但不是有效音訊資料。",
+                )
             return CheckResult(
                 name="VoAI",
-                ok=False,
-                detail="收到 401。請檢查 `VOAI_API_KEY` 是否有效。",
+                ok=True,
+                detail=f"已成功取得 PCM 串流測試音訊，大小 {len(received)} bytes。",
             )
-        if not response.ok:
-            return CheckResult(
-                name="VoAI",
-                ok=False,
-                detail=f"HTTP {response.status_code}: {response.text[:200]}",
-            )
+        except requests.RequestException as exc:
+            last_failure = f"連線失敗: {exc}。請確認網路狀態與 VoAI 服務可用。"
+            if attempt < 2:
+                time.sleep(1.0 + attempt)
+                continue
+        finally:
+            if response is not None:
+                response.close()
 
-        content_type = response.headers.get("content-type", "").lower()
-        received = b"".join(chunk for chunk in response.iter_content(chunk_size=4096) if chunk)
-        if "audio" not in content_type or not received:
-            return CheckResult(
-                name="VoAI",
-                ok=False,
-                detail="API 有回應，但不是有效音訊資料。",
-            )
-    finally:
-        response.close()
-
-    return CheckResult(
-        name="VoAI",
-        ok=True,
-        detail=f"已成功取得 PCM 串流測試音訊，大小 {len(received)} bytes。",
-    )
+    return CheckResult(name="VoAI", ok=False, detail=last_failure)
 
 
 class _SmokePcmPlayer:
     def is_available(self):
         return True
 
-    def play_chunks(self, chunks):
-        return sum(len(chunk) for chunk in chunks if chunk)
+    def play_chunks(self, chunks, before_start=None):
+        iterator = iter(chunks)
+        bytes_written = 0
+        started = False
+        for chunk in iterator:
+            if not chunk:
+                continue
+            if not started:
+                started = True
+                if callable(before_start) and before_start() is False:
+                    return 0
+            bytes_written += len(chunk)
+        return bytes_written
+
+
+class _LateSuppressedTTSWorker:
+    instances: list["_LateSuppressedTTSWorker"] = []
+
+    def __init__(
+        self,
+        text: str,
+        reply_id: str | None = None,
+        trace_id: str | None = None,
+        voice_id: str | None = None,
+        playback_guard=None,
+        parent=None,
+    ):
+        del parent, voice_id
+        self._text = text
+        self._reply_id = reply_id or "late-suppressed-reply"
+        self._trace_id = trace_id or ""
+        self._playback_guard = playback_guard
+        self.finished_signal = _SignalRecorder()
+        self.progress_signal = _SignalRecorder()
+        self.audio_ready_signal = _SignalRecorder()
+        self.finished = _SignalRecorder()
+        self.started = False
+        _LateSuppressedTTSWorker.instances.append(self)
+
+    def start(self):
+        self.started = True
+        self.progress_signal.emit(
+            "stream_started",
+            {
+                "reply_id": self._reply_id,
+                "trace_id": self._trace_id,
+                "bytes_forwarded": len(self._text.encode("utf-8")),
+            },
+        )
+
+    def complete(self):
+        payload = {
+            "reply_id": self._reply_id,
+            "trace_id": self._trace_id,
+            "text": self._text,
+        }
+        if callable(self._playback_guard) and self._playback_guard(self._trace_id, self._reply_id) is False:
+            payload["suppressed"] = True
+            self.finished_signal.emit(False, "因 timeout_promoted 抑制晚到音訊。", payload)
+            self.finished.emit()
+            return
+        self.progress_signal.emit(
+            "driver_started",
+            {
+                "reply_id": self._reply_id,
+                "trace_id": self._trace_id,
+            },
+        )
+        self.finished_signal.emit(True, "語音生成完成。", payload)
+        self.finished.emit()
+
+    def deleteLater(self):
+        return None
+
+
+class _SignalRecorder:
+    def __init__(self):
+        self._callbacks: list[object] = []
+
+    def connect(self, callback):
+        self._callbacks.append(callback)
+
+    def emit(self, *args):
+        for callback in list(self._callbacks):
+            callback(*args)
+
+
+def _extract_milestone_ms(summary: dict[str, object], stage_name: str) -> int | None:
+    milestones = summary.get("milestones", [])
+    if not isinstance(milestones, list):
+        return None
+    prefix = f"{stage_name}="
+    for item in milestones:
+        if not isinstance(item, str) or not item.startswith(prefix) or not item.endswith("ms"):
+            continue
+        raw_value = item[len(prefix):-2]
+        try:
+            return int(raw_value)
+        except ValueError:
+            continue
+    return None
 
 
 def _run_latency_trial(app: QCoreApplication, trial_name: str) -> tuple[LatencySample | None, str | None]:
@@ -280,19 +389,19 @@ def _run_latency_trial(app: QCoreApplication, trial_name: str) -> tuple[LatencyS
                 pcm_player_factory=_SmokePcmPlayer,
                 **kwargs,
             )
+
             def _record_finished(success, _message, payload):
-                if success:
-                    timings.setdefault("tts_finished_at", perf_counter())
-                    if isinstance(payload, dict):
-                        timings.setdefault("tts_format", str(payload.get("format", "")))
-            worker.progress_signal.connect(
-                lambda event_name, payload: timings.setdefault(
-                    "tts_stream_started_at",
-                    perf_counter(),
-                )
-                if event_name == "stream_started"
-                else None
-            )
+                timings.setdefault("tts_finished_at", perf_counter())
+                if success and isinstance(payload, dict):
+                    timings.setdefault("tts_format", str(payload.get("format", "")))
+
+            def _record_progress(event_name, _payload):
+                if event_name == "stream_started":
+                    timings.setdefault("tts_stream_started_at", perf_counter())
+                elif event_name == "driver_started":
+                    timings.setdefault("driver_started_at", perf_counter())
+
+            worker.progress_signal.connect(_record_progress)
             worker.finished_signal.connect(_record_finished)
             return worker
 
@@ -321,7 +430,9 @@ def _run_latency_trial(app: QCoreApplication, trial_name: str) -> tuple[LatencyS
             deadline = perf_counter() + 15
             while perf_counter() < deadline:
                 app.processEvents()
-                if tracker.snapshot(trace_id) is None and "tts_finished_at" in timings:
+                if tracker.snapshot(trace_id) is None and (
+                    "tts_finished_at" in timings or tracker.get_completed_trace(trace_id) is not None
+                ):
                     break
                 time.sleep(0.01)
             else:
@@ -336,16 +447,105 @@ def _run_latency_trial(app: QCoreApplication, trial_name: str) -> tuple[LatencyS
         return None, f"{trial_name}: 執行期間收到警告: {warnings[0]}"
     if not window.motion_calls:
         return None, f"{trial_name}: 沒有觸發任何動作影片。"
-    if "tts_stream_started_at" not in timings or "tts_finished_at" not in timings:
-        return None, f"{trial_name}: TTS 沒有完整啟播或完成。"
+    if "tts_stream_started_at" not in timings or "driver_started_at" not in timings or "tts_finished_at" not in timings:
+        return None, f"{trial_name}: TTS 沒有完整完成 stream_started -> driver_started -> finished。"
     if timings.get("tts_format") != "pcm":
         return None, f"{trial_name}: 未使用 PCM 主路徑，實際格式={timings.get('tts_format', '<unknown>')}。"
+    visible_chunks = window.assistant_chunks.get(trace_id, [])
+    if not visible_chunks:
+        return None, f"{trial_name}: token-first UI 沒有收到任何可見文字。"
+    if any("[ACTION:" in chunk for chunk in visible_chunks):
+        return None, f"{trial_name}: token-first UI 不應顯示 action tag，實際 chunks={visible_chunks!r}"
 
-    start_at = timings["start_at"]
-    action_ms = round((window.motion_calls[0][3] - start_at) * 1000)
-    tts_start_ms = round((timings.get("tts_stream_started_at", start_at) - start_at) * 1000)
-    total_ms = round((timings.get("tts_finished_at", perf_counter()) - start_at) * 1000)
-    return LatencySample(action_ms=action_ms, tts_start_ms=tts_start_ms, total_ms=total_ms), None
+    summary = tracker.get_completed_trace(trace_id)
+    if summary is None:
+        return None, f"{trial_name}: 找不到完成後的 trace 摘要。"
+
+    token_visible_ms = _extract_milestone_ms(summary, "first_token_visible")
+    action_ms = _extract_milestone_ms(summary, "first_action_dispatched")
+    driver_start_ms = _extract_milestone_ms(summary, "first_driver_started")
+    total_ms = summary.get("total_ms")
+    if not isinstance(token_visible_ms, int):
+        return None, f"{trial_name}: trace 缺少 first_token_visible 里程碑。"
+    if not isinstance(action_ms, int):
+        return None, f"{trial_name}: trace 缺少 first_action_dispatched 里程碑。"
+    if not isinstance(driver_start_ms, int):
+        return None, f"{trial_name}: trace 缺少 first_driver_started 里程碑。"
+    if not isinstance(total_ms, int):
+        return None, f"{trial_name}: trace 缺少 total_ms。"
+    if summary.get("timeout_promoted"):
+        return None, f"{trial_name}: 正常 smoke flow 不應觸發 timeout_promoted。"
+    if "tts_to_driver_start" not in dict(summary.get("stage_durations", {})):
+        return None, f"{trial_name}: trace 缺少 tts_to_driver_start 階段摘要。"
+
+    return LatencySample(
+        token_visible_ms=token_visible_ms,
+        action_ms=action_ms,
+        driver_start_ms=driver_start_ms,
+        total_ms=total_ms,
+    ), None
+
+
+def check_timeout_promotion_guard() -> CheckResult:
+    app = QCoreApplication.instance() or QCoreApplication([])
+    tracker = InteractionLatencyTracker()
+    _LateSuppressedTTSWorker.instances.clear()
+    with tempfile.TemporaryDirectory(prefix="echoes-timeout-guard-") as temp_dir:
+        listen_path = Path(temp_dir) / "listen.webm"
+        idle_path = Path(temp_dir) / "Idle.webm"
+        listen_path.write_bytes(b"listen")
+        idle_path.write_bytes(b"idle")
+
+        window = _SmokeWindow()
+        dispatcher = ActionDispatcher(
+            window,
+            library=_SmokeLibrary(),
+            motion_path_resolver=lambda motion_key: str(
+                {"listen": listen_path, "idle": idle_path}.get(motion_key, "")
+            ),
+            tts_worker_factory=_LateSuppressedTTSWorker,
+            latency_tracker=tracker,
+        )
+        trace_id = tracker.begin_interaction("timeout-guard", "請晚點說話")
+        tracker.mark_brain_started(trace_id)
+        tracker.mark_fragment_emitted(trace_id, "[ACTION:listen]")
+        dispatcher.dispatch("[ACTION:listen] 這句要被超時抑制。", trace_id=trace_id)
+        tracker.mark_brain_completed(trace_id)
+        dispatcher._promote_pending_action(trace_id)
+
+        if len(window.motion_calls) != 1:
+            dispatcher.shutdown()
+            return CheckResult(
+                name="TimeoutGuard",
+                ok=False,
+                detail=f"超時升級後應只切一次正式動作，實際 motion_calls={window.motion_calls!r}",
+            )
+        if not _LateSuppressedTTSWorker.instances:
+            dispatcher.shutdown()
+            return CheckResult(name="TimeoutGuard", ok=False, detail="沒有建立待驗證的 TTS worker。")
+
+        _LateSuppressedTTSWorker.instances[0].complete()
+        app.processEvents()
+        summary = tracker.get_completed_trace(trace_id)
+        dispatcher.shutdown()
+
+    if summary is None:
+        return CheckResult(name="TimeoutGuard", ok=False, detail="超時抑制後沒有完成 trace 摘要。")
+    if summary.get("timeout_promoted") is not True:
+        return CheckResult(name="TimeoutGuard", ok=False, detail="trace 未標記 timeout_promoted。")
+    if _extract_milestone_ms(summary, "first_driver_started") is not None:
+        return CheckResult(name="TimeoutGuard", ok=False, detail="晚到音訊被抑制時不應留下 first_driver_started。")
+    if summary.get("tts_failures") != 1:
+        return CheckResult(
+            name="TimeoutGuard",
+            ok=False,
+            detail=f"晚到音訊抑制應被記錄成單次 TTS failure，實際={summary.get('tts_failures')!r}",
+        )
+    return CheckResult(
+        name="TimeoutGuard",
+        ok=True,
+        detail="已驗證 timeout_promoted 會升級正式動作，並抑制晚到音訊與重複 motion。",
+    )
 
 
 def run_latency_probe() -> CheckResult:
@@ -374,10 +574,12 @@ def run_latency_probe() -> CheckResult:
         )
 
     action_values = [sample.action_ms for sample in measured_samples]
-    tts_start_values = [sample.tts_start_ms for sample in measured_samples]
+    token_visible_values = [sample.token_visible_ms for sample in measured_samples]
+    driver_start_values = [sample.driver_start_ms for sample in measured_samples]
     total_values = [sample.total_ms for sample in measured_samples]
+    median_token = round(statistics.median(token_visible_values))
     median_action = round(statistics.median(action_values))
-    median_tts_start = round(statistics.median(tts_start_values))
+    median_driver_start = round(statistics.median(driver_start_values))
     median_total = round(statistics.median(total_values))
     fast_rounds = sum(1 for total_ms in total_values if total_ms <= LATENCY_SLA_MS)
 
@@ -388,7 +590,8 @@ def run_latency_probe() -> CheckResult:
             detail=(
                 "多輪量測未達穩定低延遲門檻。"
                 f" totals={total_values}ms, median_total={median_total}ms, "
-                f"median_action={median_action}ms, median_tts_start={median_tts_start}ms, "
+                f"median_token={median_token}ms, median_action={median_action}ms, "
+                f"median_driver_start={median_driver_start}ms, "
                 f"fast_rounds={fast_rounds}/{measured_rounds}, sla_ms={LATENCY_SLA_MS}"
             ),
         )
@@ -399,7 +602,8 @@ def run_latency_probe() -> CheckResult:
         detail=(
             "多輪量測通過。"
             f" totals={total_values}ms, median_total={median_total}ms, "
-            f"median_action={median_action}ms, median_tts_start={median_tts_start}ms, "
+            f"median_token={median_token}ms, median_action={median_action}ms, "
+            f"median_driver_start={median_driver_start}ms, "
             f"fast_rounds={fast_rounds}/{measured_rounds}, sla_ms={LATENCY_SLA_MS}"
         ),
     )
@@ -411,6 +615,7 @@ def main() -> int:
         check_env(env_map),
         check_openai(),
         check_voai(),
+        check_timeout_promotion_guard(),
         run_latency_probe(),
     ]
 

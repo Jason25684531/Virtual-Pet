@@ -1,7 +1,7 @@
 """
 ECHOES live STT latency probe.
 
-在真實桌面與麥克風環境下，量測 Azure speech end 到 action / 首次音訊 / 整輪完成。
+在真實桌面與麥克風環境下，量測 Azure speech end 到 action / 首次音訊交給播放驅動 / 整輪完成。
 請先進入專案虛擬環境後執行：
     source venv/bin/activate
     python scripts/live_stt_latency_probe.py
@@ -147,7 +147,7 @@ def main() -> int:
             summary = tracker.get_completed_trace(trace_id)
             sample = _extract_sample(summary or {})
             if sample is None:
-                print(f"[PROBE] Trace {trace_id} 缺少完整 STT / audio milestones，略過。")
+        print(f"[PROBE] Trace {trace_id} 缺少完整 STT / driver-start milestones，略過。")
                 return
             captured_samples.append(sample)
             print(

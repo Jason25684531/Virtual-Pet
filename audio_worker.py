@@ -23,7 +23,7 @@ import threading
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
-from audio_playback import PygameInMemoryAudioPlayer
+from audio_playback import PlaybackStartSuppressed, PygameInMemoryAudioPlayer
 
 _SENTINEL = None
 
@@ -35,7 +35,8 @@ class AudioStreamWorker(QObject):
     Qt 的 'QThread: Destroyed while still running' 致命錯誤。
     """
 
-    playback_started = pyqtSignal(str, str)   # reply_id, trace_id
+    driver_started = pyqtSignal(str, str)     # reply_id, trace_id
+    playback_started = pyqtSignal(str, str)   # legacy alias: reply_id, trace_id
     playback_finished = pyqtSignal(str, str)  # reply_id, trace_id
     queue_drained = pyqtSignal()         # 佇列清空（TTS 全部播完）
 
@@ -45,6 +46,7 @@ class AudioStreamWorker(QObject):
         self._player = audio_player or PygameInMemoryAudioPlayer()
         self._playing_lock = threading.Lock()
         self._current_reply_id: str | None = None
+        self._suppressed_traces: set[str] = set()
         # daemon=True：主程式退出時此 thread 自動終止，不觸發 Qt 的 QThread abort
         self._thread = threading.Thread(target=self._run, daemon=True, name="AudioStreamWorker")
 
@@ -86,6 +88,18 @@ class AudioStreamWorker(QObject):
             except queue.Empty:
                 break
 
+    def suppress_trace(self, trace_id: str | None) -> None:
+        normalized = str(trace_id or "").strip()
+        if not normalized:
+            return
+        self._suppressed_traces.add(normalized)
+
+    def clear_suppressed_trace(self, trace_id: str | None) -> None:
+        normalized = str(trace_id or "").strip()
+        if not normalized:
+            return
+        self._suppressed_traces.discard(normalized)
+
     def is_busy(self) -> bool:
         """回傳是否正在播放或佇列中仍有待播項目。"""
         with self._playing_lock:
@@ -110,9 +124,20 @@ class AudioStreamWorker(QObject):
                 self._current_reply_id = reply_id
 
             try:
-                self.playback_started.emit(reply_id, trace_id)
-                self._player.play(audio_bytes)
+                if trace_id and trace_id in self._suppressed_traces:
+                    raise PlaybackStartSuppressed("該 trace 已在起播前被抑制。")
+
+                def before_start():
+                    if trace_id and trace_id in self._suppressed_traces:
+                        return False
+                    self.driver_started.emit(reply_id, trace_id)
+                    self.playback_started.emit(reply_id, trace_id)
+                    return True
+
+                self._player.play(audio_bytes, before_start=before_start)
                 self.playback_finished.emit(reply_id, trace_id)
+            except PlaybackStartSuppressed:
+                pass
             except Exception as exc:  # pragma: no cover
                 print(f"[AudioStreamWorker] 播放失敗 reply_id={reply_id}: {exc}")
             finally:

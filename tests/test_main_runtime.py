@@ -25,7 +25,9 @@ class _FakeSignal:
 
 class _FakeBrain:
     def __init__(self):
+        self.token_streamed = _FakeSignal()
         self.streamed_fragment = _FakeSignal()
+        self.sentence_ready = _FakeSignal()
         self.speech_ready = _FakeSignal()
 
 
@@ -52,15 +54,19 @@ def _sanitize_text(text: str) -> str:
 
 
 class MainRuntimeWiringTests(unittest.TestCase):
-    def test_streamed_fragments_only_drive_ui_and_action_while_full_reply_triggers_single_tts(self):
+    def test_token_streamed_drives_ui_while_sentence_ready_triggers_tts(self):
         window = _FakeWindow()
         brain = _FakeBrain()
 
         connect_brain_output_handlers(window, brain, _sanitize_text)
 
-        brain.streamed_fragment.emit("[ACTION:listen] 第一段。", "trace-1")
+        brain.streamed_fragment.emit("[ACTION:listen]", "trace-1")
+        brain.token_streamed.emit("第一段。", "trace-1")
+        brain.streamed_fragment.emit("第一段。", "trace-1")
+        brain.token_streamed.emit("第二段。", "trace-1")
         brain.streamed_fragment.emit("第二段。", "trace-1")
-        brain.speech_ready.emit("第一段。第二段。", "trace-1")
+        brain.sentence_ready.emit("第一段。", "trace-1")
+        brain.sentence_ready.emit("第二段。", "trace-1")
 
         self.assertEqual(
             window.append_calls,
@@ -69,11 +75,12 @@ class MainRuntimeWiringTests(unittest.TestCase):
         self.assertEqual(
             window.dispatch_calls,
             [
-                ("[ACTION:listen] 第一段。", "trace-1", False),
+                ("[ACTION:listen]", "trace-1", False),
+                ("第一段。", "trace-1", False),
                 ("第二段。", "trace-1", False),
             ],
         )
-        self.assertEqual(window.speak_calls, [("第一段。第二段。", "trace-1")])
+        self.assertEqual(window.speak_calls, [("第一段。", "trace-1"), ("第二段。", "trace-1")])
 
 
 if __name__ == "__main__":

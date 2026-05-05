@@ -16,7 +16,7 @@ import requests
 from PyQt5.QtCore import QThread, pyqtSignal
 
 import config
-from audio_playback import FfplayPcmAudioPlayer
+from audio_playback import FfplayPcmAudioPlayer, PlaybackStartSuppressed
 
 _VOAI_TTS_URL = "https://connect.voai.ai/TTS/Speech"
 _VOAI_HTTP_SESSION = requests.Session()
@@ -55,6 +55,7 @@ class VoAIStreamingTTSWorker(QThread):
         voice_id: str | None = None,
         requests_post=None,
         pcm_player_factory=None,
+        playback_guard=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -66,15 +67,16 @@ class VoAIStreamingTTSWorker(QThread):
         self._pcm_player_factory = pcm_player_factory or (
             lambda: FfplayPcmAudioPlayer(sample_rate=_PCM_SAMPLE_RATE, channels=1)
         )
+        self._playback_guard = playback_guard
 
     def run(self):
         if not self._text:
-            self.finished_signal.emit(False, "略過 VoAI TTS：沒有可朗讀的文字。", None)
+            self.finished_signal.emit(False, "略過 VoAI TTS：沒有可朗讀的文字。", self._build_result_payload())
             return
 
         api_key = _get_api_key()
         if not api_key:
-            self.finished_signal.emit(False, "略過 VoAI TTS：缺少 VOAI_API_KEY。", None)
+            self.finished_signal.emit(False, "略過 VoAI TTS：缺少 VOAI_API_KEY。", self._build_result_payload())
             return
 
         voice_cfg = config.get_voai_config_for_character(self._voice_id)
@@ -98,6 +100,15 @@ class VoAIStreamingTTSWorker(QThread):
             "style_weight": float(voice_cfg.get("style_weight", _DEFAULT_STYLE_WEIGHT)),
             "breath_pause": float(voice_cfg.get("breath_pause", _DEFAULT_BREATH_PAUSE)),
         }
+
+    def _build_result_payload(self, **extra) -> dict:
+        payload = {
+            "reply_id": self._reply_id,
+            "trace_id": self._trace_id,
+            "text": self._text,
+        }
+        payload.update(extra)
+        return payload
 
     @staticmethod
     def _pcm_streaming_enabled() -> bool:
@@ -147,18 +158,22 @@ class VoAIStreamingTTSWorker(QThread):
                                 "format": "pcm",
                             },
                         )
-                        self.progress_signal.emit(
-                            "playback_started",
-                            {
-                                "reply_id": self._reply_id,
-                                "trace_id": self._trace_id,
-                                "format": "pcm",
-                            },
-                        )
                     bytes_forwarded += len(chunk)
                     yield chunk
 
-            played_bytes = int(player.play_chunks(iter_chunks()) or 0)
+            def before_start():
+                if callable(self._playback_guard) and self._playback_guard(self._trace_id, self._reply_id) is False:
+                    return False
+                payload = {
+                    "reply_id": self._reply_id,
+                    "trace_id": self._trace_id,
+                    "format": "pcm",
+                }
+                self.progress_signal.emit("driver_started", payload)
+                self.progress_signal.emit("playback_started", payload)
+                return True
+
+            played_bytes = int(player.play_chunks(iter_chunks(), before_start=before_start) or 0)
             if bytes_forwarded <= 0 and played_bytes <= 0:
                 return False, "VoAI PCM 回傳空音訊。"
 
@@ -171,6 +186,19 @@ class VoAIStreamingTTSWorker(QThread):
                     "text": self._text,
                     "bytes_forwarded": bytes_forwarded or played_bytes,
                     "format": "pcm",
+                },
+            )
+            return True, ""
+        except PlaybackStartSuppressed:
+            self.finished_signal.emit(
+                False,
+                "VoAI PCM 起播前已被同步策略抑制。",
+                {
+                    "reply_id": self._reply_id,
+                    "trace_id": self._trace_id,
+                    "text": self._text,
+                    "format": "pcm",
+                    "suppressed": True,
                 },
             )
             return True, ""
@@ -204,13 +232,13 @@ class VoAIStreamingTTSWorker(QThread):
                 self.finished_signal.emit(
                     False,
                     f"VoAI 回傳非音訊格式：{content_type}",
-                    None,
+                    self._build_result_payload(format="mp3"),
                 )
                 return
 
             audio_bytes = response.content
             if not audio_bytes:
-                self.finished_signal.emit(False, "VoAI 回傳空音訊。", None)
+                self.finished_signal.emit(False, "VoAI 回傳空音訊。", self._build_result_payload(format="mp3"))
                 return
 
             self.progress_signal.emit(
@@ -219,6 +247,7 @@ class VoAIStreamingTTSWorker(QThread):
                     "reply_id": self._reply_id,
                     "trace_id": self._trace_id,
                     "bytes_received": len(audio_bytes),
+                    "format": "mp3",
                 },
             )
 
@@ -243,11 +272,23 @@ class VoAIStreamingTTSWorker(QThread):
                 body = exc.response.text[:200] if exc.response is not None else ""
             except Exception:
                 pass
-            self.finished_signal.emit(False, f"VoAI API 請求失敗 ({exc}): {body}", None)
+            self.finished_signal.emit(
+                False,
+                f"VoAI API 請求失敗 ({exc}): {body}",
+                self._build_result_payload(format="mp3"),
+            )
         except requests.RequestException as exc:
-            self.finished_signal.emit(False, f"VoAI 網路錯誤: {exc}", None)
+            self.finished_signal.emit(
+                False,
+                f"VoAI 網路錯誤: {exc}",
+                self._build_result_payload(format="mp3"),
+            )
         except Exception as exc:
-            self.finished_signal.emit(False, f"VoAI TTS 取得失敗: {exc}", None)
+            self.finished_signal.emit(
+                False,
+                f"VoAI TTS 取得失敗: {exc}",
+                self._build_result_payload(format="mp3"),
+            )
         finally:
             if response is not None:
                 response.close()

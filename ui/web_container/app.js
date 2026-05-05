@@ -20,6 +20,9 @@
     var motionLoopTimer = null;
     var motionLoopSource = null;
     var motionLoopActive = false;
+    var motionLoopGeneration = 0;
+    var mainVideoGeneration = 0;
+    var panelVideoGeneration = 0;
     var defaultStatusText = '房間待命中';
     var conversationTurns = new Map();
     var maxConversationTurns = 3;
@@ -104,6 +107,8 @@
             return;
         }
 
+        mainVideoGeneration += 1;
+        var requestGeneration = mainVideoGeneration;
         video.muted = true;
         video.defaultMuted = true;
         video.playsInline = true;
@@ -111,13 +116,20 @@
         video.setAttribute('muted', '');
         video.setAttribute('playsinline', '');
         video.loop = Boolean(shouldLoop);
+        video.dataset.requestGeneration = String(requestGeneration);
         video.src = source;
         video.load();
         var playPromise = video.play();
         if (playPromise !== undefined) {
             playPromise.then(function () {
+                if (requestGeneration !== mainVideoGeneration) {
+                    return;
+                }
                 console.log('[JS] 影片開始播放:', source);
             }).catch(function (error) {
+                if (requestGeneration !== mainVideoGeneration) {
+                    return;
+                }
                 console.error('[JS] 播放被 Chromium 阻擋, Reason:', error.name, error.message);
             });
         }
@@ -193,16 +205,25 @@
         targetVideo.setAttribute('playsinline', '');
         targetVideo.loop = false;
 
+        mainVideoGeneration += 1;
+        var requestGeneration = mainVideoGeneration;
         console.log('[JS] 準備切換動作:', source);
         targetVideo.pause();
+        targetVideo.dataset.requestGeneration = String(requestGeneration);
         targetVideo.src = source;
         targetVideo.load();
 
         var playPromise = targetVideo.play();
         if (playPromise !== undefined) {
             playPromise.then(function () {
+                if (requestGeneration !== mainVideoGeneration) {
+                    return;
+                }
                 console.log('[JS] 動作播放成功:', source);
             }).catch(function (error) {
+                if (requestGeneration !== mainVideoGeneration) {
+                    return;
+                }
                 console.error('[JS ERROR] 動作切換失敗:', error.name, error.message);
             });
         }
@@ -313,12 +334,18 @@
         if (!source || !panelVideo) {
             return;
         }
+        panelVideoGeneration += 1;
+        var requestGeneration = panelVideoGeneration;
         panelVideo.muted = (muted !== false);
         panelVideo.loop = (shouldLoop === true);
+        panelVideo.dataset.requestGeneration = String(requestGeneration);
         panelVideo.src = source;
         panelVideo.load();
         panelVideo.style.display = 'block';
         panelVideo.play().catch(function (err) {
+            if (requestGeneration !== panelVideoGeneration) {
+                return;
+            }
             console.warn('[ECHOES] panel video 播放失敗:', err.message);
         });
     };
@@ -327,6 +354,7 @@
         if (!panelVideo) {
             return;
         }
+        panelVideoGeneration += 1;
         panelVideo.pause();
         panelVideo.removeAttribute('src');
         panelVideo.load();
@@ -336,10 +364,15 @@
     window.startMotionLoop = function (source, intervalMs) {
         window.stopMotionLoop();
         if (!source) { return; }
+        motionLoopGeneration += 1;
+        var loopGeneration = motionLoopGeneration;
         motionLoopSource = source;
         motionLoopActive = true;
         window.playTemporaryVideo(source);
         motionLoopTimer = setInterval(function () {
+            if (loopGeneration !== motionLoopGeneration) {
+                return;
+            }
             if (motionLoopActive && motionLoopSource && (video.ended || video.paused)) {
                 window.playTemporaryVideo(motionLoopSource);
             }
@@ -348,6 +381,7 @@
     };
 
     window.stopMotionLoop = function () {
+        motionLoopGeneration += 1;
         if (motionLoopTimer) {
             clearInterval(motionLoopTimer);
             motionLoopTimer = null;

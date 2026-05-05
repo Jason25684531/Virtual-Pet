@@ -9,7 +9,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from PyQt5.QtCore import QUrl
+from PyQt5.QtCore import QCoreApplication, QUrl
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -227,11 +227,78 @@ class _ManualQueuedTTSWorker:
         )
 
     def complete(self):
+        self.progress_signal.emit(
+            "driver_started",
+            {
+                "reply_id": self.reply_id,
+                "trace_id": self.trace_id,
+            },
+        )
         payload = {
             "reply_id": self.reply_id,
             "trace_id": self.trace_id,
             "text": self.text,
         }
+        self.finished_signal.emit(True, "語音生成完成。", payload)
+        self.finished.emit()
+
+    def deleteLater(self):
+        return None
+
+
+class _GuardedQueuedTTSWorker:
+    instances: list["_GuardedQueuedTTSWorker"] = []
+
+    def __init__(
+        self,
+        text: str,
+        reply_id: str | None = None,
+        trace_id: str | None = None,
+        voice_id: str | None = None,
+        playback_guard=None,
+        parent=None,
+    ):
+        del parent, voice_id
+        self.text = text
+        self.reply_id = reply_id or "guarded-reply"
+        self.trace_id = trace_id or ""
+        self.playback_guard = playback_guard
+        self.finished_signal = _DebugSignal()
+        self.progress_signal = _DebugSignal()
+        self.audio_ready_signal = _DebugSignal()
+        self.finished = _DebugSignal()
+        self.started = False
+        _GuardedQueuedTTSWorker.instances.append(self)
+
+    def start(self):
+        self.started = True
+        self.progress_signal.emit(
+            "stream_started",
+            {
+                "reply_id": self.reply_id,
+                "trace_id": self.trace_id,
+                "bytes_forwarded": len(self.text.encode("utf-8")),
+            },
+        )
+
+    def complete(self):
+        payload = {
+            "reply_id": self.reply_id,
+            "trace_id": self.trace_id,
+            "text": self.text,
+        }
+        if callable(self.playback_guard) and self.playback_guard(self.trace_id, self.reply_id) is False:
+            payload["suppressed"] = True
+            self.finished_signal.emit(False, "因 timeout_promoted 抑制晚到音訊。", payload)
+            self.finished.emit()
+            return
+        self.progress_signal.emit(
+            "driver_started",
+            {
+                "reply_id": self.reply_id,
+                "trace_id": self.trace_id,
+            },
+        )
         self.finished_signal.emit(True, "語音生成完成。", payload)
         self.finished.emit()
 
@@ -276,6 +343,13 @@ class _ImmediateTTSWorker:
                 "reply_id": self._reply_id,
                 "trace_id": self._trace_id,
                 "bytes_forwarded": len(self._text.encode("utf-8")),
+            },
+        )
+        self.progress_signal.emit(
+            "driver_started",
+            {
+                "reply_id": self._reply_id,
+                "trace_id": self._trace_id,
             },
         )
         payload = {
@@ -385,8 +459,13 @@ def run_streamed_action_first_debug_probe() -> dict[str, object]:
 
 
 class ActionPlaybackTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._app = QCoreApplication.instance() or QCoreApplication([])
+
     def setUp(self):
         _ManualQueuedTTSWorker.instances.clear()
+        _GuardedQueuedTTSWorker.instances.clear()
 
     def test_missing_motion_falls_back_to_idle_with_warning(self):
         with tempfile.TemporaryDirectory(prefix="echoes-action-fallback-") as temp_dir:
@@ -447,7 +526,7 @@ class ActionPlaybackTests(unittest.TestCase):
         outputs.extend(parser.feed("still going."))
         outputs.extend(parser.flush())
 
-        self.assertEqual(outputs, ["[ACTION:listen]", "Hi, next line still going."])
+        self.assertEqual(outputs, ["[ACTION:listen]", "Hi, next line", "still going."])
 
     def test_dispatcher_accepts_alias_action_name(self):
         with tempfile.TemporaryDirectory(prefix="echoes-action-alias-") as temp_dir:
@@ -580,6 +659,52 @@ class ActionPlaybackTests(unittest.TestCase):
 
             self.assertEqual(len(_ManualQueuedTTSWorker.instances), 2)
             self.assertTrue(_ManualQueuedTTSWorker.instances[1].started)
+
+    def test_timeout_promoted_action_suppresses_late_audio_and_duplicate_motion(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-timeout-") as temp_dir:
+            listen_path = Path(temp_dir) / "listen.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            listen_path.write_bytes(b"listen")
+            idle_path.write_bytes(b"idle")
+
+            tracker = InteractionLatencyTracker()
+            trace_id = tracker.begin_interaction("test", "晚到語音")
+            tracker.mark_brain_started(trace_id)
+            tracker.mark_fragment_emitted(trace_id, "[ACTION:listen]")
+
+            window = _DispatchProbeWindow(temp_dir)
+            dispatcher = ActionDispatcher(
+                window,
+                library=_NoopLibrary(),
+                motion_path_resolver=lambda motion_key: str(
+                    {"listen": listen_path, "idle": idle_path}.get(motion_key, "")
+                ),
+                tts_worker_factory=_GuardedQueuedTTSWorker,
+                latency_tracker=tracker,
+            )
+
+            self.assertTrue(dispatcher.dispatch("[ACTION:listen] 晚一點才開口。", trace_id=trace_id))
+            tracker.mark_brain_completed(trace_id)
+            dispatcher._promote_pending_action(trace_id)
+
+            self.assertEqual(len(window.played_assets), 1)
+            self.assertEqual(window.played_assets[0][0], "listen")
+            snapshot = tracker.snapshot(trace_id)
+            self.assertIsNotNone(snapshot)
+            self.assertTrue(snapshot["timeout_promoted"])
+            self.assertEqual(len(_GuardedQueuedTTSWorker.instances), 1)
+
+            _GuardedQueuedTTSWorker.instances[0].complete()
+
+            completed = tracker.get_completed_trace(trace_id)
+            self.assertIsNotNone(completed)
+            assert completed is not None
+            self.assertTrue(completed["timeout_promoted"])
+            self.assertEqual(completed["tts_failures"], 1)
+            self.assertEqual(len(window.played_assets), 1)
+            self.assertNotIn("first_driver_started", " ".join(completed["milestones"]))
+
+            dispatcher.shutdown()
 
 
 if __name__ == "__main__":

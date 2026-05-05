@@ -18,6 +18,10 @@ except ModuleNotFoundError:  # pragma: no cover - depends on runtime environment
     pygame = None  # type: ignore[assignment]
 
 
+class PlaybackStartSuppressed(RuntimeError):
+    """Raised when a queued reply is intentionally suppressed before playback starts."""
+
+
 class PygameInMemoryAudioPlayer:
     """Play a complete MP3 buffer from memory through pygame."""
 
@@ -28,7 +32,7 @@ class PygameInMemoryAudioPlayer:
         self._poll_interval = poll_interval
         self._initialized = False
 
-    def play(self, audio_buffer: io.BytesIO):
+    def play(self, audio_buffer: io.BytesIO, before_start=None):
         if self._mixer is None:
             raise RuntimeError("pygame 尚未安裝，無法播放記憶體音訊。")
 
@@ -45,6 +49,8 @@ class PygameInMemoryAudioPlayer:
                 pass
 
             self._mixer.music.load(audio_buffer, "mp3")
+            if callable(before_start) and before_start() is False:
+                raise PlaybackStartSuppressed("記憶體音訊在起播前被抑制。")
             self._mixer.music.play()
             while self._mixer.music.get_busy():
                 time.sleep(self._poll_interval)
@@ -63,7 +69,7 @@ class PygameInMemoryAudioPlayer:
             frequency=int(os.getenv("PYGAME_MIXER_FREQUENCY", "22050")),
             size=int(os.getenv("PYGAME_MIXER_SIZE", "-16")),
             channels=int(os.getenv("PYGAME_MIXER_CHANNELS", "2")),
-            buffer=int(os.getenv("PYGAME_MIXER_BUFFER", "4096")),
+            buffer=int(os.getenv("PYGAME_MIXER_BUFFER", "512")),
         )
         self._initialized = True
 
@@ -86,7 +92,7 @@ class FfplayPcmAudioPlayer:
     def is_available(self) -> bool:
         return bool(self._ffplay_path)
 
-    def play_chunks(self, chunks: Iterable[bytes]) -> int:
+    def play_chunks(self, chunks: Iterable[bytes], before_start=None) -> int:
         if not self._ffplay_path:
             raise RuntimeError("找不到 ffplay，無法播放 PCM 串流。")
 
@@ -114,9 +120,14 @@ class FfplayPcmAudioPlayer:
         try:
             if process.stdin is None:
                 raise RuntimeError("ffplay stdin 不可用。")
+            started = False
             for chunk in chunks:
                 if not chunk:
                     continue
+                if not started:
+                    started = True
+                    if callable(before_start) and before_start() is False:
+                        raise PlaybackStartSuppressed("PCM 音訊在起播前被抑制。")
                 process.stdin.write(chunk)
                 process.stdin.flush()
                 bytes_written += len(chunk)

@@ -50,8 +50,15 @@ class _FakePcmPlayer:
     def is_available(self):
         return self.available
 
-    def play_chunks(self, chunks):
-        data = b"".join(chunks)
+    def play_chunks(self, chunks, before_start=None):
+        chunks = iter(chunks)
+        try:
+            first_chunk = next(chunks)
+        except StopIteration:
+            first_chunk = b""
+        if first_chunk and callable(before_start):
+            before_start()
+        data = first_chunk + b"".join(chunks)
         self.played += data
         return len(data)
 
@@ -115,7 +122,8 @@ class VoAIStreamingTests(unittest.TestCase):
         self.assertEqual(calls[0]["headers"]["x-sample-rate"], "32000")
         self.assertTrue(calls[0]["stream"])
         self.assertEqual(progress.events[0][0], "stream_started")
-        self.assertEqual(progress.events[1][0], "playback_started")
+        self.assertEqual(progress.events[1][0], "driver_started")
+        self.assertEqual(progress.events[2][0], "playback_started")
         self.assertTrue(finished.events[0][0])
         self.assertEqual(finished.events[0][2]["format"], "pcm")
 

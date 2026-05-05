@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import queue
 import re
+import inspect
 from uuid import uuid4
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -39,6 +40,15 @@ class ActionBinding:
     motion_key: str
     status_label: str
     handler_name: str
+
+
+@dataclass
+class PendingActionState:
+    trace_id: str
+    binding: ActionBinding
+    status: str = "pending"
+    has_tts: bool = False
+    timeout_timer: QTimer | None = None
 
 
 class ActionDispatcher(QObject):
@@ -74,6 +84,11 @@ class ActionDispatcher(QObject):
         self._latency_tracker = latency_tracker
         self._active_tts_worker: object | None = None
         self._pending_tts_chunks: "queue.Queue[tuple[str, str, str | None]]" = queue.Queue()
+        self._pending_actions: dict[str, PendingActionState] = {}
+        self._suppressed_traces: set[str] = set()
+        self._driver_started_replies: set[str] = set()
+        self._active_action_trace_id: str | None = None
+        self._action_sync_timeout_ms = max(500, int(getattr(config, "ACTION_SYNC_TIMEOUT_MS", 3500)))
         self._current_loop_action_key: str | None = None
         self._loop_action_tts_queued: bool = False
         self._loop_cleanup_timer: QTimer | None = None
@@ -82,7 +97,7 @@ class ActionDispatcher(QObject):
         self._wait_for_main_video_ended: bool = False
         # AudioStreamWorker：Consumer，持續從佇列取出 BytesIO 並播放
         self._audio_worker = AudioStreamWorker(parent=self)
-        self._audio_worker.playback_started.connect(self._on_audio_playback_started)
+        self._audio_worker.driver_started.connect(self._on_audio_driver_started)
         self._audio_worker.queue_drained.connect(self._on_audio_queue_drained)
         self._audio_worker.start()
         self._bindings = {
@@ -152,7 +167,7 @@ class ActionDispatcher(QObject):
 
     @property
     def has_active_motion(self) -> bool:
-        return self._current_loop_action_key is not None
+        return self._current_loop_action_key is not None or bool(self._pending_actions)
 
     def dispatch(
         self,
@@ -207,14 +222,19 @@ class ActionDispatcher(QObject):
         print(f"[ECHOES] Action tag 命中: {action_name} -> motion `{binding.motion_key}`")
         if self._latency_tracker is not None:
             self._latency_tracker.mark_action_dispatched(trace_id, action_name)
-        wait_for_main_video_ended = bool(action_name == "wave_response" and not display_message)
-        motion_found = self._play_binding_motion(
-            binding,
-            wait_for_main_video_ended=wait_for_main_video_ended,
-        )
-        if not motion_found:
-            print(f"[ECHOES] 警告: action {action_name} 缺少對應動作，改以安全狀態執行。")
-            self._window.restore_idle_video()
+        use_pending_sync = bool(trace_id)
+        if use_pending_sync:
+            self._start_pending_action(trace_id, binding)
+            motion_found = True
+        else:
+            wait_for_main_video_ended = bool(action_name == "wave_response" and not display_message)
+            motion_found = self._play_binding_motion(
+                binding,
+                wait_for_main_video_ended=wait_for_main_video_ended,
+            )
+            if not motion_found:
+                print(f"[ECHOES] 警告: action {action_name} 缺少對應動作，改以安全狀態執行。")
+                self._window.restore_idle_video()
 
         getattr(self, binding.handler_name)(binding, motion_found)
 
@@ -301,6 +321,80 @@ class ActionDispatcher(QObject):
     def _handle_motion_only(self, binding: ActionBinding, motion_found: bool):
         if not motion_found:
             self._window.restore_idle_video()
+
+    def _start_pending_action(self, trace_id: str | None, binding: ActionBinding):
+        normalized_trace_id = str(trace_id or "").strip()
+        if not normalized_trace_id:
+            return
+        self._clear_pending_action(normalized_trace_id)
+        self._suppressed_traces.discard(normalized_trace_id)
+        self._audio_worker.clear_suppressed_trace(normalized_trace_id)
+        if hasattr(self._window, "stop_motion_loop"):
+            self._window.stop_motion_loop()
+        self._window.restore_idle_video()
+        state = PendingActionState(
+            trace_id=normalized_trace_id,
+            binding=binding,
+        )
+        self._pending_actions[normalized_trace_id] = state
+        if QCoreApplication.instance() is None:
+            return
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda current_trace_id=normalized_trace_id: self._promote_pending_action(current_trace_id))
+        timer.start(self._action_sync_timeout_ms)
+        state.timeout_timer = timer
+
+    def _clear_pending_action(self, trace_id: str | None):
+        normalized_trace_id = str(trace_id or "").strip()
+        if not normalized_trace_id:
+            return
+        state = self._pending_actions.pop(normalized_trace_id, None)
+        if state is not None and state.timeout_timer is not None:
+            state.timeout_timer.stop()
+            state.timeout_timer = None
+
+    def _activate_pending_action(self, trace_id: str | None, promoted: bool = False) -> bool:
+        normalized_trace_id = str(trace_id or "").strip()
+        if not normalized_trace_id:
+            return False
+        state = self._pending_actions.get(normalized_trace_id)
+        if state is None:
+            return False
+        if state.timeout_timer is not None:
+            state.timeout_timer.stop()
+            state.timeout_timer = None
+        if state.status == "timeout_promoted" and not promoted:
+            return False
+        state.status = "timeout_promoted" if promoted else "synced"
+        self._active_action_trace_id = normalized_trace_id
+        motion_found = self._play_binding_motion(
+            state.binding,
+            wait_for_main_video_ended=bool(state.binding.name == "wave_response" and not state.has_tts),
+        )
+        if not motion_found:
+            print(f"[ECHOES] 警告: action {state.binding.name} 缺少對應動作，改以安全狀態執行。")
+            self._window.restore_idle_video()
+            self._clear_pending_action(normalized_trace_id)
+            return False
+        if state.has_tts:
+            self._loop_action_tts_queued = True
+        if promoted:
+            if self._latency_tracker is not None:
+                self._latency_tracker.mark_timeout_promoted(normalized_trace_id, state.binding.name)
+            self._suppressed_traces.add(normalized_trace_id)
+            self._audio_worker.suppress_trace(normalized_trace_id)
+            self._schedule_loop_cleanup(2200)
+        return True
+
+    def _promote_pending_action(self, trace_id: str | None):
+        normalized_trace_id = str(trace_id or "").strip()
+        if not normalized_trace_id:
+            return
+        state = self._pending_actions.get(normalized_trace_id)
+        if state is None or state.status != "pending":
+            return
+        self._activate_pending_action(normalized_trace_id, promoted=True)
 
     def _play_binding_motion(
         self,
@@ -451,12 +545,31 @@ class ActionDispatcher(QObject):
         if not speech_text:
             return
 
+        normalized_trace_id = str(trace_id or "").strip()
+        if normalized_trace_id in self._suppressed_traces:
+            reply_id = uuid4().hex
+            self._on_tts_finished(
+                reply_id,
+                False,
+                "因 timeout_promoted 已抑制後續句段。",
+                {
+                    "reply_id": reply_id,
+                    "trace_id": normalized_trace_id,
+                    "text": speech_text,
+                    "suppressed": True,
+                },
+            )
+            return
+
         if not callable(self._tts_worker_factory):
             print("[ECHOES] 警告: TTS worker factory 無效，已回退到 VoAIStreamingTTSWorker。")
             self._tts_worker_factory = VoAIStreamingTTSWorker
 
         reply_id = uuid4().hex
         self._pending_tts_chunks.put((reply_id, speech_text, trace_id))
+        pending_state = self._pending_actions.get(normalized_trace_id) if normalized_trace_id else None
+        if pending_state is not None:
+            pending_state.has_tts = True
         if self._current_loop_action_key is not None:
             self._loop_action_tts_queued = True
             if self._loop_cleanup_timer is not None:
@@ -479,17 +592,27 @@ class ActionDispatcher(QObject):
         else:
             voice_id = config.get_voice_id_for_character(current_character_id)
 
-        worker = self._tts_worker_factory(
-            text=speech_text,
-            reply_id=reply_id,
-            trace_id=trace_id,
-            voice_id=voice_id,
-            parent=self,
-        )
+        worker_kwargs = {
+            "text": speech_text,
+            "reply_id": reply_id,
+            "trace_id": trace_id,
+            "voice_id": voice_id,
+            "parent": self,
+        }
+        try:
+            signature = inspect.signature(self._tts_worker_factory)
+            if "playback_guard" in signature.parameters:
+                worker_kwargs["playback_guard"] = self._can_start_trace_audio
+        except (TypeError, ValueError):
+            pass
+
+        worker = self._tts_worker_factory(**worker_kwargs)
         self._active_tts_worker = worker
         self._workers.append(worker)
 
         def handle_audio_ready(audio_bytes, r_id: str, t_id: str):
+            if t_id and t_id in self._suppressed_traces:
+                return
             self._audio_worker.enqueue(audio_bytes, r_id, t_id)
 
         def handle_result(success: bool, result_message: str, payload: object, current_reply_id=reply_id):
@@ -564,18 +687,33 @@ class ActionDispatcher(QObject):
                 int(payload.get("bytes_forwarded", payload.get("bytes_received", 0)) or 0),
             )
             return
-        if event_name == "playback_started" and self._latency_tracker is not None:
-            self._latency_tracker.mark_tts_playback_started(
-                payload.get("trace_id"),
+        if event_name in {"driver_started", "playback_started"}:
+            self._on_driver_started(
                 str(payload.get("reply_id", "")),
+                payload.get("trace_id"),
             )
 
-    def _on_audio_playback_started(self, reply_id: str, trace_id: str):
+    def _on_audio_driver_started(self, reply_id: str, trace_id: str):
+        self._on_driver_started(reply_id, trace_id)
+
+    def _on_driver_started(self, reply_id: str, trace_id: str | None):
+        if not reply_id:
+            return
+        self._driver_started_replies.add(reply_id)
+        normalized_trace_id = str(trace_id or "").strip()
         if self._latency_tracker is not None:
-            self._latency_tracker.mark_tts_playback_started(trace_id, reply_id)
+            self._latency_tracker.mark_driver_started(normalized_trace_id, reply_id)
+        if normalized_trace_id in self._suppressed_traces:
+            return
+        self._activate_pending_action(normalized_trace_id, promoted=False)
 
     def _on_tts_finished(self, reply_id: str, success: bool, message: str, payload: object):
         trace_id = payload.get("trace_id") if isinstance(payload, dict) else None
+        normalized_trace_id = str(trace_id or "").strip()
+        if normalized_trace_id in self._suppressed_traces and reply_id not in self._driver_started_replies:
+            success = False
+            if "抑制" not in message:
+                message = "因 timeout_promoted 抑制晚到音訊。"
         if self._latency_tracker is not None:
             self._latency_tracker.mark_tts_finished(trace_id, reply_id, success, message)
         if not success:
@@ -584,7 +722,15 @@ class ActionDispatcher(QObject):
 
         print(f"[ECHOES] 提示: 語音播放完成。{message}")
 
+    def _can_start_trace_audio(self, trace_id: str | None, _reply_id: str | None = None) -> bool:
+        normalized_trace_id = str(trace_id or "").strip()
+        return normalized_trace_id not in self._suppressed_traces
+
     def shutdown(self, wait_ms: int = 5000):
+        for trace_id in list(self._pending_actions):
+            self._clear_pending_action(trace_id)
+        self._pending_actions.clear()
+        self._suppressed_traces.clear()
         while not self._pending_tts_chunks.empty():
             try:
                 self._pending_tts_chunks.get_nowait()
@@ -679,6 +825,11 @@ class ActionDispatcher(QObject):
         self._wait_for_main_video_ended = False
         self._panel_video_started = False
         self._panel_video_ended = False
+        if self._active_action_trace_id:
+            self._clear_pending_action(self._active_action_trace_id)
+            self._suppressed_traces.discard(self._active_action_trace_id)
+            self._audio_worker.clear_suppressed_trace(self._active_action_trace_id)
+            self._active_action_trace_id = None
         if hasattr(self._window, "stop_motion_loop"):
             self._window.stop_motion_loop()
         if hasattr(self._window, "clear_panel_video"):

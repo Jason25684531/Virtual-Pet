@@ -88,10 +88,18 @@ class BrainStreamingTests(unittest.TestCase):
         )
         emitted: list[str] = []
         traced_fragments: list[tuple[str, str | None]] = []
+        streamed_tokens: list[tuple[str, str | None]] = []
+        sentence_ready: list[tuple[str, str | None]] = []
         speech_ready: list[tuple[str, str | None]] = []
         warnings: list[str] = []
         engine.message_received.connect(emitted.append)
+        engine.token_streamed.connect(lambda token, current_trace_id: streamed_tokens.append((token, current_trace_id)))
         engine.streamed_fragment.connect(lambda fragment, trace_id: traced_fragments.append((fragment, trace_id)))
+        def handle_sentence_ready(text, current_trace_id):
+            sentence_ready.append((text, current_trace_id))
+            self._simulate_tts_completion(engine, current_trace_id, text)
+
+        engine.sentence_ready.connect(handle_sentence_ready)
         def handle_speech_ready(text, current_trace_id):
             speech_ready.append((text, current_trace_id))
             self._simulate_tts_completion(engine, current_trace_id, text)
@@ -115,10 +123,12 @@ class BrainStreamingTests(unittest.TestCase):
                 ("一起加油", trace_id),
             ],
         )
+        self.assertEqual(streamed_tokens, [("哈囉，", trace_id), ("今天天氣很好。", trace_id), ("一起加油", trace_id)])
         self.assertEqual(
-            speech_ready,
-            [("哈囉，今天天氣很好。一起加油", trace_id)],
+            sentence_ready,
+            [("哈囉，今天天氣很好。", trace_id), ("一起加油", trace_id)],
         )
+        self.assertEqual(speech_ready, [])
         self.assertEqual(len(engine._dummy_memory.saved_contexts), 1)
         saved_inputs, saved_outputs = engine._dummy_memory.saved_contexts[0]
         self.assertEqual(saved_inputs, {"input": "測試輸入"})
