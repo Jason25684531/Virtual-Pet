@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -57,6 +58,38 @@ class _DispatchProbeWindow:
 
     def stop_music(self):
         return None
+
+
+class _LoopActionProbeWindow(_DispatchProbeWindow):
+    def __init__(self, demo_dir: str):
+        super().__init__(demo_dir)
+        self.motion_loop_calls: list[tuple[str, int]] = []
+        self.stop_motion_loop_calls = 0
+        self.panel_calls: list[tuple[str, bool]] = []
+        self.clear_panel_calls = 0
+
+    def start_motion_loop(self, path: str, interval_ms: int = 1000):
+        self.motion_loop_calls.append((path, interval_ms))
+
+    def stop_motion_loop(self):
+        self.stop_motion_loop_calls += 1
+
+    def play_panel_video(self, path: str, muted: bool = True):
+        self.panel_calls.append((path, muted))
+
+    def clear_panel_video(self):
+        self.clear_panel_calls += 1
+
+
+class _PanelLibrary(_NoopLibrary):
+    def __init__(self, panel_paths: dict[str, str]):
+        self._panel_paths = dict(panel_paths)
+
+    def get_current_character_id(self):
+        return "probe-character"
+
+    def get_panel_motion_path(self, _character_id: str, action_name: str):
+        return self._panel_paths.get(action_name)
 
 
 class _DebugProbeWindow:
@@ -381,6 +414,111 @@ class _ImmediateServiceWorker:
         return None
 
 
+class _FakePcmSessionPlayer:
+    def __init__(self):
+        self.chunks: list[bytes] = []
+
+    def play_chunks(self, chunks, before_start=None):
+        started = False
+        total = 0
+        for chunk in chunks:
+            if not chunk:
+                continue
+            if not started:
+                started = True
+                if callable(before_start):
+                    before_start()
+            payload = bytes(chunk)
+            self.chunks.append(payload)
+            total += len(payload)
+        return total
+
+
+class _ManualPcmSessionWorker:
+    instances: list["_ManualPcmSessionWorker"] = []
+
+    def __init__(
+        self,
+        text: str,
+        reply_id: str | None = None,
+        trace_id: str | None = None,
+        voice_id: str | None = None,
+        pcm_stream_sink=None,
+        parent=None,
+    ):
+        del parent, voice_id
+        self.text = text
+        self.reply_id = reply_id or "pcm-reply"
+        self.trace_id = trace_id or ""
+        self.pcm_stream_sink = pcm_stream_sink
+        self.finished_signal = _DebugSignal()
+        self.progress_signal = _DebugSignal()
+        self.audio_ready_signal = _DebugSignal()
+        self.finished = _DebugSignal()
+        self.started = False
+        _ManualPcmSessionWorker.instances.append(self)
+
+    def start(self):
+        self.started = True
+        payload = self.text.encode("utf-8")
+        self.progress_signal.emit(
+            "stream_started",
+            {
+                "reply_id": self.reply_id,
+                "trace_id": self.trace_id,
+                "bytes_forwarded": len(payload),
+                "format": "pcm",
+                "transport": "http",
+            },
+        )
+        midpoint = max(1, len(payload) // 2)
+        first = payload[:midpoint]
+        second = payload[midpoint:]
+        if self.pcm_stream_sink is not None:
+            self.pcm_stream_sink.enqueue_pcm_chunk(first, self.reply_id, self.trace_id)
+            if second:
+                self.pcm_stream_sink.enqueue_pcm_chunk(second, self.reply_id, self.trace_id)
+            self.pcm_stream_sink.finish_pcm_segment(self.reply_id, self.trace_id)
+        result_payload = {
+            "reply_id": self.reply_id,
+            "trace_id": self.trace_id,
+            "text": self.text,
+            "format": "pcm",
+            "transport": "http",
+            "queued_playback": True,
+            "pcm_stream_session": True,
+        }
+        self.finished_signal.emit(True, "PCM handoff 完成。", result_payload)
+        self.finished.emit()
+
+    def deleteLater(self):
+        return None
+
+
+class _ManualServiceWorker:
+    instances: list["_ManualServiceWorker"] = []
+
+    def __init__(self, success: bool = True, message: str = "", payload: object | None = None, parent=None):
+        del parent
+        self._success = success
+        self._message = message
+        self._payload = payload
+        self.finished_signal = _DebugSignal()
+        self.finished = _DebugSignal()
+        self.started = False
+        _ManualServiceWorker.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def complete(self):
+        self.finished_signal.emit(self._success, self._message, self._payload)
+        self.finished.emit()
+
+    def deleteLater(self):
+        return None
+
+
 class _StickyFallbackTTSWorker:
     preferred_providers: list[str] = []
     started_count = 0
@@ -633,6 +771,7 @@ class ActionPlaybackTests(unittest.TestCase):
     def setUp(self):
         _ManualQueuedTTSWorker.instances.clear()
         _GuardedQueuedTTSWorker.instances.clear()
+        _ManualServiceWorker.instances.clear()
         _StickyFallbackTTSWorker.preferred_providers.clear()
         _StickyFallbackTTSWorker.started_count = 0
 
@@ -909,6 +1048,126 @@ class ActionPlaybackTests(unittest.TestCase):
             assert completed is not None
             self.assertTrue(completed["fallback_triggered"])
             self.assertEqual(completed["selected_tts_provider"], "elevenlabs")
+
+            dispatcher.shutdown()
+
+    def test_dispatcher_reuses_single_driver_started_for_pcm_session_trace(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-pcm-session-") as temp_dir:
+            listen_path = Path(temp_dir) / "listen.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            listen_path.write_bytes(b"listen")
+            idle_path.write_bytes(b"idle")
+
+            tracker = InteractionLatencyTracker()
+            trace_id = tracker.begin_interaction("test", "連續 PCM")
+            tracker.mark_brain_started(trace_id)
+            tracker.mark_fragment_emitted(trace_id, "[ACTION:listen]")
+
+            window = _DispatchProbeWindow(temp_dir)
+            dispatcher = ActionDispatcher(
+                window,
+                library=_NoopLibrary(),
+                motion_path_resolver=lambda motion_key: str(
+                    {"listen": listen_path, "idle": idle_path}.get(motion_key, "")
+                ),
+                tts_worker_factory=_ManualPcmSessionWorker,
+                latency_tracker=tracker,
+            )
+            fake_pcm_player = _FakePcmSessionPlayer()
+            dispatcher._audio_worker._pcm_player_factory = lambda sample_rate, channels: fake_pcm_player
+
+            self.assertTrue(dispatcher.dispatch("[ACTION:listen] 第一段比較長的測試語音。", trace_id=trace_id))
+            self.assertTrue(dispatcher.dispatch("第二段也接續進來，不要重開 driver。", trace_id=trace_id))
+            tracker.mark_brain_completed(trace_id)
+            dispatcher.complete_tts_trace(trace_id)
+
+            deadline = time.time() + 2.0
+            completed = None
+            while time.time() < deadline:
+                QCoreApplication.processEvents()
+                completed = tracker.get_completed_trace(trace_id)
+                if completed is not None and not dispatcher._audio_worker.is_busy():
+                    break
+                time.sleep(0.02)
+
+            self.assertEqual(len(dispatcher._driver_started_replies), 1)
+            self.assertEqual(len(window.played_assets), 1)
+            self.assertGreaterEqual(len(fake_pcm_player.chunks), 2)
+            self.assertIsNotNone(completed)
+            assert completed is not None
+            self.assertEqual(completed["tts_failures"], 0)
+            self.assertIn("first_driver_started", " ".join(completed["milestones"]))
+            self.assertFalse(dispatcher._audio_worker.is_busy())
+
+            dispatcher.shutdown()
+
+    def test_duplicate_report_news_dispatch_does_not_restart_pending_action(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-report-news-reentry-") as temp_dir:
+            report_news_path = Path(temp_dir) / "report_news.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            panel_path = Path(temp_dir) / "News_Panel.webm"
+            report_news_path.write_bytes(b"news")
+            idle_path.write_bytes(b"idle")
+            panel_path.write_bytes(b"panel")
+
+            window = _LoopActionProbeWindow(temp_dir)
+            library = _PanelLibrary({"report_news": str(panel_path)})
+            dispatcher = ActionDispatcher(
+                window,
+                library=library,
+                news_worker_factory=lambda parent=None: _ManualServiceWorker(
+                    success=True,
+                    message="新聞已完成",
+                    payload={"headline": "測試頭條"},
+                    parent=parent,
+                ),
+                motion_path_resolver=lambda motion_key: str(
+                    {"report_news": report_news_path, "idle": idle_path}.get(motion_key, "")
+                ),
+                tts_enabled=False,
+            )
+
+            self.assertTrue(dispatcher.dispatch("[ACTION:report_news]", trace_id="trace-news"))
+            self.assertTrue(dispatcher.dispatch("[ACTION:report_news]", trace_id="trace-news"))
+
+            self.assertEqual(len(_ManualServiceWorker.instances), 1)
+            self.assertEqual(len(window.panel_calls), 1)
+            self.assertNotIn("trace-news", dispatcher._suppressed_traces)
+
+            dispatcher.shutdown()
+
+    def test_duplicate_play_music_dispatch_does_not_restart_active_loop_action(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-play-music-reentry-") as temp_dir:
+            play_music_path = Path(temp_dir) / "play_music.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            panel_path = Path(temp_dir) / "Play_Music_Panel.webm"
+            play_music_path.write_bytes(b"music")
+            idle_path.write_bytes(b"idle")
+            panel_path.write_bytes(b"panel")
+
+            window = _LoopActionProbeWindow(temp_dir)
+            library = _PanelLibrary({"play_music": str(panel_path)})
+            dispatcher = ActionDispatcher(
+                window,
+                library=library,
+                music_worker_factory=lambda parent=None: _ManualServiceWorker(
+                    success=True,
+                    message="音樂已完成",
+                    payload={"path": "song.mp3", "title": "Test Song"},
+                    parent=parent,
+                ),
+                motion_path_resolver=lambda motion_key: str(
+                    {"play_music": play_music_path, "idle": idle_path}.get(motion_key, "")
+                ),
+                tts_enabled=False,
+            )
+
+            self.assertTrue(dispatcher.dispatch("[ACTION:play_music]"))
+            self.assertTrue(dispatcher.dispatch("[ACTION:play_music]"))
+
+            self.assertEqual(len(_ManualServiceWorker.instances), 1)
+            self.assertEqual(len(window.motion_loop_calls), 1)
+            self.assertEqual(len(window.panel_calls), 1)
 
             dispatcher.shutdown()
 

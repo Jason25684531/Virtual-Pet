@@ -125,13 +125,15 @@ class SoulLoader:
         return SystemMessage(content=content)
 
 
-SENTENCE_BOUNDARY_PATTERN = re.compile(r"[。！？.!?]")
-EXTENDED_SENTENCE_BOUNDARY_PATTERN = re.compile(r"[。！？.!?;；\n]")
+SENTENCE_BOUNDARY_PATTERN = re.compile(r"[。！？.!?\n]")
 ACTION_PREFIX_PATTERN = re.compile(
     r"^\s*(\[\s*ACTION\s*:\s*(?P<action>[A-Za-z0-9_-]+)\s*\])",
     re.IGNORECASE,
 )
-SHORT_SENTENCE_MIN_CHARS = max(1, int(os.getenv("BRAIN_SHORT_SENTENCE_MIN_CHARS", "5")))
+SHORT_SENTENCE_MIN_CHARS = max(
+    1,
+    int(os.getenv("BRAIN_SENTENCE_MIN_CHARS", os.getenv("BRAIN_SHORT_SENTENCE_MIN_CHARS", "15"))),
+)
 
 
 class _TokenVisibilityFilter:
@@ -276,23 +278,32 @@ class StreamedReplyParser:
         self._text_buffer += text
 
         while True:
-            match = EXTENDED_SENTENCE_BOUNDARY_PATTERN.search(self._text_buffer)
-            if not match:
+            selected_end_index = None
+            selected_chunk = ""
+
+            for match in SENTENCE_BOUNDARY_PATTERN.finditer(self._text_buffer):
+                end_index = match.end()
+                chunk = sanitize_tts_text(self._text_buffer[:end_index])
+                if not chunk:
+                    selected_end_index = end_index
+                    selected_chunk = ""
+                    break
+                is_action_leading_first_sentence = self._action_emitted and self._sentence_count == 0
+                if not is_action_leading_first_sentence and len(chunk) < SHORT_SENTENCE_MIN_CHARS:
+                    continue
+                selected_end_index = end_index
+                selected_chunk = chunk
                 break
 
-            end_index = match.end()
-            chunk = sanitize_tts_text(self._text_buffer[:end_index])
-            if not chunk:
-                self._text_buffer = self._text_buffer[end_index:]
-                self._text_buffer = self._text_buffer.lstrip()
-                continue
-            is_first_sentence = self._sentence_count == 0
-            if not is_first_sentence and len(chunk) < SHORT_SENTENCE_MIN_CHARS:
+            if selected_end_index is None:
                 break
-            self._text_buffer = self._text_buffer[end_index:]
+
+            self._text_buffer = self._text_buffer[selected_end_index:]
             self._text_buffer = self._text_buffer.lstrip()
-            outputs.append(chunk)
-            self._emitted_fragments.append(chunk)
+            if not selected_chunk:
+                continue
+            outputs.append(selected_chunk)
+            self._emitted_fragments.append(selected_chunk)
             self._sentence_count += 1
 
         return outputs
@@ -353,6 +364,7 @@ class BrainEngine(QThread):
     streamed_fragment = pyqtSignal(str, object)
     sentence_ready = pyqtSignal(str, object)
     speech_ready = pyqtSignal(str, object)
+    brain_completed = pyqtSignal(object)
     warning_emitted = pyqtSignal(str)
     profile_changed = pyqtSignal(str)
 
@@ -448,6 +460,7 @@ class BrainEngine(QThread):
             if self._latency_tracker is not None:
                 self._latency_tracker.mark_failure(trace_id, "brain", warning)
             self._emit_fragment(f"[ACTION:listen] {warning}", trace_id)
+            self.brain_completed.emit(trace_id)
             if self._latency_tracker is not None:
                 self._latency_tracker.mark_brain_completed(trace_id)
             return
@@ -511,6 +524,7 @@ class BrainEngine(QThread):
                 if self._latency_tracker is not None:
                     self._latency_tracker.mark_tts_expected(trace_id, fallback)
                 self.speech_ready.emit(fallback, trace_id)
+            self.brain_completed.emit(trace_id)
             if self._latency_tracker is not None:
                 self._latency_tracker.mark_brain_completed(trace_id)
         except Exception as exc:
@@ -524,6 +538,7 @@ class BrainEngine(QThread):
             if self._latency_tracker is not None:
                 self._latency_tracker.mark_tts_expected(trace_id, fallback)
             self.speech_ready.emit(fallback, trace_id)
+            self.brain_completed.emit(trace_id)
             if self._latency_tracker is not None:
                 self._latency_tracker.mark_brain_completed(trace_id)
             return

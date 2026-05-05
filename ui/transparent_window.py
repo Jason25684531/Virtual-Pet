@@ -618,6 +618,9 @@ class TransparentWindow(QMainWindow):
     def speak_text(self, message: str, trace_id: str | None = None, has_action: bool = False):
         self._action_dispatcher.speak_text(message, trace_id=trace_id, has_action=has_action)
 
+    def complete_tts_trace(self, trace_id: str | None):
+        self._action_dispatcher.complete_tts_trace(trace_id)
+
     def begin_conversation_turn(self, trace_id: str, source_label: str, user_text: str):
         self._run_javascript("beginConversationTurn", trace_id, source_label, user_text)
 

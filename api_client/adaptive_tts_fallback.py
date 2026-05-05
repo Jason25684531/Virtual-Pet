@@ -4,6 +4,7 @@ Adaptive multi-provider TTS orchestration for ECHOES.
 
 from __future__ import annotations
 
+import inspect
 from typing import Callable
 
 from PyQt5.QtCore import QObject, pyqtSignal
@@ -37,6 +38,7 @@ class AdaptiveTTSFallbackWorker(QObject):
         fallback_voice_id: str | None = None,
         preferred_provider: str | None = None,
         playback_guard=None,
+        pcm_stream_sink=None,
         voai_worker_factory: Callable[..., object] | None = None,
         elevenlabs_worker_factory: Callable[..., object] | None = None,
         parent=None,
@@ -52,6 +54,7 @@ class AdaptiveTTSFallbackWorker(QObject):
         )
         self._preferred_provider = _normalize_provider_name(preferred_provider) or "voai"
         self._playback_guard = playback_guard
+        self._pcm_stream_sink = pcm_stream_sink
         self._voai_worker_factory = voai_worker_factory or VoAIStreamingTTSWorker
         self._elevenlabs_worker_factory = elevenlabs_worker_factory or ElevenLabsStreamingTTSWorker
         self._running = False
@@ -110,15 +113,22 @@ class AdaptiveTTSFallbackWorker(QObject):
                 parent=self,
             )
         else:
-            worker = self._voai_worker_factory(
-                text=self._text,
-                reply_id=self._reply_id,
-                trace_id=self._trace_id,
-                voice_id=self._character_id,
-                playback_guard=self._playback_guard,
-                adaptive_fallback_enabled=True,
-                parent=self,
-            )
+            worker_kwargs = {
+                "text": self._text,
+                "reply_id": self._reply_id,
+                "trace_id": self._trace_id,
+                "voice_id": self._character_id,
+                "playback_guard": self._playback_guard,
+                "adaptive_fallback_enabled": True,
+                "parent": self,
+            }
+            try:
+                signature = inspect.signature(self._voai_worker_factory)
+                if "pcm_stream_sink" in signature.parameters:
+                    worker_kwargs["pcm_stream_sink"] = self._pcm_stream_sink
+            except (TypeError, ValueError):
+                pass
+            worker = self._voai_worker_factory(**worker_kwargs)
         self._active_worker = worker
         self._workers.append(worker)
         self._wire_worker(worker, normalized_provider)

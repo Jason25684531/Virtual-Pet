@@ -73,6 +73,49 @@ class _AudioReadyCollector:
         self.events.append((audio_buffer.read(), reply_id, trace_id))
 
 
+class _PcmSinkCollector:
+    def __init__(self):
+        self.chunks = []
+        self.finished_segments = []
+
+    def enqueue_pcm_chunk(self, chunk: bytes, reply_id: str, trace_id: str):
+        self.chunks.append((bytes(chunk), reply_id, trace_id))
+
+    def finish_pcm_segment(self, reply_id: str, trace_id: str):
+        self.finished_segments.append((reply_id, trace_id))
+
+
+class _FakeTransportSession:
+    def __init__(self, *, chunks=None, warmup_error=None, iter_error=None):
+        self._chunks = list(chunks or [])
+        self._warmup_error = warmup_error
+        self._iter_error = iter_error
+        self.warmed_up = False
+        self.closed = False
+        self.finished = False
+        self.sent_text = []
+
+    def warmup(self):
+        if self._warmup_error is not None:
+            raise self._warmup_error
+        self.warmed_up = True
+
+    def send_text(self, text: str):
+        self.sent_text.append(text)
+
+    def finish_input(self):
+        self.finished = True
+
+    def iter_audio_chunks(self):
+        if self._iter_error is not None:
+            raise self._iter_error
+        for chunk in self._chunks:
+            yield chunk
+
+    def close(self):
+        self.closed = True
+
+
 class VoAIStreamingTests(unittest.TestCase):
     def setUp(self):
         self._original_key = os.environ.get("VOAI_API_KEY")
@@ -128,6 +171,125 @@ class VoAIStreamingTests(unittest.TestCase):
         self.assertTrue(finished.events[0][0])
         self.assertEqual(finished.events[0][2]["format"], "pcm")
 
+    def test_websocket_transport_session_streams_without_http_post(self):
+        player = _FakePcmPlayer()
+        progress = _SignalCollector()
+        finished = _SignalCollector()
+        factory_calls = []
+        session = _FakeTransportSession(chunks=[b"ws-a", b"ws-b"])
+
+        def fake_transport_factory(**kwargs):
+            factory_calls.append(kwargs)
+            return session
+
+        def fake_post(*_args, **_kwargs):
+            raise AssertionError("explicit websocket mode should not call HTTP fallback")
+
+        worker = VoAIStreamingTTSWorker(
+            text="測試 websocket",
+            trace_id="trace-ws",
+            requests_post=fake_post,
+            pcm_player_factory=lambda: player,
+            transport_mode="websocket",
+            transport_session_factory=fake_transport_factory,
+        )
+        worker.progress_signal.connect(progress)
+        worker.finished_signal.connect(finished)
+
+        worker.run()
+
+        self.assertEqual(player.played, b"ws-aws-b")
+        self.assertEqual(len(factory_calls), 1)
+        self.assertEqual(factory_calls[0]["transport_mode"], "websocket")
+        self.assertTrue(session.warmed_up)
+        self.assertEqual(session.sent_text, ["測試 websocket"])
+        self.assertTrue(session.finished)
+        self.assertTrue(session.closed)
+        self.assertEqual(progress.events[0][0], "transport_selected")
+        self.assertEqual(progress.events[0][1]["transport"], "websocket")
+        self.assertEqual(finished.events[0][2]["transport"], "websocket")
+
+    def test_auto_transport_falls_back_to_http_pcm_when_duplex_unavailable(self):
+        calls = []
+        player = _FakePcmPlayer()
+        progress = _SignalCollector()
+
+        def fake_transport_factory(**_kwargs):
+            return None
+
+        def fake_post(*_args, **kwargs):
+            calls.append(kwargs)
+            return _FakeResponse(chunks=[b"pcm-a", b"pcm-b"], headers={"content-type": "audio/pcm"})
+
+        worker = VoAIStreamingTTSWorker(
+            text="測試 auto",
+            trace_id="trace-auto",
+            requests_post=fake_post,
+            pcm_player_factory=lambda: player,
+            transport_mode="auto",
+            transport_session_factory=fake_transport_factory,
+        )
+        worker.progress_signal.connect(progress)
+
+        worker.run()
+
+        self.assertEqual(player.played, b"pcm-apcm-b")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["headers"]["x-output-format"], "pcm")
+        self.assertTrue(any(event[0] == "transport_fallback" for event in progress.events))
+
+    def test_websocket_upgrade_failure_emits_fast_fail_when_adaptive_enabled(self):
+        finished = _SignalCollector()
+
+        def fake_transport_factory(**_kwargs):
+            return _FakeTransportSession(warmup_error=RuntimeError("101 upgrade failed"))
+
+        def fake_post(*_args, **_kwargs):
+            raise AssertionError("websocket mode should not downgrade to HTTP in this test")
+
+        worker = VoAIStreamingTTSWorker(
+            text="測試",
+            trace_id="trace-upgrade-fail",
+            requests_post=fake_post,
+            pcm_player_factory=lambda: _FakePcmPlayer(),
+            adaptive_fallback_enabled=True,
+            transport_mode="websocket",
+            transport_session_factory=fake_transport_factory,
+        )
+        worker.finished_signal.connect(finished)
+
+        worker.run()
+
+        self.assertFalse(finished.events[0][0])
+        payload = finished.events[0][2]
+        self.assertTrue(payload["fast_fail"])
+        self.assertEqual(payload["failure_code"], "transport_upgrade_failed")
+        self.assertEqual(payload["transport"], "websocket")
+
+    def test_websocket_abnormal_close_emits_transport_closed_fast_fail(self):
+        finished = _SignalCollector()
+
+        def fake_transport_factory(**_kwargs):
+            return _FakeTransportSession(iter_error=RuntimeError("abnormal close code 1006"))
+
+        worker = VoAIStreamingTTSWorker(
+            text="測試 close",
+            trace_id="trace-close-fail",
+            pcm_player_factory=lambda: _FakePcmPlayer(),
+            adaptive_fallback_enabled=True,
+            transport_mode="websocket",
+            transport_session_factory=fake_transport_factory,
+        )
+        worker.finished_signal.connect(finished)
+
+        worker.run()
+
+        self.assertFalse(finished.events[0][0])
+        payload = finished.events[0][2]
+        self.assertTrue(payload["fast_fail"])
+        self.assertEqual(payload["failure_code"], "transport_closed")
+        self.assertEqual(payload["transport"], "websocket")
+
     def test_pcm_unavailable_falls_back_to_mp3_audio_ready(self):
         calls = []
         audio_ready = _AudioReadyCollector()
@@ -153,6 +315,35 @@ class VoAIStreamingTests(unittest.TestCase):
         self.assertEqual(audio_ready.events[0][0], b"mp3-bytes")
         self.assertTrue(finished.events[0][0])
         self.assertEqual(finished.events[0][2]["format"], "mp3")
+
+    def test_pcm_streaming_can_handoff_to_pcm_sink_session(self):
+        calls = []
+        sink = _PcmSinkCollector()
+        finished = _SignalCollector()
+
+        def fake_post(*_args, **kwargs):
+            calls.append(kwargs)
+            return _FakeResponse(chunks=[b"pcm-a", b"pcm-b"], headers={"content-type": "audio/pcm"})
+
+        worker = VoAIStreamingTTSWorker(
+            text="測試 sink",
+            trace_id="trace-sink",
+            reply_id="reply-sink",
+            requests_post=fake_post,
+            pcm_player_factory=lambda: _FakePcmPlayer(),
+            pcm_stream_sink=sink,
+            transport_mode="http",
+        )
+        worker.finished_signal.connect(finished)
+
+        worker.run()
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(sink.chunks, [(b"pcm-a", "reply-sink", "trace-sink"), (b"pcm-b", "reply-sink", "trace-sink")])
+        self.assertEqual(sink.finished_segments, [("reply-sink", "trace-sink")])
+        self.assertTrue(finished.events[0][0])
+        self.assertTrue(finished.events[0][2]["queued_playback"])
+        self.assertTrue(finished.events[0][2]["pcm_stream_session"])
 
     def test_missing_api_key_emits_safe_failure(self):
         os.environ.pop("VOAI_API_KEY", None)

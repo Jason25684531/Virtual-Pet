@@ -166,6 +166,72 @@ class BrainStreamingTests(unittest.TestCase):
         self.assertIn("OpenAI 推論失敗", warnings[0])
         self.assertIsNone(engine._tracker.snapshot(trace_id))
 
+    def test_short_non_action_sentence_waits_for_later_hard_boundary(self):
+        engine = _TestBrainEngine([
+            "你好。",
+            "第二句真的比較長，而且內容足夠完整。",
+        ])
+        sentence_ready: list[tuple[str, str | None]] = []
+
+        def handle_sentence_ready(text, current_trace_id):
+            sentence_ready.append((text, current_trace_id))
+            self._simulate_tts_completion(engine, current_trace_id, text)
+
+        engine.sentence_ready.connect(handle_sentence_ready)
+
+        trace_id = engine._tracker.begin_interaction("test", "測試短句")
+        engine._handle_prompt("測試短句", trace_id=trace_id)
+
+        self.assertEqual(
+            sentence_ready,
+            [("你好。第二句真的比較長，而且內容足夠完整。", trace_id)],
+        )
+
+    def test_action_leading_first_sentence_is_exempt_from_min_length(self):
+        engine = _TestBrainEngine([
+            "[ACTION:listen]好。",
+            "下一句補上更多內容，而且保持完整。",
+        ])
+        sentence_ready: list[tuple[str, str | None]] = []
+
+        def handle_sentence_ready(text, current_trace_id):
+            sentence_ready.append((text, current_trace_id))
+            self._simulate_tts_completion(engine, current_trace_id, text)
+
+        engine.sentence_ready.connect(handle_sentence_ready)
+
+        trace_id = engine._tracker.begin_interaction("test", "測試 action 短句")
+        engine._handle_prompt("測試 action 短句", trace_id=trace_id)
+
+        self.assertEqual(
+            sentence_ready,
+            [
+                ("好。", trace_id),
+                ("下一句補上更多內容，而且保持完整。", trace_id),
+            ],
+        )
+
+    def test_commas_do_not_trigger_sentence_ready_before_hard_boundary(self):
+        engine = _TestBrainEngine([
+            "這裡先停，還有內容、但還沒到句號",
+            "現在才完整結束。",
+        ])
+        sentence_ready: list[tuple[str, str | None]] = []
+
+        def handle_sentence_ready(text, current_trace_id):
+            sentence_ready.append((text, current_trace_id))
+            self._simulate_tts_completion(engine, current_trace_id, text)
+
+        engine.sentence_ready.connect(handle_sentence_ready)
+
+        trace_id = engine._tracker.begin_interaction("test", "測試逗號")
+        engine._handle_prompt("測試逗號", trace_id=trace_id)
+
+        self.assertEqual(
+            sentence_ready,
+            [("這裡先停，還有內容、但還沒到句號現在才完整結束。", trace_id)],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

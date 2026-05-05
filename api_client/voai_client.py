@@ -25,6 +25,8 @@ _DEFAULT_SPEED = 1.2
 _DEFAULT_STYLE_WEIGHT = 0.0
 _DEFAULT_BREATH_PAUSE = 0.0
 _PCM_SAMPLE_RATE = 32000
+_DEFAULT_TRANSPORT_MODE = "auto"
+_SUPPORTED_TRANSPORT_MODES = {"auto", "http", "websocket"}
 
 
 def _get_api_key() -> str:
@@ -42,6 +44,34 @@ def _classify_fast_fail(exc: Exception) -> tuple[str, str, bool]:
     if isinstance(exc, requests.ConnectionError):
         return "connection_error", "VoAI connection failed before playback", True
     return "request_error", str(exc), False
+
+
+def _normalize_transport_mode(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in _SUPPORTED_TRANSPORT_MODES:
+        return normalized
+    return _DEFAULT_TRANSPORT_MODE
+
+
+class VoAITransportError(RuntimeError):
+    def __init__(self, code: str, detail: str, *, definitive: bool = False):
+        super().__init__(detail)
+        self.code = str(code or "transport_error").strip() or "transport_error"
+        self.detail = str(detail or "VoAI transport failed").strip() or "VoAI transport failed"
+        self.definitive = bool(definitive)
+
+
+def _classify_transport_error(exc: Exception) -> tuple[str, str, bool]:
+    if isinstance(exc, VoAITransportError):
+        return exc.code, exc.detail, exc.definitive
+
+    message = str(exc or "").strip()
+    lowered = message.lower()
+    if "101" in lowered or "upgrade" in lowered or "switching protocol" in lowered:
+        return "transport_upgrade_failed", "VoAI duplex transport upgrade failed", True
+    if "close code" in lowered or "abnormal close" in lowered or "closed" in lowered:
+        return "transport_closed", "VoAI duplex transport closed before playback", True
+    return "transport_error", message or "VoAI duplex transport failed", False
 
 
 class VoAIStreamingTTSWorker(QThread):
@@ -67,6 +97,9 @@ class VoAIStreamingTTSWorker(QThread):
         pcm_player_factory=None,
         playback_guard=None,
         adaptive_fallback_enabled: bool = False,
+        transport_mode: str | None = None,
+        transport_session_factory=None,
+        pcm_stream_sink=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -80,6 +113,11 @@ class VoAIStreamingTTSWorker(QThread):
         )
         self._playback_guard = playback_guard
         self._adaptive_fallback_enabled = bool(adaptive_fallback_enabled)
+        self._transport_mode = _normalize_transport_mode(
+            transport_mode or os.getenv("VOAI_TRANSPORT_MODE", _DEFAULT_TRANSPORT_MODE)
+        )
+        self._transport_session_factory = transport_session_factory
+        self._pcm_stream_sink = pcm_stream_sink
 
     def run(self):
         if not self._text:
@@ -93,6 +131,31 @@ class VoAIStreamingTTSWorker(QThread):
 
         voice_cfg = config.get_voai_config_for_character(self._voice_id)
         payload = self._build_payload(voice_cfg)
+        if self._transport_mode in {"auto", "websocket"}:
+            ok, fallback_reason, result_payload = self._try_duplex_transport(api_key, payload)
+            if ok:
+                return
+            if self._transport_mode == "websocket":
+                if isinstance(result_payload, dict) and result_payload.get("fast_fail") and self._adaptive_fallback_enabled:
+                    self.finished_signal.emit(False, fallback_reason, result_payload)
+                    return
+                self.finished_signal.emit(
+                    False,
+                    fallback_reason or "VoAI duplex transport 失敗。",
+                    result_payload or self._build_result_payload(format="pcm", transport="websocket"),
+                )
+                return
+            if fallback_reason and self._transport_session_factory is not None:
+                self.progress_signal.emit(
+                    "transport_fallback",
+                    {
+                        "reply_id": self._reply_id,
+                        "trace_id": self._trace_id,
+                        "from_transport": "websocket",
+                        "to_transport": "http",
+                        "reason": fallback_reason,
+                    },
+                )
         if self._pcm_streaming_enabled():
             ok, fallback_reason, result_payload = self._try_pcm_stream(api_key, payload)
             if ok:
@@ -133,6 +196,7 @@ class VoAIStreamingTTSWorker(QThread):
         reason_code: str,
         detail: str,
         audio_format: str,
+        transport: str,
     ) -> dict:
         return self._build_result_payload(
             fast_fail=True,
@@ -141,6 +205,7 @@ class VoAIStreamingTTSWorker(QThread):
             failure_code=reason_code,
             failure_detail=detail,
             format=audio_format,
+            transport=transport,
         )
 
     @staticmethod
@@ -148,11 +213,179 @@ class VoAIStreamingTTSWorker(QThread):
         value = os.getenv("VOAI_PCM_STREAMING_ENABLED", "true").strip().lower()
         return value not in {"0", "false", "no", "off"}
 
+    def _try_duplex_transport(self, api_key: str, payload: dict) -> tuple[bool, str, dict | None]:
+        factory = self._transport_session_factory
+        if factory is None:
+            return False, "VoAI duplex transport 未設定。", None
+
+        player = None
+        if self._pcm_stream_sink is None:
+            player = self._pcm_player_factory()
+            is_available = getattr(player, "is_available", None)
+            if callable(is_available) and not is_available():
+                return False, "ffplay backend unavailable", None
+
+        session = None
+        bytes_forwarded = 0
+        try:
+            session = factory(
+                api_key=api_key,
+                payload=payload,
+                reply_id=self._reply_id,
+                trace_id=self._trace_id,
+                voice_id=self._voice_id,
+                transport_mode=self._transport_mode,
+            )
+            if session is None:
+                return False, "VoAI duplex transport unavailable", None
+
+            self.progress_signal.emit(
+                "transport_selected",
+                {
+                    "reply_id": self._reply_id,
+                    "trace_id": self._trace_id,
+                    "transport": "websocket",
+                },
+            )
+
+            warmup = getattr(session, "warmup", None)
+            if callable(warmup):
+                warmup()
+            send_text = getattr(session, "send_text", None)
+            if callable(send_text):
+                send_text(self._text)
+            finish_input = getattr(session, "finish_input", None)
+            if callable(finish_input):
+                finish_input()
+
+            iter_audio_chunks = getattr(session, "iter_audio_chunks", None)
+            if not callable(iter_audio_chunks):
+                raise VoAITransportError(
+                    "transport_protocol_error",
+                    "VoAI duplex transport session 缺少 iter_audio_chunks 介面。",
+                    definitive=True,
+                )
+
+            def iter_chunks():
+                nonlocal bytes_forwarded
+                for chunk in iter_audio_chunks():
+                    if not chunk:
+                        continue
+                    if bytes_forwarded <= 0:
+                        self.progress_signal.emit(
+                            "stream_started",
+                            {
+                                "reply_id": self._reply_id,
+                                "trace_id": self._trace_id,
+                                "bytes_forwarded": len(chunk),
+                                "format": "pcm",
+                                "transport": "websocket",
+                            },
+                        )
+                    bytes_forwarded += len(chunk)
+                    yield chunk
+
+            if self._pcm_stream_sink is not None:
+                ok, sink_reason = self._handoff_pcm_chunks_to_sink(iter_chunks(), transport="websocket")
+                if not ok:
+                    return True, "", None
+                if bytes_forwarded <= 0:
+                    raise VoAITransportError(
+                        "transport_empty_audio",
+                        "VoAI duplex transport 回傳空音訊。",
+                        definitive=False,
+                    )
+                self.finished_signal.emit(
+                    True,
+                    "VoAI duplex transport 音訊已送入連續播放 session。",
+                    {
+                        "reply_id": self._reply_id,
+                        "trace_id": self._trace_id,
+                        "text": self._text,
+                        "bytes_forwarded": bytes_forwarded,
+                        "format": "pcm",
+                        "selected_provider": "voai",
+                        "transport": "websocket",
+                        "queued_playback": True,
+                        "pcm_stream_session": True,
+                    },
+                )
+                return True, sink_reason, None
+
+            def before_start():
+                if callable(self._playback_guard) and self._playback_guard(self._trace_id, self._reply_id) is False:
+                    return False
+                start_payload = {
+                    "reply_id": self._reply_id,
+                    "trace_id": self._trace_id,
+                    "format": "pcm",
+                    "transport": "websocket",
+                }
+                self.progress_signal.emit("driver_started", start_payload)
+                self.progress_signal.emit("playback_started", start_payload)
+                return True
+
+            played_bytes = int(player.play_chunks(iter_chunks(), before_start=before_start) or 0)
+            if bytes_forwarded <= 0 and played_bytes <= 0:
+                raise VoAITransportError(
+                    "transport_empty_audio",
+                    "VoAI duplex transport 回傳空音訊。",
+                    definitive=False,
+                )
+
+            self.finished_signal.emit(
+                True,
+                "VoAI duplex transport 串流播放完成。",
+                {
+                    "reply_id": self._reply_id,
+                    "trace_id": self._trace_id,
+                    "text": self._text,
+                    "bytes_forwarded": bytes_forwarded or played_bytes,
+                    "format": "pcm",
+                    "selected_provider": "voai",
+                    "transport": "websocket",
+                },
+            )
+            return True, "", None
+        except PlaybackStartSuppressed:
+            self.finished_signal.emit(
+                False,
+                "VoAI duplex transport 起播前已被同步策略抑制。",
+                {
+                    "reply_id": self._reply_id,
+                    "trace_id": self._trace_id,
+                    "text": self._text,
+                    "format": "pcm",
+                    "transport": "websocket",
+                    "suppressed": True,
+                },
+            )
+            return True, "", None
+        except Exception as exc:
+            reason_code, detail, definitive = _classify_transport_error(exc)
+            result_payload = None
+            if definitive:
+                result_payload = self._build_fast_fail_payload(
+                    stage="duplex_transport",
+                    reason_code=reason_code,
+                    detail=detail,
+                    audio_format="pcm",
+                    transport="websocket",
+                )
+            return False, f"VoAI duplex transport 失敗: {exc}", result_payload
+        finally:
+            if session is not None:
+                close = getattr(session, "close", None)
+                if callable(close):
+                    close()
+
     def _try_pcm_stream(self, api_key: str, payload: dict) -> tuple[bool, str, dict | None]:
-        player = self._pcm_player_factory()
-        is_available = getattr(player, "is_available", None)
-        if callable(is_available) and not is_available():
-            return False, "ffplay backend unavailable", None
+        player = None
+        if self._pcm_stream_sink is None:
+            player = self._pcm_player_factory()
+            is_available = getattr(player, "is_available", None)
+            if callable(is_available) and not is_available():
+                return False, "ffplay backend unavailable", None
 
         headers = {
             "x-api-key": api_key,
@@ -189,10 +422,34 @@ class VoAIStreamingTTSWorker(QThread):
                                 "trace_id": self._trace_id,
                                 "bytes_forwarded": len(chunk),
                                 "format": "pcm",
+                                "transport": "http",
                             },
                         )
                     bytes_forwarded += len(chunk)
                     yield chunk
+
+            if self._pcm_stream_sink is not None:
+                ok, sink_reason = self._handoff_pcm_chunks_to_sink(iter_chunks(), transport="http")
+                if not ok:
+                    return True, "", None
+                if bytes_forwarded <= 0:
+                    return False, "VoAI PCM 回傳空音訊。", None
+                self.finished_signal.emit(
+                    True,
+                    "VoAI PCM 音訊已送入連續播放 session。",
+                    {
+                        "reply_id": self._reply_id,
+                        "trace_id": self._trace_id,
+                        "text": self._text,
+                        "bytes_forwarded": bytes_forwarded,
+                        "format": "pcm",
+                        "selected_provider": "voai",
+                        "transport": "http",
+                        "queued_playback": True,
+                        "pcm_stream_session": True,
+                    },
+                )
+                return True, sink_reason, None
 
             def before_start():
                 if callable(self._playback_guard) and self._playback_guard(self._trace_id, self._reply_id) is False:
@@ -201,6 +458,7 @@ class VoAIStreamingTTSWorker(QThread):
                     "reply_id": self._reply_id,
                     "trace_id": self._trace_id,
                     "format": "pcm",
+                    "transport": "http",
                 }
                 self.progress_signal.emit("driver_started", payload)
                 self.progress_signal.emit("playback_started", payload)
@@ -220,6 +478,7 @@ class VoAIStreamingTTSWorker(QThread):
                     "bytes_forwarded": bytes_forwarded or played_bytes,
                     "format": "pcm",
                     "selected_provider": "voai",
+                    "transport": "http",
                 },
             )
             return True, "", None
@@ -232,6 +491,7 @@ class VoAIStreamingTTSWorker(QThread):
                     "trace_id": self._trace_id,
                     "text": self._text,
                     "format": "pcm",
+                    "transport": "http",
                     "suppressed": True,
                 },
             )
@@ -245,6 +505,7 @@ class VoAIStreamingTTSWorker(QThread):
                     reason_code=reason_code,
                     detail=detail,
                     audio_format="pcm",
+                    transport="http",
                 )
             return False, f"VoAI PCM 網路錯誤: {exc}", payload
         except Exception as exc:
@@ -252,6 +513,32 @@ class VoAIStreamingTTSWorker(QThread):
         finally:
             if response is not None:
                 response.close()
+
+    def _handoff_pcm_chunks_to_sink(self, chunks, *, transport: str) -> tuple[bool, str]:
+        first_chunk_seen = False
+        for chunk in chunks:
+            if not chunk:
+                continue
+            if not first_chunk_seen:
+                first_chunk_seen = True
+                if callable(self._playback_guard) and self._playback_guard(self._trace_id, self._reply_id) is False:
+                    self.finished_signal.emit(
+                        False,
+                        "VoAI PCM 起播前已被同步策略抑制。",
+                        {
+                            "reply_id": self._reply_id,
+                            "trace_id": self._trace_id,
+                            "text": self._text,
+                            "format": "pcm",
+                            "transport": transport,
+                            "suppressed": True,
+                        },
+                    )
+                    return False, "suppressed"
+            self._pcm_stream_sink.enqueue_pcm_chunk(chunk, self._reply_id, self._trace_id)
+        if first_chunk_seen:
+            self._pcm_stream_sink.finish_pcm_segment(self._reply_id, self._trace_id)
+        return True, ""
 
     def _run_mp3_fallback(self, api_key: str, payload: dict):
         headers = {
@@ -291,6 +578,7 @@ class VoAIStreamingTTSWorker(QThread):
                     "trace_id": self._trace_id,
                     "bytes_received": len(audio_bytes),
                     "format": "mp3",
+                    "transport": "http",
                 },
             )
 
@@ -309,6 +597,7 @@ class VoAIStreamingTTSWorker(QThread):
                     "format": "mp3",
                     "selected_provider": "voai",
                     "queued_playback": True,
+                    "transport": "http",
                 },
             )
         except requests.HTTPError as exc:
@@ -327,6 +616,7 @@ class VoAIStreamingTTSWorker(QThread):
                         reason_code=reason_code,
                         detail=detail,
                         audio_format="mp3",
+                        transport="http",
                     ),
                 )
                 return
@@ -346,6 +636,7 @@ class VoAIStreamingTTSWorker(QThread):
                         reason_code=reason_code,
                         detail=detail,
                         audio_format="mp3",
+                        transport="http",
                     ),
                 )
                 return

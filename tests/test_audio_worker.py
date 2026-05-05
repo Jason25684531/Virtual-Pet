@@ -39,6 +39,58 @@ class FakeAudioPlayer:
         time.sleep(self._duration)
 
 
+class FakePcmPlayer:
+    def __init__(self):
+        self.chunks: list[bytes] = []
+
+    def play_chunks(self, chunks, before_start=None):
+        started = False
+        total = 0
+        for chunk in chunks:
+            if not chunk:
+                continue
+            if not started:
+                started = True
+                if callable(before_start):
+                    before_start()
+            self.chunks.append(bytes(chunk))
+            total += len(chunk)
+        return total
+
+
+class InterruptiblePcmPlayer:
+    def __init__(self):
+        self.chunks: list[bytes] = []
+        self.second_chunk_started = threading.Event()
+        self.release_second_chunk = threading.Event()
+
+    def play_chunks(self, chunks, before_start=None):
+        started = False
+        total = 0
+        for index, chunk in enumerate(chunks):
+            if not chunk:
+                continue
+            if not started:
+                started = True
+                if callable(before_start):
+                    before_start()
+            if index == 1:
+                self.second_chunk_started.set()
+                self.release_second_chunk.wait(1.0)
+            payload = bytes(chunk)
+            self.chunks.append(payload)
+            total += len(payload)
+        return total
+
+
+class SignalCollector:
+    def __init__(self):
+        self.events = []
+
+    def __call__(self, *args):
+        self.events.append(args)
+
+
 # ---------------------------------------------------------------------------
 # 延遲匯入 AudioStreamWorker（避免 PyQt5 初始化問題）
 # ---------------------------------------------------------------------------
@@ -170,3 +222,83 @@ def test_concurrent_enqueue_is_safe(worker):
         time.sleep(0.05)
 
     assert len(player.played) == 20, f"並發 enqueue 後播放數量錯誤: {len(player.played)}"
+
+
+def test_pcm_trace_session_emits_single_driver_started_and_queue_drained(qapp, fake_player):
+    from audio_worker import AudioStreamWorker
+
+    pcm_player = FakePcmPlayer()
+    driver_started = SignalCollector()
+    playback_finished = SignalCollector()
+    queue_drained = SignalCollector()
+
+    worker = AudioStreamWorker(
+        audio_player=fake_player,
+        pcm_player_factory=lambda sample_rate, channels: pcm_player,
+        pcm_session_idle_ms=0,
+    )
+    worker.driver_started.connect(driver_started)
+    worker.playback_finished.connect(playback_finished)
+    worker.queue_drained.connect(queue_drained)
+    worker.start()
+
+    worker.enqueue_pcm_chunk(b"pcm-a", reply_id="r1", trace_id="trace-1")
+    worker.finish_pcm_segment("r1", trace_id="trace-1")
+    worker.enqueue_pcm_chunk(b"pcm-b", reply_id="r2", trace_id="trace-1")
+    worker.finish_pcm_segment("r2", trace_id="trace-1")
+    worker.close_trace_session("trace-1")
+
+    timeout = time.time() + 2.0
+    while len(playback_finished.events) < 2 and time.time() < timeout:
+        qapp.processEvents()
+        time.sleep(0.02)
+
+    worker.stop()
+    worker.wait(1000)
+    qapp.processEvents()
+
+    assert pcm_player.chunks == [b"pcm-a", b"pcm-b"]
+    assert driver_started.events == [("r1", "trace-1")]
+    assert playback_finished.events == [("r1", "trace-1"), ("r2", "trace-1")]
+    assert len(queue_drained.events) == 1
+
+
+def test_interrupt_trace_preserves_finished_pcm_segment_and_drops_later_one(qapp, fake_player):
+    from audio_worker import AudioStreamWorker
+
+    pcm_player = InterruptiblePcmPlayer()
+    playback_finished = SignalCollector()
+
+    worker = AudioStreamWorker(
+        audio_player=fake_player,
+        pcm_player_factory=lambda sample_rate, channels: pcm_player,
+        pcm_session_idle_ms=0,
+    )
+    worker.playback_finished.connect(playback_finished)
+    worker.start()
+
+    worker.enqueue_pcm_chunk(b"first-segment", reply_id="r1", trace_id="trace-int")
+    worker.finish_pcm_segment("r1", trace_id="trace-int")
+
+    timeout = time.time() + 2.0
+    while len(playback_finished.events) < 1 and time.time() < timeout:
+        qapp.processEvents()
+        time.sleep(0.02)
+
+    worker.enqueue_pcm_chunk(b"second-segment", reply_id="r2", trace_id="trace-int")
+    worker.finish_pcm_segment("r2", trace_id="trace-int")
+    assert pcm_player.second_chunk_started.wait(1.0), "第二段 PCM 沒有進入 active session"
+
+    worker.interrupt_trace("trace-int")
+    pcm_player.release_second_chunk.set()
+
+    timeout = time.time() + 2.0
+    while worker.is_busy() and time.time() < timeout:
+        qapp.processEvents()
+        time.sleep(0.02)
+
+    worker.stop()
+    worker.wait(1000)
+    qapp.processEvents()
+
+    assert playback_finished.events == [("r1", "trace-int")]

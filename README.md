@@ -6,8 +6,8 @@
 
 - Azure STT 背景收音與開始 / 停止控制
 - `InteractionTurnManager` 單輪互動序列化，避免上一輪還沒播完就插入下一輪
-- `BrainEngine` 的 OpenAI 串流回覆、action-first prompt、句讀切塊、bounded message memory
-- `ActionDispatcher` 的動作前置、TTS queue 與背景 worker 收尾
+- `BrainEngine` 的 OpenAI 串流回覆、action-first prompt、全句級 `sentence_ready` 緩衝、bounded message memory
+- `ActionDispatcher` 的動作前置、session-level `driver_started` 同步、TTS queue 與背景 worker 收尾
 - `TransparentWindow + app.js` 的 WebM 動作切換、狀態列與 conversation panel
 - `InteractionLatencyTracker` 的 STT / LLM / Action / TTS 延遲追蹤
 - OpenCV `wave_response` 揮手感測
@@ -28,13 +28,13 @@ flowchart LR
 
     STT --> TURN
     TURN --> BRAIN[BrainEngine\nChatOpenAI streaming]
-    BRAIN --> PARSER[Action-first parser\nSentence chunking]
+    BRAIN --> PARSER[Action-first parser\nSentence buffering]
     PARSER --> DISP
 
     DISP --> MOTION[TransparentWindow\nWebM motion bridge]
     DISP --> TTSQ[TTS Queue]
-    TTSQ --> TTS[Adaptive TTS fallback\nVoAI PCM/MP3 -> ElevenLabs]
-    TTS --> PLAY[ffplay / pygame playback]
+    TTSQ --> TTS[Adaptive TTS fallback\nVoAI transport session -> ElevenLabs]
+    TTS --> PLAY[AudioStreamWorker PCM session\nffplay / pygame playback]
 
     TURN --> CHAT[Conversation Panel]
     BRAIN --> CHAT
@@ -65,6 +65,7 @@ Virtual-Pet/
 │   ├── elevenlabs_client.py
 │   └── comfyui_client.py
 ├── audio_playback.py
+├── audio_worker.py
 ├── sensors/
 │   ├── microphone_stt.py
 │   ├── stt_session_controller.py
@@ -78,15 +79,21 @@ Virtual-Pet/
 │       └── app.js
 ├── scripts/
 │   ├── smoke_test.py
-│   ├── live_stt_latency_probe.py
-│   └── verify_linux_env.py
+│   └── live_stt_latency_probe.py
 ├── tests/
 │   ├── test_action_playback.py
+│   ├── test_adaptive_tts_fallback.py
+│   ├── test_audio_worker.py
+│   ├── test_b3_voice_routing.py
 │   ├── test_brain_streaming.py
+│   ├── test_character_layout.py
+│   ├── test_database.py
 │   ├── test_elevenlabs_streaming.py
 │   ├── test_interaction_turn_manager.py
+│   ├── test_main_runtime.py
 │   ├── test_microphone_stt.py
 │   ├── test_stt_controls_and_trace.py
+│   ├── test_voai_streaming.py
 │   └── test_wave_sensor.py
 ├── docs/
 │   ├── current_stage_archviz.md
@@ -94,8 +101,6 @@ Virtual-Pet/
 │   ├── linux_deployment.md
 │   ├── STTTTS.md
 │   └── archive/
-├── legacy/
-│   └── openclaw/
 └── openspec/
 ```
 
@@ -108,16 +113,19 @@ Virtual-Pet/
   把 STT 與 Dev Query 序列化成一輪一輪互動。上一輪尚未完成時，下一輪只會排隊，不會插隊。
 
 - `api_client/brain_engine.py`
-  使用 `ChatOpenAI(model="gpt-4o-mini", streaming=True)`。以 message history 保存最近幾輪對話，避免使用已棄用的 classic memory；同時在背景執行緒預熱 active profile，將串流拆成 `token_streamed`、`streamed_fragment` 與 `sentence_ready` 三條路徑，讓 UI 可逐 token 顯示、action 可先行解析、語音可按句排入播放。
+  使用 `ChatOpenAI(model="gpt-4o-mini", streaming=True)`。以 message history 保存最近幾輪對話，避免使用已棄用的 classic memory；同時在背景執行緒預熱 active profile，將串流拆成 `token_streamed`、`streamed_fragment` 與 `sentence_ready` 三條路徑，讓 UI 可逐 token 顯示、action 可先行解析、語音以較保守的全句 / 段落級邊界排入播放。`sentence_ready` 只會在硬句界與最小字數門檻成立時送出，但 `[ACTION:*]` 後的第一句仍保留即時發射豁免。
 
 - `action_dispatcher.py`
-  統一處理 action alias、白名單、WebM 動作切換、pending-action timeout、trace-scoped provider stickiness、TTS queue 與背景 worker 收尾。
+  統一處理 action alias、白名單、WebM 動作切換、pending-action timeout、trace-scoped provider stickiness、TTS queue 與背景 worker 收尾；其中 `report_news` / `play_music` 在同一個未完成 lifecycle 內會忽略重複觸發，避免重新啟動 motion、panel 與背景 worker。對同一個 trace 的 PCM 播放，正式動作只會在連續播放 session 的第一次 `driver_started` 到達時切入。
 
 - `api_client/adaptive_tts_fallback.py`
   將 VoAI primary path 與 ElevenLabs fallback 包成單一 worker contract；負責轉發 `driver_started`、記錄 fallback 決策，並在雙重失敗時回報 text-only 降級。
 
 - `api_client/voai_client.py`
-  預設 TTS provider。優先以 VoAI PCM 串流交給 `ffplay` 播放，若只是 backend / content-type 類問題，仍可回退到同 provider 的 MP3 BytesIO 佇列；若遇到 `HTTP 529` 或 definitive connect error，則交由 adaptive fallback layer 立刻切到 ElevenLabs。
+  預設 TTS provider。支援 `VOAI_TRANSPORT_MODE=auto/http/websocket` 三種 transport mode：`auto` 會優先嘗試已配置的 duplex transport，否則退回官方文件保證的 HTTP PCM 串流；`http` 固定走 `TTS/Speech` / `TTS/generate-voice`；`websocket` 則保留給未來正式公開的 duplex contract。若只是 backend / content-type 類問題，仍可回退到同 provider 的 MP3 BytesIO 佇列；若遇到 `HTTP 529`、upgrade failure 或 definitive connect error，則交由 adaptive fallback layer 立刻切到 ElevenLabs。
+
+- `audio_worker.py`
+  將完整 MP3 buffer queue 與 trace-aware PCM session 收斂到同一個播放 worker。對同一個 trace 的多個 PCM 句段會共用一個連續播放 session，`driver_started` 只會在第一次真正交給播放驅動時發出一次；trace 完成或中斷時才關閉 session，避免每句重開播放器。
 
 - `audio_playback.py`
   放置 provider-neutral 播放器，包含 `FfplayPcmAudioPlayer` 與 `PygameInMemoryAudioPlayer`。
@@ -143,9 +151,10 @@ Virtual-Pet/
 -> BrainEngine(OpenAI streaming)
 -> token_streamed 持續更新對話卡片
 -> streamed_fragment 先解析 [ACTION:*] 並切到 pre-action / idle
--> sentence_ready 逐句排入 Adaptive TTS queue
--> driver_started 觸發正式 Action Motion
--> VoAI PCM stream -> ffplay playback
+-> sentence_ready 以硬句界 + 最小字數門檻排入 Adaptive TTS queue
+-> AudioStreamWorker 維持同 trace 的連續 PCM session
+-> driver_started 在第一段音訊真正交給播放驅動時觸發正式 Action Motion
+-> VoAI PCM stream -> AudioStreamWorker -> ffplay playback
    或 VoAI MP3 fallback -> pygame playback
    或 VoAI fast-fail -> ElevenLabs fallback -> pygame playback
 -> 對話卡片完成
@@ -155,6 +164,7 @@ Virtual-Pet/
 補充：
 
 - `wave_response` 可直接走 `ActionDispatcher`，不需經過大腦與 TTS；Greeting 會播到主影片 ended callback 後才回 idle。
+- `report_news` / `play_music` 在同一個 pending / active loop-action lifecycle 內只會啟動一次；要等本輪 cleanup 完成後才會接受下一次相同 action，避免動畫與 panel 被重啟打斷。
 - STT 停止後的晚到辨識事件會被忽略，避免停止收音後又偷偷塞進新互動。
 - 關閉程式時會先 shutdown 背景 worker，避免 `QThread: Destroyed while thread is still running`。
 
@@ -266,12 +276,15 @@ AZURE_STT_ENABLED=true
 
 ```bash
 VOAI_PCM_STREAMING_ENABLED=true
+VOAI_TRANSPORT_MODE=auto
 CHATGPT_API_KEY=your_openai_api_key_fallback
 BRAIN_MEMORY_MAX_TURNS=6
+BRAIN_SENTENCE_MIN_CHARS=15
 OPENAI_TEMPERATURE=0.4
 ELEVENLABS_VOICE_ID=default_elevenlabs_voice_id
 ELEVENLABS_MIKU_VOICE_ID=optional_miku_fallback_voice_id
 ELEVENLABS_CHOPPER_VOICE_ID=optional_choppr_fallback_voice_id
+ACTION_SYNC_TIMEOUT_MS=6000
 AZURE_STT_INITIAL_SILENCE_TIMEOUT_MS=5000
 AZURE_STT_END_SILENCE_TIMEOUT_MS=350
 AZURE_STT_SEGMENTATION_SILENCE_TIMEOUT_MS=300
@@ -285,6 +298,9 @@ AZURE_STT_SEGMENTATION_MAX_TIME_MS=4000
 - `ELEVENLABS_API_KEY` 是 adaptive fallback 啟用時的必要欄位。
 - `CHATGPT_API_KEY` 只作為 `OPENAI_API_KEY` 的 fallback。
 - `VOAI_PCM_STREAMING_ENABLED=false` 可暫時停用 PCM 串流，回退到 MP3 BytesIO 播放。
+- `VOAI_TRANSPORT_MODE=auto` 是目前建議值；由於 VoAI 公開文件目前明確保證的是 HTTP `GetSpeaker` / `TTS/Speech` / `TTS/generate-voice`，只有在你已取得正式 duplex contract 時才建議改成 `websocket`。
+- `ACTION_SYNC_TIMEOUT_MS` 預設已拉高到 `6000`，用來降低正常 VoAI 起播時被誤判成 `timeout_promoted` 的機率。
+- `BRAIN_SENTENCE_MIN_CHARS` 可調整全句級 `sentence_ready` 的最小字數門檻，預設為 `15`。
 - `ELEVENLABS_VOICE_ID` 是全域 fallback 聲線；`ELEVENLABS_MIKU_VOICE_ID`、`ELEVENLABS_CHOPPER_VOICE_ID` 可覆蓋角色專屬 fallback 聲線。
 - `BRAIN_MEMORY_MAX_TURNS` 用來限制保留的最近對話輪數，避免上下文無限制膨脹而拖慢延遲。
 - `AZURE_STT_*TIMEOUT_MS` 用來校調 Azure STT 的收音收尾與 segmentation；目前 README 內的預設值對應低延遲互動模式。
@@ -309,8 +325,10 @@ python -m unittest discover -s tests -v
 目前測試涵蓋：
 
 - action / motion / TTS queue 播放順序
-- OpenAI 串流切片與安全降級
-- VoAI PCM 串流、adaptive fallback、provider-neutral playback 與 critical text-only 降級
+- 同 trace PCM session 的 single `driver_started`、逐句 `playback_finished` 與中途中斷
+- `report_news` / `play_music` loop action 的重複觸發保護
+- OpenAI 串流切片、全句級緩衝與安全降級
+- VoAI transport mode、PCM session handoff、adaptive fallback、provider-neutral playback 與 critical text-only 降級
 - interaction turn 排隊與完成順序
 - STT 控制、partial preview 與延遲追蹤
 - wave sensor 整合
@@ -400,6 +418,5 @@ python scripts/live_stt_latency_probe.py
 
 ## 開發備註
 
-- `legacy/openclaw/` 是封存區，不是目前主流程依賴。
 - `docs/archive/` 存放歷史文件，不影響主流程。
 - 若要理解目前程式真實結構，請優先看本 README 與 `docs/current_stage_archviz.md`，不要以舊提交內的 Ollama 流程為準。

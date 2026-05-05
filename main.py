@@ -40,6 +40,9 @@ def connect_brain_output_handlers(window, brain_engine, sanitize_text):
     if sentence_ready is not None:
         sentence_ready.connect(handle_sentence_ready)
     brain_engine.speech_ready.connect(handle_speech_ready)
+    brain_completed = getattr(brain_engine, "brain_completed", None)
+    if brain_completed is not None:
+        brain_completed.connect(lambda trace_id: getattr(window, "complete_tts_trace", lambda *_args: None)(trace_id))
 
 
 def main():

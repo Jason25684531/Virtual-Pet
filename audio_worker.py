@@ -20,12 +20,164 @@ from __future__ import annotations
 import io
 import queue
 import threading
+import time
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
-from audio_playback import PlaybackStartSuppressed, PygameInMemoryAudioPlayer
+from audio_playback import FfplayPcmAudioPlayer, PlaybackStartSuppressed, PygameInMemoryAudioPlayer
 
 _SENTINEL = None
+_PCM_STREAM_SENTINEL = object()
+
+
+class _PcmTraceSession:
+    def __init__(
+        self,
+        owner: "AudioStreamWorker",
+        trace_id: str,
+        session_reply_id: str,
+        player,
+        bytes_per_second: float,
+    ):
+        self._owner = owner
+        self._trace_id = trace_id
+        self._session_reply_id = session_reply_id
+        self._player = player
+        self._bytes_per_second = max(1.0, float(bytes_per_second or 1.0))
+        self._chunk_queue: "queue.Queue[tuple[str, bytes] | object]" = queue.Queue()
+        self._lock = threading.Lock()
+        self._segment_bytes: dict[str, int] = {}
+        self._consumed_segment_bytes: dict[str, int] = {}
+        self._finalized_segments: list[str] = []
+        self._emitted_segments: set[str] = set()
+        self._scheduled_segments = 0
+        self._scheduled_bytes = 0
+        self._timers: dict[str, threading.Timer] = {}
+        self._started_at: float | None = None
+        self._closed = False
+        self._aborted = False
+        self._thread = threading.Thread(
+            target=self._run,
+            daemon=True,
+            name=f"AudioStreamWorkerPCM:{trace_id[:8]}",
+        )
+        self._thread.start()
+
+    def enqueue_chunk(self, reply_id: str, chunk: bytes):
+        if not chunk:
+            return
+        with self._lock:
+            if self._closed or self._aborted:
+                return
+            self._segment_bytes[reply_id] = self._segment_bytes.get(reply_id, 0) + len(chunk)
+        self._chunk_queue.put((reply_id, bytes(chunk)))
+
+    def finish_segment(self, reply_id: str):
+        with self._lock:
+            if self._aborted or reply_id in self._finalized_segments:
+                return
+            self._finalized_segments.append(reply_id)
+            self._schedule_pending_segments_locked()
+
+    def close(self):
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        self._chunk_queue.put(_PCM_STREAM_SENTINEL)
+
+    def interrupt(self):
+        with self._lock:
+            if self._aborted:
+                return
+            self._aborted = True
+            self._closed = True
+            self._cancel_timers_locked()
+        while not self._chunk_queue.empty():
+            try:
+                self._chunk_queue.get_nowait()
+            except queue.Empty:
+                break
+        self._chunk_queue.put(_PCM_STREAM_SENTINEL)
+
+    def is_alive(self) -> bool:
+        return self._thread.is_alive()
+
+    def _iter_chunks(self):
+        while True:
+            item = self._chunk_queue.get()
+            if item is _PCM_STREAM_SENTINEL:
+                return
+            reply_id, chunk = item
+            yield chunk
+            with self._lock:
+                if self._aborted:
+                    continue
+                self._consumed_segment_bytes[reply_id] = self._consumed_segment_bytes.get(reply_id, 0) + len(chunk)
+                self._schedule_pending_segments_locked()
+
+    def _before_start(self):
+        if self._owner._is_trace_suppressed(self._trace_id):
+            return False
+        with self._lock:
+            self._started_at = time.monotonic()
+            self._schedule_pending_segments_locked()
+        self._owner.driver_started.emit(self._session_reply_id, self._trace_id)
+        self._owner.playback_started.emit(self._session_reply_id, self._trace_id)
+        return True
+
+    def _schedule_pending_segments_locked(self):
+        if self._started_at is None or self._aborted:
+            return
+        while self._scheduled_segments < len(self._finalized_segments):
+            reply_id = self._finalized_segments[self._scheduled_segments]
+            total_bytes = int(self._segment_bytes.get(reply_id, 0) or 0)
+            consumed_bytes = int(self._consumed_segment_bytes.get(reply_id, 0) or 0)
+            if consumed_bytes < total_bytes:
+                return
+            self._scheduled_bytes += total_bytes
+            end_time = self._started_at + (self._scheduled_bytes / self._bytes_per_second)
+            delay = max(0.0, end_time - time.monotonic())
+            timer = threading.Timer(delay, self._emit_segment_finished, args=(reply_id,))
+            timer.daemon = True
+            self._timers[reply_id] = timer
+            timer.start()
+            self._scheduled_segments += 1
+
+    def _emit_segment_finished(self, reply_id: str):
+        with self._lock:
+            self._timers.pop(reply_id, None)
+            if self._aborted or reply_id in self._emitted_segments:
+                return
+            self._emitted_segments.add(reply_id)
+        self._owner.playback_finished.emit(reply_id, self._trace_id)
+
+    def _cancel_timers_locked(self):
+        for timer in self._timers.values():
+            timer.cancel()
+        self._timers.clear()
+
+    def _run(self):
+        pending_reply_ids: list[str] = []
+        try:
+            self._player.play_chunks(self._iter_chunks(), before_start=self._before_start)
+        except PlaybackStartSuppressed:
+            pass
+        except Exception as exc:  # pragma: no cover
+            print(f"[AudioStreamWorker] PCM session 播放失敗 trace={self._trace_id}: {exc}")
+        finally:
+            with self._lock:
+                if self._aborted:
+                    self._cancel_timers_locked()
+                else:
+                    pending_timers = list(self._timers.values())
+                    pending_reply_ids = list(self._timers.keys())
+                    for timer in pending_timers:
+                        timer.cancel()
+                    self._timers.clear()
+            for reply_id in pending_reply_ids:
+                self._emit_segment_finished(reply_id)
+            self._owner._on_pcm_session_finished(self._trace_id)
 
 
 class AudioStreamWorker(QObject):
@@ -40,13 +192,30 @@ class AudioStreamWorker(QObject):
     playback_finished = pyqtSignal(str, str)  # reply_id, trace_id
     queue_drained = pyqtSignal()         # 佇列清空（TTS 全部播完）
 
-    def __init__(self, audio_player=None, parent=None):
+    def __init__(
+        self,
+        audio_player=None,
+        pcm_player_factory=None,
+        pcm_sample_rate: int = 32000,
+        pcm_channels: int = 1,
+        pcm_session_idle_ms: int = 250,
+        parent=None,
+    ):
         super().__init__(parent)
         self._queue: queue.Queue[tuple[io.BytesIO, str, str] | None] = queue.Queue()
         self._player = audio_player or PygameInMemoryAudioPlayer()
+        self._pcm_player_factory = pcm_player_factory or (
+            lambda sample_rate, channels: FfplayPcmAudioPlayer(sample_rate=sample_rate, channels=channels)
+        )
+        self._pcm_sample_rate = int(pcm_sample_rate)
+        self._pcm_channels = int(pcm_channels)
+        self._pcm_bytes_per_second = max(1, self._pcm_sample_rate * self._pcm_channels * 2)
+        self._pcm_session_idle_ms = max(0, int(pcm_session_idle_ms))
         self._playing_lock = threading.Lock()
+        self._pcm_lock = threading.Lock()
         self._current_reply_id: str | None = None
         self._suppressed_traces: set[str] = set()
+        self._pcm_sessions: dict[str, _PcmTraceSession] = {}
         # daemon=True：主程式退出時此 thread 自動終止，不觸發 Qt 的 QThread abort
         self._thread = threading.Thread(target=self._run, daemon=True, name="AudioStreamWorker")
 
@@ -61,6 +230,10 @@ class AudioStreamWorker(QObject):
 
     def stop(self) -> None:
         """通知 Worker 在播完當前項目後退出。可從任意 thread 呼叫。"""
+        with self._pcm_lock:
+            sessions = list(self._pcm_sessions.values())
+        for session in sessions:
+            session.close()
         self._queue.put(_SENTINEL)
 
     def wait(self, timeout_ms: int = 5000) -> bool:
@@ -80,6 +253,50 @@ class AudioStreamWorker(QObject):
         """將一段音訊放入播放佇列。可在任意 Thread 呼叫。"""
         self._queue.put((audio_bytes, reply_id, str(trace_id)))
 
+    def enqueue_pcm_chunk(self, chunk: bytes, reply_id: str, trace_id: str = "") -> None:
+        normalized_trace_id = str(trace_id or "").strip()
+        if not normalized_trace_id:
+            raise ValueError("PCM session playback requires a non-empty trace_id")
+        with self._pcm_lock:
+            session = self._pcm_sessions.get(normalized_trace_id)
+            if session is None:
+                session = _PcmTraceSession(
+                    self,
+                    normalized_trace_id,
+                    reply_id,
+                    self._pcm_player_factory(self._pcm_sample_rate, self._pcm_channels),
+                    self._pcm_bytes_per_second,
+                )
+                self._pcm_sessions[normalized_trace_id] = session
+        session.enqueue_chunk(reply_id, chunk)
+
+    def finish_pcm_segment(self, reply_id: str, trace_id: str = "") -> None:
+        normalized_trace_id = str(trace_id or "").strip()
+        if not normalized_trace_id:
+            return
+        with self._pcm_lock:
+            session = self._pcm_sessions.get(normalized_trace_id)
+        if session is not None:
+            session.finish_segment(reply_id)
+
+    def close_trace_session(self, trace_id: str | None) -> None:
+        normalized_trace_id = str(trace_id or "").strip()
+        if not normalized_trace_id:
+            return
+        with self._pcm_lock:
+            session = self._pcm_sessions.get(normalized_trace_id)
+        if session is not None:
+            session.close()
+
+    def interrupt_trace(self, trace_id: str | None) -> None:
+        normalized_trace_id = str(trace_id or "").strip()
+        if not normalized_trace_id:
+            return
+        with self._pcm_lock:
+            session = self._pcm_sessions.get(normalized_trace_id)
+        if session is not None:
+            session.interrupt()
+
     def clear_queue(self) -> None:
         """清空尚未播放的佇列項目（不中斷當前正在播放的音訊）。"""
         while not self._queue.empty():
@@ -93,6 +310,7 @@ class AudioStreamWorker(QObject):
         if not normalized:
             return
         self._suppressed_traces.add(normalized)
+        self.interrupt_trace(normalized)
 
     def clear_suppressed_trace(self, trace_id: str | None) -> None:
         normalized = str(trace_id or "").strip()
@@ -104,7 +322,36 @@ class AudioStreamWorker(QObject):
         """回傳是否正在播放或佇列中仍有待播項目。"""
         with self._playing_lock:
             has_current = self._current_reply_id is not None
-        return has_current or not self._queue.empty()
+        with self._pcm_lock:
+            has_pcm_session = any(session.is_alive() for session in self._pcm_sessions.values())
+        return has_current or has_pcm_session or not self._queue.empty()
+
+    def _is_trace_suppressed(self, trace_id: str) -> bool:
+        return trace_id in self._suppressed_traces
+
+    def _on_pcm_session_finished(self, trace_id: str):
+        with self._pcm_lock:
+            self._pcm_sessions.pop(trace_id, None)
+        self._emit_queue_drained_if_idle()
+
+    def _emit_queue_drained_if_idle(self):
+        with self._playing_lock:
+            has_current = self._current_reply_id is not None
+        with self._pcm_lock:
+            has_pcm_session = any(session.is_alive() for session in self._pcm_sessions.values())
+        if not has_current and not has_pcm_session and self._queue.empty():
+            self.queue_drained.emit()
+
+    def _play_buffer(self, audio_bytes: io.BytesIO, before_start):
+        play = getattr(self._player, "play", None)
+        if not callable(play):
+            raise RuntimeError("音訊播放器缺少 play() 介面。")
+        try:
+            play(audio_bytes, before_start=before_start)
+        except TypeError:
+            if callable(before_start) and before_start() is False:
+                raise PlaybackStartSuppressed("記憶體音訊在起播前被抑制。")
+            play(audio_bytes)
 
     # ------------------------------------------------------------------
     # Consumer loop（在 daemon thread 中執行）
@@ -134,7 +381,7 @@ class AudioStreamWorker(QObject):
                     self.playback_started.emit(reply_id, trace_id)
                     return True
 
-                self._player.play(audio_bytes, before_start=before_start)
+                self._play_buffer(audio_bytes, before_start)
                 self.playback_finished.emit(reply_id, trace_id)
             except PlaybackStartSuppressed:
                 pass
@@ -144,5 +391,4 @@ class AudioStreamWorker(QObject):
                 with self._playing_lock:
                     self._current_reply_id = None
 
-            if self._queue.empty():
-                self.queue_drained.emit()
+            self._emit_queue_drained_if_idle()

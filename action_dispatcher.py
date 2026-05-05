@@ -33,6 +33,7 @@ ACTION_DIRECTIVE_PATTERN = re.compile(
     r"(?:\[\s*ACTION\s*:\s*(?P<bracket>[A-Za-z0-9_-]+)\s*\]|(?<!\w)ACTION\s*:\s*(?P<bare>[A-Za-z0-9_-]+))",
     re.IGNORECASE,
 )
+NON_REPEATABLE_LOOP_ACTIONS = {"report_news", "play_music"}
 
 
 @dataclass(frozen=True)
@@ -91,8 +92,10 @@ class ActionDispatcher(QObject):
         self._driver_started_replies: set[str] = set()
         self._queued_playback_results: dict[str, tuple[str | None, str]] = {}
         self._trace_tts_providers: dict[str, str] = {}
+        self._trace_pending_tts_counts: dict[str, int] = {}
+        self._completed_tts_traces: set[str] = set()
         self._active_action_trace_id: str | None = None
-        self._action_sync_timeout_ms = max(500, int(getattr(config, "ACTION_SYNC_TIMEOUT_MS", 3500)))
+        self._action_sync_timeout_ms = max(500, int(getattr(config, "ACTION_SYNC_TIMEOUT_MS", 6000))) #VOAI Timeout 約 5-6 秒，ElevenLabs Timeout 約 3-4 秒，綜合考量後設定為 6 秒以兼顧兩者並留有緩衝
         self._fallback_timeout_grace_ms = 500
         self._current_loop_action_key: str | None = None
         self._loop_action_tts_queued: bool = False
@@ -217,6 +220,9 @@ class ActionDispatcher(QObject):
             print(f"[ECHOES] 警告: action `{action_name}` 尚未綁定。")
             self._window.restore_idle_video()
             return False
+        if self._is_duplicate_loop_action(binding):
+            print(f"[ECHOES] 提示: action `{binding.name}` 已在進行中，略過重複觸發。")
+            return True
         message_tone = "working"
         if display_message:
             message_tone = self._resolve_message_tone(display_message, has_action=True)
@@ -301,6 +307,13 @@ class ActionDispatcher(QObject):
         if normalized.startswith(("錯誤:", "[error]", "error:")):
             return "error"
         return "working" if has_action else "idle"
+
+    def _is_duplicate_loop_action(self, binding: ActionBinding) -> bool:
+        if binding.name not in NON_REPEATABLE_LOOP_ACTIONS:
+            return False
+        if self._current_loop_action_key == binding.motion_key:
+            return True
+        return any(state.binding.name == binding.name for state in self._pending_actions.values())
 
     def _handle_report_news(self, binding: ActionBinding, motion_found: bool):
         current_character_id = self._call_library_method("get_current_character_id")
@@ -573,6 +586,10 @@ class ActionDispatcher(QObject):
 
         reply_id = uuid4().hex
         self._pending_tts_chunks.put((reply_id, speech_text, trace_id))
+        if normalized_trace_id:
+            self._trace_pending_tts_counts[normalized_trace_id] = (
+                self._trace_pending_tts_counts.get(normalized_trace_id, 0) + 1
+            )
         pending_state = self._pending_actions.get(normalized_trace_id) if normalized_trace_id else None
         if pending_state is not None:
             pending_state.has_tts = True
@@ -629,6 +646,8 @@ class ActionDispatcher(QObject):
                 worker_kwargs["fallback_voice_id"] = config.get_elevenlabs_voice_id_for_character(current_character_id)
             if "preferred_provider" in signature.parameters and preferred_provider:
                 worker_kwargs["preferred_provider"] = preferred_provider
+            if "pcm_stream_sink" in signature.parameters:
+                worker_kwargs["pcm_stream_sink"] = self._audio_worker
         except (TypeError, ValueError):
             pass
 
@@ -670,6 +689,21 @@ class ActionDispatcher(QObject):
     def _on_audio_queue_drained(self):
         """AudioStreamWorker 播放佇列清空時觸發。用於 loop action 的 TTS 完成偵測。"""
         self._finish_loop_action_if_tts_idle()
+
+    def complete_tts_trace(self, trace_id: str | None):
+        normalized_trace_id = str(trace_id or "").strip()
+        if not normalized_trace_id:
+            return
+        self._completed_tts_traces.add(normalized_trace_id)
+        self._maybe_close_trace_audio_session(normalized_trace_id)
+
+    def _maybe_close_trace_audio_session(self, trace_id: str | None):
+        normalized_trace_id = str(trace_id or "").strip()
+        if not normalized_trace_id or normalized_trace_id not in self._completed_tts_traces:
+            return
+        if self._trace_pending_tts_counts.get(normalized_trace_id, 0) > 0:
+            return
+        self._audio_worker.close_trace_session(normalized_trace_id)
 
     def _finish_loop_action_if_tts_idle(self):
         if not (self._loop_action_tts_queued
@@ -778,6 +812,12 @@ class ActionDispatcher(QObject):
     def _on_tts_finished(self, reply_id: str, success: bool, message: str, payload: object):
         trace_id = payload.get("trace_id") if isinstance(payload, dict) else None
         normalized_trace_id = str(trace_id or "").strip()
+        if normalized_trace_id:
+            pending_count = self._trace_pending_tts_counts.get(normalized_trace_id, 0)
+            if pending_count <= 1:
+                self._trace_pending_tts_counts.pop(normalized_trace_id, None)
+            else:
+                self._trace_pending_tts_counts[normalized_trace_id] = pending_count - 1
         if normalized_trace_id in self._suppressed_traces and reply_id not in self._driver_started_replies:
             success = False
             if "抑制" not in message:
@@ -791,13 +831,16 @@ class ActionDispatcher(QObject):
         queued_playback = bool(isinstance(payload, dict) and payload.get("queued_playback"))
         if queued_playback and success:
             self._queued_playback_results[reply_id] = (trace_id, message)
+            self._maybe_close_trace_audio_session(normalized_trace_id)
             return
         if self._latency_tracker is not None:
             self._latency_tracker.mark_tts_finished(trace_id, reply_id, success, message)
         if not success:
             print(f"[ECHOES] 提示: 串流 TTS 未播放，保留文字回覆。{message}")
+            self._maybe_close_trace_audio_session(normalized_trace_id)
             return
         print(f"[ECHOES] 提示: 語音播放完成。{message}")
+        self._maybe_close_trace_audio_session(normalized_trace_id)
 
     def _apply_fallback_timeout_grace(self, trace_id: str | None):
         normalized_trace_id = str(trace_id or "").strip()
@@ -843,6 +886,8 @@ class ActionDispatcher(QObject):
         self._suppressed_traces.clear()
         self._queued_playback_results.clear()
         self._trace_tts_providers.clear()
+        self._trace_pending_tts_counts.clear()
+        self._completed_tts_traces.clear()
         while not self._pending_tts_chunks.empty():
             try:
                 self._pending_tts_chunks.get_nowait()
