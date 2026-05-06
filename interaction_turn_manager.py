@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import threading
 
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
@@ -22,10 +23,11 @@ class InteractionTurnManager(QObject):
     turn_completed = pyqtSignal(str, str, str)  # trace_id, source, text
     queue_depth_changed = pyqtSignal(int)
 
-    def __init__(self, brain_engine, latency_tracker: InteractionLatencyTracker, parent=None):
+    def __init__(self, brain_engine, latency_tracker: InteractionLatencyTracker, prewarm_callback=None, parent=None):
         super().__init__(parent)
         self._brain_engine = brain_engine
         self._latency_tracker = latency_tracker
+        self._prewarm_callback = prewarm_callback if callable(prewarm_callback) else None
         self._pending_inputs: deque[PendingInteraction] = deque()
         self._active_trace_id: str | None = None
         self._active_source = ""
@@ -88,6 +90,7 @@ class InteractionTurnManager(QObject):
                 self._latency_tracker.abort(trace_id, "interaction turn manager 未送入 BrainEngine")
                 continue
 
+            self._trigger_prewarm(trace_id)
             self._active_trace_id = trace_id
             self._active_source = pending.source
             self._active_text = pending.text
@@ -115,3 +118,21 @@ class InteractionTurnManager(QObject):
         self.turn_completed.emit(finished_trace_id, finished_source, finished_text)
         self.queue_depth_changed.emit(len(self._pending_inputs))
         self._start_next_if_idle()
+
+    def _trigger_prewarm(self, trace_id: str | None):
+        normalized_trace_id = str(trace_id or "").strip()
+        callback = self._prewarm_callback
+        if not normalized_trace_id or not callable(callback):
+            return
+
+        def run_prewarm():
+            try:
+                callback(normalized_trace_id)
+            except Exception:
+                return
+
+        threading.Thread(
+            target=run_prewarm,
+            daemon=True,
+            name=f"VoAIPrewarm:{normalized_trace_id[:8]}",
+        ).start()

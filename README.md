@@ -110,7 +110,7 @@ Virtual-Pet/
   啟動 `QApplication`、`TransparentWindow`、`BrainEngine`、`InteractionTurnManager`、`STTSessionController`、`WaveSensor`，並管理整體關閉流程。
 
 - `interaction_turn_manager.py`
-  把 STT 與 Dev Query 序列化成一輪一輪互動。上一輪尚未完成時，下一輪只會排隊，不會插隊。
+  把 STT 與 Dev Query 序列化成一輪一輪互動。上一輪尚未完成時，下一輪只會排隊，不會插隊；當新的一輪真正成為 active turn 時，也會以共享 `requests.Session` 背景觸發一次 VoAI HTTP prewarm，提前暖好後續 TTS request 的連線狀態。
 
 - `api_client/brain_engine.py`
   使用 `ChatOpenAI(model="gpt-4o-mini", streaming=True)`。以 message history 保存最近幾輪對話，避免使用已棄用的 classic memory；同時在背景執行緒預熱 active profile，將串流拆成 `token_streamed`、`streamed_fragment` 與 `sentence_ready` 三條路徑，讓 UI 可逐 token 顯示、action 可先行解析、語音以較保守的全句 / 段落級邊界排入播放。`sentence_ready` 只會在硬句界與最小字數門檻成立時送出，但 `[ACTION:*]` 後的第一句仍保留即時發射豁免。
@@ -122,7 +122,7 @@ Virtual-Pet/
   將 VoAI primary path 與 ElevenLabs fallback 包成單一 worker contract；負責轉發 `driver_started`、記錄 fallback 決策，並在雙重失敗時回報 text-only 降級。
 
 - `api_client/voai_client.py`
-  預設 TTS provider。支援 `VOAI_TRANSPORT_MODE=auto/http/websocket` 三種 transport mode：`auto` 會優先嘗試已配置的 duplex transport，否則退回官方文件保證的 HTTP PCM 串流；`http` 固定走 `TTS/Speech` / `TTS/generate-voice`；`websocket` 則保留給未來正式公開的 duplex contract。若只是 backend / content-type 類問題，仍可回退到同 provider 的 MP3 BytesIO 佇列；若遇到 `HTTP 529`、upgrade failure 或 definitive connect error，則交由 adaptive fallback layer 立刻切到 ElevenLabs。
+  預設 TTS provider。正式主路徑已收斂為文件化的 HTTP PCM 串流：固定走 `TTS/Speech`，以共享 `requests.Session` 送出 `x-output-format: pcm` 的 request；若只是 backend / content-type 類問題，仍可回退到同 provider 的 MP3 BytesIO 佇列。當 `InteractionTurnManager` 啟動新回合時，會先用同一個 shared session 對 VoAI 發送輕量 authenticated prewarm request；這個 prewarm 若失敗只會被記錄為 advisory outcome，不會直接觸發 ElevenLabs fallback。只有真正的 pre-`driver_started` synthesis fast-fail，例如 `HTTP 529` 或 definitive connect error，才會交由 adaptive fallback layer 切到 ElevenLabs。
 
 - `audio_worker.py`
   將完整 MP3 buffer queue 與 trace-aware PCM session 收斂到同一個播放 worker。對同一個 trace 的多個 PCM 句段會共用一個連續播放 session，`driver_started` 只會在第一次真正交給播放驅動時發出一次；trace 完成或中斷時才關閉 session，避免每句重開播放器。
@@ -148,6 +148,7 @@ Virtual-Pet/
 使用者輸入
 -> Azure STT speech end / finalized text
 -> InteractionTurnManager
+-> active turn start 觸發 VoAI HTTP prewarm（shared session, advisory only）
 -> BrainEngine(OpenAI streaming)
 -> token_streamed 持續更新對話卡片
 -> streamed_fragment 先解析 [ACTION:*] 並切到 pre-action / idle
@@ -276,7 +277,6 @@ AZURE_STT_ENABLED=true
 
 ```bash
 VOAI_PCM_STREAMING_ENABLED=true
-VOAI_TRANSPORT_MODE=auto
 CHATGPT_API_KEY=your_openai_api_key_fallback
 BRAIN_MEMORY_MAX_TURNS=6
 BRAIN_SENTENCE_MIN_CHARS=15
@@ -298,12 +298,13 @@ AZURE_STT_SEGMENTATION_MAX_TIME_MS=4000
 - `ELEVENLABS_API_KEY` 是 adaptive fallback 啟用時的必要欄位。
 - `CHATGPT_API_KEY` 只作為 `OPENAI_API_KEY` 的 fallback。
 - `VOAI_PCM_STREAMING_ENABLED=false` 可暫時停用 PCM 串流，回退到 MP3 BytesIO 播放。
-- `VOAI_TRANSPORT_MODE=auto` 是目前建議值；由於 VoAI 公開文件目前明確保證的是 HTTP `GetSpeaker` / `TTS/Speech` / `TTS/generate-voice`，只有在你已取得正式 duplex contract 時才建議改成 `websocket`。
+- `VOAI_TRANSPORT_MODE` 已進入 deprecated shim；runtime 目前一律收斂到文件化 HTTP PCM 主路徑，舊值只會被正規化為 `http` 並輸出提示，不再提供正式 websocket 主路徑。
 - `ACTION_SYNC_TIMEOUT_MS` 預設已拉高到 `6000`，用來降低正常 VoAI 起播時被誤判成 `timeout_promoted` 的機率。
 - `BRAIN_SENTENCE_MIN_CHARS` 可調整全句級 `sentence_ready` 的最小字數門檻，預設為 `15`。
 - `ELEVENLABS_VOICE_ID` 是全域 fallback 聲線；`ELEVENLABS_MIKU_VOICE_ID`、`ELEVENLABS_CHOPPER_VOICE_ID` 可覆蓋角色專屬 fallback 聲線。
 - `BRAIN_MEMORY_MAX_TURNS` 用來限制保留的最近對話輪數，避免上下文無限制膨脹而拖慢延遲。
 - `AZURE_STT_*TIMEOUT_MS` 用來校調 Azure STT 的收音收尾與 segmentation；目前 README 內的預設值對應低延遲互動模式。
+- VoAI turn-start prewarm 會在新回合成為 active turn 時背景觸發；它只負責暖線與授權，不會建立音訊，也不會因為失敗就切到 ElevenLabs。
 - 舊的 `OLLAMA_*` 設定仍留在 `config.py` 內做相容保留，但已不是目前互動主路徑。
 
 ## 啟動
@@ -328,7 +329,7 @@ python -m unittest discover -s tests -v
 - 同 trace PCM session 的 single `driver_started`、逐句 `playback_finished` 與中途中斷
 - `report_news` / `play_music` loop action 的重複觸發保護
 - OpenAI 串流切片、全句級緩衝與安全降級
-- VoAI transport mode、PCM session handoff、adaptive fallback、provider-neutral playback 與 critical text-only 降級
+- VoAI HTTP PCM primary path、shared-session prewarm、adaptive fallback、provider-neutral playback 與 critical text-only 降級
 - interaction turn 排隊與完成順序
 - STT 控制、partial preview 與延遲追蹤
 - wave sensor 整合
@@ -343,10 +344,11 @@ python scripts/smoke_test.py
 
 - 檢查 `.env` 主要欄位
 - 檢查 OpenAI 串流是否能產出 action-first 片段
-- 檢查 VoAI PCM 串流是否能回傳有效音訊
+- 檢查文件化的 VoAI HTTP PCM 主路徑是否能回傳有效音訊
 - 檢查 `timeout_promoted` 是否會抑制晚到音訊與重複 motion
 - 可用 `python scripts/smoke_test.py --mock-tts-fail voai529` 驗證 VoAI 529 -> ElevenLabs 自動 fallback
 - 可用 `python scripts/smoke_test.py --mock-tts-fail double-fail` 驗證雙 provider 失敗時的文字-only 降級
+- VoAI turn-start prewarm 失敗屬於 advisory only；smoke 不會因單獨的 prewarm failure 就把 provider 視為失效
 - 先 warmup 1 輪，再量測 3 輪 latency probe；確認 token-first UI、`driver_started` 與整輪中位數是否達標，並輸出 `fast_rounds` 供觀察穩定度
 
 ### 真實 STT 端到端量測

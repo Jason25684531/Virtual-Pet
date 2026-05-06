@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+import threading
 import unittest
 
 from PyQt5.QtCore import QCoreApplication
@@ -73,6 +74,36 @@ class InteractionTurnManagerTests(unittest.TestCase):
         self.assertTrue(result["started"])
         self.assertEqual(result["trace_id"], external_trace_id)
         self.assertEqual(brain.sent_items[0][1], external_trace_id)
+        manager.shutdown()
+
+    def test_turn_start_triggers_prewarm_callback_only_for_active_turns(self):
+        tracker = InteractionLatencyTracker()
+        brain = _FakeBrainEngine()
+        prewarmed_trace_ids: list[str] = []
+        first_event = threading.Event()
+        second_event = threading.Event()
+
+        def fake_prewarm(trace_id: str):
+            prewarmed_trace_ids.append(trace_id)
+            if len(prewarmed_trace_ids) == 1:
+                first_event.set()
+            if len(prewarmed_trace_ids) == 2:
+                second_event.set()
+
+        manager = InteractionTurnManager(brain, tracker, prewarm_callback=fake_prewarm)
+        first = manager.submit("stt", "第一句")
+        second = manager.submit("stt", "第二句")
+
+        self.assertTrue(first["started"])
+        self.assertFalse(second["started"])
+        self.assertTrue(first_event.wait(1.0))
+        self.assertEqual(prewarmed_trace_ids, [first["trace_id"]])
+
+        tracker.mark_brain_completed(first["trace_id"])
+        manager._on_monitor_tick()
+
+        self.assertTrue(second_event.wait(1.0))
+        self.assertEqual(prewarmed_trace_ids, [first["trace_id"], brain.sent_items[1][1]])
         manager.shutdown()
 
 

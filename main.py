@@ -49,6 +49,7 @@ def main():
     from PyQt5.QtWidgets import QApplication
     from PyQt5.QtCore import QTimer
     from api_client.brain_engine import BrainEngine, sanitize_tts_text
+    from api_client.voai_client import prewarm_voai_http_session
     import config
     from interaction_trace import InteractionLatencyTracker
     from interaction_turn_manager import InteractionTurnManager
@@ -76,7 +77,15 @@ def main():
     window.set_action_status("正在預熱 OpenAI 大腦...", tone="working", timeout_ms=2500)
 
     brain_engine = BrainEngine(latency_tracker=latency_tracker, parent=app)
-    turn_manager = InteractionTurnManager(brain_engine, latency_tracker, parent=app)
+    turn_manager = InteractionTurnManager(
+        brain_engine,
+        latency_tracker,
+        prewarm_callback=lambda trace_id: prewarm_voai_http_session(
+            trace_id=trace_id,
+            latency_tracker=latency_tracker,
+        ),
+        parent=app,
+    )
     stt_controller = STTSessionController(latency_tracker=latency_tracker, parent=app)
     original_apply_character = window.apply_character
 

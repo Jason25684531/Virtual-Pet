@@ -11,7 +11,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from api_client.voai_client import VoAIStreamingTTSWorker
+import api_client.voai_client as voai_client
+from api_client.voai_client import VoAIStreamingTTSWorker, prewarm_voai_http_session
 
 
 class _SignalCollector:
@@ -23,11 +24,12 @@ class _SignalCollector:
 
 
 class _FakeResponse:
-    def __init__(self, chunks=None, content=None, headers=None, error=None):
+    def __init__(self, chunks=None, content=None, headers=None, error=None, status_code=200):
         self._chunks = list(chunks or [])
         self.content = content if content is not None else b"".join(self._chunks)
         self.headers = headers or {"content-type": "audio/wav"}
         self._error = error
+        self.status_code = status_code
         self.closed = False
 
     def raise_for_status(self):
@@ -85,37 +87,6 @@ class _PcmSinkCollector:
         self.finished_segments.append((reply_id, trace_id))
 
 
-class _FakeTransportSession:
-    def __init__(self, *, chunks=None, warmup_error=None, iter_error=None):
-        self._chunks = list(chunks or [])
-        self._warmup_error = warmup_error
-        self._iter_error = iter_error
-        self.warmed_up = False
-        self.closed = False
-        self.finished = False
-        self.sent_text = []
-
-    def warmup(self):
-        if self._warmup_error is not None:
-            raise self._warmup_error
-        self.warmed_up = True
-
-    def send_text(self, text: str):
-        self.sent_text.append(text)
-
-    def finish_input(self):
-        self.finished = True
-
-    def iter_audio_chunks(self):
-        if self._iter_error is not None:
-            raise self._iter_error
-        for chunk in self._chunks:
-            yield chunk
-
-    def close(self):
-        self.closed = True
-
-
 class VoAIStreamingTests(unittest.TestCase):
     def setUp(self):
         self._original_key = os.environ.get("VOAI_API_KEY")
@@ -171,50 +142,15 @@ class VoAIStreamingTests(unittest.TestCase):
         self.assertTrue(finished.events[0][0])
         self.assertEqual(finished.events[0][2]["format"], "pcm")
 
-    def test_websocket_transport_session_streams_without_http_post(self):
+    def test_deprecated_transport_mode_is_normalized_to_http_primary_path(self):
         player = _FakePcmPlayer()
         progress = _SignalCollector()
         finished = _SignalCollector()
         factory_calls = []
-        session = _FakeTransportSession(chunks=[b"ws-a", b"ws-b"])
+        calls = []
 
         def fake_transport_factory(**kwargs):
             factory_calls.append(kwargs)
-            return session
-
-        def fake_post(*_args, **_kwargs):
-            raise AssertionError("explicit websocket mode should not call HTTP fallback")
-
-        worker = VoAIStreamingTTSWorker(
-            text="測試 websocket",
-            trace_id="trace-ws",
-            requests_post=fake_post,
-            pcm_player_factory=lambda: player,
-            transport_mode="websocket",
-            transport_session_factory=fake_transport_factory,
-        )
-        worker.progress_signal.connect(progress)
-        worker.finished_signal.connect(finished)
-
-        worker.run()
-
-        self.assertEqual(player.played, b"ws-aws-b")
-        self.assertEqual(len(factory_calls), 1)
-        self.assertEqual(factory_calls[0]["transport_mode"], "websocket")
-        self.assertTrue(session.warmed_up)
-        self.assertEqual(session.sent_text, ["測試 websocket"])
-        self.assertTrue(session.finished)
-        self.assertTrue(session.closed)
-        self.assertEqual(progress.events[0][0], "transport_selected")
-        self.assertEqual(progress.events[0][1]["transport"], "websocket")
-        self.assertEqual(finished.events[0][2]["transport"], "websocket")
-
-    def test_auto_transport_falls_back_to_http_pcm_when_duplex_unavailable(self):
-        calls = []
-        player = _FakePcmPlayer()
-        progress = _SignalCollector()
-
-        def fake_transport_factory(**_kwargs):
             return None
 
         def fake_post(*_args, **kwargs):
@@ -222,73 +158,55 @@ class VoAIStreamingTests(unittest.TestCase):
             return _FakeResponse(chunks=[b"pcm-a", b"pcm-b"], headers={"content-type": "audio/pcm"})
 
         worker = VoAIStreamingTTSWorker(
-            text="測試 auto",
-            trace_id="trace-auto",
+            text="測試 websocket shim",
+            trace_id="trace-http-only",
             requests_post=fake_post,
             pcm_player_factory=lambda: player,
-            transport_mode="auto",
+            transport_mode="websocket",
             transport_session_factory=fake_transport_factory,
         )
         worker.progress_signal.connect(progress)
+        worker.finished_signal.connect(finished)
 
         worker.run()
 
         self.assertEqual(player.played, b"pcm-apcm-b")
+        self.assertEqual(factory_calls, [])
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["headers"]["x-output-format"], "pcm")
-        self.assertTrue(any(event[0] == "transport_fallback" for event in progress.events))
+        self.assertEqual(finished.events[0][2]["transport"], "http")
+        self.assertFalse(any(event[0] in {"transport_selected", "transport_fallback"} for event in progress.events))
 
-    def test_websocket_upgrade_failure_emits_fast_fail_when_adaptive_enabled(self):
-        finished = _SignalCollector()
+    def test_prewarm_uses_authenticated_shared_session_request(self):
+        calls = []
+        original_get = voai_client._VOAI_HTTP_SESSION.get
 
-        def fake_transport_factory(**_kwargs):
-            return _FakeTransportSession(warmup_error=RuntimeError("101 upgrade failed"))
+        def fake_get(*args, **kwargs):
+            calls.append((args, kwargs))
+            return _FakeResponse(headers={"content-type": "application/json"}, status_code=200)
 
-        def fake_post(*_args, **_kwargs):
-            raise AssertionError("websocket mode should not downgrade to HTTP in this test")
+        voai_client._VOAI_HTTP_SESSION.get = fake_get
+        try:
+            payload = prewarm_voai_http_session(trace_id="trace-prewarm")
+        finally:
+            voai_client._VOAI_HTTP_SESSION.get = original_get
 
-        worker = VoAIStreamingTTSWorker(
-            text="測試",
-            trace_id="trace-upgrade-fail",
-            requests_post=fake_post,
-            pcm_player_factory=lambda: _FakePcmPlayer(),
-            adaptive_fallback_enabled=True,
-            transport_mode="websocket",
-            transport_session_factory=fake_transport_factory,
-        )
-        worker.finished_signal.connect(finished)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["advisory"])
+        self.assertEqual(payload["transport"], "http")
+        self.assertEqual(calls[0][0][0], voai_client._VOAI_PREWARM_URL)
+        self.assertEqual(calls[0][1]["headers"]["x-api-key"], "test-key")
 
-        worker.run()
+    def test_prewarm_failure_is_advisory_only(self):
+        def fake_get(*_args, **_kwargs):
+            raise requests.ConnectionError("prewarm failed")
 
-        self.assertFalse(finished.events[0][0])
-        payload = finished.events[0][2]
-        self.assertTrue(payload["fast_fail"])
-        self.assertEqual(payload["failure_code"], "transport_upgrade_failed")
-        self.assertEqual(payload["transport"], "websocket")
+        payload = prewarm_voai_http_session(trace_id="trace-prewarm-failed", requests_get=fake_get)
 
-    def test_websocket_abnormal_close_emits_transport_closed_fast_fail(self):
-        finished = _SignalCollector()
-
-        def fake_transport_factory(**_kwargs):
-            return _FakeTransportSession(iter_error=RuntimeError("abnormal close code 1006"))
-
-        worker = VoAIStreamingTTSWorker(
-            text="測試 close",
-            trace_id="trace-close-fail",
-            pcm_player_factory=lambda: _FakePcmPlayer(),
-            adaptive_fallback_enabled=True,
-            transport_mode="websocket",
-            transport_session_factory=fake_transport_factory,
-        )
-        worker.finished_signal.connect(finished)
-
-        worker.run()
-
-        self.assertFalse(finished.events[0][0])
-        payload = finished.events[0][2]
-        self.assertTrue(payload["fast_fail"])
-        self.assertEqual(payload["failure_code"], "transport_closed")
-        self.assertEqual(payload["transport"], "websocket")
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload["advisory"])
+        self.assertEqual(payload["failure_code"], "request_error")
+        self.assertNotIn("fast_fail", payload)
 
     def test_pcm_unavailable_falls_back_to_mp3_audio_ready(self):
         calls = []

@@ -1,5 +1,8 @@
 """
-ECHOES smoke test for token-first OpenAI streaming + synced VoAI playback.
+ECHOES smoke test for token-first OpenAI streaming + synced VoAI HTTP PCM playback.
+
+This smoke contract validates the documented HTTP PCM primary path. Deprecated
+transport-mode shims are intentionally not treated as a separate runtime path.
 
 請務必先進入 Ubuntu 24.04 專案虛擬環境後再執行：
     source venv/bin/activate

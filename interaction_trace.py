@@ -111,6 +111,19 @@ class InteractionLatencyTracker:
     def mark_brain_started(self, trace_id: str | None):
         self._record(trace_id, "brain_started", "BrainEngine 開始處理")
 
+    def mark_voai_prewarm_started(self, trace_id: str | None):
+        self._record(trace_id, "voai_prewarm_started", "VoAI HTTP prewarm started", first_only=True)
+
+    def mark_voai_prewarm_finished(self, trace_id: str | None, status_code: int | None = None):
+        detail = "VoAI HTTP prewarm finished"
+        if status_code is not None:
+            detail = f"{detail} (HTTP {status_code})"
+        self._record(trace_id, "voai_prewarm_finished", detail, first_only=True)
+
+    def mark_voai_prewarm_failed(self, trace_id: str | None, detail: str):
+        normalized = str(detail or "VoAI HTTP prewarm failed").strip() or "VoAI HTTP prewarm failed"
+        self._record(trace_id, "voai_prewarm_failed", normalized, first_only=True)
+
     def mark_fragment_emitted(self, trace_id: str | None, fragment: str):
         if not trace_id:
             return

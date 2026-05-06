@@ -64,6 +64,38 @@ class _VoAIFastFailWorker:
         return None
 
 
+class _VoAIAdvisoryFailureWorker:
+    instances: list["_VoAIAdvisoryFailureWorker"] = []
+
+    def __init__(self, *args, adaptive_fallback_enabled: bool = False, **kwargs):
+        self.reply_id = kwargs.get("reply_id") or "reply-advisory"
+        self.trace_id = kwargs.get("trace_id") or "trace-advisory"
+        self.adaptive_fallback_enabled = adaptive_fallback_enabled
+        self.finished_signal = _DebugSignal()
+        self.progress_signal = _DebugSignal()
+        self.audio_ready_signal = _DebugSignal()
+        self.finished = _DebugSignal()
+        _VoAIAdvisoryFailureWorker.instances.append(self)
+
+    def start(self):
+        self.finished_signal.emit(
+            False,
+            "VoAI prewarm advisory failure",
+            {
+                "reply_id": self.reply_id,
+                "trace_id": self.trace_id,
+                "provider": "voai",
+                "advisory": True,
+                "stage": "prewarm",
+                "failure_code": "request_error",
+            },
+        )
+        self.finished.emit()
+
+    def deleteLater(self):
+        return None
+
+
 class _ElevenLabsSuccessWorker:
     instances: list["_ElevenLabsSuccessWorker"] = []
 
@@ -137,6 +169,7 @@ class AdaptiveTTSFallbackWorkerTests(unittest.TestCase):
 
     def setUp(self):
         _VoAIFastFailWorker.instances.clear()
+        _VoAIAdvisoryFailureWorker.instances.clear()
         _ElevenLabsSuccessWorker.instances.clear()
         _ElevenLabsFailureWorker.instances.clear()
 
@@ -191,6 +224,31 @@ class AdaptiveTTSFallbackWorkerTests(unittest.TestCase):
         self.assertTrue(payload["critical_tts_failure"])
         self.assertTrue(payload["text_only"])
         self.assertEqual(payload["provider_chain"], ["voai", "elevenlabs"])
+
+    def test_advisory_voai_failure_does_not_trigger_cross_provider_fallback(self):
+        progress = _SignalCollector()
+        finished = _SignalCollector()
+        worker = AdaptiveTTSFallbackWorker(
+            text="測試",
+            reply_id="reply-3",
+            trace_id="trace-3",
+            voice_id="Choppr",
+            fallback_voice_id="ELV-VOICE-3",
+            voai_worker_factory=_VoAIAdvisoryFailureWorker,
+            elevenlabs_worker_factory=_ElevenLabsSuccessWorker,
+        )
+        worker.progress_signal.connect(progress)
+        worker.finished_signal.connect(finished)
+
+        worker.start()
+
+        event_names = [event[0] for event in progress.events]
+        self.assertNotIn("fallback_triggered", event_names)
+        self.assertEqual(len(_ElevenLabsSuccessWorker.instances), 0)
+        self.assertFalse(finished.events[0][0])
+        payload = finished.events[0][2]
+        self.assertTrue(payload["advisory"])
+        self.assertEqual(payload["provider"], "voai")
 
 
 if __name__ == "__main__":
