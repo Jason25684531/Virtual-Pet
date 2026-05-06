@@ -16,6 +16,7 @@
     var conversationList = document.getElementById('conversation-list');
     var conversationQueueText = document.getElementById('conversation-queue-text');
     var idleSource = '';
+    var idleMotionCandidates = [];
     var statusTimer = null;
     var motionLoopTimer = null;
     var motionLoopSource = null;
@@ -135,6 +136,66 @@
         }
     }
 
+    function normalizeIdleMotionCandidates(candidates) {
+        if (!Array.isArray(candidates)) {
+            return [];
+        }
+
+        return candidates.map(function (candidate) {
+            if (!candidate || typeof candidate !== 'object') {
+                return null;
+            }
+            var source = typeof candidate.source === 'string' ? candidate.source : '';
+            var weight = Number(candidate.weight) || 1;
+            if (!source) {
+                return null;
+            }
+            return {
+                source: source,
+                weight: Math.max(1, weight)
+            };
+        }).filter(Boolean);
+    }
+
+    function chooseIdleMotionSource(fallbackSource) {
+        var candidates = idleMotionCandidates;
+        if (!candidates.length) {
+            return fallbackSource || idleSource;
+        }
+
+        var totalWeight = candidates.reduce(function (sum, candidate) {
+            return sum + candidate.weight;
+        }, 0);
+        if (totalWeight <= 0) {
+            return candidates[0].source;
+        }
+
+        var threshold = Math.random() * totalWeight;
+        var runningWeight = 0;
+        for (var index = 0; index < candidates.length; index += 1) {
+            runningWeight += candidates[index].weight;
+            if (threshold < runningWeight) {
+                return candidates[index].source;
+            }
+        }
+        return candidates[candidates.length - 1].source;
+    }
+
+    function restoreIdleMotionInternal(fallbackSource) {
+        var nextIdleSource = chooseIdleMotionSource(fallbackSource);
+        if (!nextIdleSource) {
+            console.warn('[ECHOES] 目前沒有可用的 idle motion candidate');
+            return;
+        }
+
+        idleSource = nextIdleSource;
+        console.log('[ECHOES] 設定 idle 動畫:', nextIdleSource);
+        if (motionLoopActive) {
+            return;
+        }
+        setSource(nextIdleSource, true);
+    }
+
     function setStatus(message, tone, timeoutMs) {
         if (statusTimer) {
             clearTimeout(statusTimer);
@@ -160,8 +221,8 @@
 
     video.addEventListener('ended', function () {
         console.log('[ECHOES:MAIN_VIDEO_ENDED]');
-        if (!video.loop && idleSource && !motionLoopActive) {
-            setSource(idleSource, true);
+        if (!video.loop && !motionLoopActive) {
+            restoreIdleMotionInternal(idleSource);
         }
     });
 
@@ -184,6 +245,15 @@
         idleSource = source;
         console.log('[ECHOES] 設定 idle 動畫:', source);
         setSource(source, true);
+    };
+
+    window.setIdleMotionCandidates = function (candidates) {
+        idleMotionCandidates = normalizeIdleMotionCandidates(candidates);
+        console.log('[ECHOES] 更新 idle motion candidates:', idleMotionCandidates.length);
+    };
+
+    window.restoreIdleMotion = function (fallbackSource) {
+        restoreIdleMotionInternal(fallbackSource || idleSource);
     };
 
     /**

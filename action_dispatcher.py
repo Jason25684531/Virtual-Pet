@@ -44,6 +44,7 @@ class ActionBinding:
     motion_key: str
     status_label: str
     handler_name: str
+    skip_tts_sync: bool = False
 
 
 @dataclass
@@ -98,6 +99,7 @@ class ActionDispatcher(QObject):
         self._pending_tts_chunks: "queue.Queue[tuple[str, str, str | None]]" = queue.Queue()
         self._pending_actions: dict[str, PendingActionState] = {}
         self._suppressed_traces: set[str] = set()
+        self._tts_not_expected_traces: set[str] = set()
         self._driver_started_replies: set[str] = set()
         self._queued_playback_results: dict[str, tuple[str | None, str]] = {}
         self._trace_tts_providers: dict[str, str] = {}
@@ -131,6 +133,7 @@ class ActionDispatcher(QObject):
                 motion_key="play_music",
                 status_label="正在挑選音樂",
                 handler_name="_handle_play_music",
+                skip_tts_sync=True,
             ),
             "wave_response": ActionBinding(
                 name="wave_response",
@@ -259,9 +262,17 @@ class ActionDispatcher(QObject):
         if self._latency_tracker is not None:
             self._latency_tracker.mark_action_dispatched(trace_id, action_name)
         use_pending_sync = bool(trace_id)
+        intentional_tts_suppression = False
         if use_pending_sync:
             self._start_pending_action(trace_id, binding)
             motion_found = True
+            if binding.skip_tts_sync and normalized_trace_id:
+                motion_found = self._activate_pending_action(normalized_trace_id, promoted=False)
+                if motion_found:
+                    self._suppressed_traces.add(normalized_trace_id)
+                    self._tts_not_expected_traces.add(normalized_trace_id)
+                    self._audio_worker.suppress_trace(normalized_trace_id)
+                    intentional_tts_suppression = True
         else:
             wait_for_main_video_ended = bool(action_name == "wave_response" and not display_message)
             motion_found = self._play_binding_motion(
@@ -280,14 +291,10 @@ class ActionDispatcher(QObject):
                     self._synthesize_tts(display_message, tone=message_tone, trace_id=trace_id)
             except Exception as exc:  # pragma: no cover - 防止 TTS 異常阻斷動作播放
                 print(f"[ECHOES] 警告: TTS 背景啟動失敗，但動作已照常執行。({exc})")
+            if intentional_tts_suppression and motion_found and self._current_loop_action_key is not None:
+                self._schedule_non_tts_loop_cleanup(binding)
         elif motion_found and self._current_loop_action_key is not None:
-            # 無 TTS 動作仍需等主 WebM / panel lifecycle 收尾；timer 只作為 ended callback 失效時的保護。
-            if binding.name in WAIT_MAIN_VIDEO_BEFORE_FINISH_ACTIONS:
-                if not self._panel_video_started:
-                    self._wait_for_main_video_ended = True
-                self._schedule_loop_cleanup(12000, wait_for_main_video_end=True)
-            else:
-                self._schedule_loop_cleanup(12000 if self._wait_for_main_video_ended else 3000)
+            self._schedule_non_tts_loop_cleanup(binding)
         return True
 
     @staticmethod
@@ -392,6 +399,7 @@ class ActionDispatcher(QObject):
             return
         self._clear_pending_action(normalized_trace_id)
         self._suppressed_traces.discard(normalized_trace_id)
+        self._tts_not_expected_traces.discard(normalized_trace_id)
         self._audio_worker.clear_suppressed_trace(normalized_trace_id)
         if hasattr(self._window, "stop_motion_loop"):
             self._window.stop_motion_loop()
@@ -459,6 +467,15 @@ class ActionDispatcher(QObject):
         if state is None or state.status != "pending":
             return
         self._activate_pending_action(normalized_trace_id, promoted=True)
+
+    def _schedule_non_tts_loop_cleanup(self, binding: ActionBinding):
+        # 無 TTS 動作仍需等主 WebM / panel lifecycle 收尾；timer 只作為 ended callback 失效時的保護。
+        if binding.name in WAIT_MAIN_VIDEO_BEFORE_FINISH_ACTIONS:
+            if not self._panel_video_started:
+                self._wait_for_main_video_ended = True
+            self._schedule_loop_cleanup(12000, wait_for_main_video_end=True)
+            return
+        self._schedule_loop_cleanup(12000 if self._wait_for_main_video_ended else 3000)
 
     def _play_binding_motion(
         self,
@@ -611,16 +628,23 @@ class ActionDispatcher(QObject):
 
         normalized_trace_id = str(trace_id or "").strip()
         if normalized_trace_id in self._suppressed_traces:
+            skipped_by_design = normalized_trace_id in self._tts_not_expected_traces
+            suppressed_message = (
+                "因 play_music fast path 依設計略過語音。"
+                if skipped_by_design
+                else "因 timeout_promoted 已抑制後續句段。"
+            )
             reply_id = uuid4().hex
             self._on_tts_finished(
                 reply_id,
                 False,
-                "因 timeout_promoted 已抑制後續句段。",
+                suppressed_message,
                 {
                     "reply_id": reply_id,
                     "trace_id": normalized_trace_id,
                     "text": speech_text,
                     "suppressed": True,
+                    "tts_skipped_by_design": skipped_by_design,
                 },
             )
             return
@@ -654,15 +678,22 @@ class ActionDispatcher(QObject):
         reply_id, speech_text, trace_id = self._pending_tts_chunks.get_nowait()
         normalized_trace_id = str(trace_id or "").strip()
         if normalized_trace_id in self._suppressed_traces:
+            skipped_by_design = normalized_trace_id in self._tts_not_expected_traces
+            suppressed_message = (
+                "因 play_music fast path 依設計略過語音。"
+                if skipped_by_design
+                else "因已改為文字-only 或 timeout_promoted，略過後續句段。"
+            )
             self._on_tts_finished(
                 reply_id,
                 False,
-                "因已改為文字-only 或 timeout_promoted，略過後續句段。",
+                suppressed_message,
                 {
                     "reply_id": reply_id,
                     "trace_id": normalized_trace_id,
                     "text": speech_text,
                     "suppressed": True,
+                    "tts_skipped_by_design": skipped_by_design,
                 },
             )
             self._start_next_tts_worker()
@@ -865,13 +896,14 @@ class ActionDispatcher(QObject):
     def _on_tts_finished(self, reply_id: str, success: bool, message: str, payload: object):
         trace_id = payload.get("trace_id") if isinstance(payload, dict) else None
         normalized_trace_id = str(trace_id or "").strip()
+        skipped_by_design = bool(isinstance(payload, dict) and payload.get("tts_skipped_by_design"))
         if normalized_trace_id:
             pending_count = self._trace_pending_tts_counts.get(normalized_trace_id, 0)
             if pending_count <= 1:
                 self._trace_pending_tts_counts.pop(normalized_trace_id, None)
             else:
                 self._trace_pending_tts_counts[normalized_trace_id] = pending_count - 1
-        if normalized_trace_id in self._suppressed_traces and reply_id not in self._driver_started_replies:
+        if normalized_trace_id in self._suppressed_traces and reply_id not in self._driver_started_replies and not skipped_by_design:
             success = False
             if "抑制" not in message:
                 message = "因 timeout_promoted 抑制晚到音訊。"
@@ -881,14 +913,22 @@ class ActionDispatcher(QObject):
                 self._trace_tts_providers[normalized_trace_id] = selected_provider
             if payload.get("critical_tts_failure"):
                 self._handle_critical_tts_failure(normalized_trace_id, message)
+        if skipped_by_design and self._latency_tracker is not None:
+            self._latency_tracker.mark_tts_skipped_by_design(normalized_trace_id, message)
         queued_playback = bool(isinstance(payload, dict) and payload.get("queued_playback"))
         if queued_playback and success:
             self._queued_playback_results[reply_id] = (trace_id, message)
             self._maybe_close_trace_audio_session(normalized_trace_id)
             return
         if self._latency_tracker is not None:
-            self._latency_tracker.mark_tts_finished(trace_id, reply_id, success, message)
-        if not success:
+            self._latency_tracker.mark_tts_finished(
+                trace_id,
+                reply_id,
+                success,
+                message,
+                skipped_by_design=skipped_by_design,
+            )
+        if not success and not skipped_by_design:
             print(f"[ECHOES] 提示: 串流 TTS 未播放，保留文字回覆。{message}")
             self._maybe_close_trace_audio_session(normalized_trace_id)
             return
@@ -937,6 +977,7 @@ class ActionDispatcher(QObject):
             self._clear_pending_action(trace_id)
         self._pending_actions.clear()
         self._suppressed_traces.clear()
+        self._tts_not_expected_traces.clear()
         self._queued_playback_results.clear()
         self._trace_tts_providers.clear()
         self._trace_pending_tts_counts.clear()
@@ -1052,6 +1093,7 @@ class ActionDispatcher(QObject):
         if self._active_action_trace_id:
             self._clear_pending_action(self._active_action_trace_id)
             self._suppressed_traces.discard(self._active_action_trace_id)
+            self._tts_not_expected_traces.discard(self._active_action_trace_id)
             self._audio_worker.clear_suppressed_trace(self._active_action_trace_id)
             self._active_action_trace_id = None
         if hasattr(self._window, "stop_motion_loop"):

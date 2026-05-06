@@ -524,7 +524,7 @@ class TransparentWindow(QMainWindow):
             return False
 
         self._library.set_current_character_id(character_id)
-        self.change_video(idle_path, loop=True)
+        self.restore_idle_video()
         self.apply_character_layout(character_id)
         self.set_room_character(character_name)
         self.set_action_status(f"{character_name} 已待命", tone="idle", timeout_ms=2200)
@@ -576,12 +576,36 @@ class TransparentWindow(QMainWindow):
         print(f"[ECHOES] 警告: 找不到可播放的 action 動作 {motion_key}。")
         return False
 
+    def _set_idle_motion_candidates(self, character_id: str | None) -> list[dict[str, object]]:
+        if not character_id:
+            self._run_javascript("setIdleMotionCandidates", [])
+            return []
+
+        raw_candidates = self._library.get_idle_motion_candidates(character_id)
+        payload: list[dict[str, object]] = []
+        for candidate in raw_candidates:
+            absolute_path = self._resolve_media_path(candidate.get("path"))
+            if not absolute_path or not os.path.isfile(absolute_path):
+                continue
+            payload.append(
+                {
+                    "source": self._build_media_source_url(absolute_path),
+                    "weight": max(1, int(candidate.get("weight") or 1)),
+                }
+            )
+
+        self._run_javascript("setIdleMotionCandidates", payload)
+        return payload
+
     def restore_idle_video(self) -> bool:
         current_character_id = self._library.get_current_character_id()
         if current_character_id:
-            idle_path = self._library.get_motion_path(current_character_id, "idle")
-            if idle_path:
-                return self.change_video(idle_path, loop=True)
+            idle_candidates = self._set_idle_motion_candidates(current_character_id)
+            if idle_candidates:
+                self._run_javascript("restoreIdleMotion")
+                return True
+
+        self._run_javascript("setIdleMotionCandidates", [])
 
         demo_idle_path = os.path.join(
             self.DEMO_ANIMATIONS_DIR,
@@ -812,8 +836,7 @@ class TransparentWindow(QMainWindow):
             print(f"[ECHOES ERROR] WebM 檔案不存在: {absolute_path or filename}")
             return False
 
-        source_url = QUrl.fromLocalFile(absolute_path).toString(QUrl.FullyEncoded)
-        source_url = f"{source_url}?v={int(os.path.getmtime(absolute_path))}"
+        source_url = self._build_media_source_url(absolute_path)
         print(f"[ECHOES] 送出影片 URL: {source_url}")
         if loop:
             self._run_javascript("setIdleVideo", source_url)
@@ -867,6 +890,11 @@ class TransparentWindow(QMainWindow):
             "return true;"
             "})();"
         )
+
+    @staticmethod
+    def _build_media_source_url(absolute_path: str) -> str:
+        source_url = QUrl.fromLocalFile(absolute_path).toString(QUrl.FullyEncoded)
+        return f"{source_url}?v={int(os.path.getmtime(absolute_path))}"
 
     def _resolve_media_path(self, filename: str) -> str | None:
         if not filename:

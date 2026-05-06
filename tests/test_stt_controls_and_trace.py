@@ -201,6 +201,35 @@ class InteractionLatencyTrackerTests(unittest.TestCase):
 
         self.assertIsNone(tracker.snapshot(trace_id))
 
+    def test_tts_skipped_by_design_finishes_without_counting_failure(self):
+        tracker = InteractionLatencyTracker()
+        trace_id = tracker.begin_interaction("test", "我想聽音樂")
+        tracker.mark_brain_queued(trace_id)
+        tracker.mark_brain_started(trace_id)
+        tracker.mark_fragment_emitted(trace_id, "[ACTION:play_music]")
+        tracker.mark_tts_expected(trace_id, "我想聽音樂。")
+        tracker.mark_tts_skipped_by_design(trace_id, "因 play_music fast path 依設計略過語音。")
+        tracker.mark_brain_completed(trace_id)
+
+        snapshot = tracker.snapshot(trace_id)
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertTrue(snapshot["tts_skipped_by_design"])
+
+        tracker.mark_tts_finished(
+            trace_id,
+            "reply-1",
+            False,
+            "因 play_music fast path 依設計略過語音。",
+            skipped_by_design=True,
+        )
+
+        completed = tracker.get_completed_trace(trace_id)
+        self.assertIsNotNone(completed)
+        assert completed is not None
+        self.assertEqual(completed["tts_failures"], 0)
+        self.assertTrue(completed["tts_skipped_by_design"])
+
 
 if __name__ == "__main__":
     unittest.main()

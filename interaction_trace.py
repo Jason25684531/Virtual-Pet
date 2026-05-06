@@ -35,6 +35,7 @@ class InteractionTraceState:
     fallback_triggered: bool = False
     selected_tts_provider: str = ""
     text_only_completed: bool = False
+    tts_skipped_by_design: bool = False
     brain_completed: bool = False
     finalized: bool = False
 
@@ -268,7 +269,25 @@ class InteractionLatencyTracker:
             detail = f"{detail} ({provider_chain})"
         self._record(trace_id, "text_only_completed", detail, first_only=True)
 
-    def mark_tts_finished(self, trace_id: str | None, reply_id: str, success: bool, message: str):
+    def mark_tts_skipped_by_design(self, trace_id: str | None, reason: str = ""):
+        if not trace_id:
+            return
+        with self._lock:
+            state = self._traces.get(trace_id)
+            if state is None:
+                return
+            state.tts_skipped_by_design = True
+        detail = reason.strip() or "TTS 依設計略過"
+        self._record(trace_id, "tts_skipped_by_design", detail, first_only=True)
+
+    def mark_tts_finished(
+        self,
+        trace_id: str | None,
+        reply_id: str,
+        success: bool,
+        message: str,
+        skipped_by_design: bool = False,
+    ):
         if not trace_id:
             return
         should_finalize = False
@@ -279,9 +298,13 @@ class InteractionLatencyTracker:
             now = perf_counter()
             state.tts_finished += 1
             state.stages["last_tts_finished"] = now
-            note = f"reply={reply_id[:8]}，{'成功' if success else '失敗'}：{message}"
+            if skipped_by_design:
+                state.tts_skipped_by_design = True
+                note = f"reply={reply_id[:8]}，依設計略過：{message}"
+            else:
+                note = f"reply={reply_id[:8]}，{'成功' if success else '失敗'}：{message}"
             state.notes["last_tts_finished"] = note
-            if not success:
+            if not success and not skipped_by_design:
                 state.tts_failures += 1
             elapsed_ms = self._elapsed_from(state, now)
             should_finalize = self._should_finalize(state)
@@ -332,6 +355,7 @@ class InteractionLatencyTracker:
                 "fallback_triggered": state.fallback_triggered,
                 "selected_tts_provider": state.selected_tts_provider,
                 "text_only_completed": state.text_only_completed,
+                "tts_skipped_by_design": state.tts_skipped_by_design,
                 "brain_completed": state.brain_completed,
                 "finalized": state.finalized,
             }
@@ -468,6 +492,7 @@ class InteractionLatencyTracker:
             "fallback_triggered": state.fallback_triggered,
             "selected_tts_provider": provider_label,
             "text_only_completed": state.text_only_completed,
+            "tts_skipped_by_design": state.tts_skipped_by_design,
             "missing_stt_milestones": missing_stt,
             "failure_suffix": failure_suffix,
             "stage_parts": stage_parts,
@@ -488,6 +513,7 @@ class InteractionLatencyTracker:
             f" | provider={summary_payload.get('selected_tts_provider', 'unknown')}"
             f" fallback_triggered={summary_payload.get('fallback_triggered', False)}"
             f" text_only={summary_payload.get('text_only_completed', False)}"
+            f" tts_skipped_by_design={summary_payload.get('tts_skipped_by_design', False)}"
         )
         legacy_suffix = (
             f" | driver_start={summary_payload.get('driver_start_stage')} "

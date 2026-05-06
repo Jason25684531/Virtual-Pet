@@ -225,6 +225,82 @@ class _ChangeVideoHarness:
     def _resolve_media_path(self, filename: str) -> str | None:
         return os.path.abspath(os.path.normpath(filename))
 
+    @staticmethod
+    def _build_media_source_url(absolute_path: str) -> str:
+        source_url = QUrl.fromLocalFile(absolute_path).toString(QUrl.FullyEncoded)
+        return f"{source_url}?v={int(os.path.getmtime(absolute_path))}"
+
+
+class _IdleCandidateLibrary:
+    def __init__(self, current_character_id: str | None, idle_candidates: list[dict[str, object]]):
+        self._current_character_id = current_character_id
+        self._idle_candidates = list(idle_candidates)
+
+    def get_current_character_id(self):
+        return self._current_character_id
+
+    def get_idle_motion_candidates(self, _character_id: str | None):
+        return list(self._idle_candidates)
+
+
+class _ScopedIdleCandidateLibrary:
+    def __init__(self, current_character_id: str | None, idle_candidates_by_character: dict[str, list[dict[str, object]]]):
+        self._current_character_id = current_character_id
+        self._idle_candidates_by_character = {
+            character_id: list(candidates)
+            for character_id, candidates in idle_candidates_by_character.items()
+        }
+
+    def get_current_character_id(self):
+        return self._current_character_id
+
+    def get_idle_motion_candidates(self, character_id: str | None):
+        return list(self._idle_candidates_by_character.get(character_id or "", []))
+
+
+class _IdleRestoreHarness(_ChangeVideoHarness):
+    DEMO_MOTION_MAPPING = {"idle": "Idle.webm"}
+
+    def __init__(self, library, demo_dir: str):
+        super().__init__()
+        self._library = library
+        self.DEMO_ANIMATIONS_DIR = demo_dir
+
+    def _set_idle_motion_candidates(self, character_id: str | None) -> list[dict[str, object]]:
+        if not character_id:
+            self._run_javascript("setIdleMotionCandidates", [])
+            return []
+
+        raw_candidates = self._library.get_idle_motion_candidates(character_id)
+        payload: list[dict[str, object]] = []
+        for candidate in raw_candidates:
+            absolute_path = self._resolve_media_path(candidate.get("path"))
+            if not absolute_path or not os.path.isfile(absolute_path):
+                continue
+            payload.append(
+                {
+                    "source": self._build_media_source_url(absolute_path),
+                    "weight": max(1, int(candidate.get("weight") or 1)),
+                }
+            )
+
+        self._run_javascript("setIdleMotionCandidates", payload)
+        return payload
+
+    def restore_idle_video(self) -> bool:
+        current_character_id = self._library.get_current_character_id()
+        if current_character_id:
+            idle_candidates = self._set_idle_motion_candidates(current_character_id)
+            if idle_candidates:
+                self._run_javascript("restoreIdleMotion")
+                return True
+
+        self._run_javascript("setIdleMotionCandidates", [])
+        demo_idle_path = os.path.join(self.DEMO_ANIMATIONS_DIR, self.DEMO_MOTION_MAPPING["idle"])
+        if os.path.isfile(demo_idle_path):
+            return self.change_video(demo_idle_path, loop=True)
+        return False
+
 
 class _ManualQueuedTTSWorker:
     instances: list["_ManualQueuedTTSWorker"] = []
@@ -883,6 +959,65 @@ class ActionPlaybackTests(unittest.TestCase):
             )
             self.assertEqual(harness.web_view.page().scripts, [expected_script])
 
+    def test_restore_idle_video_pushes_idle_candidates_before_js_restore(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-idle-bridge-") as temp_dir:
+            idle_path = Path(temp_dir) / "Idle.webm"
+            guitar_path = Path(temp_dir) / "Idle_Guitar.webm"
+            idle_path.write_bytes(b"idle")
+            guitar_path.write_bytes(b"guitar")
+
+            library = _IdleCandidateLibrary(
+                "miku",
+                [
+                    {"path": str(idle_path), "weight": 4},
+                    {"path": str(guitar_path), "weight": 2},
+                ],
+            )
+            harness = _IdleRestoreHarness(library, temp_dir)
+
+            restored = harness.restore_idle_video()
+
+            self.assertTrue(restored)
+            self.assertEqual(len(harness.web_view.page().scripts), 2)
+            self.assertIn('"setIdleMotionCandidates"', harness.web_view.page().scripts[0])
+            self.assertIn("Idle.webm", harness.web_view.page().scripts[0])
+            self.assertIn("Idle_Guitar.webm", harness.web_view.page().scripts[0])
+            self.assertIn('"restoreIdleMotion"', harness.web_view.page().scripts[1])
+
+    def test_restore_idle_video_only_pushes_current_character_candidates(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-idle-scope-") as temp_dir:
+            miku_dir = Path(temp_dir) / "miku"
+            choppr_dir = Path(temp_dir) / "Choppr"
+            miku_dir.mkdir()
+            choppr_dir.mkdir()
+
+            miku_idle = miku_dir / "Idle.webm"
+            choppr_idle = choppr_dir / "Idle.webm"
+            choppr_reading = choppr_dir / "Idle_reading.webm"
+            miku_idle.write_bytes(b"miku")
+            choppr_idle.write_bytes(b"choppr")
+            choppr_reading.write_bytes(b"reading")
+
+            library = _ScopedIdleCandidateLibrary(
+                "Choppr",
+                {
+                    "miku": [{"path": str(miku_idle), "weight": 4}],
+                    "Choppr": [
+                        {"path": str(choppr_idle), "weight": 4},
+                        {"path": str(choppr_reading), "weight": 2},
+                    ],
+                },
+            )
+            harness = _IdleRestoreHarness(library, temp_dir)
+
+            restored = harness.restore_idle_video()
+
+            self.assertTrue(restored)
+            candidate_script = harness.web_view.page().scripts[0]
+            self.assertIn("Choppr/Idle.webm", candidate_script)
+            self.assertIn("Choppr/Idle_reading.webm", candidate_script)
+            self.assertNotIn("miku/Idle.webm", candidate_script)
+
     def test_streamed_action_prefix_starts_motion_before_text_chunk(self):
         result = run_streamed_action_first_debug_probe()
         self.assertTrue(result["ok"], result)
@@ -1011,6 +1146,61 @@ class ActionPlaybackTests(unittest.TestCase):
             self.assertEqual(completed["tts_failures"], 1)
             self.assertEqual(len(window.played_assets), 1)
             self.assertNotIn("first_driver_started", " ".join(completed["milestones"]))
+
+            dispatcher.shutdown()
+
+    def test_play_music_fast_path_marks_trace_as_tts_skipped_by_design(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-play-music-trace-fast-") as temp_dir:
+            play_music_path = Path(temp_dir) / "play_music.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            panel_path = Path(temp_dir) / "Play_Music_Panel.webm"
+            play_music_path.write_bytes(b"music")
+            idle_path.write_bytes(b"idle")
+            panel_path.write_bytes(b"panel")
+
+            tracker = InteractionLatencyTracker()
+            trace_id = tracker.begin_interaction("test", "我想聽音樂")
+            tracker.mark_brain_queued(trace_id)
+            tracker.mark_brain_started(trace_id)
+            tracker.mark_fragment_emitted(trace_id, "[ACTION:play_music]")
+            tracker.mark_tts_expected(trace_id, "我想聽音樂。")
+
+            window = _LoopActionProbeWindow(temp_dir)
+            library = _PanelLibrary({"play_music": str(panel_path)})
+            dispatcher = ActionDispatcher(
+                window,
+                library=library,
+                music_worker_factory=lambda parent=None: _ManualServiceWorker(
+                    success=True,
+                    message="音樂已完成",
+                    payload={"path": "song.mp3", "title": "Test Song"},
+                    parent=parent,
+                ),
+                motion_path_resolver=lambda motion_key: str(
+                    {"play_music": play_music_path, "idle": idle_path}.get(motion_key, "")
+                ),
+                tts_worker_factory=_ManualQueuedTTSWorker,
+                latency_tracker=tracker,
+            )
+
+            self.assertTrue(dispatcher.dispatch("[ACTION:play_music] 我想聽音樂。", trace_id=trace_id))
+
+            snapshot = tracker.snapshot(trace_id)
+            self.assertIsNotNone(snapshot)
+            assert snapshot is not None
+            self.assertEqual(snapshot["tts_finished"], 1)
+            self.assertEqual(snapshot["tts_failures"], 0)
+            self.assertTrue(snapshot["tts_skipped_by_design"])
+            self.assertFalse(snapshot["timeout_promoted"])
+
+            tracker.mark_brain_completed(trace_id)
+
+            completed = tracker.get_completed_trace(trace_id)
+            self.assertIsNotNone(completed)
+            assert completed is not None
+            self.assertEqual(completed["tts_failures"], 0)
+            self.assertTrue(completed["tts_skipped_by_design"])
+            self.assertFalse(completed["timeout_promoted"])
 
             dispatcher.shutdown()
 
@@ -1314,6 +1504,44 @@ class ActionPlaybackTests(unittest.TestCase):
             self.assertIsNone(dispatcher._current_loop_action_key)
             self.assertEqual(window.stop_motion_loop_calls, 1)
             self.assertGreaterEqual(window.restore_idle_calls, 1)
+
+            dispatcher.shutdown()
+
+    def test_play_music_fast_path_starts_without_tts_worker(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-play-music-fast-path-") as temp_dir:
+            play_music_path = Path(temp_dir) / "play_music.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            panel_path = Path(temp_dir) / "Play_Music_Panel.webm"
+            play_music_path.write_bytes(b"music")
+            idle_path.write_bytes(b"idle")
+            panel_path.write_bytes(b"panel")
+
+            window = _LoopActionProbeWindow(temp_dir)
+            library = _PanelLibrary({"play_music": str(panel_path)})
+            dispatcher = ActionDispatcher(
+                window,
+                library=library,
+                music_worker_factory=lambda parent=None: _ManualServiceWorker(
+                    success=True,
+                    message="音樂已完成",
+                    payload={"path": "song.mp3", "title": "Test Song"},
+                    parent=parent,
+                ),
+                motion_path_resolver=lambda motion_key: str(
+                    {"play_music": play_music_path, "idle": idle_path}.get(motion_key, "")
+                ),
+                tts_worker_factory=_ManualQueuedTTSWorker,
+            )
+
+            self.assertTrue(dispatcher.dispatch("[ACTION:play_music] 我想聽音樂。", trace_id="trace-music-fast"))
+
+            self.assertEqual(len(_ManualQueuedTTSWorker.instances), 0)
+            self.assertEqual(len(_ManualServiceWorker.instances), 1)
+            self.assertEqual(dispatcher._current_loop_action_key, "play_music")
+            self.assertEqual(dispatcher._active_action_trace_id, "trace-music-fast")
+            self.assertIn("trace-music-fast", dispatcher._suppressed_traces)
+            self.assertEqual(len(window.motion_loop_calls), 1)
+            self.assertEqual(len(window.panel_calls), 1)
 
             dispatcher.shutdown()
 

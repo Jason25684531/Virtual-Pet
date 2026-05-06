@@ -149,10 +149,108 @@ class CharacterLibrary:
             return None
         return str(absolute_path)
 
+    def get_idle_motion_candidates(self, character_id: str | None) -> list[dict[str, object]]:
+        manifest = self.get_character(character_id)
+        if not manifest:
+            return []
+
+        candidates: dict[str, dict[str, object]] = {}
+        normalized_character_id = str(character_id or manifest.get("id") or "").strip()
+        base_idle_path = self.get_motion_path(normalized_character_id, "idle") if normalized_character_id else None
+        if base_idle_path:
+            candidates[base_idle_path] = {"path": base_idle_path, "weight": 4}
+
+        idle_pool = manifest.get("idle_pool")
+        if not isinstance(idle_pool, list):
+            return list(candidates.values())
+
+        for entry in idle_pool:
+            resolved = self._resolve_idle_pool_entry(manifest, entry, base_idle_path)
+            if resolved is None:
+                continue
+            candidate_path, weight = resolved
+            candidates[candidate_path] = {"path": candidate_path, "weight": weight}
+        return list(candidates.values())
+
     def get_action_motion_path(self, character_id: str, action_key: str) -> str | None:
         if action_key not in ACTION_MOTION_KEYS:
             return None
         return self.get_motion_path(character_id, action_key)
+
+    def _resolve_idle_pool_entry(
+        self,
+        manifest: dict,
+        entry: object,
+        base_idle_path: str | None,
+    ) -> tuple[str, int] | None:
+        candidate = ""
+        weight: int | None = None
+        if isinstance(entry, str):
+            candidate = entry.strip()
+        elif isinstance(entry, dict):
+            candidate = str(
+                entry.get("motion")
+                or entry.get("path")
+                or entry.get("relative_path")
+                or entry.get("filename")
+                or ""
+            ).strip()
+            raw_weight = entry.get("weight")
+            if raw_weight is not None:
+                try:
+                    weight = int(raw_weight)
+                except (TypeError, ValueError):
+                    weight = None
+        else:
+            return None
+
+        resolved_path = self._resolve_idle_candidate_path(manifest, candidate, base_idle_path)
+        if not resolved_path:
+            return None
+        if weight is None:
+            weight = 4 if base_idle_path and Path(resolved_path) == Path(base_idle_path) else 2
+        return resolved_path, max(1, int(weight))
+
+    def _resolve_idle_candidate_path(
+        self,
+        manifest: dict,
+        candidate: str,
+        base_idle_path: str | None,
+    ) -> str | None:
+        normalized = str(candidate or "").strip()
+        if not normalized:
+            return None
+        if normalized == "idle":
+            return base_idle_path if base_idle_path and Path(base_idle_path).is_file() else None
+
+        motions = manifest.get("motions") if isinstance(manifest.get("motions"), dict) else {}
+        motion_candidate = motions.get(normalized)
+        if motion_candidate:
+            resolved = self._resolve_manifest_asset_path(motion_candidate)
+            if resolved:
+                return resolved
+
+        resolved = self._resolve_manifest_asset_path(normalized)
+        if resolved:
+            return resolved
+
+        motions_dir = manifest.get("motions_dir")
+        if isinstance(motions_dir, str) and motions_dir.strip():
+            return self._resolve_manifest_asset_path(str(Path(motions_dir) / normalized))
+        return None
+
+    @staticmethod
+    def _resolve_manifest_asset_path(candidate: str | None) -> str | None:
+        normalized = str(candidate or "").strip()
+        if not normalized:
+            return None
+        path = Path(normalized)
+        absolute_path = path if path.is_absolute() else PROJECT_ROOT / normalized
+        if absolute_path.suffix.lower() != ".webm":
+            return None
+        if not absolute_path.is_file():
+            return None
+        return str(absolute_path)
 
     _PANEL_MOTION_FILENAMES: dict[str, str] = {
         "report_news": "News_Panel.webm",
