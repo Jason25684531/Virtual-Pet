@@ -351,6 +351,20 @@
         turn.assistantText.textContent += String(fragment);
     };
 
+    window.setConversationAssistant = function (turnId, message) {
+        if (!turnId) {
+            return;
+        }
+        var turn = ensureConversationTurn(String(turnId), '使用者');
+        turn.assistantText.textContent = String(message || '');
+        if (turn.assistantText.textContent) {
+            turn.assistantText.classList.remove('conversation-turn__text--muted');
+            return;
+        }
+        turn.assistantText.textContent = '本輪沒有可顯示的回覆。';
+        turn.assistantText.classList.add('conversation-turn__text--muted');
+    };
+
     window.finishConversationTurn = function (turnId) {
         if (!turnId) {
             return;

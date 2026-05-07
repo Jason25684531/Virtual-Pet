@@ -22,6 +22,8 @@ def build_wave_response_directive(_directive: str | None = None) -> str:
 
 
 def connect_brain_output_handlers(window, brain_engine, sanitize_text):
+    from action_services import FIXED_NEWS_SCRIPT
+
     reply_action_state: dict[str, dict[str, bool]] = {}
 
     def _normalize_trace_id(trace_id: str | None) -> str:
@@ -36,8 +38,32 @@ def connect_brain_output_handlers(window, brain_engine, sanitize_text):
             {
                 "saw_explicit_action": False,
                 "injected_default_action": False,
+                "uses_fixed_news_reply": False,
             },
         )
+
+    def _extract_explicit_action(text: str) -> str | None:
+        match = ACTION_DIRECTIVE_PATTERN.search(str(text or ""))
+        if not match:
+            return None
+        action_name = (match.group("bracket") or match.group("bare") or "").strip().lower()
+        if not action_name:
+            return None
+        try:
+            import config
+
+            return config.canonicalize_host_action(action_name) or action_name
+        except Exception:
+            return action_name
+
+    def _activate_fixed_news_reply(trace_id: str | None):
+        state = _get_or_create_trace_state(trace_id)
+        if state is None or state["uses_fixed_news_reply"]:
+            return
+        state["uses_fixed_news_reply"] = True
+        set_assistant = getattr(window, "set_conversation_assistant", None)
+        if callable(set_assistant):
+            set_assistant(trace_id, FIXED_NEWS_SCRIPT)
 
     def _has_explicit_action(text: str) -> bool:
         return bool(ACTION_DIRECTIVE_PATTERN.search(str(text or "")))
@@ -63,15 +89,21 @@ def connect_brain_output_handlers(window, brain_engine, sanitize_text):
         append_message = getattr(window, "append_conversation_assistant", None)
         if not trace_id or not callable(append_message):
             return
+        state = _get_or_create_trace_state(trace_id)
+        if state is not None and state["uses_fixed_news_reply"]:
+            return
         visible_text = sanitize_text(token)
         if visible_text:
             append_message(trace_id, visible_text)
 
     def handle_brain_fragment(fragment: str, trace_id: str | None):
         state = _get_or_create_trace_state(trace_id)
-        if _has_explicit_action(fragment):
+        explicit_action = _extract_explicit_action(fragment)
+        if explicit_action:
             if state is not None:
                 state["saw_explicit_action"] = True
+            if explicit_action == "report_news":
+                _activate_fixed_news_reply(trace_id)
         else:
             _maybe_inject_default_reply_action(trace_id)
         dispatch_action = getattr(window, "dispatch_action", None)
@@ -162,13 +194,12 @@ def main():
     window.apply_character = apply_character_and_sync  # type: ignore[method-assign]
 
     def handle_developer_query(text: str):
-        preview = text if len(text) <= 24 else f"{text[:24]}..."
         result = turn_manager.submit("developer-input", text)
         if not result["accepted"]:
             window.set_action_status("Dev Query 送出失敗：請輸入非空白文字。", tone="warn", timeout_ms=3200)
             return
         if result["started"]:
-            window.set_action_status(f"Dev Query 已送出: {preview}", tone="working", timeout_ms=0)
+            window.set_action_status("正在回覆", tone="working", timeout_ms=0)
             return
         window.set_action_status(
             f"上一輪尚未完成，Dev Query 已加入佇列（待處理 {int(result['queue_position'])} 則）。",
@@ -199,9 +230,8 @@ def main():
         return "使用者"
 
     def handle_turn_started(trace_id: str, source: str, text: str):
-        preview = text if len(text) <= 40 else f"{text[:40]}..."
         window.begin_conversation_turn(trace_id, _source_label(source), text)
-        window.set_action_status(f"正在回應：{preview}", tone="working", timeout_ms=0)
+        window.set_action_status("正在回覆", tone="working", timeout_ms=0)
 
     def handle_turn_completed(trace_id: str, _source: str, _text: str):
         window.finish_conversation_turn(trace_id)

@@ -715,6 +715,9 @@ class TransparentWindow(QMainWindow):
     def append_conversation_assistant(self, trace_id: str, fragment: str):
         self._run_javascript("appendConversationAssistant", trace_id, fragment)
 
+    def set_conversation_assistant(self, trace_id: str, message: str):
+        self._run_javascript("setConversationAssistant", trace_id, message)
+
     def finish_conversation_turn(self, trace_id: str):
         self._run_javascript("finishConversationTurn", trace_id)
 

@@ -34,6 +34,10 @@ ACTION_DIRECTIVE_PATTERN = re.compile(
     r"(?:\[\s*ACTION\s*:\s*(?P<bracket>[A-Za-z0-9_-]+)\s*\]|(?<!\w)ACTION\s*:\s*(?P<bare>[A-Za-z0-9_-]+))",
     re.IGNORECASE,
 )
+REPLY_STATUS_LABEL = "正在回覆"
+#為了兼顧 VOAI 和 ElevenLabs 的 TTS 響應時間，並給予角色動作足夠的播放時間，設定新聞播報的語音觸發延遲為 2.5 秒。這樣可以確保在大多數情況下，角色的新聞播報動作能夠先行展現，提升互動的自然感。
+REPORT_NEWS_AUDIO_TRIGGER_DELAY_SECONDS = 2.5
+REPORT_NEWS_DELAY_CHARACTER_ID = "miku"
 # 為了兼顧 VOAI 和 ElevenLabs 的 TTS 響應時間，並給予角色動作足夠的播放時間，設定揮手回應的語音觸發延遲為 2 秒。這樣可以確保在大多數情況下，角色的揮手動作能夠先行展現，提升互動的自然感。
 WAVE_GREETING_AUDIO_TRIGGER_DELAY_SECONDS = 2.0
 NON_REPEATABLE_LOOP_ACTIONS = {"report_news", "play_music", "wave_response"}
@@ -124,6 +128,8 @@ class ActionDispatcher(QObject):
         self._current_loop_binding: ActionBinding | None = None
         self._loop_action_tts_queued: bool = False
         self._loop_cleanup_timer: QTimer | None = None
+        self._news_audio_delay_timer: QTimer | None = None
+        self._news_audio_trigger_delay_ms = max(0, int(REPORT_NEWS_AUDIO_TRIGGER_DELAY_SECONDS * 1000))
         self._wave_greeting_delay_timer: QTimer | None = None
         self._wave_greeting_audio_delay_ms = max(0, int(WAVE_GREETING_AUDIO_TRIGGER_DELAY_SECONDS * 1000))
         self._panel_video_ended: bool = False
@@ -141,7 +147,7 @@ class ActionDispatcher(QObject):
             "report_news": ActionBinding(
                 name="report_news",
                 motion_key="report_news",
-                status_label="正在整理新聞",
+                status_label=REPLY_STATUS_LABEL,
                 handler_name="_handle_report_news",
                 skip_tts_sync=True,
                 panel_loop=True,
@@ -274,11 +280,16 @@ class ActionDispatcher(QObject):
         if self._is_duplicate_loop_action(binding):
             print(f"[ECHOES] 提示: action `{binding.name}` 已在進行中，略過重複觸發。")
             return True
+        effective_display_message = "" if binding.name == "report_news" else display_message
         message_tone = "working"
-        if display_message:
-            message_tone = self._resolve_message_tone(display_message, has_action=True)
+        if effective_display_message:
+            message_tone = self._resolve_message_tone(effective_display_message, has_action=True)
             timeout_ms = 4200 if message_tone == "warn" else 6000 if message_tone == "error" else 6500
-            self._window.set_action_status(display_message, tone=message_tone, timeout_ms=timeout_ms)
+            status_message = effective_display_message
+            if binding.name == "listen" and message_tone == "working":
+                status_message = REPLY_STATUS_LABEL
+                timeout_ms = 0
+            self._window.set_action_status(status_message, tone=message_tone, timeout_ms=timeout_ms)
         else:
             self._window.set_action_status(binding.status_label, tone="working")
 
@@ -305,10 +316,10 @@ class ActionDispatcher(QObject):
 
         getattr(self, binding.handler_name)(binding, motion_found)
 
-        if display_message:
+        if effective_display_message:
             try:
                 if allow_tts and (not binding.skip_tts_sync or bool(trace_id)):
-                    self._synthesize_tts(display_message, tone=message_tone, trace_id=trace_id)
+                    self._synthesize_tts(effective_display_message, tone=message_tone, trace_id=trace_id)
             except Exception as exc:  # pragma: no cover - 防止 TTS 異常阻斷動作播放
                 print(f"[ECHOES] 警告: TTS 背景啟動失敗，但動作已照常執行。({exc})")
             if intentional_tts_suppression and motion_found and self._current_loop_action_key is not None:
@@ -347,7 +358,13 @@ class ActionDispatcher(QObject):
     ):
         tone = self._resolve_message_tone(message, has_action)
         timeout_ms = 4200 if tone == "warn" else 6000 if tone == "error" else 6500
-        self._window.set_action_status(message, tone=tone, timeout_ms=timeout_ms)
+        status_message = message
+        status_tone = tone
+        if tone not in {"warn", "error"}:
+            status_message = REPLY_STATUS_LABEL
+            status_tone = "working"
+            timeout_ms = 0
+        self._window.set_action_status(status_message, tone=status_tone, timeout_ms=timeout_ms)
         if allow_tts:
             self._synthesize_tts(message, tone=tone, trace_id=trace_id)
 
@@ -401,7 +418,17 @@ class ActionDispatcher(QObject):
             parent=self,
             character_id=current_character_id,
         )
-        self._start_worker(worker, lambda success, message, payload: self._on_news_finished(binding, motion_found, success, message, payload))
+        self._start_worker(
+            worker,
+            lambda success, message, payload: self._on_news_finished(
+                binding,
+                motion_found,
+                current_character_id,
+                success,
+                message,
+                payload,
+            ),
+        )
 
     def _handle_play_music(self, binding: ActionBinding, motion_found: bool):
         if hasattr(self._window, "stop_music"):
@@ -454,6 +481,49 @@ class ActionDispatcher(QObject):
                 payload,
             ),
         )
+
+    def _schedule_report_news_audio_playback(
+        self,
+        binding: ActionBinding,
+        audio_path: str,
+        title: str,
+        character_id: str | None,
+    ):
+        if self._news_audio_delay_timer is not None:
+            self._news_audio_delay_timer.stop()
+        delay_ms = self._report_news_audio_delay_ms_for_character(character_id)
+        if delay_ms <= 0 or QCoreApplication.instance() is None:
+            self._start_report_news_audio_playback(binding, audio_path, title)
+            return
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(
+            lambda: self._start_report_news_audio_playback(
+                binding,
+                audio_path,
+                title,
+            )
+        )
+        timer.start(delay_ms)
+        self._news_audio_delay_timer = timer
+
+    def _report_news_audio_delay_ms_for_character(self, character_id: str | None) -> int:
+        normalized_character_id = str(character_id or "").strip().lower()
+        if normalized_character_id != REPORT_NEWS_DELAY_CHARACTER_ID:
+            return 0
+        return self._news_audio_trigger_delay_ms
+
+    def _start_report_news_audio_playback(
+        self,
+        binding: ActionBinding,
+        audio_path: str,
+        title: str,
+    ):
+        self._news_audio_delay_timer = None
+        if self._window.play_music(audio_path, title, update_status=False):
+            self._arm_room_audio_wait()
+            return
+        self._schedule_non_tts_loop_cleanup(binding)
 
     def _handle_motion_only(self, binding: ActionBinding, motion_found: bool):
         if not motion_found:
@@ -1136,6 +1206,9 @@ class ActionDispatcher(QObject):
         return normalized_trace_id not in self._suppressed_traces
 
     def shutdown(self, wait_ms: int = 5000):
+        if self._news_audio_delay_timer is not None:
+            self._news_audio_delay_timer.stop()
+            self._news_audio_delay_timer = None
         if self._wave_greeting_delay_timer is not None:
             self._wave_greeting_delay_timer.stop()
             self._wave_greeting_delay_timer = None
@@ -1193,26 +1266,23 @@ class ActionDispatcher(QObject):
         self,
         binding: ActionBinding,
         motion_found: bool,
+        character_id: str | None,
         success: bool,
         message: str,
         payload: object,
     ):
+        del motion_found
         self._loop_action_service_pending = False
         if success:
             if isinstance(payload, dict) and payload.get("path"):
                 title = str(payload.get("title") or "固定新聞播報")
-                if self._window.play_music(str(payload.get("path") or ""), title, update_status=False):
-                    headline = str(payload.get("headline") or message)
-                    cache_label = "快取" if payload.get("cached") else "新生成"
-                    self._window.set_action_status(
-                        f"新聞焦點: {headline}（{cache_label}音檔）",
-                        tone="news",
-                        timeout_ms=9000,
-                    )
-                    self._arm_room_audio_wait()
-                    return
-            headline = payload.get("headline") if isinstance(payload, dict) else message
-            self._window.set_action_status(f"新聞焦點: {headline}", tone="news", timeout_ms=9000)
+                self._schedule_report_news_audio_playback(
+                    binding,
+                    str(payload.get("path") or ""),
+                    title,
+                    character_id,
+                )
+                return
             self._schedule_non_tts_loop_cleanup(binding)
             return
 
@@ -1306,6 +1376,9 @@ class ActionDispatcher(QObject):
         if self._loop_cleanup_timer is not None:
             self._loop_cleanup_timer.stop()
             self._loop_cleanup_timer = None
+        if self._news_audio_delay_timer is not None:
+            self._news_audio_delay_timer.stop()
+            self._news_audio_delay_timer = None
         if self._wave_greeting_delay_timer is not None:
             self._wave_greeting_delay_timer.stop()
             self._wave_greeting_delay_timer = None

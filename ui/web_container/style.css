@@ -171,7 +171,7 @@ body {
     position: absolute;
     left: 26px;
     right: 360px;
-    bottom: 26px;
+    bottom: 86px;
     z-index: 4;
     display: flex;
     align-items: center;
@@ -305,6 +305,13 @@ body {
     box-shadow: 0 0 0 6px rgba(103, 208, 240, 0.18);
 }
 
+.action-status[data-tone="news"] .action-status__text {
+    display: block;
+    white-space: pre-line;
+    overflow: visible;
+    text-overflow: clip;
+}
+
 .action-status[data-tone="music"] .action-status__dot {
     background: #ff9f6a;
     box-shadow: 0 0 0 6px rgba(255, 159, 106, 0.18);
@@ -332,7 +339,7 @@ body {
     .action-status {
         left: 16px;
         right: 16px;
-        bottom: 16px;
+        bottom: 84px;
         padding: 13px 15px;
     }
 

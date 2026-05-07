@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 import unittest
 
+from action_services import FIXED_NEWS_SCRIPT
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -35,12 +37,16 @@ class _FakeBrain:
 class _FakeWindow:
     def __init__(self):
         self.append_calls: list[tuple[str, str]] = []
+        self.set_calls: list[tuple[str, str]] = []
         self.dispatch_calls: list[tuple[str, str | None, bool]] = []
         self.speak_calls: list[tuple[str, str | None]] = []
         self.completed_traces: list[str | None] = []
 
     def append_conversation_assistant(self, trace_id: str, text: str):
         self.append_calls.append((trace_id, text))
+
+    def set_conversation_assistant(self, trace_id: str, text: str):
+        self.set_calls.append((trace_id, text))
 
     def dispatch_action(self, directive: str, trace_id: str | None = None, allow_tts: bool = True):
         self.dispatch_calls.append((directive, trace_id, allow_tts))
@@ -137,6 +143,20 @@ class MainRuntimeWiringTests(unittest.TestCase):
             ],
         )
         self.assertEqual(window.completed_traces, ["trace-fallback"])
+
+    def test_report_news_replaces_conversation_reply_with_fixed_news_script(self):
+        window = _FakeWindow()
+        brain = _FakeBrain()
+
+        connect_brain_output_handlers(window, brain, _sanitize_text)
+
+        brain.streamed_fragment.emit("[ACTION:report_news]", "trace-news")
+        brain.token_streamed.emit("這是 llm 的新聞摘要。", "trace-news")
+        brain.streamed_fragment.emit("這是 llm 的新聞摘要。", "trace-news")
+
+        self.assertEqual(window.set_calls, [("trace-news", FIXED_NEWS_SCRIPT)])
+        self.assertEqual(window.append_calls, [])
+        self.assertEqual(window.dispatch_calls[0], ("[ACTION:report_news]", "trace-news", False))
 
 
 if __name__ == "__main__":

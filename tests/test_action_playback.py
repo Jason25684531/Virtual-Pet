@@ -88,11 +88,12 @@ class _LoopActionProbeWindow(_DispatchProbeWindow):
 
 
 class _PanelLibrary(_NoopLibrary):
-    def __init__(self, panel_paths: dict[str, str]):
+    def __init__(self, panel_paths: dict[str, str], character_id: str = "probe-character"):
         self._panel_paths = dict(panel_paths)
+        self._character_id = character_id
 
     def get_current_character_id(self):
-        return "probe-character"
+        return self._character_id
 
     def get_panel_motion_path(self, _character_id: str, action_name: str):
         return self._panel_paths.get(action_name)
@@ -800,7 +801,7 @@ def run_tts_dispatch_debug_probe() -> dict[str, object]:
                 and bool(window.motion_asset_calls)
                 and window.motion_asset_calls[0][1].endswith("listen.webm")
                 and len(window.call_order) >= 2
-                and window.call_order[0] == ("status", "這是一段測試語音。")
+                and window.call_order[0] == ("status", "正在回覆")
                 and window.call_order[1] == ("motion", "listen")
             ),
         }
@@ -842,7 +843,7 @@ def run_streamed_action_first_debug_probe() -> dict[str, object]:
                 and len(window.call_order) >= 3
                 and window.call_order[0] == ("status", "正在專心聆聽")
                 and window.call_order[1] == ("motion", "listen")
-                and window.call_order[2] == ("status", "第一句測試語音。")
+                and window.call_order[2] == ("status", "正在回覆")
             ),
         }
 
@@ -1319,7 +1320,7 @@ class ActionPlaybackTests(unittest.TestCase):
             panel_path.write_bytes(b"panel")
 
             window = _LoopActionProbeWindow(temp_dir)
-            library = _PanelLibrary({"report_news": str(panel_path)})
+            library = _PanelLibrary({"report_news": str(panel_path)}, character_id="miku")
             dispatcher = ActionDispatcher(
                 window,
                 library=library,
@@ -1426,6 +1427,13 @@ class ActionPlaybackTests(unittest.TestCase):
 
     def test_report_news_waits_for_room_audio_end_without_tts_output(self):
         with tempfile.TemporaryDirectory(prefix="echoes-action-report-news-audio-end-") as temp_dir:
+            news_script = "\n".join(
+                [
+                    "被盜！《人機迷網》黛安娜「駭入」 《惡靈古堡》官方帳號",
+                    "《澀谷交叉物語》公開卡司陣容、 《428》部分原班人馬重聚",
+                    "Valve 宣布最新 STEAM 控制器 5 月 5 日上市　台灣等地售價公開",
+                ]
+            )
             report_news_path = Path(temp_dir) / "report_news.webm"
             idle_path = Path(temp_dir) / "Idle.webm"
             panel_path = Path(temp_dir) / "News_Panel.webm"
@@ -1434,7 +1442,66 @@ class ActionPlaybackTests(unittest.TestCase):
             panel_path.write_bytes(b"panel")
 
             window = _LoopActionProbeWindow(temp_dir)
-            library = _PanelLibrary({"report_news": str(panel_path)})
+            library = _PanelLibrary({"report_news": str(panel_path)}, character_id="miku")
+            dispatcher = ActionDispatcher(
+                window,
+                library=library,
+                news_worker_factory=lambda parent=None: _ImmediateServiceWorker(
+                    success=True,
+                    message="新聞已完成",
+                    payload={
+                        "headline": "被盜！《人機迷網》黛安娜「駭入」 《惡靈古堡》官方帳號",
+                        "script": news_script,
+                        "title": "固定新聞播報",
+                        "path": "news.mp3",
+                        "cached": True,
+                    },
+                    parent=parent,
+                ),
+                motion_path_resolver=lambda motion_key: str(
+                    {"report_news": report_news_path, "idle": idle_path}.get(motion_key, "")
+                ),
+                tts_worker_factory=_ManualQueuedTTSWorker,
+            )
+            dispatcher._news_audio_trigger_delay_ms = 80
+
+            self.assertTrue(dispatcher.dispatch("[ACTION:report_news] 我來播報新聞。"))
+            self.assertEqual(len(window.audio_calls), 0)
+
+            time.sleep(0.12)
+            QCoreApplication.processEvents()
+
+            self.assertEqual(len(_ManualQueuedTTSWorker.instances), 0)
+            self.assertEqual(len(window.audio_calls), 1)
+            self.assertEqual(window.status_calls, [("正在回覆", "working", 0)])
+            self.assertEqual(len(window.motion_loop_calls), 1)
+            self.assertEqual(len(window.panel_calls), 1)
+            self.assertTrue(window.panel_calls[0][2])
+            self.assertTrue(dispatcher._wait_for_room_audio_ended)
+            self.assertEqual(dispatcher._current_loop_action_key, "report_news")
+
+            dispatcher._on_panel_video_ended()
+            dispatcher._on_main_video_ended()
+
+            self.assertEqual(dispatcher._current_loop_action_key, "report_news")
+
+            dispatcher._on_room_audio_ended()
+
+            self.assertIsNone(dispatcher._current_loop_action_key)
+
+            dispatcher.shutdown()
+
+    def test_report_news_shutdown_cancels_pending_delayed_audio(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-report-news-delay-cancel-") as temp_dir:
+            report_news_path = Path(temp_dir) / "report_news.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            panel_path = Path(temp_dir) / "News_Panel.webm"
+            report_news_path.write_bytes(b"news")
+            idle_path.write_bytes(b"idle")
+            panel_path.write_bytes(b"panel")
+
+            window = _LoopActionProbeWindow(temp_dir)
+            library = _PanelLibrary({"report_news": str(panel_path)}, character_id="miku")
             dispatcher = ActionDispatcher(
                 window,
                 library=library,
@@ -1454,25 +1521,52 @@ class ActionPlaybackTests(unittest.TestCase):
                 ),
                 tts_worker_factory=_ManualQueuedTTSWorker,
             )
+            dispatcher._news_audio_trigger_delay_ms = 80
 
             self.assertTrue(dispatcher.dispatch("[ACTION:report_news] 我來播報新聞。"))
+            self.assertEqual(len(window.audio_calls), 0)
 
-            self.assertEqual(len(_ManualQueuedTTSWorker.instances), 0)
+            dispatcher.shutdown()
+            time.sleep(0.12)
+            QCoreApplication.processEvents()
+
+            self.assertEqual(len(window.audio_calls), 0)
+
+    def test_report_news_for_choppr_starts_audio_without_miku_delay(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-report-news-choppr-immediate-") as temp_dir:
+            report_news_path = Path(temp_dir) / "report_news.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            panel_path = Path(temp_dir) / "News_Panel.webm"
+            report_news_path.write_bytes(b"news")
+            idle_path.write_bytes(b"idle")
+            panel_path.write_bytes(b"panel")
+
+            window = _LoopActionProbeWindow(temp_dir)
+            library = _PanelLibrary({"report_news": str(panel_path)}, character_id="Choppr")
+            dispatcher = ActionDispatcher(
+                window,
+                library=library,
+                news_worker_factory=lambda parent=None: _ImmediateServiceWorker(
+                    success=True,
+                    message="新聞已完成",
+                    payload={
+                        "headline": "測試頭條",
+                        "title": "固定新聞播報",
+                        "path": "news.mp3",
+                        "cached": True,
+                    },
+                    parent=parent,
+                ),
+                motion_path_resolver=lambda motion_key: str(
+                    {"report_news": report_news_path, "idle": idle_path}.get(motion_key, "")
+                ),
+                tts_worker_factory=_ManualQueuedTTSWorker,
+            )
+            dispatcher._news_audio_trigger_delay_ms = 80
+
+            self.assertTrue(dispatcher.dispatch("[ACTION:report_news] 我來播報新聞。"))
             self.assertEqual(len(window.audio_calls), 1)
-            self.assertEqual(len(window.motion_loop_calls), 1)
-            self.assertEqual(len(window.panel_calls), 1)
-            self.assertTrue(window.panel_calls[0][2])
             self.assertTrue(dispatcher._wait_for_room_audio_ended)
-            self.assertEqual(dispatcher._current_loop_action_key, "report_news")
-
-            dispatcher._on_panel_video_ended()
-            dispatcher._on_main_video_ended()
-
-            self.assertEqual(dispatcher._current_loop_action_key, "report_news")
-
-            dispatcher._on_room_audio_ended()
-
-            self.assertIsNone(dispatcher._current_loop_action_key)
 
             dispatcher.shutdown()
 
