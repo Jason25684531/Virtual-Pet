@@ -34,6 +34,8 @@ ACTION_DIRECTIVE_PATTERN = re.compile(
     r"(?:\[\s*ACTION\s*:\s*(?P<bracket>[A-Za-z0-9_-]+)\s*\]|(?<!\w)ACTION\s*:\s*(?P<bare>[A-Za-z0-9_-]+))",
     re.IGNORECASE,
 )
+# 為了兼顧 VOAI 和 ElevenLabs 的 TTS 響應時間，並給予角色動作足夠的播放時間，設定揮手回應的語音觸發延遲為 2 秒。這樣可以確保在大多數情況下，角色的揮手動作能夠先行展現，提升互動的自然感。
+WAVE_GREETING_AUDIO_TRIGGER_DELAY_SECONDS = 2.0
 NON_REPEATABLE_LOOP_ACTIONS = {"report_news", "play_music", "wave_response"}
 BLOCKING_LOOP_ACTIONS = {"report_news", "play_music", "wave_response"}
 
@@ -122,6 +124,8 @@ class ActionDispatcher(QObject):
         self._current_loop_binding: ActionBinding | None = None
         self._loop_action_tts_queued: bool = False
         self._loop_cleanup_timer: QTimer | None = None
+        self._wave_greeting_delay_timer: QTimer | None = None
+        self._wave_greeting_audio_delay_ms = max(0, int(WAVE_GREETING_AUDIO_TRIGGER_DELAY_SECONDS * 1000))
         self._panel_video_ended: bool = False
         self._panel_video_started: bool = False
         self._wait_for_main_video_ended: bool = False
@@ -159,7 +163,7 @@ class ActionDispatcher(QObject):
                 status_label="正在回應揮手",
                 handler_name="_handle_wave_response",
                 skip_tts_sync=True,
-                finish_event="room_audio",
+                finish_event="main_video",
             ),
             "laugh": ActionBinding(
                 name="laugh",
@@ -421,13 +425,35 @@ class ActionDispatcher(QObject):
 
     def _handle_wave_response(self, binding: ActionBinding, motion_found: bool):
         self._loop_action_service_pending = True
+        if self._wave_greeting_audio_delay_ms <= 0 or QCoreApplication.instance() is None:
+            self._start_wave_response_worker(binding, motion_found)
+            return
+        if self._wave_greeting_delay_timer is not None:
+            self._wave_greeting_delay_timer.stop()
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: self._start_wave_response_worker(binding, motion_found))
+        timer.start(self._wave_greeting_audio_delay_ms)
+        self._wave_greeting_delay_timer = timer
+
+    def _start_wave_response_worker(self, binding: ActionBinding, motion_found: bool):
+        self._wave_greeting_delay_timer = None
         current_character_id = self._call_library_method("get_current_character_id")
         worker = self._create_service_worker(
             self._wave_worker_factory,
             parent=self,
             character_id=current_character_id,
         )
-        self._start_worker(worker, lambda success, message, payload: self._on_wave_finished(binding, motion_found, success, message, payload))
+        self._start_worker(
+            worker,
+            lambda success, message, payload: self._on_wave_finished(
+                binding,
+                motion_found,
+                success,
+                message,
+                payload,
+            ),
+        )
 
     def _handle_motion_only(self, binding: ActionBinding, motion_found: bool):
         if not motion_found:
@@ -907,6 +933,12 @@ class ActionDispatcher(QObject):
     def _on_room_audio_ended(self):
         if not (self._wait_for_room_audio_ended and self._current_loop_action_key is not None):
             return
+        self._wait_for_room_audio_ended = False
+        current_binding = self._current_loop_binding
+        if current_binding is not None and current_binding.finish_event == "main_video":
+            self._wait_for_main_video_ended = True
+            self._schedule_loop_cleanup(12000, wait_for_main_video_end=True)
+            return
         self._finish_loop_action()
 
     def _on_tts_progress(self, event_name: str, payload: object):
@@ -1104,6 +1136,9 @@ class ActionDispatcher(QObject):
         return normalized_trace_id not in self._suppressed_traces
 
     def shutdown(self, wait_ms: int = 5000):
+        if self._wave_greeting_delay_timer is not None:
+            self._wave_greeting_delay_timer.stop()
+            self._wave_greeting_delay_timer = None
         for trace_id in list(self._pending_actions):
             self._clear_pending_action(trace_id)
         self._pending_actions.clear()
@@ -1224,7 +1259,11 @@ class ActionDispatcher(QObject):
     ):
         self._loop_action_service_pending = False
         if success and isinstance(payload, dict) and payload.get("path"):
-            if self._window.play_music(str(payload.get("path") or ""), str(payload.get("title") or "hi~"), update_status=False):
+            if self._window.play_music(
+                str(payload.get("path") or ""),
+                str(payload.get("title") or "嗨 你好嗎"),
+                update_status=False,
+            ):
                 self._arm_room_audio_wait(timeout_ms=15000)
                 return
         self._handle_failure(binding, motion_found, message)
@@ -1267,6 +1306,9 @@ class ActionDispatcher(QObject):
         if self._loop_cleanup_timer is not None:
             self._loop_cleanup_timer.stop()
             self._loop_cleanup_timer = None
+        if self._wave_greeting_delay_timer is not None:
+            self._wave_greeting_delay_timer.stop()
+            self._wave_greeting_delay_timer = None
         self._current_loop_action_key = None
         self._current_loop_binding = None
         self._loop_action_tts_queued = False

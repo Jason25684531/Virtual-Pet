@@ -95,6 +95,8 @@ class NewsAudioCacheTests(unittest.TestCase):
             self.assertTrue(results[1][0])
             self.assertFalse(results[0][2]["cached"])
             self.assertTrue(results[1][2]["cached"])
+            self.assertEqual(results[0][2]["text"], WAVE_GREETING_SCRIPT)
+            self.assertEqual(results[0][2]["title"], WAVE_GREETING_SCRIPT)
             self.assertEqual(results[0][2]["path"], results[1][2]["path"])
             self.assertTrue(Path(results[1][2]["path"]).is_file())
 

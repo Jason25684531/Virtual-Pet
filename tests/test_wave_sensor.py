@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import tempfile
 import sys
+import time
 from pathlib import Path
 import unittest
+
+from PyQt5.QtCore import QCoreApplication
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -79,6 +82,7 @@ class _WaveProbeWindow:
         self.motion_calls: list[str] = []
         self.motion_asset_calls: list[tuple[str, str, bool]] = []
         self.motion_loop_calls: list[tuple[str, int]] = []
+        self.audio_calls: list[tuple[str, str, bool]] = []
         self.restore_idle_calls = 0
 
     def set_action_status(self, message: str, tone: str = "idle", timeout_ms: int = 0):
@@ -100,7 +104,7 @@ class _WaveProbeWindow:
         return True
 
     def play_music(self, filename: str, title: str = "", update_status: bool = True) -> bool:
-        del filename, title, update_status
+        self.audio_calls.append((filename, title, update_status))
         return True
 
     def stop_music(self):
@@ -108,8 +112,9 @@ class _WaveProbeWindow:
 
 
 def run_wave_response_debug_probe() -> dict[str, object]:
-    """wave_response 應走本地音檔路徑，並等待 room audio 結束後再回 idle。"""
-    directive = "[ACTION:wave_response] hi~"
+    """wave_response 應走本地音檔路徑，並等待音訊與主動作都結束後再回 idle。"""
+    directive = "[ACTION:wave_response] 嗨 你好嗎"
+    _app = QCoreApplication.instance() or QCoreApplication([])
     with tempfile.TemporaryDirectory(prefix="echoes-debug-webm-") as temp_dir:
         wave_path = Path(temp_dir) / "Greeting.webm"
         idle_path = Path(temp_dir) / "Idle.webm"
@@ -123,17 +128,24 @@ def run_wave_response_debug_probe() -> dict[str, object]:
             wave_worker_factory=lambda parent=None: _ImmediateWaveWorker(
                 success=True,
                 message="揮手問候音檔已完成",
-                payload={"path": "wave.mp3", "title": "hi~"},
+                payload={"path": "wave.mp3", "title": "嗨 你好嗎"},
                 parent=parent,
             ),
             motion_path_resolver=resolver,
             tts_enabled=False,
         )
+        dispatcher._wave_greeting_audio_delay_ms = 80
         dispatched = dispatcher.dispatch(directive)
+        audio_calls_before_delay = len(window.audio_calls)
+        time.sleep(0.12)
+        QCoreApplication.processEvents()
+        audio_calls_after_delay = len(window.audio_calls)
         restore_before_audio_end = window.restore_idle_calls
         dispatcher._on_main_video_ended()
         restore_after_main_end = window.restore_idle_calls
         dispatcher._on_room_audio_ended()
+        restore_after_audio_end = window.restore_idle_calls
+        dispatcher._on_main_video_ended()
         idle_restored = window.restore_idle_calls >= 1
         dispatcher.shutdown()
 
@@ -144,19 +156,25 @@ def run_wave_response_debug_probe() -> dict[str, object]:
             "motion_calls": window.motion_calls,
             "motion_loop_calls": window.motion_loop_calls,
             "motion_asset_calls": window.motion_asset_calls,
+            "audio_calls_before_delay": audio_calls_before_delay,
+            "audio_calls_after_delay": audio_calls_after_delay,
             "restore_before_audio_end": restore_before_audio_end,
             "restore_after_main_end": restore_after_main_end,
+            "restore_after_audio_end": restore_after_audio_end,
             "idle_restored": idle_restored,
             "restore_idle_calls": window.restore_idle_calls,
             "ok": (
                 dispatched
                 and bool(window.status_calls)
-                and window.status_calls[0][0] == "hi~"
+                and window.status_calls[0][0] == "嗨 你好嗎"
                 and bool(window.motion_loop_calls)
                 and window.motion_loop_calls[0][0].endswith("Greeting.webm")
                 and not window.motion_asset_calls
+                and audio_calls_before_delay == 0
+                and audio_calls_after_delay == 1
                 and restore_before_audio_end == 0
                 and restore_after_main_end == 0
+                and restore_after_audio_end == 0
                 and idle_restored
                 and window.restore_idle_calls == 1
             ),
@@ -293,7 +311,7 @@ class WaveSensorTests(unittest.TestCase):
 
 class WaveResponseIntegrationTests(unittest.TestCase):
     def test_main_wave_fast_path_adds_fixed_hi_text(self):
-        self.assertEqual(build_wave_response_directive(WAVE_RESPONSE_DIRECTIVE), "[ACTION:wave_response] hi~")
+        self.assertEqual(build_wave_response_directive(WAVE_RESPONSE_DIRECTIVE), "[ACTION:wave_response] 嗨 你好嗎")
 
     def test_wave_response_action_dispatch_is_supported(self):
         result = run_wave_response_debug_probe()

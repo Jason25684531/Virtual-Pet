@@ -27,8 +27,8 @@ FIXED_NEWS_SCRIPT = "\n".join(
     ]
 )
 NEWS_AUDIO_CACHE_DIR = PROJECT_ROOT / "runtime_cache" / "news_audio"
-WAVE_GREETING_VERSION = "wave-greeting-2026-05-06-v1"
-WAVE_GREETING_SCRIPT = "hi~"
+WAVE_GREETING_VERSION = "wave-greeting-2026-05-07-v2"
+WAVE_GREETING_SCRIPT = "嗨 你好嗎"
 WAVE_AUDIO_CACHE_DIR = PROJECT_ROOT / "runtime_cache" / "wave_audio"
 SUPPORTED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"}
 
@@ -204,7 +204,7 @@ class WaveGreetingWorker(QThread):
     def _payload(self, cache_path: Path, cached: bool) -> dict[str, object]:
         return {
             "text": WAVE_GREETING_SCRIPT,
-            "title": "hi~",
+            "title": WAVE_GREETING_SCRIPT,
             "path": str(cache_path),
             "cached": cached,
             "version": WAVE_GREETING_VERSION,

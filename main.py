@@ -6,9 +6,15 @@ ECHOES — 程式進入點
 import sys
 import signal
 import time
+import re
 
 
-WAVE_RESPONSE_GREETING_DIRECTIVE = "[ACTION:wave_response] hi~"
+WAVE_RESPONSE_GREETING_DIRECTIVE = "[ACTION:wave_response] 嗨 你好嗎"
+DEFAULT_REPLY_ACTION_DIRECTIVE = "[ACTION:listen]"
+ACTION_DIRECTIVE_PATTERN = re.compile(
+    r"(?:\[\s*ACTION\s*:\s*(?P<bracket>[A-Za-z0-9_-]+)\s*\]|(?<!\w)ACTION\s*:\s*(?P<bare>[A-Za-z0-9_-]+))",
+    re.IGNORECASE,
+)
 
 
 def build_wave_response_directive(_directive: str | None = None) -> str:
@@ -16,6 +22,43 @@ def build_wave_response_directive(_directive: str | None = None) -> str:
 
 
 def connect_brain_output_handlers(window, brain_engine, sanitize_text):
+    reply_action_state: dict[str, dict[str, bool]] = {}
+
+    def _normalize_trace_id(trace_id: str | None) -> str:
+        return str(trace_id or "").strip()
+
+    def _get_or_create_trace_state(trace_id: str | None) -> dict[str, bool] | None:
+        normalized_trace_id = _normalize_trace_id(trace_id)
+        if not normalized_trace_id:
+            return None
+        return reply_action_state.setdefault(
+            normalized_trace_id,
+            {
+                "saw_explicit_action": False,
+                "injected_default_action": False,
+            },
+        )
+
+    def _has_explicit_action(text: str) -> bool:
+        return bool(ACTION_DIRECTIVE_PATTERN.search(str(text or "")))
+
+    def _maybe_inject_default_reply_action(trace_id: str | None):
+        dispatch_action = getattr(window, "dispatch_action", None)
+        if not callable(dispatch_action):
+            return
+        state = _get_or_create_trace_state(trace_id)
+        if state is None:
+            return
+        if state["saw_explicit_action"] or state["injected_default_action"]:
+            return
+        dispatch_action(DEFAULT_REPLY_ACTION_DIRECTIVE, trace_id=trace_id, allow_tts=False)
+        state["injected_default_action"] = True
+
+    def _clear_reply_action_state(trace_id: str | None):
+        normalized_trace_id = _normalize_trace_id(trace_id)
+        if normalized_trace_id:
+            reply_action_state.pop(normalized_trace_id, None)
+
     def handle_token_streamed(token: str, trace_id: str | None):
         append_message = getattr(window, "append_conversation_assistant", None)
         if not trace_id or not callable(append_message):
@@ -25,6 +68,12 @@ def connect_brain_output_handlers(window, brain_engine, sanitize_text):
             append_message(trace_id, visible_text)
 
     def handle_brain_fragment(fragment: str, trace_id: str | None):
+        state = _get_or_create_trace_state(trace_id)
+        if _has_explicit_action(fragment):
+            if state is not None:
+                state["saw_explicit_action"] = True
+        else:
+            _maybe_inject_default_reply_action(trace_id)
         dispatch_action = getattr(window, "dispatch_action", None)
         if callable(dispatch_action):
             dispatch_action(fragment, trace_id=trace_id, allow_tts=False)
@@ -35,6 +84,7 @@ def connect_brain_output_handlers(window, brain_engine, sanitize_text):
             speak_text(sentence_text, trace_id=trace_id)
 
     def handle_speech_ready(reply_text: str, trace_id: str | None):
+        _maybe_inject_default_reply_action(trace_id)
         speak_text = getattr(window, "speak_text", None)
         if callable(speak_text):
             speak_text(reply_text, trace_id=trace_id)
@@ -49,7 +99,12 @@ def connect_brain_output_handlers(window, brain_engine, sanitize_text):
     brain_engine.speech_ready.connect(handle_speech_ready)
     brain_completed = getattr(brain_engine, "brain_completed", None)
     if brain_completed is not None:
-        brain_completed.connect(lambda trace_id: getattr(window, "complete_tts_trace", lambda *_args: None)(trace_id))
+        brain_completed.connect(
+            lambda trace_id: (
+                _clear_reply_action_state(trace_id),
+                getattr(window, "complete_tts_trace", lambda *_args: None)(trace_id),
+            )
+        )
 
 
 def main():

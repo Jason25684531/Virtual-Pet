@@ -1641,7 +1641,7 @@ class ActionPlaybackTests(unittest.TestCase):
 
             dispatcher.shutdown()
 
-    def test_wave_response_uses_cached_audio_and_waits_for_room_audio_end(self):
+    def test_wave_response_uses_cached_audio_and_waits_for_room_audio_and_main_video_end(self):
         with tempfile.TemporaryDirectory(prefix="echoes-action-wave-audio-") as temp_dir:
             wave_path = Path(temp_dir) / "Greeting.webm"
             idle_path = Path(temp_dir) / "Idle.webm"
@@ -1655,7 +1655,7 @@ class ActionPlaybackTests(unittest.TestCase):
                 wave_worker_factory=lambda parent=None: _ImmediateServiceWorker(
                     success=True,
                     message="揮手問候音檔已完成",
-                    payload={"path": "wave.mp3", "title": "hi~"},
+                    payload={"path": "wave.mp3", "title": "嗨 你好嗎"},
                     parent=parent,
                 ),
                 motion_path_resolver=lambda motion_key: str(
@@ -1663,11 +1663,17 @@ class ActionPlaybackTests(unittest.TestCase):
                 ),
                 tts_worker_factory=_ManualQueuedTTSWorker,
             )
+            dispatcher._wave_greeting_audio_delay_ms = 80
 
-            self.assertTrue(dispatcher.dispatch("[ACTION:wave_response] hi~"))
+            self.assertTrue(dispatcher.dispatch("[ACTION:wave_response] 嗨 你好嗎"))
 
             self.assertEqual(len(_ManualQueuedTTSWorker.instances), 0)
             self.assertEqual(len(window.motion_loop_calls), 1)
+            self.assertEqual(len(window.audio_calls), 0)
+
+            time.sleep(0.12)
+            QCoreApplication.processEvents()
+
             self.assertEqual(len(window.audio_calls), 1)
             self.assertTrue(dispatcher._wait_for_room_audio_ended)
             self.assertEqual(dispatcher._current_loop_action_key, "wave_response")
@@ -1677,6 +1683,10 @@ class ActionPlaybackTests(unittest.TestCase):
             self.assertEqual(dispatcher._current_loop_action_key, "wave_response")
 
             dispatcher._on_room_audio_ended()
+
+            self.assertEqual(dispatcher._current_loop_action_key, "wave_response")
+
+            dispatcher._on_main_video_ended()
 
             self.assertIsNone(dispatcher._current_loop_action_key)
 
