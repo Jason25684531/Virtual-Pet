@@ -227,6 +227,7 @@
     });
 
     audio.addEventListener('ended', function () {
+        console.log('[ECHOES:ROOM_AUDIO_ENDED]');
         if (audio.dataset.statusManaged === 'true') {
             setStatus('音樂播放完畢', 'idle', 2200);
         }
@@ -367,6 +368,14 @@
         conversationQueueText.textContent = '佇列 ' + depth;
     };
 
+    window.clearConversationTurns = function () {
+        conversationTurns.clear();
+        while (conversationList.firstElementChild) {
+            conversationList.removeChild(conversationList.firstElementChild);
+        }
+        window.setConversationQueueDepth(0);
+    };
+
     window.playRoomAudio = function (source, title, updateStatus) {
         if (!source || typeof source !== 'string') {
             console.warn('[ECHOES] 無效的音訊來源:', source);
@@ -420,6 +429,13 @@
         });
     };
 
+    window.setPanelVideoMuted = function (muted) {
+        if (!panelVideo) {
+            return;
+        }
+        panelVideo.muted = (muted !== false);
+    };
+
     window.clearPanelVideo = function () {
         if (!panelVideo) {
             return;
@@ -459,6 +475,17 @@
         motionLoopSource = null;
         motionLoopActive = false;
         console.log('[ECHOES] motionLoop 停止');
+    };
+
+    window.resetRoomState = function () {
+        window.stopRoomAudio();
+        window.clearPanelVideo();
+        window.stopMotionLoop();
+        window.clearConversationTurns();
+        window.clearActionStatus();
+        if (idleSource) {
+            restoreIdleMotionInternal(idleSource);
+        }
     };
 
     window.setRoomBackground = function (source) {

@@ -71,8 +71,10 @@ class STTSessionControllerTests(unittest.TestCase):
     def test_start_and_stop_session_updates_state(self):
         controller = STTSessionController(worker_factory=_FakeWorker)
         states: list[bool] = []
+        lifecycles: list[str] = []
         statuses: list[str] = []
         controller.session_state_changed.connect(states.append)
+        controller.session_lifecycle_changed.connect(lifecycles.append)
         controller.status_changed.connect(statuses.append)
 
         started = controller.start_session()
@@ -81,8 +83,32 @@ class STTSessionControllerTests(unittest.TestCase):
         self.assertTrue(started)
         self.assertTrue(stopped)
         self.assertEqual(states, [True, False])
+        self.assertEqual(lifecycles, ["starting", "listening", "stopping", "idle"])
+        self.assertEqual(controller.state(), "idle")
         self.assertTrue(any("正在啟動 STT 收音" in message for message in statuses))
         self.assertTrue(any("正在停止 STT 收音" in message for message in statuses))
+
+    def test_start_is_locked_while_session_is_stopping(self):
+        controller = STTSessionController(worker_factory=_FakeWorker)
+        controller.start_session()
+        controller._set_state(STTSessionController.STATE_STOPPING)
+
+        self.assertFalse(controller.start_session())
+
+    def test_listening_loss_keeps_controller_disabled_until_worker_finishes(self):
+        controller = STTSessionController(worker_factory=_FakeWorker)
+        controller.start_session()
+        worker = controller._worker
+
+        worker.listening_state_changed.emit(True)
+        worker.listening_state_changed.emit(False)
+
+        self.assertEqual(controller.state(), STTSessionController.STATE_STOPPING)
+        self.assertFalse(controller.is_listening())
+
+        worker.finished.emit()
+
+        self.assertEqual(controller.state(), STTSessionController.STATE_IDLE)
 
     def test_partial_preview_is_forwarded_without_final_submission(self):
         controller = STTSessionController(worker_factory=_FakeWorker)

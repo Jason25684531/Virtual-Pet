@@ -8,6 +8,13 @@ import signal
 import time
 
 
+WAVE_RESPONSE_GREETING_DIRECTIVE = "[ACTION:wave_response] hi~"
+
+
+def build_wave_response_directive(_directive: str | None = None) -> str:
+    return WAVE_RESPONSE_GREETING_DIRECTIVE
+
+
 def connect_brain_output_handlers(window, brain_engine, sanitize_text):
     def handle_token_streamed(token: str, trace_id: str | None):
         append_message = getattr(window, "append_conversation_assistant", None)
@@ -51,6 +58,7 @@ def main():
     from api_client.brain_engine import BrainEngine, sanitize_tts_text
     from api_client.voai_client import prewarm_voai_http_session
     import config
+    from database import SQLiteMemoryManager
     from interaction_trace import InteractionLatencyTracker
     from interaction_turn_manager import InteractionTurnManager
     from sensors.camera_vision import (
@@ -77,6 +85,7 @@ def main():
     window.set_action_status("正在預熱 OpenAI 大腦...", tone="working", timeout_ms=2500)
 
     brain_engine = BrainEngine(latency_tracker=latency_tracker, parent=app)
+    memory_manager = SQLiteMemoryManager()
     turn_manager = InteractionTurnManager(
         brain_engine,
         latency_tracker,
@@ -166,12 +175,16 @@ def main():
         if not config.AZURE_STT_ENABLED:
             window.set_stt_available(False)
 
-    def handle_stt_session_state(active: bool):
-        window.set_stt_listening(active)
-        if active:
+    def handle_stt_lifecycle_state(state: str):
+        if not config.AZURE_STT_ENABLED:
+            window.set_stt_available(False)
+            return
+        window.set_stt_state(state)
+        if state == "listening":
             window.set_action_status("STT 收音中，等待語音輸入...", tone="working", timeout_ms=2200)
             return
-        window.set_action_status("STT 已停止收音", tone="idle", timeout_ms=2200)
+        if state == "idle":
+            window.set_action_status("STT 已停止收音", tone="idle", timeout_ms=2200)
 
     def handle_stt_preview(text: str, trace_id: str | None):
         preview = text if len(text) <= 24 else f"{text[:24]}..."
@@ -195,10 +208,24 @@ def main():
     stt_controller.status_changed.connect(handle_stt_status)
     stt_controller.recognizing_text.connect(handle_stt_partial_preview)
     stt_controller.warning_emitted.connect(handle_stt_warning)
-    stt_controller.session_state_changed.connect(handle_stt_session_state)
+    stt_controller.session_lifecycle_changed.connect(handle_stt_lifecycle_state)
     stt_controller.recognized_result.connect(handle_stt_preview)
     window.stt_start_requested.connect(stt_controller.start_session)
     window.stt_stop_requested.connect(stt_controller.stop_session)
+
+    def handle_reset_requested():
+        stt_controller.stop_session()
+        turn_manager.reset()
+        current_character_id = window.get_current_character_id()
+        memory_manager.clear_session(current_character_id)
+        brain_engine.clear_memory()
+        window.reset_runtime_state()
+        if config.AZURE_STT_ENABLED and stt_controller.state() not in {"starting", "listening", "stopping"}:
+            window.set_stt_state("idle")
+        elif not config.AZURE_STT_ENABLED:
+            window.set_stt_available(False)
+
+    window.reset_requested.connect(handle_reset_requested)
 
     if not config.AZURE_STT_ENABLED:
         print("[ECHOES][STT] 提示: Azure STT 設定尚未完成；收音按鈕會顯示為不可用。")
@@ -218,7 +245,7 @@ def main():
             print("[ECHOES] Wave response 略過：STT 或 TTS 進行中")
             return
         _last_wave_time = now  # 只在實際 dispatch 時更新計時器
-        window.dispatch_action(directive)
+        window.dispatch_action(build_wave_response_directive(directive))
 
     if wave_sensor_config.detection_enabled:
         wave_sensor.wave_detected.connect(_on_wave_detected)

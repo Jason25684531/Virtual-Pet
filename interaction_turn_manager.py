@@ -73,7 +73,16 @@ class InteractionTurnManager(QObject):
 
     def shutdown(self):
         self._monitor.stop()
+        self.reset(reason="interaction turn manager shutdown")
+
+    def reset(self, reason: str = "runtime reset"):
+        active_trace_id = self._active_trace_id
         self._pending_inputs.clear()
+        if active_trace_id and self._latency_tracker.snapshot(active_trace_id) is not None:
+            self._latency_tracker.abort(active_trace_id, reason)
+        self._active_trace_id = None
+        self._active_source = ""
+        self._active_text = ""
         self.queue_depth_changed.emit(0)
 
     def _start_next_if_idle(self) -> str | None:

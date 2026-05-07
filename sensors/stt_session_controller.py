@@ -13,6 +13,19 @@ def _log_session(message: str):
 class STTSessionController(QObject):
     """集中管理 Azure STT worker 的開始、停止與清理。"""
 
+    STATE_IDLE = "idle"
+    STATE_STARTING = "starting"
+    STATE_LISTENING = "listening"
+    STATE_STOPPING = "stopping"
+    STATE_UNAVAILABLE = "unavailable"
+    VALID_STATES = {
+        STATE_IDLE,
+        STATE_STARTING,
+        STATE_LISTENING,
+        STATE_STOPPING,
+        STATE_UNAVAILABLE,
+    }
+
     speech_started = pyqtSignal(object)
     speech_ended = pyqtSignal(object)
     recognizing_text = pyqtSignal(str)
@@ -21,6 +34,7 @@ class STTSessionController(QObject):
     warning_emitted = pyqtSignal(str)
     status_changed = pyqtSignal(str)
     session_state_changed = pyqtSignal(bool)
+    session_lifecycle_changed = pyqtSignal(str)
 
     def __init__(
         self,
@@ -33,12 +47,20 @@ class STTSessionController(QObject):
         self._latency_tracker = latency_tracker
         self._worker = None
         self._listening = False
+        self._state = self.STATE_IDLE
         self._active_trace_id: str | None = None
 
     def is_listening(self) -> bool:
         return self._listening
 
+    def state(self) -> str:
+        return self._state
+
     def start_session(self) -> bool:
+        if self._state in {self.STATE_STARTING, self.STATE_STOPPING}:
+            self.status_changed.emit("Azure STT 正在切換狀態，請稍候。")
+            _log_session(f"略過 start：目前 state={self._state}。")
+            return False
         if self._worker is not None and self._worker.isRunning():
             self.status_changed.emit("Azure STT 已在收音中。")
             _log_session("略過 start：目前已有活動中的 STT session。")
@@ -59,6 +81,7 @@ class STTSessionController(QObject):
             worker.listening_state_changed.connect(self._handle_listening_state_changed)
         worker.finished.connect(self._handle_worker_finished)
 
+        self._set_state(self.STATE_STARTING)
         self.status_changed.emit("正在啟動 STT 收音...")
         _log_session("建立新的 Azure STT worker 並開始啟動。")
         worker.start()
@@ -69,8 +92,11 @@ class STTSessionController(QObject):
         if worker is None:
             self.status_changed.emit("Azure STT 目前未啟動。")
             _log_session("略過 stop：目前沒有活動中的 worker。")
+            if self._state != self.STATE_UNAVAILABLE:
+                self._set_state(self.STATE_IDLE)
             return False
 
+        self._set_state(self.STATE_STOPPING)
         self.status_changed.emit("正在停止 STT 收音...")
         _log_session("收到停止收音請求。")
         try:
@@ -85,8 +111,11 @@ class STTSessionController(QObject):
     def shutdown(self):
         worker = self._worker
         if worker is None:
+            if self._state != self.STATE_UNAVAILABLE:
+                self._set_state(self.STATE_IDLE)
             return
         _log_session("應用程式關閉中，準備清理 STT worker。")
+        self._set_state(self.STATE_STOPPING)
         try:
             worker.stop()
             worker.quit()
@@ -97,6 +126,8 @@ class STTSessionController(QObject):
             if self._listening:
                 self._listening = False
                 self.session_state_changed.emit(False)
+            if self._state != self.STATE_UNAVAILABLE:
+                self._set_state(self.STATE_IDLE)
 
     def _handle_worker_warning(self, message: str):
         self.warning_emitted.emit(message)
@@ -144,6 +175,13 @@ class STTSessionController(QObject):
             return
         self._listening = active
         self.session_state_changed.emit(active)
+        if active:
+            self._set_state(self.STATE_LISTENING)
+        elif self._state != self.STATE_STOPPING:
+            if self._worker is not None and self._worker.isRunning():
+                self._set_state(self.STATE_STOPPING)
+            else:
+                self._set_state(self.STATE_IDLE)
         _log_session(f"session_state_changed -> {active}")
 
     def _handle_worker_finished(self):
@@ -155,5 +193,16 @@ class STTSessionController(QObject):
         if self._listening:
             self._listening = False
             self.session_state_changed.emit(False)
+        if self._state != self.STATE_UNAVAILABLE:
+            self._set_state(self.STATE_IDLE)
         self.status_changed.emit("STT 收音已停止，等待下一次開始。")
         _log_session("STT worker 已結束並完成清理。")
+
+    def _set_state(self, state: str):
+        if state not in self.VALID_STATES:
+            raise ValueError(f"Unknown STT lifecycle state: {state}")
+        if self._state == state:
+            return
+        self._state = state
+        self.session_lifecycle_changed.emit(state)
+        _log_session(f"session_lifecycle_changed -> {state}")

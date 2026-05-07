@@ -10,7 +10,7 @@ from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QFileDialog, QProgressBar, QTextEdit, QLineEdit,
-    QComboBox,
+    QComboBox, QScrollArea, QWidget,
 )
 
 from api_client.comfyui_client import ComfyUIClient
@@ -83,6 +83,14 @@ _BTN_STYLE = (
 )
 _BTN_RED = _BTN_STYLE.format(bg="#c0392b", hover="#e74c3c", pressed="#a93226")
 _BTN_BLUE = _BTN_STYLE.format(bg="#2980b9", hover="#3498db", pressed="#1f6fa0")
+DEFAULT_POSITIVE_PROMPT = (
+    "anime character, transparent background, full body, lively idle pose, "
+    "friendly smile, smooth motion, clean silhouette, stable hands, high quality"
+)
+DEFAULT_NEGATIVE_PROMPT = (
+    "low quality, blurry, distorted face, extra fingers, missing hands, broken limbs, "
+    "cropped body, duplicate character, noisy background, watermark, text"
+)
 
 
 class SettingsDialog(QDialog):
@@ -109,9 +117,17 @@ class SettingsDialog(QDialog):
     # ── UI 建構 ──────────────────────────────────────────
 
     def _init_ui(self):
-        layout = QVBoxLayout(self)
+        root_layout = QVBoxLayout(self)
+        root_layout.setSpacing(12)
+        root_layout.setContentsMargins(18, 18, 18, 18)
+
+        scroll_area = QScrollArea(self)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setSpacing(12)
-        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setContentsMargins(6, 6, 12, 6)
 
         # 標題
         title = QLabel("角色設定")
@@ -226,6 +242,7 @@ class SettingsDialog(QDialog):
         self._positive_edit.setPlaceholderText(
             "例：the character is happy and waving hands, smooth motion"
         )
+        self._positive_edit.setPlainText(DEFAULT_POSITIVE_PROMPT)
         self._positive_edit.setStyleSheet(
             "border: 1px solid #ccc; border-radius: 4px;"
             " font-size: 13px; padding: 4px;"
@@ -242,6 +259,7 @@ class SettingsDialog(QDialog):
         self._negative_edit.setPlaceholderText(
             "留空則使用 JSON 預設負向詞。也可手動輸入。"
         )
+        self._negative_edit.setText(DEFAULT_NEGATIVE_PROMPT)
         self._negative_edit.setStyleSheet(
             "border: 1px solid #ccc; border-radius: 4px;"
             " font-size: 12px; padding: 4px;"
@@ -275,13 +293,15 @@ class SettingsDialog(QDialog):
         layout.addWidget(self._status)
 
         layout.addStretch()
+        scroll_area.setWidget(content)
+        root_layout.addWidget(scroll_area, stretch=1)
 
         # 關閉按鈕
         close_btn = QPushButton("關閉")
         close_btn.setFixedHeight(36)
         close_btn.setStyleSheet(_BTN_RED)
         close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)
+        root_layout.addWidget(close_btn)
 
         self._update_character_controls()
 

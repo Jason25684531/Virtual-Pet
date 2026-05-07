@@ -101,6 +101,12 @@ class FakeSpeechSDK:
         RecognizedSpeech = "RecognizedSpeech"
         NoMatch = "NoMatch"
 
+    class CancellationDetails:
+        def __init__(self, result):
+            self.reason = getattr(result, "cancellation_reason", None)
+            self.error_details = getattr(result, "cancellation_error_details", None)
+            self.error_code = getattr(result, "cancellation_error_code", None)
+
     class audio:
         AudioConfig = FakeAudioConfig
 
@@ -217,6 +223,29 @@ class AzureSTTWorkerTests(unittest.TestCase):
 
         self.assertEqual(recognized, [])
 
+    def test_canceled_event_prefers_sdk_cancellation_details(self):
+        speech_sdk = FakeSpeechSDK()
+        warnings: list[str] = []
+        worker = AzureSTTWorker(api_key="key", region="eastus", speech_sdk=speech_sdk)
+        worker.warning_emitted.connect(warnings.append)
+
+        worker._handle_canceled_event(
+            SimpleNamespace(
+                reason=None,
+                error_details=None,
+                result=SimpleNamespace(
+                    cancellation_reason="CancellationReason.Error",
+                    cancellation_error_details="Could not validate speech context.",
+                    cancellation_error_code="1007",
+                ),
+            )
+        )
+
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("CancellationReason.Error", warnings[0])
+        self.assertIn("error_code=1007", warnings[0])
+        self.assertIn("Could not validate speech context.", warnings[0])
+
     def test_run_starts_and_stops_continuous_recognition_safely(self):
         speech_sdk = FakeSpeechSDK()
         recognized: list[str] = []
@@ -262,11 +291,9 @@ class AzureSTTWorkerTests(unittest.TestCase):
             ),
             str(config.AZURE_STT_SEGMENTATION_SILENCE_TIMEOUT_MS),
         )
-        self.assertEqual(
-            recognizer.speech_config.properties.get(
-                speech_sdk.PropertyId.Speech_SegmentationMaximumTimeMs
-            ),
-            str(config.AZURE_STT_SEGMENTATION_MAX_TIME_MS),
+        self.assertNotIn(
+            speech_sdk.PropertyId.Speech_SegmentationMaximumTimeMs,
+            recognizer.speech_config.properties,
         )
 
 

@@ -30,3 +30,6 @@ assets/webm
 ui/assets/
 assets/
 docs/
+runtime_cache/
+
+local_memory.db

@@ -14,6 +14,7 @@ ECHOES — SQLite 持久記憶管理器。
 from __future__ import annotations
 
 import re
+import sqlite3
 from pathlib import Path
 
 try:
@@ -104,6 +105,17 @@ class SQLiteMemoryManager:
         try:
             self._get_history(character_id).clear()
         except Exception:  # pragma: no cover
+            pass
+
+    def clear_all_sessions(self) -> None:
+        """清空 SQLite 中全部角色 session 的聊天記憶。"""
+        if not self._db_path.exists():
+            return
+        try:
+            with sqlite3.connect(self._db_path) as connection:
+                connection.execute("DELETE FROM message_store")
+                connection.commit()
+        except sqlite3.Error:  # pragma: no cover
             pass
 
     # ------------------------------------------------------------------

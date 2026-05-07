@@ -85,6 +85,15 @@ class SQLiteMemoryManagerTests(unittest.TestCase):
         self.assertEqual(self.mgr.get_recent_messages("miku"), [])
         self.assertEqual(len(self.mgr.get_recent_messages("Choppr")), 2)
 
+    def test_clear_all_sessions_removes_every_character_memory(self):
+        self.mgr.add_exchange("miku", "你好", "哈囉")
+        self.mgr.add_exchange("Choppr", "嗨", "嗨嗨")
+
+        self.mgr.clear_all_sessions()
+
+        self.assertEqual(self.mgr.get_recent_messages("miku"), [])
+        self.assertEqual(self.mgr.get_recent_messages("Choppr"), [])
+
     def test_empty_or_none_text_is_ignored(self):
         """空字串或 None 的 human/ai 不應寫入 DB。"""
         self.mgr.add_exchange("miku", "", "有回覆但無問題")

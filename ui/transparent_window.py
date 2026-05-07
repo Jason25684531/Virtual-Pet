@@ -30,6 +30,7 @@ class EchoesWebPage(QWebEnginePage):
         super().__init__(parent)
         self.panel_ended_callback = None
         self.main_video_ended_callback = None
+        self.room_audio_ended_callback = None
 
     def javaScriptConsoleMessage(self, level, message, line_number, source_id):
         label = self._LEVEL_LABELS.get(level, "LOG")
@@ -38,6 +39,8 @@ class EchoesWebPage(QWebEnginePage):
             self.panel_ended_callback()
         if message == "[ECHOES:MAIN_VIDEO_ENDED]" and callable(self.main_video_ended_callback):
             self.main_video_ended_callback()
+        if message == "[ECHOES:ROOM_AUDIO_ENDED]" and callable(self.room_audio_ended_callback):
+            self.room_audio_ended_callback()
 
 
 class DeveloperInputLineEdit(QLineEdit):
@@ -58,6 +61,7 @@ class TransparentWindow(QMainWindow):
     developer_query_submitted = pyqtSignal(str)
     stt_start_requested = pyqtSignal()
     stt_stop_requested = pyqtSignal()
+    reset_requested = pyqtSignal()
     RAW_JAVASCRIPT_MARKER = "__raw_javascript__"
 
     # 視窗尺寸（可根據需求調整，或改為全螢幕）：
@@ -71,6 +75,9 @@ class TransparentWindow(QMainWindow):
     STT_BUTTON_HEIGHT = 40
     STT_BUTTON_MARGIN_LEFT = 24
     STT_BUTTON_MARGIN_BOTTOM = 30
+    RESET_BUTTON_WIDTH = 96
+    RESET_BUTTON_HEIGHT = 40
+    RESET_BUTTON_GAP = 12
     # 角色預設位移（相對於視窗中心的像素偏移量）
     DEFAULT_CHARACTER_X_OFFSET = 0
     DEFAULT_CHARACTER_Y_OFFSET = 0
@@ -106,12 +113,14 @@ class TransparentWindow(QMainWindow):
         self._drag_pos = None
         self._stt_listening = False
         self._stt_available = True
+        self._stt_state = "idle"
         self._pending_javascript_calls: list[tuple[str, tuple[object, ...]]] = []
         self._init_window()
         self._init_webview()
         self._init_drag_surface()
         self._init_developer_input()
         self._init_stt_button()
+        self._init_reset_button()
         from action_dispatcher import ActionDispatcher
         self._action_dispatcher = ActionDispatcher(
             self,
@@ -124,6 +133,7 @@ class TransparentWindow(QMainWindow):
         if isinstance(web_page, EchoesWebPage):
             web_page.panel_ended_callback = self._action_dispatcher._on_panel_video_ended
             web_page.main_video_ended_callback = self._action_dispatcher._on_main_video_ended
+            web_page.room_audio_ended_callback = self._action_dispatcher._on_room_audio_ended
         self._move_to_bottom_right()
         self._init_tray()
 
@@ -222,20 +232,57 @@ class TransparentWindow(QMainWindow):
         self._apply_stt_button_state()
         self._update_stt_button_geometry()
 
+    def _init_reset_button(self):
+        self._reset_button = QPushButton(self)
+        self._reset_button.setObjectName("runtime-reset-button")
+        self._reset_button.setText("重置")
+        self._reset_button.setFixedSize(self.RESET_BUTTON_WIDTH, self.RESET_BUTTON_HEIGHT)
+        self._reset_button.clicked.connect(self.reset_requested.emit)
+        self._reset_button.installEventFilter(self)
+        self._reset_button.setStyleSheet(
+            """
+            QPushButton#runtime-reset-button {
+                background: rgba(42, 64, 86, 215);
+                color: #ffffff;
+                border: 1px solid rgba(210, 232, 255, 140);
+                border-radius: 14px;
+                font-size: 15px;
+                font-weight: 600;
+                padding: 0 14px;
+            }
+            QPushButton#runtime-reset-button:hover {
+                background: rgba(54, 82, 110, 235);
+            }
+            """
+        )
+        self._update_reset_button_geometry()
+
     def _apply_stt_button_state(self):
         if not hasattr(self, "_stt_button"):
             return
 
-        if not self._stt_available:
+        state = "unavailable" if not self._stt_available else self._stt_state
+
+        if state == "unavailable":
             label = "STT 不可用"
             background = "rgba(92, 92, 92, 180)"
             border = "rgba(190, 190, 190, 110)"
             enabled = False
-        elif self._stt_listening:
+        elif state == "starting":
+            label = "啟動中..."
+            background = "rgba(88, 120, 160, 205)"
+            border = "rgba(218, 234, 255, 140)"
+            enabled = False
+        elif state == "listening":
             label = "結束收音"
             background = "rgba(176, 52, 52, 215)"
             border = "rgba(255, 214, 214, 160)"
             enabled = True
+        elif state == "stopping":
+            label = "停止中..."
+            background = "rgba(132, 96, 62, 205)"
+            border = "rgba(255, 232, 208, 140)"
+            enabled = False
         else:
             label = "開始收音"
             background = "rgba(32, 126, 92, 215)"
@@ -273,6 +320,16 @@ class TransparentWindow(QMainWindow):
         )
         self._stt_button.move(self.STT_BUTTON_MARGIN_LEFT, y)
 
+    def _update_reset_button_geometry(self):
+        if not hasattr(self, "_reset_button"):
+            return
+        y = max(
+            self.DRAG_SURFACE_HEIGHT + 24,
+            self.height() - self.RESET_BUTTON_HEIGHT - self.STT_BUTTON_MARGIN_BOTTOM,
+        )
+        x = self.STT_BUTTON_MARGIN_LEFT + self.STT_BUTTON_WIDTH + self.RESET_BUTTON_GAP
+        self._reset_button.move(x, y)
+
     def _update_drag_surface_geometry(self):
         if hasattr(self, "_drag_surface"):
             self._drag_surface.setGeometry(0, 0, self.width(), self.DRAG_SURFACE_HEIGHT)
@@ -294,6 +351,8 @@ class TransparentWindow(QMainWindow):
             self._drag_surface.raise_()
         if hasattr(self, "_stt_button"):
             self._stt_button.raise_()
+        if hasattr(self, "_reset_button"):
+            self._reset_button.raise_()
         if hasattr(self, "_developer_input") and self._developer_input.isVisible():
             self._developer_input.raise_()
 
@@ -379,6 +438,10 @@ class TransparentWindow(QMainWindow):
         stop_music_action.triggered.connect(self.stop_music)
         action_menu.addAction(stop_music_action)
 
+        reset_action = QAction("重置狀態", self)
+        reset_action.triggered.connect(self.reset_requested.emit)
+        menu.addAction(reset_action)
+
         self._tray_stt_toggle_action = QAction("開始收音", self)
         self._tray_stt_toggle_action.triggered.connect(self._handle_stt_button_clicked)
         menu.addAction(self._tray_stt_toggle_action)
@@ -449,6 +512,7 @@ class TransparentWindow(QMainWindow):
         self._update_drag_surface_geometry()
         self._update_developer_input_geometry()
         self._update_stt_button_geometry()
+        self._update_reset_button_geometry()
         self._raise_overlay_widgets()
 
     def keyPressEvent(self, event):
@@ -657,19 +721,37 @@ class TransparentWindow(QMainWindow):
     def set_conversation_queue_depth(self, queue_depth: int):
         self._run_javascript("setConversationQueueDepth", int(queue_depth))
 
+    def clear_conversation_turns(self):
+        self._run_javascript("clearConversationTurns")
+
     def set_stt_listening(self, active: bool):
-        self._stt_listening = bool(active)
+        self.set_stt_state("listening" if active else "idle")
+
+    def set_stt_state(self, state: str):
+        normalized = str(state or "idle").strip().lower()
+        if normalized not in {"idle", "starting", "listening", "stopping", "unavailable"}:
+            normalized = "idle"
+        self._stt_state = normalized
+        self._stt_listening = normalized == "listening"
+        self._stt_available = normalized != "unavailable"
         self._apply_stt_button_state()
 
     def set_stt_available(self, available: bool):
         self._stt_available = bool(available)
+        if not self._stt_available:
+            self._stt_state = "unavailable"
+            self._stt_listening = False
+        elif self._stt_state == "unavailable":
+            self._stt_state = "idle"
         self._apply_stt_button_state()
 
     def _handle_stt_button_clicked(self):
         if not self._stt_available:
             self.set_action_status("Azure STT 尚未配置完成。", tone="warn", timeout_ms=3200)
             return
-        if self._stt_listening:
+        if self._stt_state in {"starting", "stopping"}:
+            return
+        if self._stt_state == "listening":
             self.stt_stop_requested.emit()
             return
         self.stt_start_requested.emit()
@@ -716,9 +798,12 @@ class TransparentWindow(QMainWindow):
     def set_room_character(self, name: str):
         self._run_javascript("setRoomCharacter", name)
 
-    def play_panel_video(self, path: str, muted: bool = True):
+    def play_panel_video(self, path: str, muted: bool = True, loop: bool = False):
         bg_url = QUrl.fromLocalFile(path).toString()
-        self._run_javascript("playPanelVideo", bg_url, False, muted)
+        self._run_javascript("playPanelVideo", bg_url, bool(loop), muted)
+
+    def set_panel_video_muted(self, muted: bool):
+        self._run_javascript("setPanelVideoMuted", bool(muted))
 
     def clear_panel_video(self):
         self._run_javascript("clearPanelVideo")
@@ -743,8 +828,23 @@ class TransparentWindow(QMainWindow):
     def stop_music(self):
         self._run_javascript("stopRoomAudio")
 
+    def reset_runtime_state(self):
+        self._action_dispatcher.reset_runtime_state()
+        self.stop_music()
+        self.stop_motion_loop()
+        self.clear_panel_video()
+        self.clear_conversation_turns()
+        self.set_conversation_queue_depth(0)
+        self._hide_developer_input()
+        self._run_javascript("resetRoomState")
+        self.restore_idle_video()
+        self.set_action_status("已重置，等待下一次互動。", tone="idle", timeout_ms=2400)
+
     def shutdown_background_tasks(self):
         self._action_dispatcher.shutdown()
+
+    def get_current_character_id(self) -> str | None:
+        return self._library.get_current_character_id()
 
     def apply_character_position(self):
         """套用目前由 Python 管理的角色位移設定。"""

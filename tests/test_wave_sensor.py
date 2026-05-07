@@ -11,6 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from action_dispatcher import ActionDispatcher
 from character_library import CharacterLibrary
+from main import build_wave_response_directive
 from sensors.camera_vision import (
     WAVE_RESPONSE_DIRECTIVE,
     WaveDetectionConfig,
@@ -41,6 +42,35 @@ class FakeCapture:
 
     def release(self):
         self.released = True
+
+
+class _DebugSignal:
+    def __init__(self):
+        self._callbacks = []
+
+    def connect(self, callback):
+        self._callbacks.append(callback)
+
+    def emit(self, *args):
+        for callback in list(self._callbacks):
+            callback(*args)
+
+
+class _ImmediateWaveWorker:
+    def __init__(self, success: bool = True, message: str = "", payload: object | None = None, parent=None):
+        del parent
+        self._success = success
+        self._message = message
+        self._payload = payload
+        self.finished_signal = _DebugSignal()
+        self.finished = _DebugSignal()
+
+    def start(self):
+        self.finished_signal.emit(self._success, self._message, self._payload)
+        self.finished.emit()
+
+    def deleteLater(self):
+        return None
 
 
 class _WaveProbeWindow:
@@ -78,8 +108,8 @@ class _WaveProbeWindow:
 
 
 def run_wave_response_debug_probe() -> dict[str, object]:
-    """wave_response 應播放一次 greeting，等主影片 ended callback 再回 idle。"""
-    directive = "[ACTION:wave_response]"
+    """wave_response 應走本地音檔路徑，並等待 room audio 結束後再回 idle。"""
+    directive = "[ACTION:wave_response] hi~"
     with tempfile.TemporaryDirectory(prefix="echoes-debug-webm-") as temp_dir:
         wave_path = Path(temp_dir) / "Greeting.webm"
         idle_path = Path(temp_dir) / "Idle.webm"
@@ -90,13 +120,22 @@ def run_wave_response_debug_probe() -> dict[str, object]:
         dispatcher = ActionDispatcher(
             window,
             library=object(),
+            wave_worker_factory=lambda parent=None: _ImmediateWaveWorker(
+                success=True,
+                message="揮手問候音檔已完成",
+                payload={"path": "wave.mp3", "title": "hi~"},
+                parent=parent,
+            ),
             motion_path_resolver=resolver,
             tts_enabled=False,
         )
         dispatched = dispatcher.dispatch(directive)
-        restore_before_ended = window.restore_idle_calls
+        restore_before_audio_end = window.restore_idle_calls
         dispatcher._on_main_video_ended()
+        restore_after_main_end = window.restore_idle_calls
+        dispatcher._on_room_audio_ended()
         idle_restored = window.restore_idle_calls >= 1
+        dispatcher.shutdown()
 
         return {
             "directive": directive,
@@ -105,18 +144,19 @@ def run_wave_response_debug_probe() -> dict[str, object]:
             "motion_calls": window.motion_calls,
             "motion_loop_calls": window.motion_loop_calls,
             "motion_asset_calls": window.motion_asset_calls,
-            "restore_before_ended": restore_before_ended,
+            "restore_before_audio_end": restore_before_audio_end,
+            "restore_after_main_end": restore_after_main_end,
             "idle_restored": idle_restored,
             "restore_idle_calls": window.restore_idle_calls,
             "ok": (
                 dispatched
                 and bool(window.status_calls)
-                and window.status_calls[0][0] == "正在回應揮手"
-                and not window.motion_loop_calls
-                and bool(window.motion_asset_calls)
-                and window.motion_asset_calls[0][1].endswith("Greeting.webm")
-                and window.motion_asset_calls[0][2] is False
-                and restore_before_ended == 0
+                and window.status_calls[0][0] == "hi~"
+                and bool(window.motion_loop_calls)
+                and window.motion_loop_calls[0][0].endswith("Greeting.webm")
+                and not window.motion_asset_calls
+                and restore_before_audio_end == 0
+                and restore_after_main_end == 0
                 and idle_restored
                 and window.restore_idle_calls == 1
             ),
@@ -252,6 +292,9 @@ class WaveSensorTests(unittest.TestCase):
 
 
 class WaveResponseIntegrationTests(unittest.TestCase):
+    def test_main_wave_fast_path_adds_fixed_hi_text(self):
+        self.assertEqual(build_wave_response_directive(WAVE_RESPONSE_DIRECTIVE), "[ACTION:wave_response] hi~")
+
     def test_wave_response_action_dispatch_is_supported(self):
         result = run_wave_response_debug_probe()
         self.assertTrue(result["ok"], result)

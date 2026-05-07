@@ -76,6 +76,29 @@ class InteractionTurnManagerTests(unittest.TestCase):
         self.assertEqual(brain.sent_items[0][1], external_trace_id)
         manager.shutdown()
 
+    def test_reset_clears_active_turn_and_pending_queue(self):
+        tracker = InteractionLatencyTracker()
+        brain = _FakeBrainEngine()
+        manager = InteractionTurnManager(brain, tracker)
+        queue_depths: list[int] = []
+        manager.queue_depth_changed.connect(queue_depths.append)
+
+        first = manager.submit("stt", "第一句")
+        second = manager.submit("stt", "第二句")
+
+        self.assertTrue(first["started"])
+        self.assertFalse(second["started"])
+        self.assertTrue(manager.has_active_turn())
+        self.assertEqual(manager.pending_count(), 1)
+
+        manager.reset()
+
+        self.assertFalse(manager.has_active_turn())
+        self.assertEqual(manager.pending_count(), 0)
+        self.assertEqual(queue_depths[-1], 0)
+        self.assertIsNone(tracker.snapshot(first["trace_id"]))
+        manager.shutdown()
+
     def test_turn_start_triggers_prewarm_callback_only_for_active_turns(self):
         tracker = InteractionLatencyTracker()
         brain = _FakeBrainEngine()

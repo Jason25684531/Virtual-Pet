@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from PyQt5.QtCore import QCoreApplication, QObject, QTimer
 
-from action_services import MusicSelectionWorker, NewsFetchWorker
+from action_services import MusicSelectionWorker, NewsFetchWorker, WaveGreetingWorker
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
 from api_client.brain_engine import sanitize_tts_text
 from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker  # noqa: F401 — 保留供降級使用
@@ -34,8 +34,8 @@ ACTION_DIRECTIVE_PATTERN = re.compile(
     r"(?:\[\s*ACTION\s*:\s*(?P<bracket>[A-Za-z0-9_-]+)\s*\]|(?<!\w)ACTION\s*:\s*(?P<bare>[A-Za-z0-9_-]+))",
     re.IGNORECASE,
 )
-NON_REPEATABLE_LOOP_ACTIONS = {"report_news", "play_music"}
-WAIT_MAIN_VIDEO_BEFORE_FINISH_ACTIONS = {"report_news", "play_music"}
+NON_REPEATABLE_LOOP_ACTIONS = {"report_news", "play_music", "wave_response"}
+BLOCKING_LOOP_ACTIONS = {"report_news", "play_music", "wave_response"}
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,10 @@ class ActionBinding:
     status_label: str
     handler_name: str
     skip_tts_sync: bool = False
+    play_once: bool = False
+    panel_loop: bool = False
+    panel_muted: bool = True
+    finish_event: str = "default"
 
 
 @dataclass
@@ -74,6 +78,7 @@ class ActionDispatcher(QObject):
         tts_worker_factory=AdaptiveTTSFallbackWorker,
         news_worker_factory=NewsFetchWorker,
         music_worker_factory=MusicSelectionWorker,
+        wave_worker_factory=WaveGreetingWorker,
         motion_path_resolver=None,
         tts_enabled: bool = True,
         latency_tracker: InteractionLatencyTracker | None = None,
@@ -92,6 +97,9 @@ class ActionDispatcher(QObject):
         self._music_worker_factory = (
             music_worker_factory if callable(music_worker_factory) else MusicSelectionWorker
         )
+        self._wave_worker_factory = (
+            wave_worker_factory if callable(wave_worker_factory) else WaveGreetingWorker
+        )
         self._motion_path_resolver = motion_path_resolver
         self._tts_enabled = tts_enabled
         self._latency_tracker = latency_tracker
@@ -101,6 +109,7 @@ class ActionDispatcher(QObject):
         self._suppressed_traces: set[str] = set()
         self._tts_not_expected_traces: set[str] = set()
         self._driver_started_replies: set[str] = set()
+        self._driver_started_pairs: set[tuple[str, str]] = set()
         self._queued_playback_results: dict[str, tuple[str | None, str]] = {}
         self._trace_tts_providers: dict[str, str] = {}
         self._trace_pending_tts_counts: dict[str, int] = {}
@@ -110,11 +119,14 @@ class ActionDispatcher(QObject):
         self._action_sync_timeout_ms = max(500, int(getattr(config, "ACTION_SYNC_TIMEOUT_MS", 6000))) #VOAI Timeout 約 5-6 秒，ElevenLabs Timeout 約 3-4 秒，綜合考量後設定為 6 秒以兼顧兩者並留有緩衝
         self._fallback_timeout_grace_ms = 500
         self._current_loop_action_key: str | None = None
+        self._current_loop_binding: ActionBinding | None = None
         self._loop_action_tts_queued: bool = False
         self._loop_cleanup_timer: QTimer | None = None
         self._panel_video_ended: bool = False
         self._panel_video_started: bool = False
         self._wait_for_main_video_ended: bool = False
+        self._wait_for_room_audio_ended: bool = False
+        self._loop_action_service_pending: bool = False
         # AudioStreamWorker：Consumer，持續從佇列取出 BytesIO 並播放
         self._audio_worker = AudioStreamWorker(parent=self)
         self._audio_worker.driver_started.connect(self._on_audio_driver_started)
@@ -127,6 +139,9 @@ class ActionDispatcher(QObject):
                 motion_key="report_news",
                 status_label="正在整理新聞",
                 handler_name="_handle_report_news",
+                skip_tts_sync=True,
+                panel_loop=True,
+                finish_event="room_audio",
             ),
             "play_music": ActionBinding(
                 name="play_music",
@@ -134,12 +149,17 @@ class ActionDispatcher(QObject):
                 status_label="正在挑選音樂",
                 handler_name="_handle_play_music",
                 skip_tts_sync=True,
+                play_once=True,
+                panel_muted=False,
+                finish_event="panel_video",
             ),
             "wave_response": ActionBinding(
                 name="wave_response",
                 motion_key="wave_response",
                 status_label="正在回應揮手",
-                handler_name="_handle_motion_only",
+                handler_name="_handle_wave_response",
+                skip_tts_sync=True,
+                finish_event="room_audio",
             ),
             "laugh": ActionBinding(
                 name="laugh",
@@ -274,11 +294,7 @@ class ActionDispatcher(QObject):
                     self._audio_worker.suppress_trace(normalized_trace_id)
                     intentional_tts_suppression = True
         else:
-            wait_for_main_video_ended = bool(action_name == "wave_response" and not display_message)
-            motion_found = self._play_binding_motion(
-                binding,
-                wait_for_main_video_ended=wait_for_main_video_ended,
-            )
+            motion_found = self._play_binding_motion(binding)
             if not motion_found:
                 print(f"[ECHOES] 警告: action {action_name} 缺少對應動作，改以安全狀態執行。")
                 self._window.restore_idle_video()
@@ -287,7 +303,7 @@ class ActionDispatcher(QObject):
 
         if display_message:
             try:
-                if allow_tts:
+                if allow_tts and (not binding.skip_tts_sync or bool(trace_id)):
                     self._synthesize_tts(display_message, tone=message_tone, trace_id=trace_id)
             except Exception as exc:  # pragma: no cover - 防止 TTS 異常阻斷動作播放
                 print(f"[ECHOES] 警告: TTS 背景啟動失敗，但動作已照常執行。({exc})")
@@ -352,7 +368,7 @@ class ActionDispatcher(QObject):
         return any(state.binding.name == binding.name for state in self._pending_actions.values())
 
     def _should_defer_dispatch(self, action_name: str | None, trace_id: str | None) -> bool:
-        if self._current_loop_action_key not in WAIT_MAIN_VIDEO_BEFORE_FINISH_ACTIONS:
+        if self._current_loop_action_key not in BLOCKING_LOOP_ACTIONS:
             return False
         normalized_trace_id = str(trace_id or "").strip()
         active_trace_id = str(self._active_action_trace_id or "").strip()
@@ -368,26 +384,50 @@ class ActionDispatcher(QObject):
         return True
 
     def _handle_report_news(self, binding: ActionBinding, motion_found: bool):
+        self._loop_action_service_pending = True
         current_character_id = self._call_library_method("get_current_character_id")
         if current_character_id:
             panel_path = self._call_library_method("get_panel_motion_path", current_character_id, "report_news")
             if panel_path and hasattr(self._window, "play_panel_video"):
                 self._panel_video_started = True
                 self._panel_video_ended = False
-                self._window.play_panel_video(panel_path)
-        worker = self._news_worker_factory(parent=self)
+                self._window.play_panel_video(panel_path, muted=binding.panel_muted, loop=binding.panel_loop)
+        worker = self._create_service_worker(
+            self._news_worker_factory,
+            parent=self,
+            character_id=current_character_id,
+        )
         self._start_worker(worker, lambda success, message, payload: self._on_news_finished(binding, motion_found, success, message, payload))
 
     def _handle_play_music(self, binding: ActionBinding, motion_found: bool):
+        if hasattr(self._window, "stop_music"):
+            self._window.stop_music()
         current_character_id = self._call_library_method("get_current_character_id")
+        panel_path = None
         if current_character_id:
             panel_path = self._call_library_method("get_panel_motion_path", current_character_id, "play_music")
-            if panel_path and hasattr(self._window, "play_panel_video"):
-                self._panel_video_started = True
-                self._panel_video_ended = False
-                self._window.play_panel_video(panel_path, muted=False)
+        if panel_path and hasattr(self._window, "play_panel_video"):
+            self._panel_video_started = True
+            self._panel_video_ended = False
+            self._window.play_panel_video(panel_path, muted=binding.panel_muted, loop=binding.panel_loop)
+            self._window.set_action_status("正在播放面板音樂", tone="music")
+            if motion_found and self._current_loop_action_key is not None:
+                self._schedule_non_tts_loop_cleanup(binding)
+            return
+
+        self._loop_action_service_pending = True
         worker = self._music_worker_factory(parent=self)
         self._start_worker(worker, lambda success, message, payload: self._on_music_finished(binding, motion_found, success, message, payload))
+
+    def _handle_wave_response(self, binding: ActionBinding, motion_found: bool):
+        self._loop_action_service_pending = True
+        current_character_id = self._call_library_method("get_current_character_id")
+        worker = self._create_service_worker(
+            self._wave_worker_factory,
+            parent=self,
+            character_id=current_character_id,
+        )
+        self._start_worker(worker, lambda success, message, payload: self._on_wave_finished(binding, motion_found, success, message, payload))
 
     def _handle_motion_only(self, binding: ActionBinding, motion_found: bool):
         if not motion_found:
@@ -440,10 +480,7 @@ class ActionDispatcher(QObject):
             return False
         state.status = "timeout_promoted" if promoted else "synced"
         self._active_action_trace_id = normalized_trace_id
-        motion_found = self._play_binding_motion(
-            state.binding,
-            wait_for_main_video_ended=bool(state.binding.name == "wave_response" and not state.has_tts),
-        )
+        motion_found = self._play_binding_motion(state.binding)
         if not motion_found:
             print(f"[ECHOES] 警告: action {state.binding.name} 缺少對應動作，改以安全狀態執行。")
             self._window.restore_idle_video()
@@ -469,29 +506,34 @@ class ActionDispatcher(QObject):
         self._activate_pending_action(normalized_trace_id, promoted=True)
 
     def _schedule_non_tts_loop_cleanup(self, binding: ActionBinding):
-        # 無 TTS 動作仍需等主 WebM / panel lifecycle 收尾；timer 只作為 ended callback 失效時的保護。
-        if binding.name in WAIT_MAIN_VIDEO_BEFORE_FINISH_ACTIONS:
-            if not self._panel_video_started:
-                self._wait_for_main_video_ended = True
+        if self._loop_action_service_pending or self._wait_for_room_audio_ended:
+            return
+        if binding.finish_event == "panel_video":
+            self._schedule_loop_cleanup(180000)
+            return
+        if binding.finish_event == "main_video":
+            self._wait_for_main_video_ended = True
             self._schedule_loop_cleanup(12000, wait_for_main_video_end=True)
             return
         self._schedule_loop_cleanup(12000 if self._wait_for_main_video_ended else 3000)
 
-    def _play_binding_motion(
-        self,
-        binding: ActionBinding,
-        wait_for_main_video_ended: bool = False,
-    ) -> bool:
+    def _play_binding_motion(self, binding: ActionBinding) -> bool:
         motion_path, used_idle_fallback = self._resolve_action_motion_path(binding.motion_key)
         if not motion_path:
             self._current_loop_action_key = None
+            self._current_loop_binding = None
             self._wait_for_main_video_ended = False
+            self._wait_for_room_audio_ended = False
+            self._loop_action_service_pending = False
             return False
 
         if used_idle_fallback:
             # 找不到對應動作，退回 idle，不視為 loop action
             self._current_loop_action_key = None
+            self._current_loop_binding = None
             self._wait_for_main_video_ended = False
+            self._wait_for_room_audio_ended = False
+            self._loop_action_service_pending = False
             if hasattr(self._window, "play_resolved_motion"):
                 return bool(self._window.play_resolved_motion(binding.motion_key, motion_path, loop=True))
             if hasattr(self._window, "change_video"):
@@ -500,12 +542,16 @@ class ActionDispatcher(QObject):
 
         # 所有真實動作統一使用 start_motion_loop（循環到明確停止為止）
         self._current_loop_action_key = binding.motion_key
+        self._current_loop_binding = binding
         self._loop_action_tts_queued = False
-        self._wait_for_main_video_ended = bool(wait_for_main_video_ended)
+        self._wait_for_main_video_ended = False
+        self._wait_for_room_audio_ended = False
         self._panel_video_started = False
         self._panel_video_ended = False
-        if wait_for_main_video_ended and hasattr(self._window, "play_resolved_motion"):
+        if binding.play_once and hasattr(self._window, "play_resolved_motion"):
             return bool(self._window.play_resolved_motion(binding.motion_key, motion_path, loop=False))
+        if binding.play_once and hasattr(self._window, "change_video"):
+            return bool(self._window.change_video(motion_path, loop=False))
         if hasattr(self._window, "start_motion_loop"):
             self._window.start_motion_loop(motion_path, 300)
             return True
@@ -617,6 +663,26 @@ class ActionDispatcher(QObject):
         worker.finished_signal.connect(handle_result)
         worker.finished.connect(on_thread_finished)
         worker.start()
+
+    @staticmethod
+    def _create_service_worker(factory, **kwargs):
+        try:
+            signature = inspect.signature(factory)
+            accepts_kwargs = any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in signature.parameters.values()
+            )
+            if accepts_kwargs:
+                accepted_kwargs = kwargs
+            else:
+                accepted_kwargs = {
+                    name: value
+                    for name, value in kwargs.items()
+                    if name in signature.parameters
+                }
+            return factory(**accepted_kwargs)
+        except (TypeError, ValueError):
+            return factory(parent=kwargs.get("parent"))
 
     def _synthesize_tts(self, message: str, tone: str, trace_id: str | None = None):
         if not self._tts_enabled or tone in {"warn", "error"}:
@@ -788,10 +854,16 @@ class ActionDispatcher(QObject):
                 and self._active_tts_worker is None
                 and not self._audio_worker.is_busy()):
             return
+        if self._wait_for_room_audio_ended or self._loop_action_service_pending:
+            return
+        current_binding = self._current_loop_binding
+        if current_binding is None:
+            self._finish_loop_action()
+            return
         # panel video 尚未結束時，等待 JS 的 _on_panel_video_ended 回調再 finish
         if self._panel_video_started and not self._panel_video_ended:
             return
-        if self._current_loop_action_key in WAIT_MAIN_VIDEO_BEFORE_FINISH_ACTIONS:
+        if current_binding.finish_event == "main_video":
             self._wait_for_main_video_ended = True
             self._schedule_loop_cleanup(12000, wait_for_main_video_end=True)
             return
@@ -802,6 +874,12 @@ class ActionDispatcher(QObject):
         self._panel_video_ended = True
         if self._current_loop_action_key is None:
             return
+        if self._wait_for_room_audio_ended or self._loop_action_service_pending:
+            return
+        current_binding = self._current_loop_binding
+        if current_binding is None:
+            self._finish_loop_action()
+            return
         tts_idle = (
             not self._loop_action_tts_queued
             or (self._pending_tts_chunks.empty()
@@ -809,7 +887,10 @@ class ActionDispatcher(QObject):
                 and not self._audio_worker.is_busy())
         )
         if tts_idle:
-            if self._current_loop_action_key in WAIT_MAIN_VIDEO_BEFORE_FINISH_ACTIONS:
+            if current_binding.finish_event == "panel_video":
+                self._finish_loop_action()
+                return
+            if current_binding.finish_event == "main_video":
                 self._wait_for_main_video_ended = True
                 self._schedule_loop_cleanup(12000, wait_for_main_video_end=True)
                 return
@@ -817,7 +898,14 @@ class ActionDispatcher(QObject):
 
     def _on_main_video_ended(self):
         """JS main character video 播畢時的 Python 回調。"""
+        if self._wait_for_room_audio_ended or self._loop_action_service_pending:
+            return
         if not (self._wait_for_main_video_ended and self._current_loop_action_key is not None):
+            return
+        self._finish_loop_action()
+
+    def _on_room_audio_ended(self):
+        if not (self._wait_for_room_audio_ended and self._current_loop_action_key is not None):
             return
         self._finish_loop_action()
 
@@ -885,13 +973,56 @@ class ActionDispatcher(QObject):
     def _on_driver_started(self, reply_id: str, trace_id: str | None):
         if not reply_id:
             return
-        self._driver_started_replies.add(reply_id)
         normalized_trace_id = str(trace_id or "").strip()
+        event_key = (reply_id, normalized_trace_id)
+        if event_key in self._driver_started_pairs:
+            return
+        self._driver_started_pairs.add(event_key)
+        self._driver_started_replies.add(reply_id)
         if self._latency_tracker is not None:
             self._latency_tracker.mark_driver_started(normalized_trace_id, reply_id)
         if normalized_trace_id in self._suppressed_traces:
             return
         self._activate_pending_action(normalized_trace_id, promoted=False)
+
+    def reset_runtime_state(self):
+        for trace_id in list(self._pending_actions):
+            self._clear_pending_action(trace_id)
+        self._pending_actions.clear()
+        self._suppressed_traces.clear()
+        self._tts_not_expected_traces.clear()
+        self._driver_started_replies.clear()
+        self._driver_started_pairs.clear()
+        self._queued_playback_results.clear()
+        self._trace_tts_providers.clear()
+        self._trace_pending_tts_counts.clear()
+        self._completed_tts_traces.clear()
+        self._deferred_dispatches.clear()
+        while not self._pending_tts_chunks.empty():
+            try:
+                self._pending_tts_chunks.get_nowait()
+            except queue.Empty:
+                break
+        if self._loop_cleanup_timer is not None:
+            self._loop_cleanup_timer.stop()
+            self._loop_cleanup_timer = None
+        self._audio_worker.clear_queue()
+        active_worker = self._active_tts_worker
+        if active_worker is not None and hasattr(active_worker, "quit"):
+            try:
+                active_worker.quit()
+            except Exception:
+                pass
+        self._active_tts_worker = None
+        self._current_loop_action_key = None
+        self._current_loop_binding = None
+        self._loop_action_tts_queued = False
+        self._active_action_trace_id = None
+        self._wait_for_main_video_ended = False
+        self._wait_for_room_audio_ended = False
+        self._loop_action_service_pending = False
+        self._panel_video_started = False
+        self._panel_video_ended = False
 
     def _on_tts_finished(self, reply_id: str, success: bool, message: str, payload: object):
         trace_id = payload.get("trace_id") if isinstance(payload, dict) else None
@@ -978,6 +1109,8 @@ class ActionDispatcher(QObject):
         self._pending_actions.clear()
         self._suppressed_traces.clear()
         self._tts_not_expected_traces.clear()
+        self._driver_started_replies.clear()
+        self._driver_started_pairs.clear()
         self._queued_playback_results.clear()
         self._trace_tts_providers.clear()
         self._trace_pending_tts_counts.clear()
@@ -1018,6 +1151,7 @@ class ActionDispatcher(QObject):
                         pass
 
         self._active_tts_worker = None
+        self._current_loop_binding = None
         self._workers = []
 
     def _on_news_finished(
@@ -1028,9 +1162,23 @@ class ActionDispatcher(QObject):
         message: str,
         payload: object,
     ):
+        self._loop_action_service_pending = False
         if success:
+            if isinstance(payload, dict) and payload.get("path"):
+                title = str(payload.get("title") or "固定新聞播報")
+                if self._window.play_music(str(payload.get("path") or ""), title, update_status=False):
+                    headline = str(payload.get("headline") or message)
+                    cache_label = "快取" if payload.get("cached") else "新生成"
+                    self._window.set_action_status(
+                        f"新聞焦點: {headline}（{cache_label}音檔）",
+                        tone="news",
+                        timeout_ms=9000,
+                    )
+                    self._arm_room_audio_wait()
+                    return
             headline = payload.get("headline") if isinstance(payload, dict) else message
             self._window.set_action_status(f"新聞焦點: {headline}", tone="news", timeout_ms=9000)
+            self._schedule_non_tts_loop_cleanup(binding)
             return
 
         self._handle_failure(binding, motion_found, message)
@@ -1043,16 +1191,50 @@ class ActionDispatcher(QObject):
         message: str,
         payload: object,
     ):
+        self._loop_action_service_pending = False
         has_audio = False
         if success and isinstance(payload, dict):
             if self._window.play_music(payload.get("path", ""), payload.get("title", "")):
                 self._window.set_action_status(f"正在播放: {payload.get('title', message)}", tone="music")
+                self._arm_room_audio_wait()
                 has_audio = True
 
         if not has_audio:
             self._window.stop_music()
+            if self._panel_video_started and hasattr(self._window, "set_panel_video_muted"):
+                self._window.set_panel_video_muted(False)
+                fallback_title = payload.get("title") if isinstance(payload, dict) else ""
+                if fallback_title:
+                    self._window.set_action_status(f"正在播放: {fallback_title}", tone="music")
+                else:
+                    self._window.set_action_status("正在播放面板音訊", tone="music")
+                self._schedule_non_tts_loop_cleanup(binding)
+                return
             print(f"[ECHOES] 提示: 無可播放音樂（{message}），動畫繼續顯示。")
             self._window.set_action_status("音樂播放中", tone="music")
+            self._schedule_non_tts_loop_cleanup(binding)
+
+    def _on_wave_finished(
+        self,
+        binding: ActionBinding,
+        motion_found: bool,
+        success: bool,
+        message: str,
+        payload: object,
+    ):
+        self._loop_action_service_pending = False
+        if success and isinstance(payload, dict) and payload.get("path"):
+            if self._window.play_music(str(payload.get("path") or ""), str(payload.get("title") or "hi~"), update_status=False):
+                self._arm_room_audio_wait(timeout_ms=15000)
+                return
+        self._handle_failure(binding, motion_found, message)
+
+    def _arm_room_audio_wait(self, timeout_ms: int = 180000):
+        if self._current_loop_action_key is None:
+            return
+        self._wait_for_room_audio_ended = True
+        self._wait_for_main_video_ended = False
+        self._schedule_loop_cleanup(timeout_ms)
 
     def _schedule_loop_cleanup(self, delay_ms: int = 8000, wait_for_main_video_end: bool = False):
         if QCoreApplication.instance() is None:
@@ -1071,7 +1253,7 @@ class ActionDispatcher(QObject):
     def _on_loop_cleanup_timeout(self):
         if self._current_loop_action_key is None:
             return
-        if self._wait_for_main_video_ended and self._current_loop_action_key in WAIT_MAIN_VIDEO_BEFORE_FINISH_ACTIONS:
+        if self._wait_for_main_video_ended:
             print(
                 "[ECHOES] 警告: "
                 f"loop action `{self._current_loop_action_key}` 等不到 main video ended，改用保護性 cleanup。"
@@ -1086,8 +1268,11 @@ class ActionDispatcher(QObject):
             self._loop_cleanup_timer.stop()
             self._loop_cleanup_timer = None
         self._current_loop_action_key = None
+        self._current_loop_binding = None
         self._loop_action_tts_queued = False
         self._wait_for_main_video_ended = False
+        self._wait_for_room_audio_ended = False
+        self._loop_action_service_pending = False
         self._panel_video_started = False
         self._panel_video_ended = False
         if self._active_action_trace_id:
@@ -1112,7 +1297,7 @@ class ActionDispatcher(QObject):
                 trace_id=pending.trace_id,
                 allow_tts=pending.allow_tts,
             )
-            if self._current_loop_action_key in WAIT_MAIN_VIDEO_BEFORE_FINISH_ACTIONS:
+            if self._current_loop_action_key in BLOCKING_LOOP_ACTIONS:
                 return
 
     def _handle_failure(self, binding: ActionBinding, motion_found: bool, message: str):

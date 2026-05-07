@@ -122,7 +122,6 @@ class AzureSTTWorker(QThread):
             ("SpeechServiceConnection_InitialSilenceTimeoutMs", config.AZURE_STT_INITIAL_SILENCE_TIMEOUT_MS),
             ("SpeechServiceConnection_EndSilenceTimeoutMs", config.AZURE_STT_END_SILENCE_TIMEOUT_MS),
             ("Speech_SegmentationSilenceTimeoutMs", config.AZURE_STT_SEGMENTATION_SILENCE_TIMEOUT_MS),
-            ("Speech_SegmentationMaximumTimeMs", config.AZURE_STT_SEGMENTATION_MAX_TIME_MS),
         )
         for property_name, value in property_values:
             property_key = getattr(property_id, property_name, None)
@@ -168,12 +167,42 @@ class AzureSTTWorker(QThread):
         self._stop_requested.set()
 
     def _handle_canceled_event(self, event):
-        reason = getattr(event, "reason", None)
-        error_details = str(getattr(event, "error_details", "") or "").strip()
-        details = error_details or str(reason or "未知原因")
+        details = self._extract_cancellation_details(event)
         self._emit_warning(f"Azure STT 已取消：{details}")
         self.listening_state_changed.emit(False)
         self._stop_requested.set()
+
+    def _extract_cancellation_details(self, event) -> str:
+        detail_parts: list[str] = []
+        result = getattr(event, "result", None)
+        cancellation_details_factory = getattr(self._speech_sdk, "CancellationDetails", None)
+
+        if result is not None and callable(cancellation_details_factory):
+            try:
+                cancellation_details = cancellation_details_factory(result)
+            except Exception:
+                cancellation_details = None
+            if cancellation_details is not None:
+                cancellation_reason = getattr(cancellation_details, "reason", None)
+                error_code = getattr(cancellation_details, "error_code", None)
+                error_details = str(getattr(cancellation_details, "error_details", "") or "").strip()
+                if cancellation_reason:
+                    detail_parts.append(str(cancellation_reason))
+                if error_code not in {None, ""}:
+                    detail_parts.append(f"error_code={error_code}")
+                if error_details:
+                    detail_parts.append(error_details)
+
+        reason = getattr(event, "reason", None)
+        error_details = str(getattr(event, "error_details", "") or "").strip()
+        if reason:
+            reason_text = str(reason)
+            if reason_text and reason_text not in detail_parts:
+                detail_parts.append(reason_text)
+        if error_details and error_details not in detail_parts:
+            detail_parts.append(error_details)
+
+        return " | ".join(detail_parts) or "未知原因"
 
     def _handle_speech_started_event(self, _event):
         if self._stop_requested.is_set():
