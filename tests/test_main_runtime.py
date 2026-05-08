@@ -5,12 +5,18 @@ from pathlib import Path
 import unittest
 
 from action_services import FIXED_NEWS_SCRIPT
+from PyQt5.QtCore import Qt
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from main import connect_brain_output_handlers
+from main import (
+    build_cached_intent_trigger_source,
+    connect_brain_output_handlers,
+    resolve_cached_intent_from_text,
+)
+from ui.transparent_window import TransparentWindow
 
 
 class _FakeSignal:
@@ -157,6 +163,48 @@ class MainRuntimeWiringTests(unittest.TestCase):
         self.assertEqual(window.set_calls, [("trace-news", FIXED_NEWS_SCRIPT)])
         self.assertEqual(window.append_calls, [])
         self.assertEqual(window.dispatch_calls[0], ("[ACTION:report_news]", "trace-news", False))
+
+    def test_cached_intent_keyword_prefers_first_match(self):
+        self.assertEqual(resolve_cached_intent_from_text("可以分享一個笑話嗎"), "share")
+        self.assertEqual(resolve_cached_intent_from_text("先來個笑話再分享"), "joke")
+        self.assertIsNone(resolve_cached_intent_from_text("今天天氣不錯"))
+
+    def test_cached_intent_trigger_source_uses_display_label(self):
+        self.assertEqual(build_cached_intent_trigger_source("joke", "關鍵字觸發"), "Joke 關鍵字觸發")
+        self.assertEqual(build_cached_intent_trigger_source("share", "快捷觸發"), "share 快捷觸發")
+
+    def test_fixed_intent_shortcuts_emit_expected_intents(self):
+        class _ShortcutHarness:
+            def __init__(self):
+                self._developer_input = object()
+                self.emitted: list[tuple[str, str]] = []
+
+            def focusWidget(self):
+                return None
+
+            def _emit_cached_intent_request(self, intent_name: str, trigger_source: str):
+                self.emitted.append((intent_name, trigger_source))
+
+        class _FakeEvent:
+            def __init__(self, key: int):
+                self._key = key
+
+            def key(self):
+                return self._key
+
+            def modifiers(self):
+                return Qt.NoModifier
+
+            def isAutoRepeat(self):
+                return False
+
+        harness = _ShortcutHarness()
+        self.assertTrue(TransparentWindow._handle_cached_intent_shortcut(harness, _FakeEvent(Qt.Key_1)))
+        self.assertTrue(TransparentWindow._handle_cached_intent_shortcut(harness, _FakeEvent(Qt.Key_2)))
+        self.assertEqual(
+            harness.emitted,
+            [("joke", "Joke 快捷觸發"), ("share", "share 快捷觸發")],
+        )
 
 
 if __name__ == "__main__":

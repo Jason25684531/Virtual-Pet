@@ -40,6 +40,7 @@ class _DispatchProbeWindow:
         self.status_calls: list[tuple[str, str, int]] = []
         self.played_assets: list[tuple[str, str, bool]] = []
         self.audio_calls: list[tuple[str, str, bool]] = []
+        self.synthetic_turns: list[tuple[str, str, str]] = []
         self.play_music_result = True
         self.restore_idle_calls = 0
 
@@ -60,6 +61,9 @@ class _DispatchProbeWindow:
 
     def stop_music(self):
         return None
+
+    def show_synthetic_conversation_turn(self, source_label: str, user_text: str, assistant_text: str):
+        self.synthetic_turns.append((source_label, user_text, assistant_text))
 
 
 class _LoopActionProbeWindow(_DispatchProbeWindow):
@@ -1784,6 +1788,41 @@ class ActionPlaybackTests(unittest.TestCase):
 
             self.assertIsNone(dispatcher._current_loop_action_key)
 
+            dispatcher.shutdown()
+
+    def test_cached_joke_trigger_uses_synthetic_turn_and_room_audio_cleanup(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-cached-joke-") as temp_dir:
+            laugh_path = Path(temp_dir) / "laugh.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            laugh_path.write_bytes(b"laugh")
+            idle_path.write_bytes(b"idle")
+
+            window = _LoopActionProbeWindow(temp_dir)
+            dispatcher = ActionDispatcher(
+                window,
+                library=_NoopLibrary(),
+                fixed_intent_worker_factory=lambda parent=None: _ImmediateServiceWorker(
+                    success=True,
+                    message="Joke 固定回覆已就緒。",
+                    payload={"text": "這是一則笑話。", "path": "joke.mp3", "title": "Joke"},
+                    parent=parent,
+                ),
+                motion_path_resolver=lambda motion_key: str(
+                    {"laugh": laugh_path, "idle": idle_path}.get(motion_key, "")
+                ),
+                tts_enabled=False,
+            )
+
+            self.assertTrue(dispatcher.trigger_cached_intent("joke", "Joke 快捷觸發"))
+            self.assertEqual(window.synthetic_turns, [("Dev Query", "Joke 快捷觸發", "這是一則笑話。")])
+            self.assertEqual(len(window.motion_loop_calls), 1)
+            self.assertEqual(window.audio_calls, [("joke.mp3", "Joke", False)])
+            self.assertEqual(dispatcher._current_loop_binding.name, "cached_joke")
+            self.assertTrue(dispatcher._wait_for_room_audio_ended)
+
+            dispatcher._on_room_audio_ended()
+
+            self.assertIsNone(dispatcher._current_loop_action_key)
             dispatcher.shutdown()
 
     def test_duplicate_driver_started_event_does_not_reactivate_pending_action(self):

@@ -5,6 +5,7 @@ ECHOES — PyQt5 透明無邊框桌面視窗
 
 import json
 import os
+from uuid import uuid4
 
 from PyQt5.QtCore import QEvent, Qt, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
@@ -61,6 +62,7 @@ class TransparentWindow(QMainWindow):
     developer_query_submitted = pyqtSignal(str)
     stt_start_requested = pyqtSignal()
     stt_stop_requested = pyqtSignal()
+    cached_intent_requested = pyqtSignal(str, str)
     reset_requested = pyqtSignal()
     RAW_JAVASCRIPT_MARKER = "__raw_javascript__"
 
@@ -78,6 +80,11 @@ class TransparentWindow(QMainWindow):
     RESET_BUTTON_WIDTH = 96
     RESET_BUTTON_HEIGHT = 40
     RESET_BUTTON_GAP = 12
+    FIXED_INTENT_BUTTON_WIDTH = 88
+    FIXED_INTENT_BUTTON_HEIGHT = 34
+    FIXED_INTENT_BUTTON_GAP = 10
+    FIXED_INTENT_BUTTON_MARGIN_LEFT = 28
+    FIXED_INTENT_BUTTON_MARGIN_BOTTOM = 146
     # 角色預設位移（相對於視窗中心的像素偏移量）
     DEFAULT_CHARACTER_X_OFFSET = 0
     DEFAULT_CHARACTER_Y_OFFSET = 0
@@ -121,6 +128,7 @@ class TransparentWindow(QMainWindow):
         self._init_developer_input()
         self._init_stt_button()
         self._init_reset_button()
+        self._init_fixed_intent_buttons()
         from action_dispatcher import ActionDispatcher
         self._action_dispatcher = ActionDispatcher(
             self,
@@ -257,6 +265,41 @@ class TransparentWindow(QMainWindow):
         )
         self._update_reset_button_geometry()
 
+    def _init_fixed_intent_buttons(self):
+        self._joke_button = QPushButton(self)
+        self._joke_button.setObjectName("fixed-intent-joke-button")
+        self._joke_button.setText("Joke")
+        self._joke_button.setFixedSize(self.FIXED_INTENT_BUTTON_WIDTH, self.FIXED_INTENT_BUTTON_HEIGHT)
+        self._joke_button.clicked.connect(lambda: self._emit_cached_intent_request("joke", "Joke 按鈕觸發"))
+        self._joke_button.installEventFilter(self)
+        self._joke_button.setStyleSheet(self._fixed_intent_button_stylesheet("#8e5f38", "#f7d4b0"))
+
+        self._share_button = QPushButton(self)
+        self._share_button.setObjectName("fixed-intent-share-button")
+        self._share_button.setText("share")
+        self._share_button.setFixedSize(self.FIXED_INTENT_BUTTON_WIDTH, self.FIXED_INTENT_BUTTON_HEIGHT)
+        self._share_button.clicked.connect(lambda: self._emit_cached_intent_request("share", "share 按鈕觸發"))
+        self._share_button.installEventFilter(self)
+        self._share_button.setStyleSheet(self._fixed_intent_button_stylesheet("#305c6d", "#cdeefa"))
+        self._update_fixed_intent_buttons_geometry()
+
+    @staticmethod
+    def _fixed_intent_button_stylesheet(background: str, border: str) -> str:
+        return (
+            "QPushButton {"
+            f"background: {background};"
+            "color: #fffdf7;"
+            f"border: 1px solid {border};"
+            "border-radius: 16px;"
+            "font-size: 14px;"
+            "font-weight: 700;"
+            "padding: 0 14px;"
+            "}"
+            "QPushButton:hover {"
+            "background: rgba(52, 78, 98, 0.96);"
+            "}"
+        )
+
     def _apply_stt_button_state(self):
         if not hasattr(self, "_stt_button"):
             return
@@ -330,6 +373,17 @@ class TransparentWindow(QMainWindow):
         x = self.STT_BUTTON_MARGIN_LEFT + self.STT_BUTTON_WIDTH + self.RESET_BUTTON_GAP
         self._reset_button.move(x, y)
 
+    def _update_fixed_intent_buttons_geometry(self):
+        if not hasattr(self, "_joke_button") or not hasattr(self, "_share_button"):
+            return
+        y = max(
+            self.DRAG_SURFACE_HEIGHT + 24,
+            self.height() - self.FIXED_INTENT_BUTTON_HEIGHT - self.FIXED_INTENT_BUTTON_MARGIN_BOTTOM,
+        )
+        x = self.FIXED_INTENT_BUTTON_MARGIN_LEFT
+        self._joke_button.move(x, y)
+        self._share_button.move(x + self.FIXED_INTENT_BUTTON_WIDTH + self.FIXED_INTENT_BUTTON_GAP, y)
+
     def _update_drag_surface_geometry(self):
         if hasattr(self, "_drag_surface"):
             self._drag_surface.setGeometry(0, 0, self.width(), self.DRAG_SURFACE_HEIGHT)
@@ -353,6 +407,10 @@ class TransparentWindow(QMainWindow):
             self._stt_button.raise_()
         if hasattr(self, "_reset_button"):
             self._reset_button.raise_()
+        if hasattr(self, "_joke_button"):
+            self._joke_button.raise_()
+        if hasattr(self, "_share_button"):
+            self._share_button.raise_()
         if hasattr(self, "_developer_input") and self._developer_input.isVisible():
             self._developer_input.raise_()
 
@@ -481,6 +539,8 @@ class TransparentWindow(QMainWindow):
             if watched is self._developer_input and event.key() == Qt.Key_Escape:
                 self._hide_developer_input()
                 return True
+            if watched is not self._developer_input and self._handle_cached_intent_shortcut(event):
+                return True
             if (
                 watched is not self._developer_input
                 and event.key() == Qt.Key_D
@@ -513,9 +573,12 @@ class TransparentWindow(QMainWindow):
         self._update_developer_input_geometry()
         self._update_stt_button_geometry()
         self._update_reset_button_geometry()
+        self._update_fixed_intent_buttons_geometry()
         self._raise_overlay_widgets()
 
     def keyPressEvent(self, event):
+        if self._handle_cached_intent_shortcut(event):
+            return
         if (
             self.focusWidget() is not self._developer_input
             and event.key() == Qt.Key_D
@@ -703,6 +766,9 @@ class TransparentWindow(QMainWindow):
             allow_tts=allow_tts,
         )
 
+    def trigger_cached_intent(self, intent_name: str, trigger_source: str) -> bool:
+        return self._action_dispatcher.trigger_cached_intent(intent_name, trigger_source)
+
     def speak_text(self, message: str, trace_id: str | None = None, has_action: bool = False):
         self._action_dispatcher.speak_text(message, trace_id=trace_id, has_action=has_action)
 
@@ -726,6 +792,12 @@ class TransparentWindow(QMainWindow):
 
     def clear_conversation_turns(self):
         self._run_javascript("clearConversationTurns")
+
+    def show_synthetic_conversation_turn(self, source_label: str, user_text: str, assistant_text: str):
+        trace_id = f"synthetic-{uuid4().hex}"
+        self.begin_conversation_turn(trace_id, source_label, user_text)
+        self.set_conversation_assistant(trace_id, assistant_text)
+        self.finish_conversation_turn(trace_id)
 
     def set_stt_listening(self, active: bool):
         self.set_stt_state("listening" if active else "idle")
@@ -758,6 +830,24 @@ class TransparentWindow(QMainWindow):
             self.stt_stop_requested.emit()
             return
         self.stt_start_requested.emit()
+
+    def _emit_cached_intent_request(self, intent_name: str, trigger_source: str):
+        self.cached_intent_requested.emit(str(intent_name or "").strip().lower(), trigger_source)
+
+    def _handle_cached_intent_shortcut(self, event) -> bool:
+        if (
+            self.focusWidget() is self._developer_input
+            or event.modifiers() != Qt.NoModifier
+            or event.isAutoRepeat()
+        ):
+            return False
+        if event.key() == Qt.Key_1:
+            self._emit_cached_intent_request("joke", "Joke 快捷觸發")
+            return True
+        if event.key() == Qt.Key_2:
+            self._emit_cached_intent_request("share", "share 快捷觸發")
+            return True
+        return False
 
     def toggle_developer_input(self):
         if self._developer_input.isVisible():

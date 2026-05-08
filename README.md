@@ -10,7 +10,8 @@
 - `ActionDispatcher` 的動作前置、session-level `driver_started` 同步、TTS queue 與背景 worker 收尾
 - `TransparentWindow + app.js` 的 WebM 動作切換、狀態列與 conversation panel
 - `InteractionLatencyTracker` 的 STT / LLM / Action / TTS 延遲追蹤
-- OpenCV `wave_response` 揮手感測，命中後直接說固定 `hi~`，不經 LLM
+- `Joke` / `share` 固定意圖快取，支援 `1` / `2` 快捷鍵、overlay tag 與 STT `笑話` / `分享` 關鍵字直通
+- OpenCV `wave_response` 揮手感測，命中後直接說固定 `嗨 你好嗎`，不經 LLM，且加入更嚴格的水平跨度 / ROI / 位移門檻
 - 角色 layout override，可針對不同角色微調位置、縮放與 object-position
 - 可見 Reset 按鈕與右鍵選單重置，會停止 STT / 音樂 / TTS、清 UI conversation、清目前角色記憶並回 idle
 - 固定新聞播報音檔快取，第一次使用 VoAI 生成三則固定新聞音檔，後續直接播放本地 cache
@@ -26,17 +27,22 @@
 flowchart LR
     U[使用者語音] --> STT[Azure STT]
     D[Dev Query] --> TURN[InteractionTurnManager]
-    W[WaveSensor] --> WAVE[Fixed wave greeting\n[ACTION:wave_response] hi~]
+    W[WaveSensor] --> WAVE[Fixed wave greeting\n[ACTION:wave_response] 嗨 你好嗎]
+    F[Overlay Tag / 1,2 快捷鍵] --> CACHE[Cached intents\nJoke / share]
 
     STT --> TURN
+    STT -->|笑話 / 分享| CACHE
     TURN --> BRAIN[BrainEngine\nChatOpenAI streaming]
     BRAIN --> PARSER[Action-first parser\nSentence buffering]
     PARSER --> DISP
     WAVE --> DISP
+    CACHE --> DISP
 
     DISP --> MOTION[TransparentWindow\nWebM motion bridge]
     DISP --> NEWS[Local news audio cache]
+    DISP --> FIXEDAUDIO[Fixed intent audio cache]
     NEWS --> AUDIO[Room audio bridge]
+    FIXEDAUDIO --> AUDIO
     DISP --> TTSQ[TTS Queue]
     TTSQ --> TTS[Adaptive TTS fallback\nVoAI transport session -> ElevenLabs]
     TTS --> PLAY[AudioStreamWorker PCM session\nffplay / pygame playback]
@@ -127,7 +133,7 @@ Virtual-Pet/
   統一處理 action alias、白名單、WebM 動作切換、pending-action timeout、trace-scoped provider stickiness、TTS queue 與背景 worker 收尾；其中 `report_news` / `play_music` 在同一個未完成 lifecycle 內會忽略重複觸發，避免重新啟動 motion、panel 與背景 worker。`play_music` 的 panel WebM 只作視覺表演且一律靜音，實際可聽音樂只會透過 `playRoomAudio()` 播一次；同一 `reply_id + trace_id` 的 `driver_started` 也會被去重。
 
 - `action_services.py`
-  提供背景 service worker。`NewsFetchWorker` 現已是固定新聞音檔 cache worker，不再抓 RSS；cache key 以固定文案版本與角色 VoAI 聲線設定組成，第一次 miss 會生成 MP3，第二次 hit 直接回傳本地檔案。
+  提供背景 service worker 與固定快取底座。`NewsFetchWorker`、`WaveGreetingWorker`、`FixedIntentReplyWorker` 都共用安全寫檔與 metadata cache；`joke` / `share` 第一次會用目前角色 persona 生成短句，再用對應 VoAI 聲線生成 MP3，之後直接讀本地 cache。
 
 - `api_client/adaptive_tts_fallback.py`
   將 VoAI primary path 與 ElevenLabs fallback 包成單一 worker contract；負責轉發 `driver_started`、記錄 fallback 決策，並在雙重失敗時回報 text-only 降級。
@@ -145,7 +151,7 @@ Virtual-Pet/
   Fast-fallback client；當 VoAI primary path 被判定 fast-fail 時，接手同一個 `trace_id` 的後續句段，並沿用既有 Python-side playback contract。
 
 - `ui/transparent_window.py`
-  管理透明桌面視窗與 Python -> JS bridge，負責狀態列、對話卡片、WebM 動作切換、STT 狀態按鈕與 Reset 控制。`reset_runtime_state()` 會停止前端音訊 / 動作、清 conversation UI、回到目前角色 idle。
+  管理透明桌面視窗與 Python -> JS bridge，負責狀態列、對話卡片、WebM 動作切換、STT 狀態按鈕、`Joke/share` overlay tag、`1/2` 快捷鍵與 Reset 控制。`reset_runtime_state()` 會停止前端音訊 / 動作、清 conversation UI、回到目前角色 idle。
 
 - `ui/web_container/app.js`
   控制 idle / temporary motion、conversation panel、queue depth 顯示與前端狀態更新。新增 `clearConversationTurns()` 與 `resetRoomState()`，只清前端 state，不直接碰 Python 資料層。
@@ -175,8 +181,10 @@ Virtual-Pet/
 
 補充：
 
-- `wave_response` 可直接走 `ActionDispatcher`，不需經過大腦；主程式收到 camera wave 後會 dispatch `[ACTION:wave_response] hi~`。
+- `wave_response` 可直接走 `ActionDispatcher`，不需經過大腦；主程式收到 camera wave 後會 dispatch `[ACTION:wave_response] 嗨 你好嗎`。
 - `report_news` 會播固定三則新聞文案的本地快取音檔，不再抓 RSS，也不送 LLM。
+- `Joke` / `share` 會走固定意圖快取，不進 `InteractionTurnManager`、不進即時 LLM/TTS；第一次 miss 才會背景生成文字與音檔。
+- STT finalized text 若含 `笑話` 或 `分享`，會在送入一般互動佇列前先被固定意圖 router 攔下。
 - `play_music` 在同一個 pending / active loop-action lifecycle 內只會啟動一次；panel WebM 靜音，實際聲音只由 room audio 播放。
 - `report_news` / `play_music` 要等本輪 cleanup 完成後才會接受下一次相同 action，避免動畫與 panel 被重啟打斷。
 - STT 停止後的晚到辨識事件會被忽略，避免停止收音後又偷偷塞進新互動。
@@ -205,6 +213,34 @@ Virtual-Pet/
 - `happy` -> `laugh`
 - `mad` -> `angry`
 - `thinking` -> `listen`
+
+## 固定意圖與快取
+
+- `Joke`
+  - Overlay tag 可點
+  - 快捷鍵 `1`
+  - STT 關鍵字：`笑話`
+  - 播放動作：`laugh`
+- `share`
+  - Overlay tag 可點
+  - 快捷鍵 `2`
+  - STT 關鍵字：`分享`
+  - 播放動作：`listen`
+
+固定意圖快取目錄：
+
+```text
+runtime_cache/
+├── news_audio/
+├── wave_audio/
+└── fixed_intents/
+```
+
+說明：
+
+- `news_audio/`：固定新聞播報 MP3
+- `wave_audio/`：固定揮手問候 MP3
+- `fixed_intents/`：`joke/share` 的本地文字 metadata 與 MP3；cache key 會包含角色、意圖版本與 VoAI 聲音設定
 
 ## 資產規則
 
@@ -343,12 +379,25 @@ venv/bin/python -m unittest discover -s tests -v
 - 同 trace PCM session 的 single `driver_started`、逐句 `playback_finished` 與中途中斷
 - `report_news` / `play_music` loop action 的重複觸發保護
 - 固定新聞音檔 cache miss / hit、不再抓 RSS
+- `Joke/share` 固定意圖 cache miss / hit、角色隔離與 synthetic turn
 - Reset 對互動佇列與角色記憶的清理
 - OpenAI 串流切片、全句級緩衝與安全降級
 - VoAI HTTP PCM primary path、shared-session prewarm、adaptive fallback、provider-neutral playback 與 critical text-only 降級
 - interaction turn 排隊與完成順序
 - STT 控制、partial preview 與延遲追蹤
 - wave sensor 整合
+
+### OpenCV wave tuning
+
+目前 `sensors/camera_vision.py` 的 wave 判定不只看 cooldown，還會同時檢查：
+
+- ROI 是否落在較收斂的偵測區域
+- `min_contour_area`
+- `min_displacement_px`
+- `required_direction_changes`
+- `min_wave_span_px`
+
+換句話說，必須是在有效視窗內發生足夠大的左右移動，且總水平跨度達標，才會觸發 `wave_response`。
 
 ### 冒煙測試
 
@@ -399,6 +448,9 @@ venv/bin/python scripts/live_stt_latency_probe.py
    - 本輪完成後才進下一輪
 9. 點 `重置`，確認音樂 / TTS / 動作停止、conversation panel 清空、佇列回 0、角色回到 idle
 10. 右鍵選單觸發 `播報新聞`，第一次應產生 `runtime_cache/news_audio/*.mp3`，第二次應直接播放同一個本地 cache 音檔
+11. 點 `Joke` 或按 `1`，第一次應生成 `runtime_cache/fixed_intents/` 內對應角色的 metadata + mp3，第二次應直接播本地快取
+12. 點 `share` 或按 `2`，應顯示一筆 `Dev Query` synthetic turn，assistant 文字等於快取文字
+13. 啟動 STT 後說出含 `笑話` 或 `分享` 的句子，確認不會進一般 LLM 互動佇列，而是直接走固定意圖播放
 
 ### 延遲摘要判讀
 

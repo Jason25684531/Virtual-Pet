@@ -194,6 +194,7 @@ class WaveSensorTests(unittest.TestCase):
         sensor = WaveSensor(
             config=WaveDetectionConfig(
                 min_displacement_px=10,
+                min_wave_span_px=40,
                 required_direction_changes=2,
                 observation_window_seconds=2.0,
                 cooldown_ms=1000,
@@ -215,6 +216,7 @@ class WaveSensorTests(unittest.TestCase):
         sensor = WaveSensor(
             config=WaveDetectionConfig(
                 min_displacement_px=10,
+                min_wave_span_px=40,
                 required_direction_changes=2,
                 observation_window_seconds=2.0,
                 cooldown_ms=1000,
@@ -269,6 +271,7 @@ class WaveSensorTests(unittest.TestCase):
                 detection_enabled=True,
                 min_contour_area=1000,
                 min_displacement_px=18,
+                min_wave_span_px=40,
                 required_direction_changes=2,
                 observation_window_seconds=2.0,
                 cooldown_ms=1200,
@@ -282,6 +285,28 @@ class WaveSensorTests(unittest.TestCase):
         sensor.run()
         self.assertTrue(capture.released)
         self.assertEqual(directives, [WAVE_RESPONSE_DIRECTIVE])
+
+    def test_wave_sequence_requires_minimum_horizontal_span(self):
+        sensor = WaveSensor(
+            config=WaveDetectionConfig(
+                min_displacement_px=10,
+                min_wave_span_px=70,
+                required_direction_changes=2,
+                observation_window_seconds=2.0,
+                cooldown_ms=1000,
+            )
+        )
+        sequence = [
+            (0.0, 100),
+            (0.2, 130),
+            (0.4, 108),
+            (0.6, 132),
+        ]
+        detections = [
+            sensor._register_horizontal_motion(center_x, timestamp)
+            for timestamp, center_x in sequence
+        ]
+        self.assertEqual(detections, [False, False, False, False])
 
     @unittest.skipIf(cv2 is None, "OpenCV 尚未安裝於虛擬環境")
     def test_debug_window_flag_uses_preview_hook(self):

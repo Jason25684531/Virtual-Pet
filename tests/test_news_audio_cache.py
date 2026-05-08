@@ -10,7 +10,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from action_services import FIXED_NEWS_SCRIPT, NewsFetchWorker, WAVE_GREETING_SCRIPT, WaveGreetingWorker
+from action_services import (
+    FIXED_NEWS_SCRIPT,
+    NewsFetchWorker,
+    WAVE_GREETING_SCRIPT,
+    WaveGreetingWorker,
+    build_fixed_intent_payload,
+)
 
 
 class NewsAudioCacheTests(unittest.TestCase):
@@ -99,6 +105,48 @@ class NewsAudioCacheTests(unittest.TestCase):
             self.assertEqual(results[0][2]["title"], WAVE_GREETING_SCRIPT)
             self.assertEqual(results[0][2]["path"], results[1][2]["path"])
             self.assertTrue(Path(results[1][2]["path"]).is_file())
+
+    def test_fixed_intent_payload_reuses_cache_and_separates_characters(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-fixed-intent-cache-") as temp_dir:
+            synth_calls: list[str] = []
+
+            def synthesizer(script: str, _voice_config: dict, _cache_path: Path):
+                synth_calls.append(script)
+                return b"fake mp3 bytes"
+
+            miku_first = build_fixed_intent_payload(
+                "joke",
+                "miku",
+                cache_dir=temp_dir,
+                synthesizer=synthesizer,
+                text_generator=lambda: "這是 miku 的笑話。",
+            )
+            miku_cached = build_fixed_intent_payload(
+                "joke",
+                "miku",
+                cache_dir=temp_dir,
+                synthesizer=synthesizer,
+                text_generator=lambda: (_ for _ in ()).throw(RuntimeError("should not regenerate")),
+            )
+            choppr_first = build_fixed_intent_payload(
+                "joke",
+                "Choppr",
+                cache_dir=temp_dir,
+                synthesizer=synthesizer,
+                text_generator=lambda: "這是 Choppr 的笑話。",
+            )
+
+            self.assertEqual(
+                synth_calls,
+                ["這是 miku 的笑話。", "這是 Choppr 的笑話。"],
+            )
+            self.assertFalse(miku_first["cached"])
+            self.assertTrue(miku_cached["cached"])
+            self.assertFalse(choppr_first["cached"])
+            self.assertEqual(miku_first["path"], miku_cached["path"])
+            self.assertNotEqual(miku_first["path"], choppr_first["path"])
+            self.assertEqual(miku_first["action_name"], "laugh")
+            self.assertEqual(miku_first["text"], "這是 miku 的笑話。")
 
 
 if __name__ == "__main__":

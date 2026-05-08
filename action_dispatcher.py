@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from PyQt5.QtCore import QCoreApplication, QObject, QTimer
 
-from action_services import MusicSelectionWorker, NewsFetchWorker, WaveGreetingWorker
+from action_services import FixedIntentReplyWorker, MusicSelectionWorker, NewsFetchWorker, WaveGreetingWorker
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
 from api_client.brain_engine import sanitize_tts_text
 from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker  # noqa: F401 — 保留供降級使用
@@ -40,8 +40,6 @@ REPORT_NEWS_AUDIO_TRIGGER_DELAY_SECONDS = 2.5
 REPORT_NEWS_DELAY_CHARACTER_ID = "miku"
 # 為了兼顧 VOAI 和 ElevenLabs 的 TTS 響應時間，並給予角色動作足夠的播放時間，設定揮手回應的語音觸發延遲為 2 秒。這樣可以確保在大多數情況下，角色的揮手動作能夠先行展現，提升互動的自然感。
 WAVE_GREETING_AUDIO_TRIGGER_DELAY_SECONDS = 2.0
-NON_REPEATABLE_LOOP_ACTIONS = {"report_news", "play_music", "wave_response"}
-BLOCKING_LOOP_ACTIONS = {"report_news", "play_music", "wave_response"}
 
 
 @dataclass(frozen=True)
@@ -55,6 +53,8 @@ class ActionBinding:
     panel_loop: bool = False
     panel_muted: bool = True
     finish_event: str = "default"
+    non_repeatable: bool = False
+    blocks_following_dispatch: bool = False
 
 
 @dataclass
@@ -85,6 +85,7 @@ class ActionDispatcher(QObject):
         news_worker_factory=NewsFetchWorker,
         music_worker_factory=MusicSelectionWorker,
         wave_worker_factory=WaveGreetingWorker,
+        fixed_intent_worker_factory=FixedIntentReplyWorker,
         motion_path_resolver=None,
         tts_enabled: bool = True,
         latency_tracker: InteractionLatencyTracker | None = None,
@@ -105,6 +106,9 @@ class ActionDispatcher(QObject):
         )
         self._wave_worker_factory = (
             wave_worker_factory if callable(wave_worker_factory) else WaveGreetingWorker
+        )
+        self._fixed_intent_worker_factory = (
+            fixed_intent_worker_factory if callable(fixed_intent_worker_factory) else FixedIntentReplyWorker
         )
         self._motion_path_resolver = motion_path_resolver
         self._tts_enabled = tts_enabled
@@ -152,6 +156,8 @@ class ActionDispatcher(QObject):
                 skip_tts_sync=True,
                 panel_loop=True,
                 finish_event="room_audio",
+                non_repeatable=True,
+                blocks_following_dispatch=True,
             ),
             "play_music": ActionBinding(
                 name="play_music",
@@ -162,6 +168,8 @@ class ActionDispatcher(QObject):
                 play_once=True,
                 panel_muted=False,
                 finish_event="panel_video",
+                non_repeatable=True,
+                blocks_following_dispatch=True,
             ),
             "wave_response": ActionBinding(
                 name="wave_response",
@@ -170,6 +178,8 @@ class ActionDispatcher(QObject):
                 handler_name="_handle_wave_response",
                 skip_tts_sync=True,
                 finish_event="main_video",
+                non_repeatable=True,
+                blocks_following_dispatch=True,
             ),
             "laugh": ActionBinding(
                 name="laugh",
@@ -207,6 +217,24 @@ class ActionDispatcher(QObject):
                 status_label="回到待命狀態",
                 handler_name="_handle_motion_only",
             ),
+            "cached_joke": ActionBinding(
+                name="cached_joke",
+                motion_key="laugh",
+                status_label="正在分享笑話",
+                handler_name="_handle_motion_only",
+                finish_event="room_audio",
+                non_repeatable=True,
+                blocks_following_dispatch=True,
+            ),
+            "cached_share": ActionBinding(
+                name="cached_share",
+                motion_key="listen",
+                status_label="正在分享內容",
+                handler_name="_handle_motion_only",
+                finish_event="room_audio",
+                non_repeatable=True,
+                blocks_following_dispatch=True,
+            ),
         }
 
     @property
@@ -220,6 +248,36 @@ class ActionDispatcher(QObject):
     @property
     def has_active_motion(self) -> bool:
         return self._current_loop_action_key is not None or bool(self._pending_actions)
+
+    def trigger_cached_intent(self, intent_name: str, source_label: str) -> bool:
+        normalized_intent = str(intent_name or "").strip().lower()
+        binding = self._bindings.get(f"cached_{normalized_intent}")
+        if binding is None:
+            self._window.set_action_status(f"未支援的固定意圖: {intent_name}", tone="warn", timeout_ms=3600)
+            return False
+        if self._current_loop_binding is not None or self._loop_action_service_pending or self.is_tts_busy:
+            self._window.set_action_status("上一輪互動尚未完成，暫時無法觸發固定回覆。", tone="working", timeout_ms=2600)
+            return False
+        current_character_id = self._call_library_method("get_current_character_id")
+        self._loop_action_service_pending = True
+        self._window.set_action_status(binding.status_label, tone="working", timeout_ms=0)
+        worker = self._create_service_worker(
+            self._fixed_intent_worker_factory,
+            parent=self,
+            intent_name=normalized_intent,
+            character_id=current_character_id,
+        )
+        self._start_worker(
+            worker,
+            lambda success, message, payload: self._on_fixed_intent_finished(
+                binding,
+                source_label,
+                success,
+                message,
+                payload,
+            ),
+        )
+        return True
 
     def dispatch(
         self,
@@ -382,18 +440,23 @@ class ActionDispatcher(QObject):
         return "working" if has_action else "idle"
 
     def _is_duplicate_loop_action(self, binding: ActionBinding) -> bool:
-        if binding.name not in NON_REPEATABLE_LOOP_ACTIONS:
+        if not binding.non_repeatable:
             return False
-        if self._current_loop_action_key == binding.motion_key:
+        if self._current_loop_binding is not None and self._current_loop_binding.name == binding.name:
             return True
         return any(state.binding.name == binding.name for state in self._pending_actions.values())
 
     def _should_defer_dispatch(self, action_name: str | None, trace_id: str | None) -> bool:
-        if self._current_loop_action_key not in BLOCKING_LOOP_ACTIONS:
+        active_binding = self._current_loop_binding
+        if active_binding is None or not active_binding.blocks_following_dispatch:
             return False
         normalized_trace_id = str(trace_id or "").strip()
         active_trace_id = str(self._active_action_trace_id or "").strip()
-        if action_name and action_name == self._current_loop_action_key and not normalized_trace_id:
+        if (
+            action_name
+            and action_name in {active_binding.name, active_binding.motion_key}
+            and not normalized_trace_id
+        ):
             return False
         if normalized_trace_id and (
             (active_trace_id and normalized_trace_id == active_trace_id)
@@ -612,6 +675,22 @@ class ActionDispatcher(QObject):
             self._schedule_loop_cleanup(12000, wait_for_main_video_end=True)
             return
         self._schedule_loop_cleanup(12000 if self._wait_for_main_video_ended else 3000)
+
+    def _render_synthetic_turn(self, source_label: str, assistant_text: str):
+        show_synthetic_turn = getattr(self._window, "show_synthetic_conversation_turn", None)
+        if callable(show_synthetic_turn):
+            show_synthetic_turn("Dev Query", source_label, assistant_text)
+            return
+        trace_id = uuid4().hex
+        begin_turn = getattr(self._window, "begin_conversation_turn", None)
+        set_assistant = getattr(self._window, "set_conversation_assistant", None)
+        finish_turn = getattr(self._window, "finish_conversation_turn", None)
+        if callable(begin_turn):
+            begin_turn(trace_id, "Dev Query", source_label)
+        if callable(set_assistant):
+            set_assistant(trace_id, assistant_text)
+        if callable(finish_turn):
+            finish_turn(trace_id)
 
     def _play_binding_motion(self, binding: ActionBinding) -> bool:
         motion_path, used_idle_fallback = self._resolve_action_motion_path(binding.motion_key)
@@ -1338,6 +1417,36 @@ class ActionDispatcher(QObject):
                 return
         self._handle_failure(binding, motion_found, message)
 
+    def _on_fixed_intent_finished(
+        self,
+        binding: ActionBinding,
+        source_label: str,
+        success: bool,
+        message: str,
+        payload: object,
+    ):
+        self._loop_action_service_pending = False
+        if not success or not isinstance(payload, dict):
+            self._window.set_action_status(message, tone="error", timeout_ms=4800)
+            return
+        display_text = str(payload.get("text") or "").strip()
+        audio_path = str(payload.get("path") or payload.get("audio_path") or "").strip()
+        title = str(payload.get("title") or display_text or binding.status_label)
+        if not display_text or not audio_path:
+            self._window.set_action_status("固定回覆快取資料不完整。", tone="error", timeout_ms=4800)
+            return
+        self._render_synthetic_turn(source_label, display_text)
+        self._window.set_action_status(display_text, tone="working", timeout_ms=6500)
+        motion_found = self._play_binding_motion(binding)
+        if not motion_found:
+            self._window.restore_idle_video()
+            self._window.set_action_status("找不到對應動作，已略過固定回覆播放。", tone="warn", timeout_ms=4200)
+            return
+        if self._window.play_music(audio_path, title, update_status=False):
+            self._arm_room_audio_wait(timeout_ms=15000)
+            return
+        self._handle_failure(binding, motion_found, f"{title} 音檔播放失敗。")
+
     def _arm_room_audio_wait(self, timeout_ms: int = 180000):
         if self._current_loop_action_key is None:
             return
@@ -1412,7 +1521,7 @@ class ActionDispatcher(QObject):
                 trace_id=pending.trace_id,
                 allow_tts=pending.allow_tts,
             )
-            if self._current_loop_action_key in BLOCKING_LOOP_ACTIONS:
+            if self._current_loop_binding is not None and self._current_loop_binding.blocks_following_dispatch:
                 return
 
     def _handle_failure(self, binding: ActionBinding, motion_found: bool, message: str):

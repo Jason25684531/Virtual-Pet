@@ -32,15 +32,16 @@ class WaveDetectionConfig:
     camera_index: int = 0
     frame_width: int = 640
     frame_height: int = 360
-    roi_top_ratio: float = 0.10
-    roi_bottom_ratio: float = 0.82
-    roi_left_ratio: float = 0.18
-    roi_right_ratio: float = 0.82
+    roi_top_ratio: float = 0.14
+    roi_bottom_ratio: float = 0.70
+    roi_left_ratio: float = 0.24
+    roi_right_ratio: float = 0.76
     blur_kernel_size: int = 9
     threshold_value: int = 28
     dilation_iterations: int = 2
-    min_contour_area: int = 1800
-    min_displacement_px: int = 24
+    min_contour_area: int = 2400
+    min_displacement_px: int = 32
+    min_wave_span_px: int = 72
     required_direction_changes: int = 2
     observation_window_seconds: float = 1.4
     cooldown_ms: int = 30000
@@ -69,6 +70,7 @@ class WaveSensor(QThread):
         self._previous_roi_gray = None
         self._last_center_x: int | None = None
         self._direction_events: deque[tuple[float, int]] = deque()
+        self._center_samples: deque[tuple[float, int]] = deque()
         self._last_trigger_timestamp = float("-inf")
         self._warned_keys: set[str] = set()
         self._last_motion_bbox: tuple[int, int, int, int] | None = None
@@ -147,6 +149,7 @@ class WaveSensor(QThread):
         self._previous_roi_gray = None
         self._last_center_x = None
         self._direction_events.clear()
+        self._center_samples.clear()
         self._last_trigger_timestamp = float("-inf")
         self._last_motion_bbox = None
         self._debug_window_available = True
@@ -218,11 +221,14 @@ class WaveSensor(QThread):
 
     def _register_horizontal_motion(self, center_x: int | None, timestamp: float) -> bool:
         self._prune_direction_events(timestamp)
+        self._prune_center_samples(timestamp)
 
         if center_x is None:
             self._last_center_x = None
+            self._center_samples.clear()
             return False
 
+        self._remember_center(center_x, timestamp)
         if self._last_center_x is None:
             self._last_center_x = center_x
             return False
@@ -242,9 +248,12 @@ class WaveSensor(QThread):
         required_events = self._config.required_direction_changes + 1
         if len(self._direction_events) < required_events:
             return False
+        if self._current_wave_span() < self._config.min_wave_span_px:
+            return False
 
         self._last_trigger_timestamp = timestamp
         self._direction_events.clear()
+        self._center_samples.clear()
         self._last_center_x = None
         return True
 
@@ -259,6 +268,21 @@ class WaveSensor(QThread):
         cutoff = timestamp - self._config.observation_window_seconds
         while self._direction_events and self._direction_events[0][0] < cutoff:
             self._direction_events.popleft()
+
+    def _remember_center(self, center_x: int, timestamp: float):
+        self._center_samples.append((timestamp, center_x))
+        self._prune_center_samples(timestamp)
+
+    def _prune_center_samples(self, timestamp: float):
+        cutoff = timestamp - self._config.observation_window_seconds
+        while self._center_samples and self._center_samples[0][0] < cutoff:
+            self._center_samples.popleft()
+
+    def _current_wave_span(self) -> int:
+        if len(self._center_samples) < 2:
+            return 0
+        centers = [center_x for _timestamp, center_x in self._center_samples]
+        return max(centers) - min(centers)
 
     def _is_in_cooldown(self, timestamp: float) -> bool:
         return (timestamp - self._last_trigger_timestamp) * 1000 < self._config.cooldown_ms
