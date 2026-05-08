@@ -34,6 +34,13 @@ def build_cached_intent_trigger_source(intent_name: str, source_kind: str) -> st
     return f"{label} {source_kind}".strip()
 
 
+def build_stt_cached_intent_trigger_source(text: str, intent_name: str) -> str:
+    normalized_text = str(text or "").strip()
+    if normalized_text:
+        return normalized_text
+    return build_cached_intent_trigger_source(intent_name, "關鍵字觸發")
+
+
 def connect_brain_output_handlers(window, brain_engine, sanitize_text):
     from action_services import FIXED_NEWS_SCRIPT
 
@@ -295,7 +302,10 @@ def main():
         preview = text if len(text) <= 24 else f"{text[:24]}..."
         fixed_intent = resolve_cached_intent_from_text(text)
         if fixed_intent:
-            handle_cached_intent_request(fixed_intent, build_cached_intent_trigger_source(fixed_intent, "關鍵字觸發"))
+            handle_cached_intent_request(
+                fixed_intent,
+                build_stt_cached_intent_trigger_source(text, fixed_intent),
+            )
             return
         result = turn_manager.submit("stt", text, trace_id=trace_id)
         if not result["accepted"]:

@@ -56,6 +56,7 @@ FIXED_INTENT_DEFINITIONS = {
     "joke": {
         "version": "fixed-intent-joke-2026-05-08-v1",
         "title": "Joke",
+        "button_query_text": "我今天心情不好 可以跟我個笑話嘛",
         "prompt": (
             "請用繁體中文生成 1 則桌面陪伴角色會說的短笑話。"
             "必須是 1 到 2 句，活潑、可愛、自然，不要冷場。"
@@ -63,11 +64,14 @@ FIXED_INTENT_DEFINITIONS = {
         ),
     },
     "share": {
-        "version": "fixed-intent-share-2026-05-08-v1",
+        "version": "fixed-intent-share-2026-05-08-v2",
         "title": "share",
+        "button_query_text": "我今天心情不好 可以聽我分享嘛",
+        "request_text": "我今天心情不好 可以聽我分享嘛",
         "prompt": (
-            "請用繁體中文生成 1 則桌面陪伴角色會說的小分享或小知識。"
-            "必須是 1 到 2 句，簡短、活潑、自然。"
+            "請直接回應這位心情不好的使用者，明確表達你願意傾聽與陪伴，"
+            "讓對方放心繼續分享。"
+            "必須是 1 到 2 句，溫柔、自然、帶一點活潑感，但不要變成冷知識、說教或轉移話題。"
             "禁止輸出 [ACTION:...]、markdown、清單、引號、括號說明或角色自介。"
         ),
     },
@@ -85,6 +89,23 @@ def _normalize_reply_text(text: str) -> str:
     normalized = re.sub(r"[*_#>`-]+", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()
     return normalized
+
+
+def get_fixed_intent_button_query_text(intent_name: str) -> str | None:
+    definition = FIXED_INTENT_DEFINITIONS.get(str(intent_name or "").strip().lower())
+    if definition is None:
+        return None
+    text = str(definition.get("button_query_text") or "").strip()
+    return text or None
+
+
+def resolve_fixed_intent_source_label(intent_name: str, trigger_source: str) -> str:
+    normalized_source = str(trigger_source or "").strip()
+    if normalized_source.endswith("按鈕觸發"):
+        button_query_text = get_fixed_intent_button_query_text(intent_name)
+        if button_query_text:
+            return button_query_text
+    return normalized_source
 
 
 def _write_bytes_atomic(path: Path, content: bytes):
@@ -383,7 +404,14 @@ def generate_fixed_intent_text(
             "你不得輸出 [ACTION:...]、markdown、清單、emoji、自我介紹或額外說明。"
             "只輸出最終要顯示與朗讀的繁體中文短句。"
         ),
-        _build_human_message(str(definition["prompt"])),
+        _build_human_message(
+            (
+                f"使用者現在對你說：{definition['request_text']}\n"
+                if str(definition.get("request_text") or "").strip()
+                else ""
+            )
+            + str(definition["prompt"])
+        ),
     ]
     response = llm.invoke(messages)
     content = getattr(response, "content", response)

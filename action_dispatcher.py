@@ -16,7 +16,13 @@ from typing import TYPE_CHECKING
 
 from PyQt5.QtCore import QCoreApplication, QObject, QTimer
 
-from action_services import FixedIntentReplyWorker, MusicSelectionWorker, NewsFetchWorker, WaveGreetingWorker
+from action_services import (
+    FixedIntentReplyWorker,
+    MusicSelectionWorker,
+    NewsFetchWorker,
+    WaveGreetingWorker,
+    resolve_fixed_intent_source_label,
+)
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
 from api_client.brain_engine import sanitize_tts_text
 from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker  # noqa: F401 — 保留供降級使用
@@ -1435,7 +1441,11 @@ class ActionDispatcher(QObject):
         if not display_text or not audio_path:
             self._window.set_action_status("固定回覆快取資料不完整。", tone="error", timeout_ms=4800)
             return
-        self._render_synthetic_turn(source_label, display_text)
+        display_source_label = resolve_fixed_intent_source_label(
+            str(payload.get("intent") or binding.name.replace("cached_", "")),
+            source_label,
+        )
+        self._render_synthetic_turn(display_source_label, display_text)
         self._window.set_action_status(display_text, tone="working", timeout_ms=6500)
         motion_found = self._play_binding_motion(binding)
         if not motion_found:

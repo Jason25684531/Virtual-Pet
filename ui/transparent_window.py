@@ -16,6 +16,7 @@ from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineSettings, QWebEng
 
 from character_library import ASSETS_WEBM_DIR, CharacterLibrary, MOTION_MAP
 from interaction_trace import InteractionLatencyTracker
+from action_services import FIXED_NEWS_SCRIPT
 
 
 class EchoesWebPage(QWebEnginePage):
@@ -83,8 +84,7 @@ class TransparentWindow(QMainWindow):
     FIXED_INTENT_BUTTON_WIDTH = 88
     FIXED_INTENT_BUTTON_HEIGHT = 34
     FIXED_INTENT_BUTTON_GAP = 10
-    FIXED_INTENT_BUTTON_MARGIN_LEFT = 28
-    FIXED_INTENT_BUTTON_MARGIN_BOTTOM = 146
+    FIXED_INTENT_BUTTON_ROW_GAP = 12
     # 角色預設位移（相對於視窗中心的像素偏移量）
     DEFAULT_CHARACTER_X_OFFSET = 0
     DEFAULT_CHARACTER_Y_OFFSET = 0
@@ -281,6 +281,28 @@ class TransparentWindow(QMainWindow):
         self._share_button.clicked.connect(lambda: self._emit_cached_intent_request("share", "share 按鈕觸發"))
         self._share_button.installEventFilter(self)
         self._share_button.setStyleSheet(self._fixed_intent_button_stylesheet("#305c6d", "#cdeefa"))
+
+        self._music_button = QPushButton(self)
+        self._music_button.setObjectName("overlay-play-music-button")
+        self._music_button.setText("Music")
+        self._music_button.setFixedSize(self.FIXED_INTENT_BUTTON_WIDTH, self.FIXED_INTENT_BUTTON_HEIGHT)
+        self._music_button.clicked.connect(lambda: self.trigger_overlay_action("play_music"))
+        self._music_button.installEventFilter(self)
+        self._music_button.setStyleSheet(self._fixed_intent_button_stylesheet("#456f3b", "#d7f5bf"))
+
+        self._news_button = QPushButton(self)
+        self._news_button.setObjectName("overlay-report-news-button")
+        self._news_button.setText("News")
+        self._news_button.setFixedSize(self.FIXED_INTENT_BUTTON_WIDTH, self.FIXED_INTENT_BUTTON_HEIGHT)
+        self._news_button.clicked.connect(
+            lambda: self.trigger_overlay_action(
+                "report_news",
+                synthetic_user_text="播放新聞",
+                synthetic_assistant_text=FIXED_NEWS_SCRIPT,
+            )
+        )
+        self._news_button.installEventFilter(self)
+        self._news_button.setStyleSheet(self._fixed_intent_button_stylesheet("#6f4f8b", "#e2cdf7"))
         self._update_fixed_intent_buttons_geometry()
 
     @staticmethod
@@ -374,15 +396,24 @@ class TransparentWindow(QMainWindow):
         self._reset_button.move(x, y)
 
     def _update_fixed_intent_buttons_geometry(self):
-        if not hasattr(self, "_joke_button") or not hasattr(self, "_share_button"):
+        required_buttons = ("_joke_button", "_share_button", "_music_button", "_news_button")
+        if any(not hasattr(self, button_name) for button_name in required_buttons):
             return
         y = max(
             self.DRAG_SURFACE_HEIGHT + 24,
-            self.height() - self.FIXED_INTENT_BUTTON_HEIGHT - self.FIXED_INTENT_BUTTON_MARGIN_BOTTOM,
+            self.height() - self.FIXED_INTENT_BUTTON_HEIGHT - self.STT_BUTTON_MARGIN_BOTTOM - 3,
         )
-        x = self.FIXED_INTENT_BUTTON_MARGIN_LEFT
+        x = (
+            self.STT_BUTTON_MARGIN_LEFT
+            + self.STT_BUTTON_WIDTH
+            + self.RESET_BUTTON_GAP
+            + self.RESET_BUTTON_WIDTH
+            + self.FIXED_INTENT_BUTTON_ROW_GAP
+        )
         self._joke_button.move(x, y)
         self._share_button.move(x + self.FIXED_INTENT_BUTTON_WIDTH + self.FIXED_INTENT_BUTTON_GAP, y)
+        self._music_button.move(x + (self.FIXED_INTENT_BUTTON_WIDTH + self.FIXED_INTENT_BUTTON_GAP) * 2, y)
+        self._news_button.move(x + (self.FIXED_INTENT_BUTTON_WIDTH + self.FIXED_INTENT_BUTTON_GAP) * 3, y)
 
     def _update_drag_surface_geometry(self):
         if hasattr(self, "_drag_surface"):
@@ -411,6 +442,10 @@ class TransparentWindow(QMainWindow):
             self._joke_button.raise_()
         if hasattr(self, "_share_button"):
             self._share_button.raise_()
+        if hasattr(self, "_music_button"):
+            self._music_button.raise_()
+        if hasattr(self, "_news_button"):
+            self._news_button.raise_()
         if hasattr(self, "_developer_input") and self._developer_input.isVisible():
             self._developer_input.raise_()
 
@@ -769,6 +804,29 @@ class TransparentWindow(QMainWindow):
     def trigger_cached_intent(self, intent_name: str, trigger_source: str) -> bool:
         return self._action_dispatcher.trigger_cached_intent(intent_name, trigger_source)
 
+    def trigger_overlay_action(
+        self,
+        action_name: str,
+        *,
+        synthetic_user_text: str | None = None,
+        synthetic_assistant_text: str | None = None,
+    ) -> bool:
+        normalized_action = str(action_name or "").strip().lower()
+        if not normalized_action:
+            return False
+        dispatched = self.dispatch_action(f"[ACTION:{normalized_action}]")
+        if (
+            dispatched
+            and synthetic_user_text is not None
+            and synthetic_assistant_text is not None
+        ):
+            self.show_synthetic_conversation_turn(
+                "Dev Query",
+                str(synthetic_user_text),
+                str(synthetic_assistant_text),
+            )
+        return dispatched
+
     def speak_text(self, message: str, trace_id: str | None = None, has_action: bool = False):
         self._action_dispatcher.speak_text(message, trace_id=trace_id, has_action=has_action)
 
@@ -842,11 +900,21 @@ class TransparentWindow(QMainWindow):
         ):
             return False
         if event.key() == Qt.Key_1:
-            self._emit_cached_intent_request("joke", "Joke 快捷觸發")
+            self._emit_cached_intent_request("joke", "Joke 按鈕觸發")
             return True
         if event.key() == Qt.Key_2:
-            self._emit_cached_intent_request("share", "share 快捷觸發")
+            self._emit_cached_intent_request("share", "share 按鈕觸發")
             return True
+        if event.key() == Qt.Key_3:
+            return bool(self.trigger_overlay_action("play_music"))
+        if event.key() == Qt.Key_4:
+            return bool(
+                self.trigger_overlay_action(
+                    "report_news",
+                    synthetic_user_text="播放新聞",
+                    synthetic_assistant_text=FIXED_NEWS_SCRIPT,
+                )
+            )
         return False
 
     def toggle_developer_input(self):

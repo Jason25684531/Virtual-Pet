@@ -6,6 +6,8 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
+import action_services
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -16,6 +18,7 @@ from action_services import (
     WAVE_GREETING_SCRIPT,
     WaveGreetingWorker,
     build_fixed_intent_payload,
+    generate_fixed_intent_text,
 )
 
 
@@ -147,6 +150,33 @@ class NewsAudioCacheTests(unittest.TestCase):
             self.assertNotEqual(miku_first["path"], choppr_first["path"])
             self.assertEqual(miku_first["action_name"], "laugh")
             self.assertEqual(miku_first["text"], "這是 miku 的笑話。")
+
+    def test_share_fixed_intent_generation_uses_supportive_request_text(self):
+        captured_messages: list[object] = []
+
+        class _FakeResponse:
+            content = "當然可以，我在這裡聽你說。"
+
+        class _FakeLLM:
+            def invoke(self, messages):
+                captured_messages.extend(messages)
+                return _FakeResponse()
+
+        with patch.object(action_services.config, "OPENAI_API_KEY", "test-key"):
+            text = generate_fixed_intent_text(
+                "share",
+                "miku",
+                llm_factory=lambda **_kwargs: _FakeLLM(),
+            )
+
+        human_message = captured_messages[-1]
+        if isinstance(human_message, dict):
+            human_content = human_message.get("content")
+        else:
+            human_content = getattr(human_message, "content", "")
+        self.assertIn("我今天心情不好 可以聽我分享嘛", str(human_content))
+        self.assertIn("明確表達你願意傾聽與陪伴", str(human_content))
+        self.assertEqual(text, "當然可以，我在這裡聽你說。")
 
 
 if __name__ == "__main__":

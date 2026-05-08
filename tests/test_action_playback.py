@@ -1825,6 +1825,37 @@ class ActionPlaybackTests(unittest.TestCase):
             self.assertIsNone(dispatcher._current_loop_action_key)
             dispatcher.shutdown()
 
+    def test_cached_share_button_trigger_uses_user_prompt_text(self):
+        with tempfile.TemporaryDirectory(prefix="echoes-action-cached-share-button-") as temp_dir:
+            listen_path = Path(temp_dir) / "listen.webm"
+            idle_path = Path(temp_dir) / "Idle.webm"
+            listen_path.write_bytes(b"listen")
+            idle_path.write_bytes(b"idle")
+
+            window = _LoopActionProbeWindow(temp_dir)
+            dispatcher = ActionDispatcher(
+                window,
+                library=_NoopLibrary(),
+                fixed_intent_worker_factory=lambda parent=None: _ImmediateServiceWorker(
+                    success=True,
+                    message="share 固定回覆已就緒。",
+                    payload={"intent": "share", "text": "我在這裡聽你說。", "path": "share.mp3", "title": "share"},
+                    parent=parent,
+                ),
+                motion_path_resolver=lambda motion_key: str(
+                    {"listen": listen_path, "idle": idle_path}.get(motion_key, "")
+                ),
+                tts_enabled=False,
+            )
+
+            self.assertTrue(dispatcher.trigger_cached_intent("share", "share 按鈕觸發"))
+            self.assertEqual(
+                window.synthetic_turns,
+                [("Dev Query", "我今天心情不好 可以聽我分享嘛", "我在這裡聽你說。")],
+            )
+
+            dispatcher.shutdown()
+
     def test_duplicate_driver_started_event_does_not_reactivate_pending_action(self):
         with tempfile.TemporaryDirectory(prefix="echoes-action-driver-dedupe-") as temp_dir:
             listen_path = Path(temp_dir) / "listen.webm"

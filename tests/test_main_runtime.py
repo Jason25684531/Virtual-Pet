@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 import unittest
 
-from action_services import FIXED_NEWS_SCRIPT
+from action_services import FIXED_NEWS_SCRIPT, resolve_fixed_intent_source_label
 from PyQt5.QtCore import Qt
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from main import (
     build_cached_intent_trigger_source,
+    build_stt_cached_intent_trigger_source,
     connect_brain_output_handlers,
     resolve_cached_intent_from_text,
 )
@@ -173,17 +174,52 @@ class MainRuntimeWiringTests(unittest.TestCase):
         self.assertEqual(build_cached_intent_trigger_source("joke", "關鍵字觸發"), "Joke 關鍵字觸發")
         self.assertEqual(build_cached_intent_trigger_source("share", "快捷觸發"), "share 快捷觸發")
 
+    def test_stt_cached_intent_trigger_source_prefers_original_stt_text(self):
+        self.assertEqual(
+            build_stt_cached_intent_trigger_source("我想聽個笑話", "joke"),
+            "我想聽個笑話",
+        )
+        self.assertEqual(
+            build_stt_cached_intent_trigger_source("  ", "share"),
+            "share 關鍵字觸發",
+        )
+
+    def test_cached_intent_button_source_uses_prompt_text_for_synthetic_turn(self):
+        self.assertEqual(
+            resolve_fixed_intent_source_label("joke", "Joke 按鈕觸發"),
+            "我今天心情不好 可以跟我個笑話嘛",
+        )
+        self.assertEqual(
+            resolve_fixed_intent_source_label("share", "share 按鈕觸發"),
+            "我今天心情不好 可以聽我分享嘛",
+        )
+        self.assertEqual(
+            resolve_fixed_intent_source_label("share", "share 快捷觸發"),
+            "share 快捷觸發",
+        )
+
     def test_fixed_intent_shortcuts_emit_expected_intents(self):
         class _ShortcutHarness:
             def __init__(self):
                 self._developer_input = object()
                 self.emitted: list[tuple[str, str]] = []
+                self.overlay_calls: list[tuple[str, str | None, str | None]] = []
 
             def focusWidget(self):
                 return None
 
             def _emit_cached_intent_request(self, intent_name: str, trigger_source: str):
                 self.emitted.append((intent_name, trigger_source))
+
+            def trigger_overlay_action(
+                self,
+                action_name: str,
+                *,
+                synthetic_user_text: str | None = None,
+                synthetic_assistant_text: str | None = None,
+            ):
+                self.overlay_calls.append((action_name, synthetic_user_text, synthetic_assistant_text))
+                return True
 
         class _FakeEvent:
             def __init__(self, key: int):
@@ -201,9 +237,113 @@ class MainRuntimeWiringTests(unittest.TestCase):
         harness = _ShortcutHarness()
         self.assertTrue(TransparentWindow._handle_cached_intent_shortcut(harness, _FakeEvent(Qt.Key_1)))
         self.assertTrue(TransparentWindow._handle_cached_intent_shortcut(harness, _FakeEvent(Qt.Key_2)))
+        self.assertTrue(TransparentWindow._handle_cached_intent_shortcut(harness, _FakeEvent(Qt.Key_3)))
+        self.assertTrue(TransparentWindow._handle_cached_intent_shortcut(harness, _FakeEvent(Qt.Key_4)))
         self.assertEqual(
             harness.emitted,
-            [("joke", "Joke 快捷觸發"), ("share", "share 快捷觸發")],
+            [("joke", "Joke 按鈕觸發"), ("share", "share 按鈕觸發")],
+        )
+        self.assertEqual(
+            harness.overlay_calls,
+            [
+                ("play_music", None, None),
+                ("report_news", "播放新聞", FIXED_NEWS_SCRIPT),
+            ],
+        )
+
+    def test_overlay_action_trigger_dispatches_host_action_directive(self):
+        class _ActionHarness:
+            def __init__(self):
+                self.calls: list[tuple[str, str | None, bool]] = []
+                self.synthetic_turns: list[tuple[str, str, str]] = []
+
+            def dispatch_action(self, directive: str, trace_id: str | None = None, allow_tts: bool = True):
+                self.calls.append((directive, trace_id, allow_tts))
+                return True
+
+            def show_synthetic_conversation_turn(self, source_label: str, user_text: str, assistant_text: str):
+                self.synthetic_turns.append((source_label, user_text, assistant_text))
+
+        harness = _ActionHarness()
+        self.assertTrue(TransparentWindow.trigger_overlay_action(harness, "play_music"))
+        self.assertTrue(
+            TransparentWindow.trigger_overlay_action(
+                harness,
+                "report_news",
+                synthetic_user_text="播放新聞",
+                synthetic_assistant_text=FIXED_NEWS_SCRIPT,
+            )
+        )
+        self.assertEqual(
+            harness.calls,
+            [
+                ("[ACTION:play_music]", None, True),
+                ("[ACTION:report_news]", None, True),
+            ],
+        )
+        self.assertEqual(
+            harness.synthetic_turns,
+            [("Dev Query", "播放新聞", FIXED_NEWS_SCRIPT)],
+        )
+
+    def test_fixed_intent_buttons_align_with_bottom_control_row(self):
+        class _FakeButton:
+            def __init__(self):
+                self.position = None
+
+            def move(self, x: int, y: int):
+                self.position = (x, y)
+
+        class _GeometryHarness:
+            DRAG_SURFACE_HEIGHT = TransparentWindow.DRAG_SURFACE_HEIGHT
+            STT_BUTTON_MARGIN_LEFT = TransparentWindow.STT_BUTTON_MARGIN_LEFT
+            STT_BUTTON_WIDTH = TransparentWindow.STT_BUTTON_WIDTH
+            STT_BUTTON_MARGIN_BOTTOM = TransparentWindow.STT_BUTTON_MARGIN_BOTTOM
+            RESET_BUTTON_GAP = TransparentWindow.RESET_BUTTON_GAP
+            RESET_BUTTON_WIDTH = TransparentWindow.RESET_BUTTON_WIDTH
+            FIXED_INTENT_BUTTON_HEIGHT = TransparentWindow.FIXED_INTENT_BUTTON_HEIGHT
+            FIXED_INTENT_BUTTON_WIDTH = TransparentWindow.FIXED_INTENT_BUTTON_WIDTH
+            FIXED_INTENT_BUTTON_GAP = TransparentWindow.FIXED_INTENT_BUTTON_GAP
+            FIXED_INTENT_BUTTON_ROW_GAP = TransparentWindow.FIXED_INTENT_BUTTON_ROW_GAP
+
+            def __init__(self):
+                self._joke_button = _FakeButton()
+                self._share_button = _FakeButton()
+                self._music_button = _FakeButton()
+                self._news_button = _FakeButton()
+
+            def height(self):
+                return 1080
+
+        harness = _GeometryHarness()
+        TransparentWindow._update_fixed_intent_buttons_geometry(harness)
+
+        expected_y = 1080 - TransparentWindow.FIXED_INTENT_BUTTON_HEIGHT - TransparentWindow.STT_BUTTON_MARGIN_BOTTOM - 3
+        expected_x = (
+            TransparentWindow.STT_BUTTON_MARGIN_LEFT
+            + TransparentWindow.STT_BUTTON_WIDTH
+            + TransparentWindow.RESET_BUTTON_GAP
+            + TransparentWindow.RESET_BUTTON_WIDTH
+            + TransparentWindow.FIXED_INTENT_BUTTON_ROW_GAP
+        )
+        self.assertEqual(harness._joke_button.position, (expected_x, expected_y))
+        self.assertEqual(
+            harness._share_button.position,
+            (expected_x + TransparentWindow.FIXED_INTENT_BUTTON_WIDTH + TransparentWindow.FIXED_INTENT_BUTTON_GAP, expected_y),
+        )
+        self.assertEqual(
+            harness._music_button.position,
+            (
+                expected_x + (TransparentWindow.FIXED_INTENT_BUTTON_WIDTH + TransparentWindow.FIXED_INTENT_BUTTON_GAP) * 2,
+                expected_y,
+            ),
+        )
+        self.assertEqual(
+            harness._news_button.position,
+            (
+                expected_x + (TransparentWindow.FIXED_INTENT_BUTTON_WIDTH + TransparentWindow.FIXED_INTENT_BUTTON_GAP) * 3,
+                expected_y,
+            ),
         )
 
 
