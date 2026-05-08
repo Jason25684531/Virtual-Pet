@@ -21,6 +21,19 @@ def build_wave_response_directive(_directive: str | None = None) -> str:
     return WAVE_RESPONSE_GREETING_DIRECTIVE
 
 
+def resolve_cached_intent_from_text(text: str) -> str | None:
+    from action_services import resolve_fixed_intent_from_text
+
+    return resolve_fixed_intent_from_text(text)
+
+
+def build_cached_intent_trigger_source(intent_name: str, source_kind: str) -> str:
+    from action_services import FIXED_INTENT_LABELS
+
+    label = FIXED_INTENT_LABELS.get(str(intent_name or "").strip().lower(), intent_name)
+    return f"{label} {source_kind}".strip()
+
+
 def connect_brain_output_handlers(window, brain_engine, sanitize_text):
     from action_services import FIXED_NEWS_SCRIPT
 
@@ -209,6 +222,13 @@ def main():
 
     window.developer_query_submitted.connect(handle_developer_query)
 
+    def handle_cached_intent_request(intent_name: str, trigger_source: str):
+        if not window.trigger_cached_intent(intent_name, trigger_source):
+            return
+        window.set_action_status(f"{trigger_source}，正在準備固定回覆...", tone="working", timeout_ms=0)
+
+    window.cached_intent_requested.connect(handle_cached_intent_request)
+
     wave_sensor_config = WaveDetectionConfig(
         detection_enabled=OPENCV_WAVE_DETECTION_ENABLED,
         show_debug_window=OPENCV_DEBUG_WINDOW_ENABLED,
@@ -273,6 +293,10 @@ def main():
 
     def handle_stt_preview(text: str, trace_id: str | None):
         preview = text if len(text) <= 24 else f"{text[:24]}..."
+        fixed_intent = resolve_cached_intent_from_text(text)
+        if fixed_intent:
+            handle_cached_intent_request(fixed_intent, build_cached_intent_trigger_source(fixed_intent, "關鍵字觸發"))
+            return
         result = turn_manager.submit("stt", text, trace_id=trace_id)
         if not result["accepted"]:
             window.set_action_status("STT 文字送出失敗。", tone="warn", timeout_ms=2800)
