@@ -1,0 +1,410 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+from typing import Any
+
+from pet_harness.asset.asset_contract import AssetRequest, AssetResponse
+from pet_harness.models.events import RewardEvent, utc_now
+from pet_harness.models.provider import ProviderConfig, ProviderStatus
+from pet_harness.models.skill import Skill
+from pet_harness.tools.tool_models import ToolResult
+
+
+DEFAULT_USER_ID = "default"
+
+
+class SQLiteStore:
+    def __init__(self, db_path: str | Path = Path("data") / "pet_state.db") -> None:
+        self.db_path = Path(db_path)
+
+    def connect(self) -> sqlite3.Connection:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def initialize(self) -> None:
+        schema_path = Path(__file__).with_name("schema.sql")
+        with self.connect() as conn:
+            conn.executescript(schema_path.read_text(encoding="utf-8"))
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO user_progress (user_id, xp_total, level, updated_at)
+                VALUES (?, 0, 1, ?)
+                """,
+                (DEFAULT_USER_ID, utc_now()),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO behavior_state (state_key, behavior_id, updated_at)
+                VALUES ('default', 'idle', ?)
+                """,
+                (utc_now(),),
+            )
+            provider_row = conn.execute("SELECT 1 FROM provider_status LIMIT 1").fetchone()
+            if provider_row is None:
+                self._set_provider_status(conn, ProviderStatus())
+
+    def sync_skills(self, skills: list[Skill]) -> None:
+        with self.connect() as conn:
+            for skill in skills:
+                conn.execute(
+                    """
+                    INSERT INTO skills
+                    (name, description, triggers_json, behavior, xp_reward, required_tool,
+                     unlock_reward, file_path, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(name) DO UPDATE SET
+                        description=excluded.description,
+                        triggers_json=excluded.triggers_json,
+                        behavior=excluded.behavior,
+                        xp_reward=excluded.xp_reward,
+                        required_tool=excluded.required_tool,
+                        unlock_reward=excluded.unlock_reward,
+                        file_path=excluded.file_path,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        skill.name,
+                        skill.description,
+                        json.dumps(skill.triggers),
+                        skill.behavior,
+                        skill.xp_reward,
+                        skill.required_tool,
+                        skill.unlock_reward,
+                        skill.file_path,
+                        utc_now(),
+                    ),
+                )
+
+    def list_skills(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM skills ORDER BY name").fetchall()
+        return [self._skill_row(row) for row in rows]
+
+    def add_user_xp(self, delta: int) -> dict[str, Any]:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE user_progress
+                SET xp_total = xp_total + ?, level = MAX(1, ((xp_total + ?) / 100) + 1), updated_at = ?
+                WHERE user_id = ?
+                """,
+                (delta, delta, utc_now(), DEFAULT_USER_ID),
+            )
+        return self.get_user_progress()
+
+    def get_user_progress(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM user_progress WHERE user_id = ?", (DEFAULT_USER_ID,)
+            ).fetchone()
+        return dict(row) if row else {"user_id": DEFAULT_USER_ID, "xp_total": 0, "level": 1}
+
+    def add_skill_xp(self, skill_name: str, delta: int) -> dict[str, Any]:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO skill_progress (skill_name, xp_total, level, updated_at)
+                VALUES (?, ?, 1, ?)
+                ON CONFLICT(skill_name) DO UPDATE SET
+                    xp_total = xp_total + excluded.xp_total,
+                    level = MAX(1, ((xp_total + excluded.xp_total) / 100) + 1),
+                    updated_at = excluded.updated_at
+                """,
+                (skill_name, delta, utc_now()),
+            )
+        return self.get_skill_progress(skill_name)
+
+    def get_skill_progress(self, skill_name: str) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM skill_progress WHERE skill_name = ?", (skill_name,)
+            ).fetchone()
+        return dict(row) if row else {"skill_name": skill_name, "xp_total": 0, "level": 1}
+
+    def unlock_reward(self, event: RewardEvent, metadata: dict[str, Any] | None = None) -> bool:
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
+        with self.connect() as conn:
+            exists = conn.execute(
+                "SELECT reward_id FROM reward_unlocks WHERE reward_id = ?", (event.reward_id,)
+            ).fetchone()
+            if exists:
+                return False
+            conn.execute(
+                """
+                INSERT INTO reward_unlocks
+                (reward_id, reward_type, unlock_reason, xp_threshold, inventory_item_id, unlocked_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.reward_id,
+                    event.reward_type,
+                    event.unlock_reason,
+                    event.xp_threshold,
+                    event.inventory_item_id,
+                    event.timestamp,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO inventory
+                (item_id, reward_id, item_type, metadata_json, unlocked_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    event.inventory_item_id,
+                    event.reward_id,
+                    event.reward_type,
+                    metadata_json,
+                    event.timestamp,
+                ),
+            )
+        return True
+
+    def list_reward_unlocks(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM reward_unlocks ORDER BY unlocked_at").fetchall()
+        return [dict(row) for row in rows]
+
+    def list_inventory(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM inventory ORDER BY unlocked_at").fetchall()
+        return [self._json_row(row, "metadata_json", "metadata") for row in rows]
+
+    def set_behavior_state(self, behavior_id: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO behavior_state (state_key, behavior_id, updated_at)
+                VALUES ('default', ?, ?)
+                ON CONFLICT(state_key) DO UPDATE SET
+                    behavior_id=excluded.behavior_id,
+                    updated_at=excluded.updated_at
+                """,
+                (behavior_id, utc_now()),
+            )
+
+    def get_behavior_state(self) -> str:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT behavior_id FROM behavior_state WHERE state_key = 'default'"
+            ).fetchone()
+        return str(row["behavior_id"]) if row else "idle"
+
+    def set_provider_status(self, status: ProviderStatus) -> None:
+        with self.connect() as conn:
+            self._set_provider_status(conn, status)
+
+    def _set_provider_status(self, conn: sqlite3.Connection, status: ProviderStatus) -> None:
+        payload = status.to_dict()
+        conn.execute(
+            """
+            INSERT INTO provider_status
+            (provider_type, healthy, message, checked_at, metadata_json)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(provider_type) DO UPDATE SET
+                healthy=excluded.healthy,
+                message=excluded.message,
+                checked_at=excluded.checked_at,
+                metadata_json=excluded.metadata_json
+            """,
+            (
+                payload["provider_type"],
+                int(payload["healthy"]),
+                payload["message"],
+                payload["checked_at"],
+                json.dumps(payload["metadata"], ensure_ascii=False),
+            ),
+        )
+
+    def get_provider_status(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM provider_status ORDER BY checked_at DESC LIMIT 1").fetchone()
+        if not row:
+            return ProviderStatus().to_dict()
+        return {
+            "provider_type": row["provider_type"],
+            "healthy": bool(row["healthy"]),
+            "message": row["message"],
+            "checked_at": row["checked_at"],
+            "metadata": json.loads(row["metadata_json"] or "{}"),
+        }
+
+    def set_provider_config(self, config: ProviderConfig) -> None:
+        self.set_setting("provider_config", config.to_dict())
+
+    def get_provider_config(self) -> ProviderConfig:
+        return ProviderConfig.from_dict(self.get_setting("provider_config"))
+
+    def set_setting(self, key: str, value: Any) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO settings (key, value_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at
+                """,
+                (key, json.dumps(value, ensure_ascii=False), utc_now()),
+            )
+
+    def get_setting(self, key: str, default: Any = None) -> Any:
+        with self.connect() as conn:
+            row = conn.execute("SELECT value_json FROM settings WHERE key = ?", (key,)).fetchone()
+        return json.loads(row["value_json"]) if row else default
+
+    def log_event(self, input_payload: dict[str, Any], output_payload: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO event_log (event_id, input_payload, output_payload, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    input_payload.get("event_id"),
+                    json.dumps(input_payload, ensure_ascii=False),
+                    json.dumps(output_payload, ensure_ascii=False),
+                    utc_now(),
+                ),
+            )
+
+    def set_tool_setting(self, key: str, value: Any) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tool_settings (key, value_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at
+                """,
+                (key, json.dumps(value, ensure_ascii=False), utc_now()),
+            )
+
+    def get_tool_setting(self, key: str, default: Any = None) -> Any:
+        with self.connect() as conn:
+            row = conn.execute("SELECT value_json FROM tool_settings WHERE key = ?", (key,)).fetchone()
+        return json.loads(row["value_json"]) if row else default
+
+    def log_tool_result(self, result: ToolResult, request_payload: dict[str, Any] | None = None) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tool_log (tool_name, request_id, request_json, result_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    result.tool_name,
+                    result.request_id,
+                    json.dumps(request_payload or {}, ensure_ascii=False),
+                    json.dumps(result.to_dict(), ensure_ascii=False),
+                    utc_now(),
+                ),
+            )
+
+    def recent_tool_results(self, limit: int = 10) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM tool_log ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "tool_name": row["tool_name"],
+                "request_id": row["request_id"],
+                "request": json.loads(row["request_json"] or "{}"),
+                "result": json.loads(row["result_json"] or "{}"),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def log_asset_manifest(self, request: AssetRequest, response: AssetResponse) -> None:
+        request_payload = request.to_dict()
+        response_payload = response.to_dict()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO asset_manifest (
+                    request_id, source_event_id, reward_id, asset_type, status, asset_id, file_path, webm_key,
+                    request_json, response_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request.request_id,
+                    request.source_event_id,
+                    request.requested_reward,
+                    request.asset_type,
+                    response.status,
+                    response.asset_id,
+                    response.file_path,
+                    response.webm_key,
+                    json.dumps(request_payload, ensure_ascii=False),
+                    json.dumps(response_payload, ensure_ascii=False),
+                    request.created_at,
+                    utc_now(),
+                ),
+            )
+
+    def list_asset_manifest(self, limit: int = 10) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM asset_manifest ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "request_id": row["request_id"],
+                "source_event_id": row["source_event_id"],
+                "reward_id": row["reward_id"],
+                "asset_type": row["asset_type"],
+                "status": row["status"],
+                "asset_id": row["asset_id"],
+                "file_path": row["file_path"],
+                "webm_key": row["webm_key"],
+                "request": json.loads(row["request_json"] or "{}"),
+                "response": json.loads(row["response_json"] or "{}"),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def recent_events(self, limit: int = 10) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM event_log ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [self._event_row(row) for row in rows]
+
+    def state_snapshot(self) -> dict[str, Any]:
+        return {
+            "user_progress": self.get_user_progress(),
+            "skills": self.list_skills(),
+            "inventory": self.list_inventory(),
+            "reward_unlocks": self.list_reward_unlocks(),
+            "behavior_state": self.get_behavior_state(),
+            "provider_config": self.get_provider_config().to_dict(),
+            "provider_status": self.get_provider_status(),
+            "tool_results": self.recent_tool_results(limit=10),
+            "asset_manifest": self.list_asset_manifest(limit=10),
+        }
+
+    def _skill_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        payload = dict(row)
+        payload["triggers"] = json.loads(payload.pop("triggers_json") or "[]")
+        return payload
+
+    def _event_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        payload = dict(row)
+        payload["input_payload"] = json.loads(payload["input_payload"])
+        payload["output_payload"] = json.loads(payload["output_payload"])
+        return payload
+
+    def _json_row(self, row: sqlite3.Row, json_key: str, output_key: str) -> dict[str, Any]:
+        payload = dict(row)
+        payload[output_key] = json.loads(payload.pop(json_key) or "{}")
+        return payload

@@ -1,0 +1,43 @@
+{
+  "source_event_id": "user-ed13fd5fc1a34a4aab5e22c5da7f5746",
+  "reply": "Hello! How can I assist you today?",
+  "matched_skill": null,
+  "behavior_id": "idle",
+  "webm_key": "idle",
+  "xp_delta": 2,
+  "provider_status": {
+    "provider_type": "api",
+    "healthy": true,
+    "message": "api provider ready",
+    "checked_at": "2026-06-16T12:42:44.161916+00:00",
+    "metadata": {
+      "model_name": "gpt-4o-mini",
+      "endpoint_class": "chat_completions",
+      "base_url": "https://api.openai.com/v1/chat/completions"
+    }
+  },
+  "saved_to_db": true,
+  "reward_events": [],
+  "tool_request": null,
+  "event_id": "pet-e786b9dddfba4252a502d4bfa59ce768",
+  "timestamp": "2026-06-16T12:42:44.184505+00:00",
+  "metadata": {
+    "behavior": {
+      "behavior_id": "idle",
+      "webm_key": "idle",
+      "reason": "fallback",
+      "source_skill": null,
+      "timestamp": "2026-06-16T12:42:44.173459+00:00"
+    },
+    "agentic": {
+      "provider_type": "api",
+      "parser_status": "parsed_fenced_json",
+      "fallback_used": false,
+      "skill_source": "none",
+      "error_category": null,
+      "prompt_warnings": []
+    },
+    "tool_result": null,
+    "asset_result": null
+  }
+}

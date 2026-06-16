@@ -7,6 +7,10 @@ openspec/
 .github/
 # .gitignore
 .vscode/
+.codex/
+.cursor/
+.agent/
+.agentic/
 
 # 日誌檔案 (保留目錄結構)
 logs/*.log
