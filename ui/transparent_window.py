@@ -23,7 +23,54 @@ from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineSettings, QWebEng
 from character_library import ASSETS_WEBM_DIR, CharacterLibrary, MOTION_MAP
 from interaction_trace import InteractionLatencyTracker
 from action_services import FIXED_NEWS_SCRIPT
+from brain_mode import build_runtime_mode_contract
+from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
 from pet_harness.ui.pyqt_harness_adapter import PyQtHarnessAdapter
+from ui.background_resolver import BackgroundResolver
+
+
+BRIDGE_CONTRACT = {
+    "python_to_js": [
+        "appendConversationAssistant",
+        "beginConversationTurn",
+        "changeVideo",
+        "clearConversationTurns",
+        "clearPanelVideo",
+        "clearRoomBackground",
+        "finishConversationTurn",
+        "hydrateAgenticUI",
+        "moveCharacter",
+        "playPanelVideo",
+        "playRoomAudio",
+        "playTemporaryVideo",
+        "restoreIdleMotion",
+        "setActionStatus",
+        "setAgenticBusy",
+        "setCharacterObjectPosition",
+        "setConversationAssistant",
+        "setConversationQueueDepth",
+        "setIdleMotionCandidates",
+        "setIdleVideo",
+        "setPanelVideoMuted",
+        "setRoomBackground",
+        "setRoomCharacter",
+        "setRuntimeMode",
+        "startMotionLoop",
+        "stopMotionLoop",
+        "stopRoomAudio",
+    ],
+    "js_to_python": [
+        "addSkill",
+        "addToolConfig",
+        "deleteSkill",
+        "deleteToolConfig",
+        "refreshState",
+        "sendLiveText",
+        "sendText",
+        "toggleSkill",
+        "toggleTool",
+    ],
+}
 
 
 class EchoesWebPage(QWebEnginePage):
@@ -96,6 +143,10 @@ class HarnessUiBridge(QObject):
     @pyqtSlot(str, str)
     def sendText(self, text: str, provider: str) -> None:
         self._window.submit_agentic_text(text, provider)
+
+    @pyqtSlot(str)
+    def sendLiveText(self, text: str) -> None:
+        self._window.submit_live_text(text)
 
     @pyqtSlot(str, bool)
     def toggleSkill(self, skill_id: str, enabled: bool) -> None:
@@ -190,13 +241,24 @@ class TransparentWindow(QMainWindow):
         self._brain_mode = brain_mode
         self._library = CharacterLibrary()
         self._latency_tracker = latency_tracker
-        self._adapter = PyQtHarnessAdapter()
+        self._runtime_contract = build_runtime_mode_contract(self._brain_mode)
+        self._background_resolver = BackgroundResolver()
+        self._voice_status_adapter = VoiceRuntimeStatusAdapter()
+        self._adapter = PyQtHarnessAdapter(
+            background_resolver=self._background_resolver,
+            voice_status_adapter=self._voice_status_adapter,
+            brain_mode=self._brain_mode,
+            runtime_contract=self._runtime_contract,
+        )
         self._settings_dialog = None
         self._interaction_worker: HarnessInteractionWorker | None = None
         self._character_x_offset = self.DEFAULT_CHARACTER_X_OFFSET
         self._character_y_offset = self.DEFAULT_CHARACTER_Y_OFFSET
         self._character_scale = self.DEFAULT_CHARACTER_SCALE
         self._character_object_position = self.DEFAULT_CHARACTER_OBJECT_POSITION
+        self._background_status = "fallback_placeholder"
+        self._background_url: str | None = None
+        self._live_runtime_available = self._runtime_contract["live_runtime_available"]
         self._webview_ready = False
         self._drag_pos = None
         self._stt_listening = False
@@ -542,9 +604,33 @@ class TransparentWindow(QMainWindow):
             return
         self._webview_ready = True
         self._flush_pending_javascript_calls()
+        self._run_javascript("setRuntimeMode", self._brain_mode)
         self._raise_overlay_widgets()
         QTimer.singleShot(120, self._restore_current_character)
         QTimer.singleShot(160, self.refresh_agentic_ui)
+
+    def configure_runtime_context(
+        self,
+        *,
+        voice_status_adapter: VoiceRuntimeStatusAdapter | None = None,
+        live_runtime_available: bool | None = None,
+        runtime_contract: dict[str, object] | None = None,
+    ) -> None:
+        if voice_status_adapter is not None:
+            self._voice_status_adapter = voice_status_adapter
+        if runtime_contract is not None:
+            self._runtime_contract = dict(runtime_contract)
+        else:
+            self._runtime_contract = build_runtime_mode_contract(self._brain_mode)
+        if live_runtime_available is not None:
+            self._runtime_contract["live_runtime_available"] = bool(live_runtime_available)
+        self._live_runtime_available = bool(self._runtime_contract.get("live_runtime_available"))
+        self._adapter.configure_runtime_context(
+            brain_mode=self._brain_mode,
+            background_resolver=self._background_resolver,
+            voice_status_adapter=self._voice_status_adapter,
+            runtime_contract=self._runtime_contract,
+        )
 
     def _move_to_bottom_right(self):
         """將視窗定位到螢幕右下角"""
@@ -764,6 +850,7 @@ class TransparentWindow(QMainWindow):
             self.set_room_character("訪客模式")
             self.set_action_status("房間模式已載入", tone="idle", timeout_ms=2400)
             self.apply_character_position()
+            self._apply_resolved_background(None)
 
     def apply_character(self, character_id: str) -> bool:
         """套用指定角色並切回 idle。"""
@@ -778,13 +865,18 @@ class TransparentWindow(QMainWindow):
         self.apply_character_layout(character_id)
         self.set_room_character(character_name)
         self.set_action_status(f"{character_name} 已待命", tone="idle", timeout_ms=2200)
-
-        bg_path = self._library.get_background_path(character_id)
-        if bg_path and os.path.isfile(bg_path):
-            bg_url = QUrl.fromLocalFile(bg_path).toString()
-            self._run_javascript("setRoomBackground", bg_url)
+        self._apply_resolved_background(self._library.get_background_path(character_id))
 
         return True
+
+    def _apply_resolved_background(self, configured_path: str | None) -> None:
+        status, safe_url = self._background_resolver.resolve(configured_path=configured_path)
+        self._background_status = status
+        self._background_url = safe_url
+        if safe_url:
+            self._run_javascript("setRoomBackground", safe_url)
+            return
+        self._run_javascript("clearRoomBackground")
 
     def preview_character_motion(self, character_id: str, motion_key: str):
         """播放指定角色動作，單次動作播完後回到 idle。"""
@@ -1041,6 +1133,17 @@ class TransparentWindow(QMainWindow):
         self._developer_input.clear()
         self._hide_developer_input()
 
+    def submit_live_text(self, text: str) -> None:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            self.set_action_status("Please enter text first.", tone="warn", timeout_ms=2200)
+            return
+        if not self._live_runtime_available:
+            self.set_action_status("Live Conversation is unavailable in harness mode.", tone="warn", timeout_ms=3200)
+            return
+        self.developer_query_submitted.emit(cleaned)
+        self.set_action_status("Live Conversation queued.", tone="working", timeout_ms=0)
+
     def submit_agentic_text(self, text: str, provider: str) -> None:
         cleaned = str(text or "").strip()
         if not cleaned:
@@ -1133,10 +1236,17 @@ class TransparentWindow(QMainWindow):
         tone: str = "idle",
         timeoutMs: int = 0,
     ) -> None:
+        self._adapter.configure_runtime_context(
+            brain_mode=self._brain_mode,
+            background_resolver=self._background_resolver,
+            voice_status_adapter=self._voice_status_adapter,
+            runtime_contract=self._runtime_contract,
+        )
         state = self._adapter.get_current_state()
-        state["voice"] = self._build_runtime_voice_state(state.get("voice"))
+        state["background"] = self._build_runtime_background_state(state.get("background"))
         diagnostics = dict(state.get("diagnostics") or {})
         diagnostics["brain_mode"] = self._brain_mode
+        diagnostics["background_status"] = self._background_status
         state["diagnostics"] = diagnostics
         payload = {
             "state": state,
@@ -1151,25 +1261,16 @@ class TransparentWindow(QMainWindow):
             payload["event"] = latest_event
         self._run_javascript("hydrateAgenticUI", payload)
 
-    def _build_runtime_voice_state(self, base_voice) -> dict:
-        voice = dict(base_voice or {})
-        stt = dict(voice.get("stt") or {})
-        tts = dict(voice.get("tts") or {})
-        if self._brain_mode != "harness":
-            import config
-
-            stt["implemented"] = True
-            stt["configured"] = bool(config.AZURE_STT_API_KEY and config.AZURE_STT_REGION)
-            stt["status"] = self._stt_state if self._stt_available else "missing"
-            stt["message"] = "STT controller ready" if self._stt_available else "STT unavailable"
-
-            tts["implemented"] = True
-            tts["configured"] = True
-            tts["status"] = "ready"
-            tts["message"] = "LangchainDev TTS runtime available"
-        voice["stt"] = stt
-        voice["tts"] = tts
-        return voice
+    def _build_runtime_background_state(self, base_background) -> dict:
+        background = dict(base_background or {})
+        background["status"] = self._background_status
+        background["source"] = self._background_url or background.get("source") or "css:room-placeholder"
+        background["message"] = (
+            self._background_resolver.diagnostics().get("reason")
+            or background.get("message")
+            or "background diagnostics unavailable"
+        )
+        return background
 
     def _set_agentic_busy(self, busy: bool) -> None:
         self._run_javascript("setAgenticBusy", bool(busy))
@@ -1177,6 +1278,9 @@ class TransparentWindow(QMainWindow):
     def get_render_diagnostics(self) -> dict[str, object]:
         return {
             "brain_mode": self._brain_mode,
+            "runtime_contract": dict(self._runtime_contract),
+            "background_status": self._background_status,
+            "background_url": self._background_url,
             "stt_state": self._stt_state,
             "stt_available": self._stt_available,
             "webview_ready": self._webview_ready,
@@ -1424,8 +1528,8 @@ class TransparentWindow(QMainWindow):
         js_args = ", ".join(json.dumps(arg) for arg in args)
         return (
             "(function(){"
-            f"var fn = window[{js_function_name}];"
-            f"if (typeof fn !== 'function') {{ console.warn('[ECHOES] JS bridge 缺少函式:', {js_function_name}); return false; }}"
+            f"var fn = window[{js_function_name}] || (window.echoes && window.echoes[{js_function_name}]);"
+            f"if (typeof fn !== 'function') {{ console.warn('[ECHOES] JS bridge missing function: ' + {js_function_name}); return false; }}"
             f"fn({js_args});"
             "return true;"
             "})();"

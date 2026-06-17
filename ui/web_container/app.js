@@ -3,53 +3,61 @@
 
     console.log('[ECHOES APP.JS] IIFE started — DOM ready, binding handlers');
 
-    // -----------------------------------------------------------------------
-    // DOM 參考
-    // -----------------------------------------------------------------------
-    var video              = document.getElementById('pet-video');
-    var panelVideo         = document.getElementById('panel-video');
-    var character          = document.getElementById('pet-character');
-    var audio              = document.getElementById('room-audio');
-    var roomCharacterName  = document.getElementById('room-character-name');
-    var actionStatus       = document.getElementById('action-status');
-    var actionStatusText   = document.getElementById('action-status-text');
-    var conversationList   = document.getElementById('conversation-list');
+    var stageRoot = document.getElementById('stage-root');
+    var stageAgenticPanel = document.getElementById('stage-agentic-panel');
+    var stageBackground = document.getElementById('stage-background');
+    var video = document.getElementById('pet-video');
+    var panelVideo = document.getElementById('panel-video');
+    var character = document.getElementById('pet-character');
+    var audio = document.getElementById('room-audio');
+    var roomCharacterName = document.getElementById('room-character-name');
+    var runtimeModeBadge = document.getElementById('runtime-mode-badge');
+    var actionStatus = document.getElementById('action-status');
+    var actionStatusText = document.getElementById('action-status-text');
+    var conversationList = document.getElementById('conversation-list');
     var conversationQueueText = document.getElementById('conversation-queue-text');
-    var xpDisplay          = document.getElementById('xp-display');
-    var xpProgressBar      = document.getElementById('xp-progress-bar');
+    var xpDisplay = document.getElementById('xp-display');
+    var xpProgressBar = document.getElementById('xp-progress-bar');
     var xpThresholdDisplay = document.getElementById('xp-threshold-display');
-    var providerSummary    = document.getElementById('provider-summary');
-    var resultReply        = document.getElementById('result-reply');
-    var resultSkill        = document.getElementById('result-skill');
-    var resultTool         = document.getElementById('result-tool');
-    var resultXpDelta      = document.getElementById('result-xp-delta');
-    var resultReward       = document.getElementById('result-reward');
-    var resultAsset        = document.getElementById('result-asset');
-    var resultBehavior     = document.getElementById('result-behavior');
-    var resultWebmKey      = document.getElementById('result-webm-key');
-    var resultSaved        = document.getElementById('result-saved');
-    var warningsList       = document.getElementById('warnings-list');
-    var skillList          = document.getElementById('skill-list');
-    var toolList           = document.getElementById('tool-list');
-    var skillCountBadge    = document.getElementById('skill-count-badge');
-    var toolCountBadge     = document.getElementById('tool-count-badge');
-    var interactionInput   = document.getElementById('interaction-input');
-    var providerSelect     = document.getElementById('provider-select');
-    var sendButton         = document.getElementById('send-button');
+    var providerSummary = document.getElementById('provider-summary');
+    var resultReply = document.getElementById('result-reply');
+    var resultSkill = document.getElementById('result-skill');
+    var resultTool = document.getElementById('result-tool');
+    var resultXpDelta = document.getElementById('result-xp-delta');
+    var resultReward = document.getElementById('result-reward');
+    var resultAsset = document.getElementById('result-asset');
+    var resultBehavior = document.getElementById('result-behavior');
+    var resultWebmKey = document.getElementById('result-webm-key');
+    var resultSaved = document.getElementById('result-saved');
+    var warningsList = document.getElementById('warnings-list');
+    var skillList = document.getElementById('skill-list');
+    var toolList = document.getElementById('tool-list');
+    var skillCountBadge = document.getElementById('skill-count-badge');
+    var toolCountBadge = document.getElementById('tool-count-badge');
+    var interactionInput = document.getElementById('interaction-input');
+    var liveConversationInput = document.getElementById('live-conversation-input');
+    var providerSelect = document.getElementById('provider-select');
+    var sendButton = document.getElementById('send-button');
+    var liveSendButton = document.getElementById('live-send-button');
     var refreshStateButton = document.getElementById('refresh-state-button');
-    var refreshSkillsButton= document.getElementById('refresh-skills-button');
+    var refreshSkillsButton = document.getElementById('refresh-skills-button');
     var refreshToolsButton = document.getElementById('refresh-tools-button');
-    var skillForm          = document.getElementById('skill-form');
-    var toolForm           = document.getElementById('tool-form');
-    var bridgeStatusEl     = document.getElementById('bridge-status');
-    var lastActionEl       = document.getElementById('last-action');
-    var lastErrorEl        = document.getElementById('last-error');
+    var skillForm = document.getElementById('skill-form');
+    var toolForm = document.getElementById('tool-form');
+    var bridgeStatusEl = document.getElementById('bridge-status');
+    var lastActionEl = document.getElementById('last-action');
+    var lastErrorEl = document.getElementById('last-error');
     var backgroundStatusEl = document.getElementById('background-status');
-    var micButton          = document.getElementById('mic-button');
-    var speakReplyButton   = document.getElementById('speak-reply-button');
-    var voiceStatus        = document.getElementById('voice-status');
-    var voiceSttStatus     = document.getElementById('voice-stt-status');
-    var voiceTtsStatus     = document.getElementById('voice-tts-status');
+    var micButton = document.getElementById('mic-button');
+    var speakReplyButton = document.getElementById('speak-reply-button');
+    var voiceStatus = document.getElementById('voice-status');
+    var voiceSttStatus = document.getElementById('voice-stt-status');
+    var voiceTtsStatus = document.getElementById('voice-tts-status');
+    var voiceTtsFallbackStatus = document.getElementById('voice-tts-fallback-status');
+    var voiceAudioWorkerStatus = document.getElementById('voice-audio-worker-status');
+    var voiceLastError = document.getElementById('voice-last-error');
+    var panelToggleButton = document.getElementById('agentic-panel-toggle');
+
     var diagProviderSelected = document.getElementById('diag-provider-selected');
     var diagProviderResolved = document.getElementById('diag-provider-resolved');
     var diagApiConfigStatus = document.getElementById('diag-api-config-status');
@@ -67,8 +75,33 @@
     var diagBackgroundStatus = document.getElementById('diag-background-status');
     var diagVoiceSttStatus = document.getElementById('diag-voice-stt-status');
     var diagVoiceTtsStatus = document.getElementById('diag-voice-tts-status');
+    var diagVoiceTtsFallbackStatus = document.getElementById('diag-voice-tts-fallback-status');
+    var diagVoiceAudioWorkerStatus = document.getElementById('diag-voice-audio-worker-status');
+    var diagVoiceLastError = document.getElementById('diag-voice-last-error');
+    var diagRuntimeBrainMode = document.getElementById('diag-runtime-brain-mode');
+    var diagLiveRuntimeAvailable = document.getElementById('diag-live-runtime-available');
+    var diagHarnessRuntimeAvailable = document.getElementById('diag-harness-runtime-available');
+    var diagOpenclawEnabled = document.getElementById('diag-openclaw-enabled');
+    var diagStageSize = document.getElementById('diag-stage-size');
+    var diagStageScale = document.getElementById('diag-stage-scale');
+    var diagPetAnchorX = document.getElementById('diag-pet-anchor-x');
+    var diagPetAnchorY = document.getElementById('diag-pet-anchor-y');
+    var diagPetScale = document.getElementById('diag-pet-scale');
+    var diagIdleMotionCandidatesCount = document.getElementById('diag-idle-motion-candidates-count');
+    var diagBridgeReady = document.getElementById('diag-bridge-ready');
+
+    var securityFields = {
+        OPENAI_API_KEY: document.getElementById('diag-security-openai-api-key'),
+        CHATGPT_API_KEY: document.getElementById('diag-security-chatgpt-api-key'),
+        AZURE_STT_API_KEY: document.getElementById('diag-security-azure-stt-api-key'),
+        AZURE_STT_REGION: document.getElementById('diag-security-azure-stt-region'),
+        ELEVENLABS_API_KEY: document.getElementById('diag-security-elevenlabs-api-key'),
+        ELEVENLABS_MODEL_ID: document.getElementById('diag-security-elevenlabs-model-id')
+    };
 
     var idleSource = '';
+    var idleMotionCandidates = [];
+    var idleMotionIndex = 0;
     var statusTimer = null;
     var defaultStatusText = 'Waiting for room updates.';
     var harnessBridge = null;
@@ -82,14 +115,30 @@
     var panelVideoGeneration = 0;
     var conversationTurns = new Map();
     var maxConversationTurns = 3;
+    var latestRuntimeState = null;
+    var resizeObserver = null;
 
-    // -----------------------------------------------------------------------
-    // 診斷 UI 輔助
-    // -----------------------------------------------------------------------
+    window.echoes = window.echoes || {};
+
+    function setText(element, value, fallback) {
+        if (!element) return;
+        element.textContent = value == null || value === '' ? (fallback || '-') : String(value);
+    }
+
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     function setDiagBridgeStatus(text, isReady) {
         if (!bridgeStatusEl) return;
         bridgeStatusEl.textContent = 'Bridge: ' + text;
         bridgeStatusEl.dataset.ready = isReady ? 'true' : 'false';
+        setText(diagBridgeReady, isReady ? 'true' : 'false');
     }
 
     function setDiagLastAction(text) {
@@ -101,6 +150,105 @@
         if (!lastErrorEl) return;
         lastErrorEl.textContent = text ? ('Error: ' + text) : '';
         lastErrorEl.style.display = text ? 'block' : 'none';
+    }
+
+    function setStatus(message, tone, timeoutMs) {
+        if (statusTimer) {
+            clearTimeout(statusTimer);
+            statusTimer = null;
+        }
+        if (!actionStatus) {
+            return;
+        }
+        actionStatus.dataset.tone = tone || 'idle';
+        actionStatusText.textContent = message || defaultStatusText;
+        if (timeoutMs && timeoutMs > 0) {
+            statusTimer = window.setTimeout(function () {
+                window.clearActionStatus();
+            }, timeoutMs);
+        }
+    }
+
+    function updateStageScale() {
+        var viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1;
+        var viewportHeight = window.innerHeight || document.documentElement.clientHeight || 1;
+        var scale = Math.min(viewportWidth / 2560, viewportHeight / 1440);
+        document.documentElement.style.setProperty('--stage-scale', String(scale));
+        renderStageDiagnostics();
+    }
+
+    function getComputedCssValue(name) {
+        return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+
+    function renderStageDiagnostics() {
+        var rect = stageRoot ? stageRoot.getBoundingClientRect() : { width: 0, height: 0 };
+        setText(diagStageSize, Math.round(rect.width) + 'x' + Math.round(rect.height));
+        setText(diagStageScale, getComputedCssValue('--stage-scale'));
+        setText(diagPetAnchorX, getComputedCssValue('--pet-anchor-x'));
+        setText(diagPetAnchorY, getComputedCssValue('--pet-floor-y'));
+        setText(diagPetScale, getComputedCssValue('--pet-scale'));
+        setText(diagIdleMotionCandidatesCount, idleMotionCandidates.length, '0');
+    }
+
+    function syncAgenticPanelOffset() {
+        var collapsed = document.body.dataset.agenticPanel === 'collapsed';
+        var panelWidth = 0;
+        if (!collapsed) {
+            var panel = document.getElementById('agentic-panel');
+            panelWidth = panel ? Math.round(panel.getBoundingClientRect().width) : 0;
+        }
+        document.documentElement.style.setProperty('--agentic-panel-offset', panelWidth + 'px');
+        if (panelToggleButton) {
+            panelToggleButton.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        }
+        renderStageDiagnostics();
+    }
+
+    function toggleAgenticPanel() {
+        var collapsed = document.body.dataset.agenticPanel === 'collapsed';
+        document.body.dataset.agenticPanel = collapsed ? 'expanded' : 'collapsed';
+        syncAgenticPanelOffset();
+    }
+
+    function normalizeIdleMotionCandidates(candidates) {
+        if (!Array.isArray(candidates)) {
+            return [];
+        }
+        return candidates.map(function (candidate) {
+            if (typeof candidate === 'string') {
+                return { source: candidate, weight: 1 };
+            }
+            if (!candidate || !candidate.source) {
+                return null;
+            }
+            return {
+                source: String(candidate.source),
+                weight: Math.max(1, Number(candidate.weight || 1))
+            };
+        }).filter(Boolean);
+    }
+
+    function nextIdleCandidateSource(fallbackSource) {
+        if (!idleMotionCandidates.length) {
+            return fallbackSource || idleSource;
+        }
+        var candidate = idleMotionCandidates[idleMotionIndex % idleMotionCandidates.length];
+        idleMotionIndex = (idleMotionIndex + 1) % idleMotionCandidates.length;
+        return candidate.source;
+    }
+
+    function setSource(source, shouldLoop) {
+        if (!source || typeof source !== 'string') {
+            console.warn('[ECHOES] invalid video source', source);
+            return;
+        }
+        video.loop = Boolean(shouldLoop);
+        video.src = source;
+        video.load();
+        video.play().catch(function (err) {
+            console.warn('[ECHOES] video playback failed:', err.message);
+        });
     }
 
     function trimConversationTurns() {
@@ -119,7 +267,6 @@
         if (existing) {
             return existing;
         }
-
         var article = document.createElement('article');
         article.className = 'conversation-turn';
         article.dataset.turnId = turnId;
@@ -156,10 +303,8 @@
         if (conversationList) {
             conversationList.appendChild(article);
         }
-
         var turn = {
             root: article,
-            userLabel: userLabel,
             userText: userText,
             assistantText: assistantText
         };
@@ -168,59 +313,6 @@
         return turn;
     }
 
-    // -----------------------------------------------------------------------
-    // 視頻控制
-    // -----------------------------------------------------------------------
-    function setSource(source, shouldLoop) {
-        if (!source || typeof source !== 'string') {
-            console.warn('[ECHOES] invalid video source', source);
-            return;
-        }
-        video.loop = Boolean(shouldLoop);
-        video.src = source;
-        video.load();
-        video.play().catch(function (err) {
-            console.warn('[ECHOES] video playback failed:', err.message);
-        });
-    }
-
-    // -----------------------------------------------------------------------
-    // 狀態列
-    // -----------------------------------------------------------------------
-    function setStatus(message, tone, timeoutMs) {
-        if (statusTimer) {
-            clearTimeout(statusTimer);
-            statusTimer = null;
-        }
-        actionStatus.dataset.tone = tone || 'idle';
-        actionStatusText.textContent = message || defaultStatusText;
-        if (timeoutMs && timeoutMs > 0) {
-            statusTimer = window.setTimeout(function () {
-                window.clearActionStatus();
-            }, timeoutMs);
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // HTML escape
-    // -----------------------------------------------------------------------
-    function escapeHtml(value) {
-        return String(value == null ? '' : value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
-    }
-
-    function setText(element, value, fallback) {
-        if (!element) return;
-        element.textContent = value == null || value === '' ? (fallback || '-') : String(value);
-    }
-
-    // -----------------------------------------------------------------------
-    // 渲染函數
-    // -----------------------------------------------------------------------
     function renderWarnings(warnings) {
         var entries = Array.isArray(warnings) && warnings.length ? warnings : ['None'];
         warningsList.innerHTML = entries.map(function (item) {
@@ -249,7 +341,6 @@
                 '  </div>',
                 '  <p class="entity-card__meta">' + escapeHtml(item.description || '-') + '</p>',
                 '  <p class="entity-card__meta">triggers: ' + escapeHtml((item.triggers || []).join(', ') || '-') + '</p>',
-                '  <p class="entity-card__meta">required_tool: ' + escapeHtml(item.required_tool || '-') + '</p>',
                 '  <div class="entity-card__actions">',
                 '    <button class="secondary-button" type="button" data-skill-toggle="' + escapeHtml(item.skill_id) + '" data-enabled="' + String(!item.enabled) + '">' + toggleLabel + '</button>',
                 '    <button class="danger-button" type="button" data-skill-delete="' + escapeHtml(item.skill_id) + '">' + deleteLabel + '</button>',
@@ -274,12 +365,11 @@
                 '  <div class="entity-card__head">',
                 '    <div>',
                 '      <p class="entity-card__title">' + escapeHtml(item.tool_name) + '</p>',
-                '      <p class="entity-card__meta">' + escapeHtml(item.status) + '</p>',
+                '      <p class="entity-card__meta">' + escapeHtml(item.status || '-') + '</p>',
                 '    </div>',
                 '    <span class="status-pill">' + (item.enabled ? 'enabled' : 'disabled') + '</span>',
                 '  </div>',
                 '  <p class="entity-card__meta">' + escapeHtml(item.description || '-') + '</p>',
-                '  <p class="entity-card__meta">risk: ' + escapeHtml(item.risk_level || '-') + ' | permission: ' + escapeHtml(item.permission_requirement || '-') + '</p>',
                 '  <div class="entity-card__actions">',
                 '    <button class="secondary-button" type="button" data-tool-toggle="' + escapeHtml(item.tool_name) + '" data-enabled="' + String(!item.enabled) + '">' + toggleLabel + '</button>',
                 '    <button class="danger-button" type="button" data-tool-delete="' + escapeHtml(item.tool_name) + '">' + deleteLabel + '</button>',
@@ -291,22 +381,18 @@
 
     function renderEvent(event) {
         var payload = event || {};
-        var tool    = payload.tool || {};
-        var asset   = payload.asset_summary || {};
+        var tool = payload.tool || {};
+        var asset = payload.asset_summary || {};
         latestReplyText = payload.reply || latestReplyText || '';
-        resultReply.textContent     = payload.reply || 'Waiting for input.';
-        resultSkill.textContent     = payload.matched_skill || '-';
-        resultTool.textContent      = tool.name
-            ? [tool.name, tool.status || '-', tool.reason || ''].filter(Boolean).join(' | ')
-            : '-';
-        resultXpDelta.textContent   = String(payload.xp_delta == null ? 0 : payload.xp_delta);
-        resultReward.textContent    = Array.isArray(payload.reward_summary) && payload.reward_summary.length
-            ? payload.reward_summary.join(', ')
-            : '-';
-        resultAsset.textContent     = asset.asset_id || asset.webm_key || asset.status || '-';
-        resultBehavior.textContent  = payload.behavior_id || 'idle';
-        resultWebmKey.textContent   = payload.webm_key || 'idle';
-        resultSaved.textContent     = String(Boolean(payload.saved_to_db));
+        setText(resultReply, payload.reply, 'Waiting for input.');
+        setText(resultSkill, payload.matched_skill);
+        setText(resultTool, tool.name ? [tool.name, tool.status || '-', tool.reason || ''].filter(Boolean).join(' | ') : '-', '-');
+        setText(resultXpDelta, payload.xp_delta == null ? 0 : payload.xp_delta, '0');
+        setText(resultReward, Array.isArray(payload.reward_summary) && payload.reward_summary.length ? payload.reward_summary.join(', ') : '-');
+        setText(resultAsset, asset.asset_id || asset.webm_key || asset.status || '-');
+        setText(resultBehavior, payload.behavior_id, 'idle');
+        setText(resultWebmKey, payload.webm_key, 'idle');
+        setText(resultSaved, String(Boolean(payload.saved_to_db)));
         if (payload.provider_status && payload.provider_status.provider_type) {
             providerSummary.textContent = 'provider: ' + payload.provider_status.provider_type;
         }
@@ -315,16 +401,12 @@
 
     function renderXpState(xp) {
         if (!xp) return;
-        if (xp.display) {
-            xpDisplay.textContent = xp.display;
-        }
+        setText(xpDisplay, xp.display);
         if (xpProgressBar) {
             var percent = Number(xp.progress_percent || 0);
             xpProgressBar.style.width = Math.max(0, Math.min(100, percent)) + '%';
         }
-        if (xpThresholdDisplay) {
-            xpThresholdDisplay.textContent = String(xp.xp_total || 0) + ' / ' + String(xp.next_level_xp || 100) + ' XP';
-        }
+        setText(xpThresholdDisplay, String(xp.xp_total || 0) + ' / ' + String(xp.next_level_xp || 100) + ' XP');
     }
 
     function renderBackgroundStatus(background) {
@@ -333,19 +415,26 @@
         console.log('[ECHOES UI] background=' + status);
     }
 
-    function voiceStatusLabel(status) {
-        if (status === 'configured_not_implemented') return 'configured but not implemented';
-        return status || 'missing';
-    }
-
     function renderVoiceStatus(voice) {
         latestVoiceState = voice || null;
         var stt = voice && voice.stt ? voice.stt : {};
         var tts = voice && voice.tts ? voice.tts : {};
-        setText(voiceStatus, 'voice: ' + voiceStatusLabel(stt.status) + ' / ' + voiceStatusLabel(tts.status));
-        setText(voiceSttStatus, stt.message || voiceStatusLabel(stt.status));
-        setText(voiceTtsStatus, tts.message || voiceStatusLabel(tts.status));
+        var ttsFallback = voice && voice.tts_fallback ? voice.tts_fallback : {};
+        var audioWorker = voice && voice.audio_worker ? voice.audio_worker : {};
+        setText(voiceStatus, 'voice: ' + (voice.overall_status || stt.status || 'missing'));
+        setText(voiceSttStatus, stt.message || stt.status);
+        setText(voiceTtsStatus, tts.message || tts.status);
+        setText(voiceTtsFallbackStatus, ttsFallback.message || ttsFallback.status);
+        setText(voiceAudioWorkerStatus, audioWorker.message || audioWorker.status);
+        setText(voiceLastError, voice.last_voice_error || '-', '-');
         console.log('[ECHOES UI] voice.tts=configured status=' + (tts.status || 'missing'));
+    }
+
+    function renderSecuritySummary(security) {
+        security = security || {};
+        Object.keys(securityFields).forEach(function (key) {
+            setText(securityFields[key], security[key], '[missing]');
+        });
     }
 
     function renderDiagnostics(diagnostics) {
@@ -367,10 +456,25 @@
         setText(diagBackgroundStatus, diagnostics.background_status);
         setText(diagVoiceSttStatus, diagnostics.voice_stt_status);
         setText(diagVoiceTtsStatus, diagnostics.voice_tts_status);
+
+        var runtime = diagnostics.runtime || {};
+        setText(diagRuntimeBrainMode, runtime.brain_mode || diagnostics.brain_mode, 'harness');
+        setText(diagLiveRuntimeAvailable, runtime.live_runtime_available);
+        setText(diagHarnessRuntimeAvailable, runtime.harness_runtime_available);
+        setText(diagOpenclawEnabled, runtime.openclaw_enabled);
+
+        var voice = diagnostics.voice || {};
+        setText(diagVoiceTtsFallbackStatus, voice.tts_fallback_status);
+        setText(diagVoiceAudioWorkerStatus, voice.audio_worker_status);
+        setText(diagVoiceLastError, voice.last_voice_error, '-');
+
+        renderSecuritySummary(diagnostics.security || {});
+        renderStageDiagnostics();
     }
 
     function renderState(state) {
         if (!state) return;
+        latestRuntimeState = state;
         renderXpState(state.xp || null);
         if (state.provider_config && state.provider_config.provider_type) {
             providerSelect.value = state.provider_config.provider_type;
@@ -383,97 +487,34 @@
         renderDiagnostics(state.diagnostics || null);
     }
 
-    // -----------------------------------------------------------------------
-    // Bridge 呼叫 — 帶 log 與錯誤處理
-    // -----------------------------------------------------------------------
     function callBridge(method) {
-        if (!harnessBridge) {
+        var args = Array.prototype.slice.call(arguments, 1);
+        if (!harnessBridge || typeof harnessBridge[method] !== 'function') {
             var msg = 'Bridge not ready — cannot call: ' + method;
             console.warn('[ECHOES UI] ' + msg);
             setDiagLastError(msg);
-            setStatus('Bridge not ready. Try restarting the UI.', 'error', 5000);
+            setStatus('Bridge unavailable. Check qwebchannel.js.', 'error', 0);
             return;
         }
-        if (typeof harnessBridge[method] !== 'function') {
-            var msg2 = 'Bridge method missing: ' + method;
-            console.warn('[ECHOES UI] ' + msg2);
-            setDiagLastError(msg2);
+        setDiagLastError('');
+        return harnessBridge[method].apply(harnessBridge, args);
+    }
+
+    function routeConversationInput(inputEl) {
+        var path = String(inputEl.getAttribute('data-conversation-path') || inputEl.dataset.conversationPath || '').trim().toLowerCase();
+        if (!path) {
             return;
         }
-        try {
-            setDiagLastError('');
-            var args = Array.prototype.slice.call(arguments, 1);
-            harnessBridge[method].apply(harnessBridge, args);
-        } catch (err) {
-            var errMsg = method + ' threw: ' + err.message;
-            console.error('[ECHOES UI]', errMsg, err);
-            setDiagLastError(errMsg);
-            setStatus('Bridge error: ' + err.message, 'error', 5000);
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Scenario 按鈕
-    // -----------------------------------------------------------------------
-    function wireScenarioButtons() {
-        Array.prototype.forEach.call(document.querySelectorAll('.scenario-button'), function (button) {
-            button.addEventListener('click', function () {
-                var scenarioText = button.dataset.text || '';
-                console.log('[ECHOES UI] scenario clicked:', scenarioText);
-                setDiagLastAction('scenario: ' + scenarioText);
-                interactionInput.value = scenarioText;
-                triggerSend();
-            });
-        });
-    }
-
-    // -----------------------------------------------------------------------
-    // 動態 skill / tool 事件代理
-    // -----------------------------------------------------------------------
-    function wireDynamicActions() {
-        skillList.addEventListener('click', function (event) {
-            var toggle = event.target.closest('[data-skill-toggle]');
-            var remove = event.target.closest('[data-skill-delete]');
-            if (toggle) {
-                var skillId = toggle.dataset.skillToggle;
-                var enabled = toggle.dataset.enabled === 'true';
-                console.log('[ECHOES UI] skill toggle clicked:', skillId, '->', enabled);
-                setDiagLastAction('skill toggle: ' + skillId);
-                callBridge('toggleSkill', skillId, enabled);
-            } else if (remove) {
-                var skillIdDel = remove.dataset.skillDelete;
-                console.log('[ECHOES UI] skill delete clicked:', skillIdDel);
-                setDiagLastAction('skill delete: ' + skillIdDel);
-                callBridge('deleteSkill', skillIdDel);
-            }
-        });
-
-        toolList.addEventListener('click', function (event) {
-            var toggle = event.target.closest('[data-tool-toggle]');
-            var remove = event.target.closest('[data-tool-delete]');
-            if (toggle) {
-                var toolName = toggle.dataset.toolToggle;
-                var enabled = toggle.dataset.enabled === 'true';
-                console.log('[ECHOES UI] tool toggle clicked:', toolName, '->', enabled);
-                setDiagLastAction('tool toggle: ' + toolName);
-                callBridge('toggleTool', toolName, enabled);
-            } else if (remove) {
-                var toolNameDel = remove.dataset.toolDelete;
-                console.log('[ECHOES UI] tool delete clicked:', toolNameDel);
-                setDiagLastAction('tool delete: ' + toolNameDel);
-                // 修正：Python 方法名為 deleteToolConfig
-                callBridge('deleteToolConfig', toolNameDel);
-            }
-        });
-    }
-
-    // -----------------------------------------------------------------------
-    // Send 觸發
-    // -----------------------------------------------------------------------
-    function triggerSend() {
-        var text = interactionInput.value.trim();
+        var text = String(inputEl.value || '').trim();
         if (!text) {
             setStatus('Please enter some text first.', 'warn', 2200);
+            return;
+        }
+        setDiagLastAction('path=' + path);
+        if (path === 'live') {
+            console.log('[ECHOES UI] live send clicked, text:', text);
+            callBridge('sendLiveText', text);
+            inputEl.value = '';
             return;
         }
         if (agenticBusy) {
@@ -482,8 +523,15 @@
         }
         console.log('[ECHOES UI] action=send provider=' + providerSelect.value);
         console.log('[ECHOES UI] send clicked, text:', text, 'provider:', providerSelect.value);
-        setDiagLastAction('send: ' + text.substring(0, 40));
         callBridge('sendText', text, providerSelect.value);
+    }
+
+    function triggerSend() {
+        routeConversationInput(interactionInput);
+    }
+
+    function triggerLiveSend() {
+        routeConversationInput(liveConversationInput);
     }
 
     function handleVoiceAction(kind) {
@@ -496,69 +544,108 @@
         setStatus(message, status.implemented ? 'idle' : 'warn', 4200);
     }
 
-    // -----------------------------------------------------------------------
-    // 表單 / 靜態按鈕事件
-    // -----------------------------------------------------------------------
+    function wireScenarioButtons() {
+        var grid = document.getElementById('scenario-grid');
+        if (!grid) return;
+        grid.addEventListener('click', function (event) {
+            var button = event.target.closest('.scenario-button');
+            if (!button) return;
+            var text = button.dataset.text || '';
+            interactionInput.value = text;
+            console.log('[ECHOES UI] scenario clicked:', text);
+            setDiagLastAction('scenario: ' + text);
+        });
+    }
+
+    function wireDynamicActions() {
+        skillList.addEventListener('click', function (event) {
+            var toggle = event.target.closest('[data-skill-toggle]');
+            var remove = event.target.closest('[data-skill-delete]');
+            if (toggle) {
+                var skillId = toggle.dataset.skillToggle;
+                var enabled = toggle.dataset.enabled === 'true';
+                console.log('[ECHOES UI] skill toggle clicked:', skillId, '->', enabled);
+                callBridge('toggleSkill', skillId, enabled);
+            } else if (remove) {
+                var skillIdDel = remove.dataset.skillDelete;
+                console.log('[ECHOES UI] skill delete clicked:', skillIdDel);
+                callBridge('deleteSkill', skillIdDel);
+            }
+        });
+
+        toolList.addEventListener('click', function (event) {
+            var toggle = event.target.closest('[data-tool-toggle]');
+            var remove = event.target.closest('[data-tool-delete]');
+            if (toggle) {
+                var toolName = toggle.dataset.toolToggle;
+                var enabled = toggle.dataset.enabled === 'true';
+                console.log('[ECHOES UI] tool toggle clicked:', toolName, '->', enabled);
+                callBridge('toggleTool', toolName, enabled);
+            } else if (remove) {
+                var toolNameDel = remove.dataset.toolDelete;
+                console.log('[ECHOES UI] tool delete clicked:', toolNameDel);
+                callBridge('deleteToolConfig', toolNameDel);
+            }
+        });
+    }
+
     function setupForms() {
         sendButton.addEventListener('click', function () {
             console.log('[ECHOES UI] send clicked');
             triggerSend();
         });
-
+        liveSendButton.addEventListener('click', triggerLiveSend);
+        if (panelToggleButton) {
+            panelToggleButton.addEventListener('click', toggleAgenticPanel);
+        }
         refreshStateButton.addEventListener('click', function () {
             console.log('[ECHOES UI] refresh state clicked');
-            setDiagLastAction('refresh state');
             callBridge('refreshState');
         });
         refreshSkillsButton.addEventListener('click', function () {
             console.log('[ECHOES UI] refresh skills clicked');
-            setDiagLastAction('refresh skills');
             callBridge('refreshState');
         });
         refreshToolsButton.addEventListener('click', function () {
             console.log('[ECHOES UI] refresh tools clicked');
-            setDiagLastAction('refresh tools');
             callBridge('refreshState');
         });
-
         interactionInput.addEventListener('keydown', function (event) {
             if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
                 triggerSend();
             }
         });
-
+        liveConversationInput.addEventListener('keydown', function (event) {
+            if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+                triggerLiveSend();
+            }
+        });
         skillForm.addEventListener('submit', function (event) {
             event.preventDefault();
             var payload = {
-                skill_id:         document.getElementById('skill-id').value.trim(),
-                display_name:     document.getElementById('skill-display-name').value.trim(),
-                description:      document.getElementById('skill-description').value.trim(),
-                triggers:         document.getElementById('skill-triggers').value.trim(),
+                skill_id: document.getElementById('skill-id').value.trim(),
+                display_name: document.getElementById('skill-display-name').value.trim(),
+                description: document.getElementById('skill-description').value.trim(),
+                triggers: document.getElementById('skill-triggers').value.trim(),
                 default_behavior: document.getElementById('skill-behavior').value.trim(),
-                required_tool:    document.getElementById('skill-required-tool').value.trim()
+                required_tool: document.getElementById('skill-required-tool').value.trim()
             };
-            console.log('[ECHOES UI] add skill submitted:', payload.skill_id);
-            setDiagLastAction('add skill: ' + payload.skill_id);
             callBridge('addSkill', JSON.stringify(payload));
             skillForm.reset();
         });
-
         toolForm.addEventListener('submit', function (event) {
             event.preventDefault();
             var payload = {
-                tool_name:   document.getElementById('tool-name').value.trim(),
+                tool_name: document.getElementById('tool-name').value.trim(),
                 description: document.getElementById('tool-description').value.trim(),
-                risk_level:  document.getElementById('tool-risk-level').value,
-                enabled:     document.getElementById('tool-enabled').checked
+                risk_level: document.getElementById('tool-risk-level').value,
+                enabled: document.getElementById('tool-enabled').checked
             };
-            console.log('[ECHOES UI] add tool config submitted:', payload.tool_name);
-            setDiagLastAction('add tool: ' + payload.tool_name);
             callBridge('addToolConfig', JSON.stringify(payload));
             toolForm.reset();
             document.getElementById('tool-enabled').checked = true;
             document.getElementById('tool-risk-level').value = 'low';
         });
-
         if (micButton) {
             micButton.addEventListener('click', function () {
                 handleVoiceAction('stt');
@@ -575,14 +662,8 @@
         }
     }
 
-    // -----------------------------------------------------------------------
-    // WebChannel 初始化 — 核心修復
-    // -----------------------------------------------------------------------
     function setupWebChannel() {
-        // 診斷顯示初始狀態
         setDiagBridgeStatus('initializing…', false);
-
-        // 檢查 Qt WebChannel 是否可用
         if (typeof window.QWebChannel === 'undefined') {
             var msg = 'QWebChannel not available (qwebchannel.js failed to load)';
             console.error('[ECHOES UI]', msg);
@@ -590,7 +671,6 @@
             setStatus('Bridge unavailable. Check qwebchannel.js.', 'error', 0);
             return;
         }
-
         if (!window.qt || !window.qt.webChannelTransport) {
             var msg2 = 'qt.webChannelTransport not available (not inside Qt WebEngine?)';
             console.error('[ECHOES UI]', msg2);
@@ -598,34 +678,24 @@
             setStatus('Qt transport missing. Run via PyQt5.', 'error', 0);
             return;
         }
-
-        // 建立 QWebChannel，物件名稱必須與 Python 端 registerObject 一致：
-        // self._channel.registerObject("harnessBridge", self._bridge)
         new window.QWebChannel(window.qt.webChannelTransport, function (channel) {
             harnessBridge = channel.objects.harnessBridge || null;
             if (!harnessBridge) {
                 var errMsg = 'harnessBridge object not found in channel.objects';
-                console.error('[ECHOES UI]', errMsg, 'available:', Object.keys(channel.objects));
+                console.error('[ECHOES UI]', errMsg);
                 setDiagBridgeStatus('not ready — object missing', false);
                 setStatus('Bridge object missing. Check PyQt registration.', 'error', 0);
                 return;
             }
-
             console.log('[ECHOES UI] bridge=ready');
-            console.log('[ECHOES UI] QWebChannel ready, harnessBridge connected');
             setDiagBridgeStatus('ready', true);
-            setDiagLastError('');
             setStatus('Bridge ready.', 'idle', 1800);
-
-            // 初始化完成後立即刷新 UI
             callBridge('refreshState');
         });
     }
 
     window.beginConversationTurn = function (turnId, sourceLabel, userText) {
-        if (!turnId) {
-            return;
-        }
+        if (!turnId) return;
         var turn = ensureConversationTurn(String(turnId), sourceLabel || 'User');
         turn.root.dataset.state = 'active';
         turn.userText.textContent = userText || '';
@@ -634,9 +704,7 @@
     };
 
     window.appendConversationAssistant = function (turnId, fragment) {
-        if (!turnId || !fragment) {
-            return;
-        }
+        if (!turnId || !fragment) return;
         var turn = ensureConversationTurn(String(turnId), 'User');
         if (turn.assistantText.classList.contains('conversation-turn__text--muted')) {
             turn.assistantText.textContent = '';
@@ -646,23 +714,18 @@
     };
 
     window.setConversationAssistant = function (turnId, message) {
-        if (!turnId) {
-            return;
-        }
+        if (!turnId) return;
         var turn = ensureConversationTurn(String(turnId), 'User');
-        turn.assistantText.textContent = String(message || '');
-        if (turn.assistantText.textContent) {
+        turn.assistantText.textContent = String(message || '') || 'No visible reply.';
+        if (turn.assistantText.textContent === 'No visible reply.') {
+            turn.assistantText.classList.add('conversation-turn__text--muted');
+        } else {
             turn.assistantText.classList.remove('conversation-turn__text--muted');
-            return;
         }
-        turn.assistantText.textContent = 'No visible reply.';
-        turn.assistantText.classList.add('conversation-turn__text--muted');
     };
 
     window.finishConversationTurn = function (turnId) {
-        if (!turnId) {
-            return;
-        }
+        if (!turnId) return;
         var turn = ensureConversationTurn(String(turnId), 'User');
         turn.root.dataset.state = 'done';
         if (!turn.assistantText.textContent) {
@@ -673,9 +736,7 @@
 
     window.setConversationQueueDepth = function (queueDepth) {
         var depth = Number(queueDepth) || 0;
-        if (conversationQueueText) {
-            conversationQueueText.textContent = 'Queue ' + depth;
-        }
+        setText(conversationQueueText, 'Queue ' + depth);
     };
 
     window.clearConversationTurns = function () {
@@ -686,14 +747,11 @@
         window.setConversationQueueDepth(0);
     };
 
-    // -----------------------------------------------------------------------
-    // 從 Python 端呼叫的全域函數
-    // -----------------------------------------------------------------------
     window.setAgenticBusy = function (busy) {
         agenticBusy = Boolean(busy);
-        sendButton.disabled         = agenticBusy;
-        providerSelect.disabled     = agenticBusy;
-        interactionInput.disabled   = agenticBusy;
+        sendButton.disabled = agenticBusy;
+        providerSelect.disabled = agenticBusy;
+        interactionInput.disabled = agenticBusy;
     };
 
     window.hydrateAgenticUI = function (payload) {
@@ -711,38 +769,21 @@
         }
     };
 
-    // -----------------------------------------------------------------------
-    // 視頻 / 音頻事件
-    // -----------------------------------------------------------------------
-    video.addEventListener('error', function () {
-        console.warn('[ECHOES] video load failed:', video.src);
-    });
+    window.echoes.setIdleMotionCandidates = function (candidates) {
+        idleMotionCandidates = normalizeIdleMotionCandidates(candidates);
+        idleMotionIndex = 0;
+        renderStageDiagnostics();
+    };
+    window.setIdleMotionCandidates = window.echoes.setIdleMotionCandidates;
 
-    video.addEventListener('ended', function () {
-        if (!video.loop && idleSource) {
-            setSource(idleSource, true);
+    window.setRuntimeMode = function (mode) {
+        var normalized = String(mode || 'harness');
+        if (runtimeModeBadge) {
+            runtimeModeBadge.textContent = 'mode: ' + normalized;
         }
-    });
+        setText(diagRuntimeBrainMode, normalized, 'harness');
+    };
 
-    audio.addEventListener('ended', function () {
-        console.log('[ECHOES:ROOM_AUDIO_ENDED]');
-        setStatus('Music playback finished.', 'idle', 2200);
-    });
-
-    audio.addEventListener('error', function () {
-        console.warn('[ECHOES] audio load failed:', audio.src);
-        setStatus('Audio playback failed.', 'error', 4200);
-    });
-
-    if (panelVideo) {
-        panelVideo.addEventListener('ended', function () {
-            console.log('[ECHOES:PANEL_ENDED]');
-        });
-    }
-
-    // -----------------------------------------------------------------------
-    // 從 Python 端呼叫的視頻 / UI 函數
-    // -----------------------------------------------------------------------
     window.setIdleVideo = function (source) {
         idleSource = source;
         setSource(source, true);
@@ -753,22 +794,26 @@
     };
 
     window.setRoomBackground = function (source) {
-        if (!source) {
-            return;
-        }
-        var bg = document.querySelector('img.room-background');
-        if (bg) {
+        var bg = stageBackground ? stageBackground.querySelector('img.room-background') : null;
+        if (bg && source) {
             bg.src = source;
         }
     };
 
-    window.moveCharacter = function (x, y) {
-        var target = character || video;
-        if (!target) {
-            console.warn('[ECHOES] character target missing');
-            return;
+    window.clearRoomBackground = function () {
+        var bg = stageBackground ? stageBackground.querySelector('img.room-background') : null;
+        if (bg) {
+            bg.removeAttribute('src');
         }
-        target.style.transform = 'translate3d(' + Number(x) + 'px, ' + Number(y) + 'px, 0)';
+    };
+
+    window.moveCharacter = function (x, y, scale) {
+        document.documentElement.style.setProperty('--pet-anchor-shift', Number(x || 0) + 'px');
+        document.documentElement.style.setProperty('--pet-floor-offset', Number(y || 0) + 'px');
+        if (scale != null) {
+            document.documentElement.style.setProperty('--pet-scale', String(scale));
+        }
+        renderStageDiagnostics();
     };
 
     window.setCharacterObjectPosition = function (objectPosition) {
@@ -810,9 +855,7 @@
     };
 
     window.playPanelVideo = function (source, shouldLoop, muted) {
-        if (!source || !panelVideo) {
-            return;
-        }
+        if (!source || !panelVideo) return;
         panelVideoGeneration += 1;
         var requestGeneration = panelVideoGeneration;
         panelVideo.muted = (muted !== false);
@@ -830,16 +873,13 @@
     };
 
     window.setPanelVideoMuted = function (muted) {
-        if (!panelVideo) {
-            return;
+        if (panelVideo) {
+            panelVideo.muted = (muted !== false);
         }
-        panelVideo.muted = (muted !== false);
     };
 
     window.clearPanelVideo = function () {
-        if (!panelVideo) {
-            return;
-        }
+        if (!panelVideo) return;
         panelVideoGeneration += 1;
         panelVideo.pause();
         panelVideo.removeAttribute('src');
@@ -849,9 +889,7 @@
 
     window.startMotionLoop = function (source, intervalMs) {
         window.stopMotionLoop();
-        if (!source) {
-            return;
-        }
+        if (!source) return;
         motionLoopGeneration += 1;
         var loopGeneration = motionLoopGeneration;
         motionLoopSource = source;
@@ -879,14 +917,12 @@
     };
 
     window.restoreIdleMotion = function (fallbackSource) {
-        var nextSource = fallbackSource || idleSource;
-        if (!nextSource) {
-            return;
+        if (fallbackSource) {
+            idleSource = fallbackSource;
         }
-        idleSource = nextSource;
-        if (!motionLoopActive) {
-            setSource(nextSource, true);
-        }
+        var nextSource = nextIdleCandidateSource(idleSource);
+        if (!nextSource) return;
+        setSource(nextSource, true);
     };
 
     window.resetRoomState = function () {
@@ -918,16 +954,56 @@
         };
     };
 
-    // -----------------------------------------------------------------------
-    // 初始化 — try-catch 確保單一錯誤不會導致所有 event listener 全部失敗
-    // -----------------------------------------------------------------------
-    try { setupForms(); } catch(e) { console.error('[ECHOES APP.JS] setupForms error:', e.message); }
-    try { wireScenarioButtons(); } catch(e) { console.error('[ECHOES APP.JS] wireScenarioButtons error:', e.message); }
-    try { wireDynamicActions(); } catch(e) { console.error('[ECHOES APP.JS] wireDynamicActions error:', e.message); }
-    try { setupWebChannel(); } catch(e) { console.error('[ECHOES APP.JS] setupWebChannel error:', e.message); }
-    setStatus('', 'idle', 0);
-    window.setConversationQueueDepth(0);
+    video.addEventListener('error', function () {
+        console.warn('[ECHOES] video load failed:', video.src);
+    });
+
+    video.addEventListener('ended', function () {
+        if (!video.loop) {
+            window.restoreIdleMotion(idleSource);
+        }
+    });
+
+    audio.addEventListener('ended', function () {
+        console.log('[ECHOES:ROOM_AUDIO_ENDED]');
+        setStatus('Music playback finished.', 'idle', 2200);
+    });
+
+    audio.addEventListener('error', function () {
+        console.warn('[ECHOES] audio load failed:', audio.src);
+        setStatus('Audio playback failed.', 'error', 4200);
+    });
+
+    if (panelVideo) {
+        panelVideo.addEventListener('ended', function () {
+            console.log('[ECHOES:PANEL_ENDED]');
+        });
+    }
+
+    try {
+        document.body.dataset.agenticPanel = 'expanded';
+        updateStageScale();
+        syncAgenticPanelOffset();
+        if (typeof ResizeObserver !== 'undefined') {
+            resizeObserver = new ResizeObserver(function () {
+                updateStageScale();
+                syncAgenticPanelOffset();
+            });
+            resizeObserver.observe(document.documentElement);
+        } else {
+            window.addEventListener('resize', updateStageScale);
+            window.addEventListener('resize', syncAgenticPanelOffset);
+        }
+        setupForms();
+        wireScenarioButtons();
+        wireDynamicActions();
+        setupWebChannel();
+        setStatus('', 'idle', 0);
+        window.setConversationQueueDepth(0);
+        window.setRuntimeMode('harness');
+    } catch (error) {
+        console.error('[ECHOES APP.JS] init error:', error.message);
+    }
 
     console.log('[ECHOES APP.JS] init complete — harnessBridge:', typeof harnessBridge);
-
 })();

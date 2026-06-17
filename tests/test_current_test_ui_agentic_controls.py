@@ -131,9 +131,18 @@ def test_adapter_state_includes_safe_validation_diagnostics(tmp_path):
         "voice_tts_status",
     }
     assert expected_fields <= set(diagnostics)
-    assert state["background"]["status"] in {"loaded", "missing", "fallback"}
-    assert state["voice"]["stt"]["status"] in {"missing", "configured_not_implemented"}
-    assert state["voice"]["tts"]["status"] in {"missing", "configured_not_implemented"}
+    assert state["background"]["status"] in {"loaded", "fallback_default", "fallback_placeholder"}
+    assert state["voice"]["stt"]["status"] in {
+        "configured_missing_runtime",
+        "configured_and_ready",
+        "runtime_available",
+    }
+    assert state["voice"]["tts"]["status"] in {
+        "configured_missing_runtime",
+        "configured_and_ready",
+        "runtime_available",
+        "runtime_present_trigger_not_wired",
+    }
 
 
 def test_skill_enable_disable_persists_and_changes_routing(tmp_path):

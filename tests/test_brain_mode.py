@@ -126,6 +126,28 @@ class TestIsOpenclawEnabled:
         assert is_openclaw_enabled("auto") is True
 
 
+class TestRuntimeModeContract:
+    def test_harness_mode_plan_skips_live_runtime(self):
+        from brain_mode import build_runtime_mode_contract
+
+        contract = build_runtime_mode_contract("harness")
+
+        assert contract["brain_mode"] == "harness"
+        assert contract["live_runtime_available"] is False
+        assert contract["harness_runtime_available"] is True
+        assert contract["openclaw_enabled"] is False
+
+    def test_auto_mode_plan_preserves_live_runtime(self):
+        from brain_mode import build_runtime_mode_contract
+
+        contract = build_runtime_mode_contract("auto")
+
+        assert contract["brain_mode"] == "auto"
+        assert contract["live_runtime_available"] is True
+        assert contract["harness_runtime_available"] is True
+        assert contract["openclaw_enabled"] is True
+
+
 # ---------------------------------------------------------------------------
 # VMConnector 啟動 gate 測試
 # ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ import signal
 import sys
 import time
 
-from brain_mode import resolve_brain_mode
+from brain_mode import build_runtime_mode_contract, resolve_brain_mode
 
 WAVE_RESPONSE_GREETING_DIRECTIVE = "[ACTION:wave_response] 嗨 你好嗎"
 DEFAULT_REPLY_ACTION_DIRECTIVE = "[ACTION:listen]"
@@ -204,6 +204,10 @@ def _run_harness_mode(app, brain_mode: str):
 
     latency_tracker = InteractionLatencyTracker()
     window = TransparentWindow(brain_mode=brain_mode, latency_tracker=latency_tracker)
+    window.configure_runtime_context(
+        runtime_contract=build_runtime_mode_contract(brain_mode),
+        live_runtime_available=False,
+    )
     window.show()
     window.set_action_status("Harness mode ready.", tone="idle", timeout_ms=2400)
     app.aboutToQuit.connect(window.shutdown_background_tasks)
@@ -243,6 +247,21 @@ def _run_legacy_runtime(app, brain_mode: str):
         parent=app,
     )
     stt_controller = STTSessionController(latency_tracker=latency_tracker, parent=app)
+    tts_runtime_clients = {
+        "primary": {"configured": True, "wired": True},
+        "fallback": {"configured": True, "wired": True},
+    }
+    from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
+
+    window.configure_runtime_context(
+        runtime_contract=build_runtime_mode_contract(brain_mode),
+        live_runtime_available=True,
+        voice_status_adapter=VoiceRuntimeStatusAdapter(
+            stt_controller=stt_controller,
+            tts_clients=tts_runtime_clients,
+            audio_worker=window._action_dispatcher.audio_worker,
+        ),
+    )
     original_apply_character = window.apply_character
 
     def apply_character_and_sync(character_id: str) -> bool:

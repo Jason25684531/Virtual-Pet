@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from brain_mode import build_runtime_mode_contract
 from pet_harness.agent.provider_factory import create_provider
 from pet_harness.engine.harness_engine import PetHarnessEngine
 from pet_harness.models.events import PetEvent
@@ -17,6 +18,8 @@ from pet_harness.storage.sqlite_store import SQLiteStore
 from pet_harness.tools.registry import ToolRegistry
 from pet_harness.tools.safety_guard import SafetyGuard
 from pet_harness.tools.tool_models import ToolDefinition, ToolExecutionClass, ToolRiskLevel
+from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
+from ui.background_resolver import BackgroundResolver
 
 
 SAFE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -34,6 +37,10 @@ class PyQtHarnessAdapter:
         agentic_root: str | Path = Path(".agentic"),
         db_path: str | Path = Path("data") / "pet_state.db",
         snapshot_path: str | Path = Path("debug") / "events" / "latest_pet_event.json",
+        background_resolver: BackgroundResolver | None = None,
+        voice_status_adapter: VoiceRuntimeStatusAdapter | None = None,
+        brain_mode: str = "harness",
+        runtime_contract: dict[str, Any] | None = None,
     ) -> None:
         self.agentic_root = Path(agentic_root)
         self.skills_root = self.agentic_root / "skills"
@@ -46,8 +53,31 @@ class PyQtHarnessAdapter:
         self.store: SQLiteStore = self.engine.store
         self._project_root = self.agentic_root.parent
         self._project_env = self._load_project_env()
+        self._brain_mode = str(brain_mode or "harness")
+        self._background_resolver = background_resolver or BackgroundResolver(project_root=self._project_root)
+        self._voice_status_adapter = voice_status_adapter or VoiceRuntimeStatusAdapter()
+        self._runtime_contract = dict(runtime_contract or build_runtime_mode_contract(self._brain_mode))
         self._bootstrap_primary_provider()
         self._refresh_runtime()
+
+    def configure_runtime_context(
+        self,
+        *,
+        brain_mode: str | None = None,
+        background_resolver: BackgroundResolver | None = None,
+        voice_status_adapter: VoiceRuntimeStatusAdapter | None = None,
+        runtime_contract: dict[str, Any] | None = None,
+    ) -> None:
+        if brain_mode is not None:
+            self._brain_mode = str(brain_mode)
+        if background_resolver is not None:
+            self._background_resolver = background_resolver
+        if voice_status_adapter is not None:
+            self._voice_status_adapter = voice_status_adapter
+        if runtime_contract is not None:
+            self._runtime_contract = dict(runtime_contract)
+        else:
+            self._runtime_contract = dict(build_runtime_mode_contract(self._brain_mode))
 
     def handle_text_input(self, text: str, provider: str = "mock") -> dict[str, Any]:
         cleaned = str(text or "").strip()
@@ -404,55 +434,46 @@ class PyQtHarnessAdapter:
         return max(1, level) * 100
 
     def _build_background_status(self) -> dict[str, Any]:
-        source = "ui/assets/backgrounds/default-room.jpg"
-        project_source = self._project_root / source
-        if project_source.exists():
-            return {
-                "status": "loaded",
-                "source": source,
-                "message": "background loaded",
-            }
+        diagnostics = self._background_resolver.diagnostics()
+        if not diagnostics.get("background_url"):
+            self._background_resolver.resolve()
+            diagnostics = self._background_resolver.diagnostics()
         return {
-            "status": "fallback",
-            "source": "css:room-placeholder",
-            "message": "configured background missing; using visible placeholder",
+            "status": diagnostics.get("background_status", "fallback_placeholder"),
+            "source": diagnostics.get("background_url") or "css:room-placeholder",
+            "message": diagnostics.get("reason") or "background diagnostics unavailable",
         }
 
     def _build_voice_status(self) -> dict[str, Any]:
-        stt_configured = bool(self._project_env.get("AZURE_STT_API_KEY") and self._project_env.get("AZURE_STT_REGION"))
-        tts_configured = bool(
-            self._project_env.get("ELEVENLABS_API_KEY")
-            and (
-                self._project_env.get("ELEVENLABS_MIKU_VOICE_ID")
-                or self._project_env.get("ELEVENLABS_CHOPPER_VOICE_ID")
-                or self._project_env.get("ELEVENLABS_VOICE_ID")
-            )
-        )
+        dto = self._voice_status_adapter.get_status()
         return {
             "stt": {
                 "provider": "azure",
-                "status": "configured_not_implemented" if stt_configured else "missing",
-                "configured": stt_configured,
-                "implemented": False,
+                "status": dto.stt_status,
+                "configured": dto.stt_status != "configured_missing_runtime",
+                "implemented": dto.stt_status != "configured_missing_runtime",
                 "required_env": ["AZURE_STT_API_KEY", "AZURE_STT_REGION"],
-                "message": (
-                    "STT configured but microphone capture not implemented"
-                    if stt_configured
-                    else "STT missing Azure configuration"
-                ),
+                "message": dto.stt_status,
             },
             "tts": {
-                "provider": "elevenlabs",
-                "status": "configured_not_implemented" if tts_configured else "missing",
-                "configured": tts_configured,
-                "implemented": False,
+                "provider": "adaptive",
+                "status": dto.tts_primary_status,
+                "configured": dto.tts_primary_status != "configured_missing_runtime",
+                "implemented": dto.tts_primary_status != "configured_missing_runtime",
                 "required_env": ["ELEVENLABS_API_KEY", "ELEVENLABS_*_VOICE_ID", "ELEVENLABS_MODEL_ID"],
-                "message": (
-                    "TTS configured but playback/provider not implemented"
-                    if tts_configured
-                    else "TTS missing ElevenLabs configuration"
-                ),
+                "message": dto.tts_primary_status,
             },
+            "tts_fallback": {
+                "provider": "elevenlabs",
+                "status": dto.tts_fallback_status,
+                "message": dto.tts_fallback_status,
+            },
+            "audio_worker": {
+                "status": dto.audio_worker_status,
+                "message": dto.audio_worker_status,
+            },
+            "overall_status": dto.overall_status,
+            "last_voice_error": dto.last_voice_error,
         }
 
     def _build_provider_diagnostics(
@@ -500,12 +521,45 @@ class PyQtHarnessAdapter:
         latest_event = latest_event or {}
         latest_tool = latest_event.get("tool") or latest_event.get("tool_request") or {}
         provider_diagnostics = self._build_provider_diagnostics(provider_config, provider_status)
+        runtime_section = {
+            "brain_mode": self._runtime_contract["brain_mode"],
+            "live_runtime_available": self._runtime_contract["live_runtime_available"],
+            "harness_runtime_available": self._runtime_contract["harness_runtime_available"],
+            "openclaw_enabled": self._runtime_contract["openclaw_enabled"],
+        }
+        ui_section = {
+            "bridge_ready": True,
+            "stage_size": "pending",
+            "stage_scale": "pending",
+            "pet_anchor_x": "50%",
+            "pet_anchor_y": "2%",
+            "pet_scale": "1",
+            "background_status": background["status"],
+            "idle_motion_candidates_count": 0,
+        }
+        voice_section = {
+            "stt_status": voice["stt"]["status"],
+            "tts_primary_status": voice["tts"]["status"],
+            "tts_fallback_status": (voice.get("tts_fallback") or {}).get("status"),
+            "audio_worker_status": (voice.get("audio_worker") or {}).get("status"),
+            "last_voice_error": voice.get("last_voice_error", ""),
+        }
+        harness_section = {
+            "provider_selected": provider_diagnostics["provider_selected"],
+            "skill_count": len(skills),
+            "tool_count": len(tools),
+            "matched_skill": latest_event.get("matched_skill"),
+            "tool_result": latest_tool.get("status"),
+            "xp_level": xp_state["level"],
+            "reward_asset": latest_event.get("webm_key"),
+        }
+        security_section = self._build_security_summary()
         return self._mask_payload(
             {
                 "bridge_status": "ready",
                 "last_action": latest_event.get("source_event_id") or "none",
                 "last_error": None,
-                "brain_mode": "harness",
+                "brain_mode": runtime_section["brain_mode"],
                 "provider_selected": provider_diagnostics["provider_selected"],
                 "provider_resolved": provider_diagnostics["provider_resolved"],
                 "provider_status": provider_diagnostics["provider_status"],
@@ -526,8 +580,28 @@ class PyQtHarnessAdapter:
                 "background_status": background["status"],
                 "voice_stt_status": voice["stt"]["status"],
                 "voice_tts_status": voice["tts"]["status"],
+                "runtime": runtime_section,
+                "ui": ui_section,
+                "voice": voice_section,
+                "harness": harness_section,
+                "security": security_section,
             }
         )
+
+    def _build_security_summary(self) -> dict[str, str]:
+        keys = (
+            "OPENAI_API_KEY",
+            "CHATGPT_API_KEY",
+            "AZURE_STT_API_KEY",
+            "AZURE_STT_REGION",
+            "ELEVENLABS_API_KEY",
+            "ELEVENLABS_MODEL_ID",
+        )
+        summary: dict[str, str] = {}
+        for key in keys:
+            configured = bool(self._project_env.get(key) or os.environ.get(key))
+            summary[key] = "[configured]" if configured else "[missing]"
+        return summary
 
     def _load_latest_snapshot(self) -> dict[str, Any] | None:
         if not self.engine.snapshot_path.exists():

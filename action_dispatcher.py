@@ -255,6 +255,10 @@ class ActionDispatcher(QObject):
     def has_active_motion(self) -> bool:
         return self._current_loop_action_key is not None or bool(self._pending_actions)
 
+    @property
+    def audio_worker(self) -> AudioStreamWorker:
+        return self._audio_worker
+
     def trigger_cached_intent(self, intent_name: str, source_label: str) -> bool:
         normalized_intent = str(intent_name or "").strip().lower()
         binding = self._bindings.get(f"cached_{normalized_intent}")

@@ -20,13 +20,19 @@ import importlib
 import inspect
 import json
 from pathlib import Path
+import sys
 
 import pytest
 
 # 前端檔案路徑
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 UI_DIR = Path(__file__).resolve().parents[1] / "ui" / "web_container"
 INDEX_HTML = UI_DIR / "index.html"
 APP_JS = UI_DIR / "app.js"
+STYLE_CSS = UI_DIR / "style.css"
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +45,10 @@ def read_html() -> str:
 
 def read_js() -> str:
     return APP_JS.read_text(encoding="utf-8")
+
+
+def read_css() -> str:
+    return STYLE_CSS.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +160,24 @@ class TestIndexHtmlDomIds:
         for label in ("Interaction", "Skills", "Tools", "Voice", "Diagnostics"):
             assert label in html
 
+    def test_stage_layers_and_route_labels_exist(self):
+        html = read_html()
+        for dom_id in (
+            "stage-root",
+            "stage-background",
+            "stage-pet-layer",
+            "stage-live-ui",
+            "stage-bottom-ui",
+            "stage-agentic-panel",
+            "live-conversation-input",
+            "agentic-panel-toggle",
+        ):
+            assert f'id="{dom_id}"' in html
+        assert "Live Conversation" in html
+        assert "Harness Test Input" in html
+        assert 'data-conversation-path="live"' in html
+        assert 'data-conversation-path="harness"' in html
+
 
 # ---------------------------------------------------------------------------
 # app.js handler 測試
@@ -252,6 +280,32 @@ class TestAppJsHandlers:
         assert "[ECHOES UI] action=send provider=" in js
         assert "[ECHOES UI] bridge=ready" in js
         assert "[ECHOES UI] background=" in js
+
+    def test_idle_motion_bridge_and_routing_namespace_present(self):
+        js = read_js()
+        assert "window.echoes" in js
+        assert "setIdleMotionCandidates" in js
+        assert "data-conversation-path" in js
+        assert "sendLiveText" in js
+        assert "ResizeObserver" in js
+
+
+class TestStageCssContract:
+    def test_stage_root_variables_exist(self):
+        css = read_css()
+        for token in (
+            "--stage-design-width: 2560",
+            "--stage-design-height: 1440",
+            "--stage-scale",
+            "--agentic-panel-offset",
+            "--pet-anchor-x",
+            "--pet-floor-y",
+            "--pet-width",
+            "--pet-height",
+            "--pet-scale",
+            "--pet-z-index",
+        ):
+            assert token in css
 
 
 # ---------------------------------------------------------------------------

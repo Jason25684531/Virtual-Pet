@@ -42,3 +42,13 @@ def is_openclaw_enabled(brain_mode: str) -> bool:
     """Return True when the runtime should attempt the OpenClaw connector."""
 
     return str(brain_mode).strip().lower() in {"openclaw", "auto"}
+
+
+def build_runtime_mode_contract(brain_mode: str) -> dict[str, object]:
+    resolved = resolve_brain_mode(brain_mode)
+    return {
+        "brain_mode": resolved,
+        "live_runtime_available": resolved in {"openclaw", "auto"},
+        "harness_runtime_available": True,
+        "openclaw_enabled": is_openclaw_enabled(resolved),
+    }
