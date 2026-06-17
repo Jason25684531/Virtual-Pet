@@ -1,5 +1,25 @@
 # ECHOES Virtual Pet
 
+## Current UIUX Runtime Notes (2026-06-17)
+
+The current branch consolidates the preserved LangchainDev runtime and the Harness dashboard into a single six-layer 2K stage model.
+
+Key points:
+
+- normal runtime remains available through `--brain-mode auto`
+- Harness mode remains offline-safe through `--brain-mode harness`
+- the embedded web UI now separates `Live Conversation` from `Harness Test Input`
+- background ownership is handled by `BackgroundResolver`
+- voice readiness is summarized by `VoiceRuntimeStatusAdapter`
+- diagnostics are grouped into `Runtime`, `UI`, `Voice`, `Harness`, and `Security`
+
+Current reference docs:
+
+- [Current Stage Architecture](docs/current_stage_archviz.md)
+- [STT/TTS Runtime Status](docs/STTTTS.md)
+- [Harness Agentic Controls](docs/current_test_ui_agentic_controls.md)
+- [Linux Deployment](docs/linux_deployment.md)
+
 以 `PyQt5 + QWebEngine` 為外殼、`Azure STT` 為語音輸入、`OpenAI GPT-4o-mini` 為串流大腦、`VoAI primary + ElevenLabs fallback + Python playback` 為語音播放、`WebM` 為角色動作載體的桌面虛擬寵物專案。
 
 目前主線已完成：

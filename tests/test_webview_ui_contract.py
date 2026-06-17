@@ -382,11 +382,25 @@ class TestStageCssLayoutContract:
         if bottom_z is not None:
             assert pet_z < bottom_z, f"stage-pet-layer ({pet_z}) 應低於 stage-bottom-ui ({bottom_z})"
 
-    def test_pet_video_transform_uses_translateX_minus_50(self):
-        """pet video 的 transform 必須包含 translateX(-50%) 以置中。"""
+    def test_pet_anchor_transform_uses_translateX_minus_50(self):
+        """room-character-anchor 必須有 translateX(-50%) 以置中寵物。"""
         css = read_css()
-        assert "translateX(-50%)" in css, (
-            "pet video 的 transform 應包含 translateX(-50%)"
+        import re
+        block = re.search(r'\.room-character-anchor\s*\{([^}]+)\}', css)
+        assert block, ".room-character-anchor CSS block 不存在"
+        assert "translateX(-50%)" in block.group(1), (
+            ".room-character-anchor transform 應包含 translateX(-50%)"
+        )
+
+    def test_pet_video_does_not_have_translateX(self):
+        """#pet-video 不應有獨立的 translateX，避免雙重平移導致飛出視窗。"""
+        css = read_css()
+        import re
+        block_match = re.search(r'#pet-video[^{]*\{([^}]+)\}', css)
+        assert block_match, "#pet-video CSS block 不存在"
+        block_content = block_match.group(1)
+        assert "translateX" not in block_content, (
+            "#pet-video 不應有 translateX（anchor 已負責置中，雙重 translateX 會導致 x=-403）"
         )
 
     def test_stage_background_has_no_filter_or_blur(self):
@@ -579,3 +593,105 @@ class TestAdapterReturnContract:
         assert isinstance(result, dict)
         assert "enabled" in result
         _ = json.dumps(result)
+
+
+# ---------------------------------------------------------------------------
+# 寵物定位結構回歸測試（防止 .room-stage 含 inset:0 造成 x=-403 問題）
+# ---------------------------------------------------------------------------
+
+class TestPetLayerStructureRegression:
+    """
+    確認 pet 定位結構符合 runtime 安全規範。
+
+    歷史 bug：.room-stage { position: absolute; inset: 0 } 在 Chromium < 87 不支援
+    inset shorthand，導致 .room-stage 成為 0×0，讓 left: 50% 解析為 0，
+    實際 videoRect.x = -403（飛出視窗）。
+
+    修復：移除 .room-stage 包裝層，讓 #pet-stage-anchor 直接在 #stage-pet-layer 內。
+    #stage-pet-layer 有 width: 100%; height: 100% 群組規則保護，不受 inset 支援影響。
+    """
+
+    def test_pet_stage_anchor_id_exists_in_html(self):
+        """#pet-stage-anchor 必須存在於 HTML 中（直接定位容器）。"""
+        html = read_html()
+        assert 'id="pet-stage-anchor"' in html, (
+            "#pet-stage-anchor 不存在，pet anchor 缺少明確 id"
+        )
+
+    def test_room_stage_wrapper_removed_from_pet_layer(self):
+        """#stage-pet-layer 內不應有 .room-stage 作為中繼容器。
+
+        .room-stage 使用 inset:0 但無 width/height，在 Chromium < 87 時
+        成為 0×0，導致 pet anchor left: 50% 計算為 0px。
+        """
+        html = read_html()
+        import re
+        # 找出 stage-pet-layer 與 pet-stage-anchor 之間的內容
+        pet_layer_idx = html.find('id="stage-pet-layer"')
+        anchor_idx = html.find('id="pet-stage-anchor"')
+        assert pet_layer_idx >= 0, "stage-pet-layer 不存在"
+        assert anchor_idx >= 0, "pet-stage-anchor 不存在"
+        between = html[pet_layer_idx:anchor_idx]
+        assert 'class="room-stage"' not in between, (
+            ".room-stage 不應出現在 stage-pet-layer 與 pet-stage-anchor 之間（會造成 0×0 containing block）"
+        )
+
+    def test_pet_video_left_is_zero_not_50_percent(self):
+        """#pet-video 的 left 應為 0（anchor 已置中），不應重複用 50% 引入雙重偏移。"""
+        css = read_css()
+        import re
+        block = re.search(r'#pet-video[^{]*\{([^}]+)\}', css)
+        assert block, "#pet-video CSS block 不存在"
+        content = block.group(1)
+        assert "left: 50%" not in content and "left:50%" not in content, (
+            "#pet-video 不應有 left: 50%（與 anchor 的 translateX(-50%) 疊加會導致 x=-403 回歸）"
+        )
+
+    def test_pet_anchor_is_positioned_absolute_with_left_50(self):
+        """room-character-anchor 必須是 position: absolute 且 left 使用 50% 基準。"""
+        css = read_css()
+        import re
+        block = re.search(r'\.room-character-anchor\s*\{([^}]+)\}', css)
+        assert block, ".room-character-anchor CSS block 不存在"
+        content = block.group(1)
+        assert "position: absolute" in content or "position:absolute" in content, (
+            ".room-character-anchor 應為 position: absolute"
+        )
+        assert "50%" in content, (
+            ".room-character-anchor left 應包含 50% 基準"
+        )
+
+    def test_debug_stage_rects_function_in_app_js(self):
+        """app.js 必須暴露 window.echoes.debugStageRects 供 runtime 診斷。"""
+        js = read_js()
+        assert "debugStageRects" in js, (
+            "app.js 缺少 debugStageRects 函數"
+        )
+        assert "echoes.debugStageRects" in js, (
+            "debugStageRects 應掛載於 window.echoes 命名空間"
+        )
+
+    def test_diagnostics_logs_visible_field(self):
+        """renderStageDiagnostics 必須輸出 visible= 欄位。"""
+        js = read_js()
+        assert "'visible=' +" in js or "'visible='" in js or '"visible=" +' in js or "visible=' + visible" in js, (
+            "renderStageDiagnostics 應記錄 visible= 欄位以確認寵物是否可見"
+        )
+
+    def test_diagnostics_logs_centeredDeltaX_field(self):
+        """renderStageDiagnostics 必須輸出 centeredDeltaX= 欄位。"""
+        js = read_js()
+        assert "centeredDeltaX" in js, (
+            "renderStageDiagnostics 應記錄 centeredDeltaX 以驗證置中偏移"
+        )
+
+    def test_room_character_anchor_has_width_from_variable(self):
+        """room-character-anchor 必須有明確 width（不依賴 inset 撐開）。"""
+        css = read_css()
+        import re
+        block = re.search(r'\.room-character-anchor\s*\{([^}]+)\}', css)
+        assert block, ".room-character-anchor CSS block 不存在"
+        content = block.group(1)
+        assert "width" in content, (
+            ".room-character-anchor 應有明確 width（否則在 inset 失效時寬度為 0）"
+        )

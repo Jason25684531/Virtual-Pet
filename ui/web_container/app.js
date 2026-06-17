@@ -192,21 +192,67 @@
 
         var petLayer = document.getElementById('stage-pet-layer');
         var petLayerRect = petLayer ? petLayer.getBoundingClientRect() : null;
-        var videoRect = video ? video.getBoundingClientRect() : null;
+        var vr = video ? video.getBoundingClientRect() : null;
         var agenticPanel = document.getElementById('agentic-panel');
         var panelWidth = agenticPanel ? Math.round(agenticPanel.getBoundingClientRect().width) : 0;
         var videoLoaded = video && video.src && video.src !== '' && video.src !== window.location.href;
+
+        var stageWidth = Math.round(rect.width);
+        var stageHeight = Math.round(rect.height);
+        var videoWidth = vr ? Math.round(vr.width) : 0;
+        var videoX = vr ? Math.round(vr.left) : 0;
+        var videoY = vr ? Math.round(vr.top) : 0;
+        var expectedCenteredX = (stageWidth > 0 && videoWidth > 0)
+            ? Math.round((stageWidth - videoWidth) / 2) : 0;
+        var centeredDeltaX = videoX - expectedCenteredX;
+        var visible = vr
+            ? (vr.right > 0 && vr.left < stageWidth && vr.bottom > 0 && vr.top < stageHeight)
+            : false;
+
         console.log(
             '[ECHOES STAGE DIAG]',
-            'stage=' + Math.round(rect.width) + 'x' + Math.round(rect.height),
+            'stage=' + stageWidth + 'x' + stageHeight,
             'petLayer=' + (petLayerRect ? Math.round(petLayerRect.width) + 'x' + Math.round(petLayerRect.height) : 'null'),
-            'videoRect=' + (videoRect ? Math.round(videoRect.left) + ',' + Math.round(videoRect.top) + ' ' + Math.round(videoRect.width) + 'x' + Math.round(videoRect.height) : 'null'),
+            'videoRect=' + (vr ? videoX + ',' + videoY + ' ' + videoWidth + 'x' + Math.round(vr.height) : 'null'),
             'anchor=' + getComputedCssValue('--pet-anchor-x'),
             'scale=' + getComputedCssValue('--pet-scale'),
             'panelW=' + panelWidth,
-            'videoLoaded=' + videoLoaded
+            'videoLoaded=' + videoLoaded,
+            'visible=' + visible,
+            'centeredDeltaX=' + centeredDeltaX
         );
     }
+
+    window.echoes.debugStageRects = function () {
+        var chain = [
+            { label: '#stage-root', el: document.getElementById('stage-root') },
+            { label: '.room-scene', el: document.querySelector('.room-scene') },
+            { label: '#stage-pet-layer', el: document.getElementById('stage-pet-layer') },
+            { label: '#pet-stage-anchor', el: document.getElementById('pet-stage-anchor') },
+            { label: '#pet-character', el: document.getElementById('pet-character') },
+            { label: '#pet-video', el: document.getElementById('pet-video') }
+        ];
+        chain.forEach(function (item) {
+            var el = item.el;
+            if (!el) {
+                console.log('[ECHOES RECTS] ' + item.label + ' = NOT FOUND');
+                return;
+            }
+            var r = el.getBoundingClientRect();
+            var cs = window.getComputedStyle(el);
+            console.log(
+                '[ECHOES RECTS]', item.label,
+                'rect=' + Math.round(r.left) + ',' + Math.round(r.top) +
+                    ' ' + Math.round(r.width) + 'x' + Math.round(r.height),
+                'pos=' + cs.position,
+                'left=' + cs.left,
+                'bottom=' + cs.bottom,
+                'w=' + cs.width,
+                'h=' + cs.height,
+                'transform=' + cs.transform
+            );
+        });
+    };
 
     function syncAgenticPanelOffset() {
         var collapsed = document.body.dataset.agenticPanel === 'collapsed';
