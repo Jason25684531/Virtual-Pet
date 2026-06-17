@@ -92,8 +92,8 @@ class VoAIStreamingTests(unittest.TestCase):
         self._original_key = os.environ.get("VOAI_API_KEY")
         self._original_key_alt = os.environ.get("VoAI_API_KEY")
         self._original_streaming = os.environ.get("VOAI_PCM_STREAMING_ENABLED")
-        os.environ["VOAI_API_KEY"] = "test-key"
         os.environ.pop("VoAI_API_KEY", None)
+        os.environ["VOAI_API_KEY"] = "test-key"
         os.environ["VOAI_PCM_STREAMING_ENABLED"] = "true"
 
     def tearDown(self):

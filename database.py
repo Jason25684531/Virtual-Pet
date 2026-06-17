@@ -20,10 +20,12 @@ from pathlib import Path
 try:
     from langchain_community.chat_message_histories import SQLChatMessageHistory
     from langchain_core.messages import BaseMessage
+    from sqlalchemy.pool import NullPool
     LANGCHAIN_IMPORT_ERROR = None
 except ModuleNotFoundError as exc:  # pragma: no cover
     SQLChatMessageHistory = None  # type: ignore[assignment,misc]
     BaseMessage = None  # type: ignore[assignment]
+    NullPool = None  # type: ignore[assignment]
     LANGCHAIN_IMPORT_ERROR = exc
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -128,6 +130,7 @@ class SQLiteMemoryManager:
         return SQLChatMessageHistory(
             session_id=session_id,
             connection=self._connection_string,
+            engine_args={"poolclass": NullPool} if NullPool is not None else None,
         )
 
     def _prune_if_needed(self, history: "SQLChatMessageHistory") -> None:
