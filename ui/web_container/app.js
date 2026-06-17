@@ -189,6 +189,23 @@
         setText(diagPetAnchorY, getComputedCssValue('--pet-floor-y'));
         setText(diagPetScale, getComputedCssValue('--pet-scale'));
         setText(diagIdleMotionCandidatesCount, idleMotionCandidates.length, '0');
+
+        var petLayer = document.getElementById('stage-pet-layer');
+        var petLayerRect = petLayer ? petLayer.getBoundingClientRect() : null;
+        var videoRect = video ? video.getBoundingClientRect() : null;
+        var agenticPanel = document.getElementById('agentic-panel');
+        var panelWidth = agenticPanel ? Math.round(agenticPanel.getBoundingClientRect().width) : 0;
+        var videoLoaded = video && video.src && video.src !== '' && video.src !== window.location.href;
+        console.log(
+            '[ECHOES STAGE DIAG]',
+            'stage=' + Math.round(rect.width) + 'x' + Math.round(rect.height),
+            'petLayer=' + (petLayerRect ? Math.round(petLayerRect.width) + 'x' + Math.round(petLayerRect.height) : 'null'),
+            'videoRect=' + (videoRect ? Math.round(videoRect.left) + ',' + Math.round(videoRect.top) + ' ' + Math.round(videoRect.width) + 'x' + Math.round(videoRect.height) : 'null'),
+            'anchor=' + getComputedCssValue('--pet-anchor-x'),
+            'scale=' + getComputedCssValue('--pet-scale'),
+            'panelW=' + panelWidth,
+            'videoLoaded=' + videoLoaded
+        );
     }
 
     function syncAgenticPanelOffset() {

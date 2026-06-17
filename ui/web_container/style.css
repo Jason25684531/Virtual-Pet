@@ -20,7 +20,7 @@
     --pet-scale: 1;
     --pet-anchor-shift: 0px;
     --pet-floor-offset: 0px;
-    --pet-anchor-x: calc(50% + var(--pet-anchor-shift) - (var(--agentic-panel-offset) / 2));
+    --pet-anchor-x: calc(50% + var(--pet-anchor-shift));
     --pet-floor-y: calc(2% + var(--pet-floor-offset));
 }
 
@@ -56,6 +56,13 @@ body {
     height: 100%;
 }
 
+#stage-root {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    padding: 0;
+}
+
 .room-shell {
     width: 100vw;
     height: 100vh;
@@ -64,9 +71,9 @@ body {
 
 .room-scene {
     overflow: hidden;
-    border-radius: 32px;
-    background: linear-gradient(135deg, rgba(46, 49, 57, 0.95), rgba(78, 59, 49, 0.92));
-    box-shadow: 0 28px 64px rgba(16, 10, 8, 0.34);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
 }
 
 #stage-background,
@@ -79,11 +86,13 @@ body {
 
 #stage-background {
     z-index: 0;
+    background: #16121a;
 }
 
 #stage-pet-layer {
     z-index: 10;
     pointer-events: none;
+    overflow: visible;
 }
 
 #stage-live-ui {
@@ -110,6 +119,10 @@ body {
 .room-character,
 .room-character-shadow,
 #pet-video,
+#character-video,
+.pet-video,
+.character-video,
+.stage-pet,
 .room-panel-video,
 .room-floor-glow {
     pointer-events: none;
@@ -127,9 +140,9 @@ body {
     position: absolute;
     inset: 0;
     background:
-        linear-gradient(180deg, rgba(17, 18, 28, 0.16) 0%, rgba(20, 16, 14, 0.08) 34%, rgba(24, 15, 10, 0.42) 100%),
-        radial-gradient(circle at 16% 18%, rgba(255, 244, 204, 0.34), transparent 28%),
-        radial-gradient(circle at 84% 22%, rgba(255, 214, 176, 0.2), transparent 24%);
+        linear-gradient(180deg, rgba(17, 18, 28, 0.06) 0%, transparent 52%, rgba(24, 15, 10, 0.16) 100%),
+        radial-gradient(circle at 16% 18%, rgba(255, 244, 204, 0.20), transparent 28%),
+        radial-gradient(circle at 84% 22%, rgba(255, 214, 176, 0.14), transparent 24%);
 }
 
 .room-stage {
@@ -165,7 +178,11 @@ body {
     filter: blur(11px);
 }
 
-#pet-video {
+#pet-video,
+#character-video,
+.pet-video,
+.character-video,
+.stage-pet {
     position: absolute;
     left: 50%;
     bottom: 0;
@@ -193,7 +210,7 @@ body {
 .room-floor-glow {
     position: absolute;
     left: 18%;
-    right: calc(20% + var(--agentic-panel-offset));
+    right: 20%;
     bottom: 7%;
     height: 120px;
     border-radius: 999px;

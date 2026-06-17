@@ -308,6 +308,136 @@ class TestStageCssContract:
             assert token in css
 
 
+class TestStageCssLayoutContract:
+    """確認 stage CSS layout 符合視覺安全規範（不受 agentic panel 影響寵物位置）。"""
+
+    def test_pet_anchor_x_does_not_reference_agentic_panel_offset(self):
+        """--pet-anchor-x 不得用 --agentic-panel-offset 移動寵物位置。"""
+        css = read_css()
+        import re
+        # 找出 --pet-anchor-x 的定義行
+        matches = re.findall(r'--pet-anchor-x\s*:[^;]+;', css)
+        assert matches, "--pet-anchor-x 定義不存在"
+        for definition in matches:
+            assert "--agentic-panel-offset" not in definition, (
+                f"--pet-anchor-x 不應參照 --agentic-panel-offset: {definition.strip()}"
+            )
+
+    def test_pet_anchor_x_uses_50_percent_base(self):
+        """--pet-anchor-x 的基準必須是 50%（寵物預設置中）。"""
+        css = read_css()
+        import re
+        matches = re.findall(r'--pet-anchor-x\s*:[^;]+;', css)
+        assert matches
+        assert any("50%" in m for m in matches), (
+            "--pet-anchor-x 應包含 50% 作為基準"
+        )
+
+    def test_stage_pet_layer_has_inset_0(self):
+        """#stage-pet-layer 必須覆蓋全視窗（inset: 0）。"""
+        css = read_css()
+        import re
+        # 收集所有包含 #stage-pet-layer 選擇器的 CSS block 內容
+        combined = ""
+        for m in re.finditer(r'([^{}]*#stage-pet-layer[^{]*)\{([^}]+)\}', css, re.DOTALL):
+            combined += m.group(2)
+        assert combined, "#stage-pet-layer 相關 CSS block 不存在"
+        assert "inset: 0" in combined or "inset:0" in combined, (
+            "#stage-pet-layer 應有 inset: 0（可在 group selector 中）"
+        )
+
+    def test_stage_background_z_index_lower_than_pet_layer(self):
+        """stage-background z-index (0) 必須低於 stage-pet-layer z-index (10)。"""
+        css = read_css()
+        import re
+        bg_block = re.search(r'#stage-background\s*\{([^}]+)\}', css)
+        pet_block = re.search(r'#stage-pet-layer\s*\{([^}]+)\}', css)
+        assert bg_block and pet_block
+        def extract_z(block_text):
+            m = re.search(r'z-index\s*:\s*(\d+)', block_text)
+            return int(m.group(1)) if m else None
+        bg_z = extract_z(bg_block.group(1))
+        pet_z = extract_z(pet_block.group(1))
+        assert bg_z is not None and pet_z is not None, "z-index 未設定"
+        assert bg_z < pet_z, (
+            f"stage-background z-index ({bg_z}) 應低於 stage-pet-layer ({pet_z})"
+        )
+
+    def test_stage_pet_layer_z_index_lower_than_ui_panels(self):
+        """stage-pet-layer z-index (10) 必須低於 stage-live-ui (20) 和 stage-bottom-ui (30)。"""
+        css = read_css()
+        import re
+        def get_z(selector):
+            block = re.search(selector + r'\s*\{([^}]+)\}', css)
+            if not block:
+                return None
+            m = re.search(r'z-index\s*:\s*(\d+)', block.group(1))
+            return int(m.group(1)) if m else None
+        pet_z = get_z(r'#stage-pet-layer')
+        live_z = get_z(r'#stage-live-ui')
+        bottom_z = get_z(r'#stage-bottom-ui')
+        assert pet_z is not None
+        if live_z is not None:
+            assert pet_z < live_z, f"stage-pet-layer ({pet_z}) 應低於 stage-live-ui ({live_z})"
+        if bottom_z is not None:
+            assert pet_z < bottom_z, f"stage-pet-layer ({pet_z}) 應低於 stage-bottom-ui ({bottom_z})"
+
+    def test_pet_video_transform_uses_translateX_minus_50(self):
+        """pet video 的 transform 必須包含 translateX(-50%) 以置中。"""
+        css = read_css()
+        assert "translateX(-50%)" in css, (
+            "pet video 的 transform 應包含 translateX(-50%)"
+        )
+
+    def test_stage_background_has_no_filter_or_blur(self):
+        """#stage-background block 不應直接套用 filter 或 blur。"""
+        css = read_css()
+        import re
+        block = re.search(r'#stage-background\s*\{([^}]+)\}', css)
+        assert block
+        block_content = block.group(1)
+        assert "filter" not in block_content, (
+            "#stage-background 不應有 filter 屬性"
+        )
+        assert "blur(" not in block_content, (
+            "#stage-background 不應有 blur()"
+        )
+
+    def test_stage_root_overrides_padding_to_zero(self):
+        """#stage-root 應覆寫 room-shell padding 為 0。"""
+        css = read_css()
+        import re
+        block = re.search(r'#stage-root\s*\{([^}]+)\}', css)
+        assert block, "#stage-root standalone CSS block 不存在"
+        content = block.group(1)
+        assert "padding: 0" in content or "padding:0" in content, (
+            "#stage-root 應有 padding: 0"
+        )
+
+    def test_stage_root_is_fixed_or_absolute_positioned(self):
+        """#stage-root 應是 fixed 或 absolute 定位以覆蓋全視窗。"""
+        css = read_css()
+        import re
+        block = re.search(r'#stage-root\s*\{([^}]+)\}', css)
+        assert block, "#stage-root standalone CSS block 不存在"
+        content = block.group(1)
+        assert "position: fixed" in content or "position:fixed" in content or \
+               "position: absolute" in content or "position:absolute" in content, (
+            "#stage-root 應為 fixed 或 absolute 定位"
+        )
+
+    def test_agentic_panel_is_fixed_overlay_not_affecting_layout(self):
+        """agentic-panel 應為 fixed，不參與 layout flow。"""
+        css = read_css()
+        import re
+        block = re.search(r'\.agentic-panel\s*\{([^}]+)\}', css)
+        assert block, ".agentic-panel CSS block 不存在"
+        content = block.group(1)
+        assert "position: fixed" in content or "position:fixed" in content, (
+            ".agentic-panel 應為 position: fixed"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Python bridge 方法測試
 # ---------------------------------------------------------------------------
