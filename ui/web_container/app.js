@@ -1,48 +1,117 @@
-/**
- * ECHOES — WebM 熱切換控制器
- * 提供 changeVideo(filename) 給 Python (PyQt) 透過 runJavaScript 呼叫
- */
-
 (function () {
     'use strict';
 
-    var video = document.getElementById('pet-video');
-    var panelVideo = document.getElementById('panel-video');
-    var character = document.getElementById('pet-character');
-    var audio = document.getElementById('room-audio');
-    var roomCharacterName = document.getElementById('room-character-name');
-    var actionStatus = document.getElementById('action-status');
-    var actionStatusText = document.getElementById('action-status-text');
-    var conversationList = document.getElementById('conversation-list');
+    console.log('[ECHOES APP.JS] IIFE started — DOM ready, binding handlers');
+
+    // -----------------------------------------------------------------------
+    // DOM 參考
+    // -----------------------------------------------------------------------
+    var video              = document.getElementById('pet-video');
+    var panelVideo         = document.getElementById('panel-video');
+    var character          = document.getElementById('pet-character');
+    var audio              = document.getElementById('room-audio');
+    var roomCharacterName  = document.getElementById('room-character-name');
+    var actionStatus       = document.getElementById('action-status');
+    var actionStatusText   = document.getElementById('action-status-text');
+    var conversationList   = document.getElementById('conversation-list');
     var conversationQueueText = document.getElementById('conversation-queue-text');
+    var xpDisplay          = document.getElementById('xp-display');
+    var xpProgressBar      = document.getElementById('xp-progress-bar');
+    var xpThresholdDisplay = document.getElementById('xp-threshold-display');
+    var providerSummary    = document.getElementById('provider-summary');
+    var resultReply        = document.getElementById('result-reply');
+    var resultSkill        = document.getElementById('result-skill');
+    var resultTool         = document.getElementById('result-tool');
+    var resultXpDelta      = document.getElementById('result-xp-delta');
+    var resultReward       = document.getElementById('result-reward');
+    var resultAsset        = document.getElementById('result-asset');
+    var resultBehavior     = document.getElementById('result-behavior');
+    var resultWebmKey      = document.getElementById('result-webm-key');
+    var resultSaved        = document.getElementById('result-saved');
+    var warningsList       = document.getElementById('warnings-list');
+    var skillList          = document.getElementById('skill-list');
+    var toolList           = document.getElementById('tool-list');
+    var skillCountBadge    = document.getElementById('skill-count-badge');
+    var toolCountBadge     = document.getElementById('tool-count-badge');
+    var interactionInput   = document.getElementById('interaction-input');
+    var providerSelect     = document.getElementById('provider-select');
+    var sendButton         = document.getElementById('send-button');
+    var refreshStateButton = document.getElementById('refresh-state-button');
+    var refreshSkillsButton= document.getElementById('refresh-skills-button');
+    var refreshToolsButton = document.getElementById('refresh-tools-button');
+    var skillForm          = document.getElementById('skill-form');
+    var toolForm           = document.getElementById('tool-form');
+    var bridgeStatusEl     = document.getElementById('bridge-status');
+    var lastActionEl       = document.getElementById('last-action');
+    var lastErrorEl        = document.getElementById('last-error');
+    var backgroundStatusEl = document.getElementById('background-status');
+    var micButton          = document.getElementById('mic-button');
+    var speakReplyButton   = document.getElementById('speak-reply-button');
+    var voiceStatus        = document.getElementById('voice-status');
+    var voiceSttStatus     = document.getElementById('voice-stt-status');
+    var voiceTtsStatus     = document.getElementById('voice-tts-status');
+    var diagProviderSelected = document.getElementById('diag-provider-selected');
+    var diagProviderResolved = document.getElementById('diag-provider-resolved');
+    var diagApiConfigStatus = document.getElementById('diag-api-config-status');
+    var diagSkillCount = document.getElementById('diag-skill-count');
+    var diagMatchedSkill = document.getElementById('diag-matched-skill');
+    var diagToolCount = document.getElementById('diag-tool-count');
+    var diagToolStatus = document.getElementById('diag-tool-status');
+    var diagXpTotal = document.getElementById('diag-xp-total');
+    var diagLevel = document.getElementById('diag-level');
+    var diagNextLevelXp = document.getElementById('diag-next-level-xp');
+    var diagRewardCount = document.getElementById('diag-reward-count');
+    var diagAssetManifestCount = document.getElementById('diag-asset-manifest-count');
+    var diagBehaviorId = document.getElementById('diag-behavior-id');
+    var diagWebmKey = document.getElementById('diag-webm-key');
+    var diagBackgroundStatus = document.getElementById('diag-background-status');
+    var diagVoiceSttStatus = document.getElementById('diag-voice-stt-status');
+    var diagVoiceTtsStatus = document.getElementById('diag-voice-tts-status');
+
     var idleSource = '';
-    var idleMotionCandidates = [];
     var statusTimer = null;
+    var defaultStatusText = 'Waiting for room updates.';
+    var harnessBridge = null;
+    var agenticBusy = false;
+    var latestVoiceState = null;
+    var latestReplyText = '';
     var motionLoopTimer = null;
     var motionLoopSource = null;
     var motionLoopActive = false;
     var motionLoopGeneration = 0;
-    var mainVideoGeneration = 0;
     var panelVideoGeneration = 0;
-    var defaultStatusText = '房間待命中';
     var conversationTurns = new Map();
     var maxConversationTurns = 3;
-    var characterOffsetX = 0;
-    var characterOffsetY = 0;
-    var characterScale = 1;
 
-    function updateCharacterTransform() {
-        var target = character || video;
+    // -----------------------------------------------------------------------
+    // 診斷 UI 輔助
+    // -----------------------------------------------------------------------
+    function setDiagBridgeStatus(text, isReady) {
+        if (!bridgeStatusEl) return;
+        bridgeStatusEl.textContent = 'Bridge: ' + text;
+        bridgeStatusEl.dataset.ready = isReady ? 'true' : 'false';
+    }
 
-        if (!target) {
-            console.warn('[ECHOES] 找不到角色容器，無法更新角色 transform');
-            return;
+    function setDiagLastAction(text) {
+        if (!lastActionEl) return;
+        lastActionEl.textContent = 'Last: ' + text;
+    }
+
+    function setDiagLastError(text) {
+        if (!lastErrorEl) return;
+        lastErrorEl.textContent = text ? ('Error: ' + text) : '';
+        lastErrorEl.style.display = text ? 'block' : 'none';
+    }
+
+    function trimConversationTurns() {
+        while (conversationList && conversationList.children.length > maxConversationTurns) {
+            var firstChild = conversationList.firstElementChild;
+            if (!firstChild) {
+                break;
+            }
+            conversationTurns.delete(firstChild.dataset.turnId);
+            conversationList.removeChild(firstChild);
         }
-
-        target.style.transform = (
-            'translate3d(' + characterOffsetX + 'px, ' + characterOffsetY + 'px, 0) ' +
-            'scale(' + characterScale + ')'
-        );
     }
 
     function ensureConversationTurn(turnId, sourceLabel) {
@@ -60,29 +129,37 @@
         userRow.className = 'conversation-turn__row';
         var userLabel = document.createElement('p');
         userLabel.className = 'conversation-turn__label';
-        userLabel.textContent = sourceLabel || '使用者';
+        userLabel.textContent = sourceLabel || 'User';
+        var userCopy = document.createElement('div');
+        userCopy.className = 'conversation-turn__copy';
         var userText = document.createElement('p');
         userText.className = 'conversation-turn__text';
+        userCopy.appendChild(userText);
         userRow.appendChild(userLabel);
-        userRow.appendChild(userText);
+        userRow.appendChild(userCopy);
 
         var assistantRow = document.createElement('div');
         assistantRow.className = 'conversation-turn__row';
         var assistantLabel = document.createElement('p');
         assistantLabel.className = 'conversation-turn__label';
-        assistantLabel.textContent = 'ECHOES';
+        assistantLabel.textContent = 'Echoes';
+        var assistantCopy = document.createElement('div');
+        assistantCopy.className = 'conversation-turn__copy';
         var assistantText = document.createElement('p');
         assistantText.className = 'conversation-turn__text conversation-turn__text--muted';
-        assistantText.textContent = '等待回應中...';
+        assistantCopy.appendChild(assistantText);
         assistantRow.appendChild(assistantLabel);
-        assistantRow.appendChild(assistantText);
+        assistantRow.appendChild(assistantCopy);
 
         article.appendChild(userRow);
         article.appendChild(assistantRow);
-        conversationList.appendChild(article);
+        if (conversationList) {
+            conversationList.appendChild(article);
+        }
 
         var turn = {
             root: article,
+            userLabel: userLabel,
             userText: userText,
             assistantText: assistantText
         };
@@ -91,120 +168,32 @@
         return turn;
     }
 
-    function trimConversationTurns() {
-        while (conversationList.children.length > maxConversationTurns) {
-            var firstChild = conversationList.firstElementChild;
-            if (!firstChild) {
-                break;
-            }
-            conversationTurns.delete(firstChild.dataset.turnId);
-            conversationList.removeChild(firstChild);
-        }
-    }
-
+    // -----------------------------------------------------------------------
+    // 視頻控制
+    // -----------------------------------------------------------------------
     function setSource(source, shouldLoop) {
         if (!source || typeof source !== 'string') {
-            console.warn('[ECHOES] 無效的影片來源:', source);
+            console.warn('[ECHOES] invalid video source', source);
             return;
         }
-
-        mainVideoGeneration += 1;
-        var requestGeneration = mainVideoGeneration;
-        video.muted = true;
-        video.defaultMuted = true;
-        video.playsInline = true;
-        video.autoplay = true;
-        video.setAttribute('muted', '');
-        video.setAttribute('playsinline', '');
         video.loop = Boolean(shouldLoop);
-        video.dataset.requestGeneration = String(requestGeneration);
         video.src = source;
         video.load();
-        var playPromise = video.play();
-        if (playPromise !== undefined) {
-            playPromise.then(function () {
-                if (requestGeneration !== mainVideoGeneration) {
-                    return;
-                }
-                console.log('[JS] 影片開始播放:', source);
-            }).catch(function (error) {
-                if (requestGeneration !== mainVideoGeneration) {
-                    return;
-                }
-                console.error('[JS] 播放被 Chromium 阻擋, Reason:', error.name, error.message);
-            });
-        }
+        video.play().catch(function (err) {
+            console.warn('[ECHOES] video playback failed:', err.message);
+        });
     }
 
-    function normalizeIdleMotionCandidates(candidates) {
-        if (!Array.isArray(candidates)) {
-            return [];
-        }
-
-        return candidates.map(function (candidate) {
-            if (!candidate || typeof candidate !== 'object') {
-                return null;
-            }
-            var source = typeof candidate.source === 'string' ? candidate.source : '';
-            var weight = Number(candidate.weight) || 1;
-            if (!source) {
-                return null;
-            }
-            return {
-                source: source,
-                weight: Math.max(1, weight)
-            };
-        }).filter(Boolean);
-    }
-
-    function chooseIdleMotionSource(fallbackSource) {
-        var candidates = idleMotionCandidates;
-        if (!candidates.length) {
-            return fallbackSource || idleSource;
-        }
-
-        var totalWeight = candidates.reduce(function (sum, candidate) {
-            return sum + candidate.weight;
-        }, 0);
-        if (totalWeight <= 0) {
-            return candidates[0].source;
-        }
-
-        var threshold = Math.random() * totalWeight;
-        var runningWeight = 0;
-        for (var index = 0; index < candidates.length; index += 1) {
-            runningWeight += candidates[index].weight;
-            if (threshold < runningWeight) {
-                return candidates[index].source;
-            }
-        }
-        return candidates[candidates.length - 1].source;
-    }
-
-    function restoreIdleMotionInternal(fallbackSource) {
-        var nextIdleSource = chooseIdleMotionSource(fallbackSource);
-        if (!nextIdleSource) {
-            console.warn('[ECHOES] 目前沒有可用的 idle motion candidate');
-            return;
-        }
-
-        idleSource = nextIdleSource;
-        console.log('[ECHOES] 設定 idle 動畫:', nextIdleSource);
-        if (motionLoopActive) {
-            return;
-        }
-        setSource(nextIdleSource, true);
-    }
-
+    // -----------------------------------------------------------------------
+    // 狀態列
+    // -----------------------------------------------------------------------
     function setStatus(message, tone, timeoutMs) {
         if (statusTimer) {
             clearTimeout(statusTimer);
             statusTimer = null;
         }
-
         actionStatus.dataset.tone = tone || 'idle';
         actionStatusText.textContent = message || defaultStatusText;
-
         if (timeoutMs && timeoutMs > 0) {
             statusTimer = window.setTimeout(function () {
                 window.clearActionStatus();
@@ -212,138 +201,443 @@
         }
     }
 
-    video.onerror = function (event) {
-        var err = video.error;
-        var errCode = err ? err.code : 'unknown';
-        var errMsg = err ? err.message : '(no details)';
-        console.error('[ECHOES] 影片載入失敗 src=' + video.src + ' code=' + errCode + ' msg=' + errMsg);
-    };
+    // -----------------------------------------------------------------------
+    // HTML escape
+    // -----------------------------------------------------------------------
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
 
-    video.addEventListener('ended', function () {
-        console.log('[ECHOES:MAIN_VIDEO_ENDED]');
-        if (!video.loop && !motionLoopActive) {
-            restoreIdleMotionInternal(idleSource);
+    function setText(element, value, fallback) {
+        if (!element) return;
+        element.textContent = value == null || value === '' ? (fallback || '-') : String(value);
+    }
+
+    // -----------------------------------------------------------------------
+    // 渲染函數
+    // -----------------------------------------------------------------------
+    function renderWarnings(warnings) {
+        var entries = Array.isArray(warnings) && warnings.length ? warnings : ['None'];
+        warningsList.innerHTML = entries.map(function (item) {
+            return '<li>' + escapeHtml(item) + '</li>';
+        }).join('');
+    }
+
+    function renderSkills(skills) {
+        var items = Array.isArray(skills) ? skills : [];
+        skillCountBadge.textContent = items.length + ' skills';
+        if (!items.length) {
+            skillList.innerHTML = '<div class="entity-card"><p class="entity-card__title">No skills loaded.</p></div>';
+            return;
         }
-    });
+        skillList.innerHTML = items.map(function (item) {
+            var toggleLabel = item.enabled ? 'Disable' : 'Enable';
+            var deleteLabel = item.is_builtin ? 'Disable only' : 'Delete';
+            return [
+                '<article class="entity-card">',
+                '  <div class="entity-card__head">',
+                '    <div>',
+                '      <p class="entity-card__title">' + escapeHtml(item.display_name || item.skill_id) + '</p>',
+                '      <p class="entity-card__meta">' + escapeHtml(item.skill_id) + '</p>',
+                '    </div>',
+                '    <span class="status-pill">' + (item.enabled ? 'enabled' : 'disabled') + '</span>',
+                '  </div>',
+                '  <p class="entity-card__meta">' + escapeHtml(item.description || '-') + '</p>',
+                '  <p class="entity-card__meta">triggers: ' + escapeHtml((item.triggers || []).join(', ') || '-') + '</p>',
+                '  <p class="entity-card__meta">required_tool: ' + escapeHtml(item.required_tool || '-') + '</p>',
+                '  <div class="entity-card__actions">',
+                '    <button class="secondary-button" type="button" data-skill-toggle="' + escapeHtml(item.skill_id) + '" data-enabled="' + String(!item.enabled) + '">' + toggleLabel + '</button>',
+                '    <button class="danger-button" type="button" data-skill-delete="' + escapeHtml(item.skill_id) + '">' + deleteLabel + '</button>',
+                '  </div>',
+                '</article>'
+            ].join('');
+        }).join('');
+    }
 
-    audio.addEventListener('ended', function () {
-        console.log('[ECHOES:ROOM_AUDIO_ENDED]');
-        if (audio.dataset.statusManaged === 'true') {
-            setStatus('音樂播放完畢', 'idle', 2200);
+    function renderTools(tools) {
+        var items = Array.isArray(tools) ? tools : [];
+        toolCountBadge.textContent = items.length + ' tools';
+        if (!items.length) {
+            toolList.innerHTML = '<div class="entity-card"><p class="entity-card__title">No tools loaded.</p></div>';
+            return;
         }
-    });
+        toolList.innerHTML = items.map(function (item) {
+            var toggleLabel = item.enabled ? 'Disable' : 'Enable';
+            var deleteLabel = item.is_builtin ? 'Disable only' : 'Delete config';
+            return [
+                '<article class="entity-card">',
+                '  <div class="entity-card__head">',
+                '    <div>',
+                '      <p class="entity-card__title">' + escapeHtml(item.tool_name) + '</p>',
+                '      <p class="entity-card__meta">' + escapeHtml(item.status) + '</p>',
+                '    </div>',
+                '    <span class="status-pill">' + (item.enabled ? 'enabled' : 'disabled') + '</span>',
+                '  </div>',
+                '  <p class="entity-card__meta">' + escapeHtml(item.description || '-') + '</p>',
+                '  <p class="entity-card__meta">risk: ' + escapeHtml(item.risk_level || '-') + ' | permission: ' + escapeHtml(item.permission_requirement || '-') + '</p>',
+                '  <div class="entity-card__actions">',
+                '    <button class="secondary-button" type="button" data-tool-toggle="' + escapeHtml(item.tool_name) + '" data-enabled="' + String(!item.enabled) + '">' + toggleLabel + '</button>',
+                '    <button class="danger-button" type="button" data-tool-delete="' + escapeHtml(item.tool_name) + '">' + deleteLabel + '</button>',
+                '  </div>',
+                '</article>'
+            ].join('');
+        }).join('');
+    }
 
-    audio.addEventListener('error', function () {
-        console.warn('[ECHOES] 音訊載入失敗:', audio.src);
-        setStatus('音訊載入失敗', 'error', 4200);
-    });
+    function renderEvent(event) {
+        var payload = event || {};
+        var tool    = payload.tool || {};
+        var asset   = payload.asset_summary || {};
+        latestReplyText = payload.reply || latestReplyText || '';
+        resultReply.textContent     = payload.reply || 'Waiting for input.';
+        resultSkill.textContent     = payload.matched_skill || '-';
+        resultTool.textContent      = tool.name
+            ? [tool.name, tool.status || '-', tool.reason || ''].filter(Boolean).join(' | ')
+            : '-';
+        resultXpDelta.textContent   = String(payload.xp_delta == null ? 0 : payload.xp_delta);
+        resultReward.textContent    = Array.isArray(payload.reward_summary) && payload.reward_summary.length
+            ? payload.reward_summary.join(', ')
+            : '-';
+        resultAsset.textContent     = asset.asset_id || asset.webm_key || asset.status || '-';
+        resultBehavior.textContent  = payload.behavior_id || 'idle';
+        resultWebmKey.textContent   = payload.webm_key || 'idle';
+        resultSaved.textContent     = String(Boolean(payload.saved_to_db));
+        if (payload.provider_status && payload.provider_status.provider_type) {
+            providerSummary.textContent = 'provider: ' + payload.provider_status.provider_type;
+        }
+        renderWarnings(payload.warnings || []);
+    }
 
-    /**
-     * 設定目前角色的 idle 動畫。
-     * @param {string} source - 影片來源 URL
-     */
-    window.setIdleVideo = function (source) {
-        idleSource = source;
-        console.log('[ECHOES] 設定 idle 動畫:', source);
-        setSource(source, true);
-    };
+    function renderXpState(xp) {
+        if (!xp) return;
+        if (xp.display) {
+            xpDisplay.textContent = xp.display;
+        }
+        if (xpProgressBar) {
+            var percent = Number(xp.progress_percent || 0);
+            xpProgressBar.style.width = Math.max(0, Math.min(100, percent)) + '%';
+        }
+        if (xpThresholdDisplay) {
+            xpThresholdDisplay.textContent = String(xp.xp_total || 0) + ' / ' + String(xp.next_level_xp || 100) + ' XP';
+        }
+    }
 
-    window.setIdleMotionCandidates = function (candidates) {
-        idleMotionCandidates = normalizeIdleMotionCandidates(candidates);
-        console.log('[ECHOES] 更新 idle motion candidates:', idleMotionCandidates.length);
-    };
+    function renderBackgroundStatus(background) {
+        var status = background && background.status ? background.status : 'missing';
+        setText(backgroundStatusEl, 'Background: ' + status);
+        console.log('[ECHOES UI] background=' + status);
+    }
 
-    window.restoreIdleMotion = function (fallbackSource) {
-        restoreIdleMotionInternal(fallbackSource || idleSource);
-    };
+    function voiceStatusLabel(status) {
+        if (status === 'configured_not_implemented') return 'configured but not implemented';
+        return status || 'missing';
+    }
 
-    /**
-     * 播放一次性動作，結束後自動回到 idle。
-     * @param {string} source - 影片來源 URL
-     */
-    window.playTemporaryVideo = function (source) {
-        var targetVideo = document.getElementById('pet-video');
-        if (!targetVideo) {
-            console.error('[JS ERROR] 找不到影片元素 #pet-video，無法播放動作');
+    function renderVoiceStatus(voice) {
+        latestVoiceState = voice || null;
+        var stt = voice && voice.stt ? voice.stt : {};
+        var tts = voice && voice.tts ? voice.tts : {};
+        setText(voiceStatus, 'voice: ' + voiceStatusLabel(stt.status) + ' / ' + voiceStatusLabel(tts.status));
+        setText(voiceSttStatus, stt.message || voiceStatusLabel(stt.status));
+        setText(voiceTtsStatus, tts.message || voiceStatusLabel(tts.status));
+        console.log('[ECHOES UI] voice.tts=configured status=' + (tts.status || 'missing'));
+    }
+
+    function renderDiagnostics(diagnostics) {
+        diagnostics = diagnostics || {};
+        setText(diagProviderSelected, diagnostics.provider_selected);
+        setText(diagProviderResolved, diagnostics.provider_resolved);
+        setText(diagApiConfigStatus, diagnostics.api_config_status);
+        setText(diagSkillCount, diagnostics.skill_count, '0');
+        setText(diagMatchedSkill, diagnostics.matched_skill);
+        setText(diagToolCount, diagnostics.tool_count, '0');
+        setText(diagToolStatus, diagnostics.tool_status);
+        setText(diagXpTotal, diagnostics.xp_total, '0');
+        setText(diagLevel, diagnostics.level, '1');
+        setText(diagNextLevelXp, diagnostics.next_level_xp, '100');
+        setText(diagRewardCount, diagnostics.reward_count, '0');
+        setText(diagAssetManifestCount, diagnostics.asset_manifest_count, '0');
+        setText(diagBehaviorId, diagnostics.behavior_id, 'idle');
+        setText(diagWebmKey, diagnostics.webm_key, 'idle');
+        setText(diagBackgroundStatus, diagnostics.background_status);
+        setText(diagVoiceSttStatus, diagnostics.voice_stt_status);
+        setText(diagVoiceTtsStatus, diagnostics.voice_tts_status);
+    }
+
+    function renderState(state) {
+        if (!state) return;
+        renderXpState(state.xp || null);
+        if (state.provider_config && state.provider_config.provider_type) {
+            providerSelect.value = state.provider_config.provider_type;
+        }
+        if (state.provider_status && state.provider_status.provider_type) {
+            providerSummary.textContent = 'provider: ' + state.provider_status.provider_type;
+        }
+        renderBackgroundStatus(state.background || null);
+        renderVoiceStatus(state.voice || null);
+        renderDiagnostics(state.diagnostics || null);
+    }
+
+    // -----------------------------------------------------------------------
+    // Bridge 呼叫 — 帶 log 與錯誤處理
+    // -----------------------------------------------------------------------
+    function callBridge(method) {
+        if (!harnessBridge) {
+            var msg = 'Bridge not ready — cannot call: ' + method;
+            console.warn('[ECHOES UI] ' + msg);
+            setDiagLastError(msg);
+            setStatus('Bridge not ready. Try restarting the UI.', 'error', 5000);
+            return;
+        }
+        if (typeof harnessBridge[method] !== 'function') {
+            var msg2 = 'Bridge method missing: ' + method;
+            console.warn('[ECHOES UI] ' + msg2);
+            setDiagLastError(msg2);
+            return;
+        }
+        try {
+            setDiagLastError('');
+            var args = Array.prototype.slice.call(arguments, 1);
+            harnessBridge[method].apply(harnessBridge, args);
+        } catch (err) {
+            var errMsg = method + ' threw: ' + err.message;
+            console.error('[ECHOES UI]', errMsg, err);
+            setDiagLastError(errMsg);
+            setStatus('Bridge error: ' + err.message, 'error', 5000);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Scenario 按鈕
+    // -----------------------------------------------------------------------
+    function wireScenarioButtons() {
+        Array.prototype.forEach.call(document.querySelectorAll('.scenario-button'), function (button) {
+            button.addEventListener('click', function () {
+                var scenarioText = button.dataset.text || '';
+                console.log('[ECHOES UI] scenario clicked:', scenarioText);
+                setDiagLastAction('scenario: ' + scenarioText);
+                interactionInput.value = scenarioText;
+                triggerSend();
+            });
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // 動態 skill / tool 事件代理
+    // -----------------------------------------------------------------------
+    function wireDynamicActions() {
+        skillList.addEventListener('click', function (event) {
+            var toggle = event.target.closest('[data-skill-toggle]');
+            var remove = event.target.closest('[data-skill-delete]');
+            if (toggle) {
+                var skillId = toggle.dataset.skillToggle;
+                var enabled = toggle.dataset.enabled === 'true';
+                console.log('[ECHOES UI] skill toggle clicked:', skillId, '->', enabled);
+                setDiagLastAction('skill toggle: ' + skillId);
+                callBridge('toggleSkill', skillId, enabled);
+            } else if (remove) {
+                var skillIdDel = remove.dataset.skillDelete;
+                console.log('[ECHOES UI] skill delete clicked:', skillIdDel);
+                setDiagLastAction('skill delete: ' + skillIdDel);
+                callBridge('deleteSkill', skillIdDel);
+            }
+        });
+
+        toolList.addEventListener('click', function (event) {
+            var toggle = event.target.closest('[data-tool-toggle]');
+            var remove = event.target.closest('[data-tool-delete]');
+            if (toggle) {
+                var toolName = toggle.dataset.toolToggle;
+                var enabled = toggle.dataset.enabled === 'true';
+                console.log('[ECHOES UI] tool toggle clicked:', toolName, '->', enabled);
+                setDiagLastAction('tool toggle: ' + toolName);
+                callBridge('toggleTool', toolName, enabled);
+            } else if (remove) {
+                var toolNameDel = remove.dataset.toolDelete;
+                console.log('[ECHOES UI] tool delete clicked:', toolNameDel);
+                setDiagLastAction('tool delete: ' + toolNameDel);
+                // 修正：Python 方法名為 deleteToolConfig
+                callBridge('deleteToolConfig', toolNameDel);
+            }
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Send 觸發
+    // -----------------------------------------------------------------------
+    function triggerSend() {
+        var text = interactionInput.value.trim();
+        if (!text) {
+            setStatus('Please enter some text first.', 'warn', 2200);
+            return;
+        }
+        if (agenticBusy) {
+            setStatus('Interaction already running.', 'warn', 2200);
+            return;
+        }
+        console.log('[ECHOES UI] action=send provider=' + providerSelect.value);
+        console.log('[ECHOES UI] send clicked, text:', text, 'provider:', providerSelect.value);
+        setDiagLastAction('send: ' + text.substring(0, 40));
+        callBridge('sendText', text, providerSelect.value);
+    }
+
+    function handleVoiceAction(kind) {
+        var voice = latestVoiceState || {};
+        var status = kind === 'tts' ? (voice.tts || {}) : (voice.stt || {});
+        var label = kind === 'tts' ? 'TTS' : 'STT';
+        var message = status.message || (label + ' unavailable.');
+        console.log('[ECHOES UI] voice.' + kind + '=configured status=' + (status.status || 'missing'));
+        setDiagLastAction('voice ' + kind);
+        setStatus(message, status.implemented ? 'idle' : 'warn', 4200);
+    }
+
+    // -----------------------------------------------------------------------
+    // 表單 / 靜態按鈕事件
+    // -----------------------------------------------------------------------
+    function setupForms() {
+        sendButton.addEventListener('click', function () {
+            console.log('[ECHOES UI] send clicked');
+            triggerSend();
+        });
+
+        refreshStateButton.addEventListener('click', function () {
+            console.log('[ECHOES UI] refresh state clicked');
+            setDiagLastAction('refresh state');
+            callBridge('refreshState');
+        });
+        refreshSkillsButton.addEventListener('click', function () {
+            console.log('[ECHOES UI] refresh skills clicked');
+            setDiagLastAction('refresh skills');
+            callBridge('refreshState');
+        });
+        refreshToolsButton.addEventListener('click', function () {
+            console.log('[ECHOES UI] refresh tools clicked');
+            setDiagLastAction('refresh tools');
+            callBridge('refreshState');
+        });
+
+        interactionInput.addEventListener('keydown', function (event) {
+            if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+                triggerSend();
+            }
+        });
+
+        skillForm.addEventListener('submit', function (event) {
+            event.preventDefault();
+            var payload = {
+                skill_id:         document.getElementById('skill-id').value.trim(),
+                display_name:     document.getElementById('skill-display-name').value.trim(),
+                description:      document.getElementById('skill-description').value.trim(),
+                triggers:         document.getElementById('skill-triggers').value.trim(),
+                default_behavior: document.getElementById('skill-behavior').value.trim(),
+                required_tool:    document.getElementById('skill-required-tool').value.trim()
+            };
+            console.log('[ECHOES UI] add skill submitted:', payload.skill_id);
+            setDiagLastAction('add skill: ' + payload.skill_id);
+            callBridge('addSkill', JSON.stringify(payload));
+            skillForm.reset();
+        });
+
+        toolForm.addEventListener('submit', function (event) {
+            event.preventDefault();
+            var payload = {
+                tool_name:   document.getElementById('tool-name').value.trim(),
+                description: document.getElementById('tool-description').value.trim(),
+                risk_level:  document.getElementById('tool-risk-level').value,
+                enabled:     document.getElementById('tool-enabled').checked
+            };
+            console.log('[ECHOES UI] add tool config submitted:', payload.tool_name);
+            setDiagLastAction('add tool: ' + payload.tool_name);
+            callBridge('addToolConfig', JSON.stringify(payload));
+            toolForm.reset();
+            document.getElementById('tool-enabled').checked = true;
+            document.getElementById('tool-risk-level').value = 'low';
+        });
+
+        if (micButton) {
+            micButton.addEventListener('click', function () {
+                handleVoiceAction('stt');
+            });
+        }
+        if (speakReplyButton) {
+            speakReplyButton.addEventListener('click', function () {
+                if (!latestReplyText) {
+                    setStatus('No latest reply to speak.', 'warn', 2600);
+                    return;
+                }
+                handleVoiceAction('tts');
+            });
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // WebChannel 初始化 — 核心修復
+    // -----------------------------------------------------------------------
+    function setupWebChannel() {
+        // 診斷顯示初始狀態
+        setDiagBridgeStatus('initializing…', false);
+
+        // 檢查 Qt WebChannel 是否可用
+        if (typeof window.QWebChannel === 'undefined') {
+            var msg = 'QWebChannel not available (qwebchannel.js failed to load)';
+            console.error('[ECHOES UI]', msg);
+            setDiagBridgeStatus('not ready — ' + msg, false);
+            setStatus('Bridge unavailable. Check qwebchannel.js.', 'error', 0);
             return;
         }
 
-        targetVideo.muted = true;
-        targetVideo.defaultMuted = true;
-        targetVideo.playsInline = true;
-        targetVideo.autoplay = true;
-        targetVideo.setAttribute('muted', '');
-        targetVideo.setAttribute('playsinline', '');
-        targetVideo.loop = false;
-
-        mainVideoGeneration += 1;
-        var requestGeneration = mainVideoGeneration;
-        console.log('[JS] 準備切換動作:', source);
-        targetVideo.pause();
-        targetVideo.dataset.requestGeneration = String(requestGeneration);
-        targetVideo.src = source;
-        targetVideo.load();
-
-        var playPromise = targetVideo.play();
-        if (playPromise !== undefined) {
-            playPromise.then(function () {
-                if (requestGeneration !== mainVideoGeneration) {
-                    return;
-                }
-                console.log('[JS] 動作播放成功:', source);
-            }).catch(function (error) {
-                if (requestGeneration !== mainVideoGeneration) {
-                    return;
-                }
-                console.error('[JS ERROR] 動作切換失敗:', error.name, error.message);
-            });
+        if (!window.qt || !window.qt.webChannelTransport) {
+            var msg2 = 'qt.webChannelTransport not available (not inside Qt WebEngine?)';
+            console.error('[ECHOES UI]', msg2);
+            setDiagBridgeStatus('not ready — ' + msg2, false);
+            setStatus('Qt transport missing. Run via PyQt5.', 'error', 0);
+            return;
         }
-    };
 
-    window.moveCharacter = function (x, y, scale) {
-        characterOffsetX = Number(x) || 0;
-        characterOffsetY = Number(y) || 0;
-        characterScale = Number(scale) || 1;
-        updateCharacterTransform();
-        console.log('[ECHOES] 角色 transform:', { x: characterOffsetX, y: characterOffsetY, scale: characterScale });
-    };
+        // 建立 QWebChannel，物件名稱必須與 Python 端 registerObject 一致：
+        // self._channel.registerObject("harnessBridge", self._bridge)
+        new window.QWebChannel(window.qt.webChannelTransport, function (channel) {
+            harnessBridge = channel.objects.harnessBridge || null;
+            if (!harnessBridge) {
+                var errMsg = 'harnessBridge object not found in channel.objects';
+                console.error('[ECHOES UI]', errMsg, 'available:', Object.keys(channel.objects));
+                setDiagBridgeStatus('not ready — object missing', false);
+                setStatus('Bridge object missing. Check PyQt registration.', 'error', 0);
+                return;
+            }
 
-    window.setCharacterObjectPosition = function (objectPosition) {
-        var value = String(objectPosition || 'center bottom');
-        video.style.objectPosition = value;
-        console.log('[ECHOES] 角色 object-position:', value);
-    };
+            console.log('[ECHOES UI] bridge=ready');
+            console.log('[ECHOES UI] QWebChannel ready, harnessBridge connected');
+            setDiagBridgeStatus('ready', true);
+            setDiagLastError('');
+            setStatus('Bridge ready.', 'idle', 1800);
 
-    window.setActionStatus = function (message, tone, timeoutMs) {
-        setStatus(message, tone, Number(timeoutMs) || 0);
-    };
-
-    window.clearActionStatus = function () {
-        setStatus('', 'idle', 0);
-    };
-
-    window.setRoomCharacter = function (name) {
-        roomCharacterName.textContent = name || '未選擇角色';
-    };
+            // 初始化完成後立即刷新 UI
+            callBridge('refreshState');
+        });
+    }
 
     window.beginConversationTurn = function (turnId, sourceLabel, userText) {
         if (!turnId) {
             return;
         }
-        var turn = ensureConversationTurn(String(turnId), sourceLabel || '使用者');
+        var turn = ensureConversationTurn(String(turnId), sourceLabel || 'User');
         turn.root.dataset.state = 'active';
         turn.userText.textContent = userText || '';
-        turn.assistantText.textContent = '等待回應中...';
+        turn.assistantText.textContent = 'Waiting for reply...';
         turn.assistantText.classList.add('conversation-turn__text--muted');
-        conversationList.appendChild(turn.root);
-        trimConversationTurns();
     };
 
     window.appendConversationAssistant = function (turnId, fragment) {
         if (!turnId || !fragment) {
             return;
         }
-        var turn = ensureConversationTurn(String(turnId), '使用者');
+        var turn = ensureConversationTurn(String(turnId), 'User');
         if (turn.assistantText.classList.contains('conversation-turn__text--muted')) {
             turn.assistantText.textContent = '';
             turn.assistantText.classList.remove('conversation-turn__text--muted');
@@ -355,13 +649,13 @@
         if (!turnId) {
             return;
         }
-        var turn = ensureConversationTurn(String(turnId), '使用者');
+        var turn = ensureConversationTurn(String(turnId), 'User');
         turn.assistantText.textContent = String(message || '');
         if (turn.assistantText.textContent) {
             turn.assistantText.classList.remove('conversation-turn__text--muted');
             return;
         }
-        turn.assistantText.textContent = '本輪沒有可顯示的回覆。';
+        turn.assistantText.textContent = 'No visible reply.';
         turn.assistantText.classList.add('conversation-turn__text--muted');
     };
 
@@ -369,59 +663,151 @@
         if (!turnId) {
             return;
         }
-        var turn = ensureConversationTurn(String(turnId), '使用者');
+        var turn = ensureConversationTurn(String(turnId), 'User');
         turn.root.dataset.state = 'done';
         if (!turn.assistantText.textContent) {
-            turn.assistantText.textContent = '本輪沒有可顯示的回覆。';
+            turn.assistantText.textContent = 'No visible reply.';
             turn.assistantText.classList.add('conversation-turn__text--muted');
         }
     };
 
     window.setConversationQueueDepth = function (queueDepth) {
         var depth = Number(queueDepth) || 0;
-        conversationQueueText.textContent = '佇列 ' + depth;
+        if (conversationQueueText) {
+            conversationQueueText.textContent = 'Queue ' + depth;
+        }
     };
 
     window.clearConversationTurns = function () {
         conversationTurns.clear();
-        while (conversationList.firstElementChild) {
+        while (conversationList && conversationList.firstElementChild) {
             conversationList.removeChild(conversationList.firstElementChild);
         }
         window.setConversationQueueDepth(0);
     };
 
-    window.playRoomAudio = function (source, title, updateStatus) {
-        if (!source || typeof source !== 'string') {
-            console.warn('[ECHOES] 無效的音訊來源:', source);
-            setStatus('找不到可播放音訊', 'warn', 3200);
+    // -----------------------------------------------------------------------
+    // 從 Python 端呼叫的全域函數
+    // -----------------------------------------------------------------------
+    window.setAgenticBusy = function (busy) {
+        agenticBusy = Boolean(busy);
+        sendButton.disabled         = agenticBusy;
+        providerSelect.disabled     = agenticBusy;
+        interactionInput.disabled   = agenticBusy;
+    };
+
+    window.hydrateAgenticUI = function (payload) {
+        payload = payload || {};
+        renderState(payload.state || null);
+        renderSkills(payload.skills || []);
+        renderTools(payload.tools || []);
+        if (payload.event) {
+            renderEvent(payload.event);
+        } else if (payload.state && payload.state.latest_event) {
+            renderEvent(payload.state.latest_event);
+        }
+        if (payload.message) {
+            setStatus(payload.message, payload.tone || 'idle', payload.timeoutMs || 0);
+        }
+    };
+
+    // -----------------------------------------------------------------------
+    // 視頻 / 音頻事件
+    // -----------------------------------------------------------------------
+    video.addEventListener('error', function () {
+        console.warn('[ECHOES] video load failed:', video.src);
+    });
+
+    video.addEventListener('ended', function () {
+        if (!video.loop && idleSource) {
+            setSource(idleSource, true);
+        }
+    });
+
+    audio.addEventListener('ended', function () {
+        console.log('[ECHOES:ROOM_AUDIO_ENDED]');
+        setStatus('Music playback finished.', 'idle', 2200);
+    });
+
+    audio.addEventListener('error', function () {
+        console.warn('[ECHOES] audio load failed:', audio.src);
+        setStatus('Audio playback failed.', 'error', 4200);
+    });
+
+    if (panelVideo) {
+        panelVideo.addEventListener('ended', function () {
+            console.log('[ECHOES:PANEL_ENDED]');
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // 從 Python 端呼叫的視頻 / UI 函數
+    // -----------------------------------------------------------------------
+    window.setIdleVideo = function (source) {
+        idleSource = source;
+        setSource(source, true);
+    };
+
+    window.playTemporaryVideo = function (source) {
+        setSource(source, false);
+    };
+
+    window.setRoomBackground = function (source) {
+        if (!source) {
             return;
         }
+        var bg = document.querySelector('img.room-background');
+        if (bg) {
+            bg.src = source;
+        }
+    };
 
-        var shouldUpdateStatus = updateStatus !== false;
-        audio.dataset.statusManaged = shouldUpdateStatus ? 'true' : 'false';
+    window.moveCharacter = function (x, y) {
+        var target = character || video;
+        if (!target) {
+            console.warn('[ECHOES] character target missing');
+            return;
+        }
+        target.style.transform = 'translate3d(' + Number(x) + 'px, ' + Number(y) + 'px, 0)';
+    };
+
+    window.setCharacterObjectPosition = function (objectPosition) {
+        video.style.objectPosition = String(objectPosition || 'center bottom');
+    };
+
+    window.setActionStatus = function (message, tone, timeoutMs) {
+        setStatus(message, tone, Number(timeoutMs) || 0);
+    };
+
+    window.clearActionStatus = function () {
+        setStatus('', 'idle', 0);
+    };
+
+    window.setRoomCharacter = function (name) {
+        roomCharacterName.textContent = name || 'Pet Preview';
+    };
+
+    window.playRoomAudio = function (source, title) {
+        if (!source || typeof source !== 'string') {
+            setStatus('Audio source missing.', 'warn', 3200);
+            return;
+        }
         audio.pause();
         audio.src = source;
         audio.load();
         audio.play().then(function () {
-            if (shouldUpdateStatus) {
-                setStatus(title ? '正在播放: ' + title : '音樂播放中', 'music', 0);
-            }
+            setStatus(title ? 'Now playing: ' + title : 'Playing room audio.', 'music', 0);
         }).catch(function (err) {
-            console.warn('[ECHOES] 音樂播放失敗:', err.message);
-            setStatus('音樂播放失敗: ' + err.message, 'error', 4800);
+            console.warn('[ECHOES] audio play failed:', err.message);
+            setStatus('Audio playback failed: ' + err.message, 'error', 4800);
         });
     };
 
     window.stopRoomAudio = function () {
         audio.pause();
-        audio.dataset.statusManaged = 'false';
         audio.removeAttribute('src');
         audio.load();
     };
-
-    panelVideo.addEventListener('ended', function () {
-        console.log('[ECHOES:PANEL_ENDED]');
-    });
 
     window.playPanelVideo = function (source, shouldLoop, muted) {
         if (!source || !panelVideo) {
@@ -439,7 +825,7 @@
             if (requestGeneration !== panelVideoGeneration) {
                 return;
             }
-            console.warn('[ECHOES] panel video 播放失敗:', err.message);
+            console.warn('[ECHOES] panel video playback failed:', err.message);
         });
     };
 
@@ -463,7 +849,9 @@
 
     window.startMotionLoop = function (source, intervalMs) {
         window.stopMotionLoop();
-        if (!source) { return; }
+        if (!source) {
+            return;
+        }
         motionLoopGeneration += 1;
         var loopGeneration = motionLoopGeneration;
         motionLoopSource = source;
@@ -477,7 +865,6 @@
                 window.playTemporaryVideo(motionLoopSource);
             }
         }, intervalMs || 1000);
-        console.log('[ECHOES] motionLoop 啟動:', source, 'interval=', intervalMs || 1000);
     };
 
     window.stopMotionLoop = function () {
@@ -488,7 +875,18 @@
         }
         motionLoopSource = null;
         motionLoopActive = false;
-        console.log('[ECHOES] motionLoop 停止');
+        console.log('[ECHOES] motionLoop stopped');
+    };
+
+    window.restoreIdleMotion = function (fallbackSource) {
+        var nextSource = fallbackSource || idleSource;
+        if (!nextSource) {
+            return;
+        }
+        idleSource = nextSource;
+        if (!motionLoopActive) {
+            setSource(nextSource, true);
+        }
     };
 
     window.resetRoomState = function () {
@@ -498,29 +896,14 @@
         window.clearConversationTurns();
         window.clearActionStatus();
         if (idleSource) {
-            restoreIdleMotionInternal(idleSource);
+            window.restoreIdleMotion(idleSource);
         }
     };
 
-    window.setRoomBackground = function (source) {
-        if (!source) {
-            return;
-        }
-        var bg = document.querySelector('img.room-background');
-        if (bg) {
-            bg.src = source;
-        }
-    };
-
-    // 舊版橋接函式保留，避免其他模組呼叫失敗。
     window.changeVideo = function (source) {
         window.setIdleVideo(source);
     };
 
-    /**
-     * 取得目前播放狀態（供 Python 診斷用）
-     * @returns {object}
-     */
     window.getVideoStatus = function () {
         return {
             src: video.src,
@@ -535,6 +918,16 @@
         };
     };
 
+    // -----------------------------------------------------------------------
+    // 初始化 — try-catch 確保單一錯誤不會導致所有 event listener 全部失敗
+    // -----------------------------------------------------------------------
+    try { setupForms(); } catch(e) { console.error('[ECHOES APP.JS] setupForms error:', e.message); }
+    try { wireScenarioButtons(); } catch(e) { console.error('[ECHOES APP.JS] wireScenarioButtons error:', e.message); }
+    try { wireDynamicActions(); } catch(e) { console.error('[ECHOES APP.JS] wireDynamicActions error:', e.message); }
+    try { setupWebChannel(); } catch(e) { console.error('[ECHOES APP.JS] setupWebChannel error:', e.message); }
     setStatus('', 'idle', 0);
     window.setConversationQueueDepth(0);
+
+    console.log('[ECHOES APP.JS] init complete — harnessBridge:', typeof harnessBridge);
+
 })();

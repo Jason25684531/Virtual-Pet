@@ -12,3 +12,4 @@ langchain-openai==0.3.35
 python-dotenv==1.2.2
 azure-cognitiveservices-speech==1.46.0
 pygame==2.6.1
+pytest>=9.1

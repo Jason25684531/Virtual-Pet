@@ -1,13 +1,16 @@
 """
-ECHOES — 程式進入點
-啟動 PyQt5 應用程式，顯示透明桌面寵物視窗。
+Application entrypoint for the ECHOES desktop host runtime.
 """
 
-import sys
-import signal
-import time
-import re
+from __future__ import annotations
 
+import argparse
+import re
+import signal
+import sys
+import time
+
+from brain_mode import resolve_brain_mode
 
 WAVE_RESPONSE_GREETING_DIRECTIVE = "[ACTION:wave_response] 嗨 你好嗎"
 DEFAULT_REPLY_ACTION_DIRECTIVE = "[ACTION:listen]"
@@ -85,9 +88,6 @@ def connect_brain_output_handlers(window, brain_engine, sanitize_text):
         if callable(set_assistant):
             set_assistant(trace_id, FIXED_NEWS_SCRIPT)
 
-    def _has_explicit_action(text: str) -> bool:
-        return bool(ACTION_DIRECTIVE_PATTERN.search(str(text or "")))
-
     def _maybe_inject_default_reply_action(trace_id: str | None):
         dispatch_action = getattr(window, "dispatch_action", None)
         if not callable(dispatch_action):
@@ -159,9 +159,58 @@ def connect_brain_output_handlers(window, brain_engine, sanitize_text):
         )
 
 
-def main():
-    from PyQt5.QtWidgets import QApplication
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="ECHOES desktop pet host",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    parser.add_argument(
+        "--brain-mode",
+        dest="brain_mode",
+        default=None,
+        metavar="MODE",
+        help=(
+            "brain mode (harness|openclaw|auto).\n"
+            "  harness  - use the local harness validation UI only\n"
+            "  openclaw - keep the legacy runtime path enabled\n"
+            "  auto     - currently follows the legacy runtime path\n"
+            "CLI overrides ECHOES_BRAIN_MODE."
+        ),
+    )
+    return parser.parse_args()
+
+
+def _configure_sigint_timer(app):
     from PyQt5.QtCore import QTimer
+
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    app.setQuitOnLastWindowClosed(False)
+    app._sigint_timer = QTimer(parent=app)
+    app._sigint_timer.start(200)
+    app._sigint_timer.timeout.connect(lambda: None)
+
+
+def _create_application(argv):
+    from PyQt5.QtCore import QCoreApplication, Qt
+    from PyQt5.QtWidgets import QApplication
+
+    QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
+    return QApplication(argv)
+
+
+def _run_harness_mode(app, brain_mode: str):
+    from interaction_trace import InteractionLatencyTracker
+    from ui.transparent_window import TransparentWindow
+
+    latency_tracker = InteractionLatencyTracker()
+    window = TransparentWindow(brain_mode=brain_mode, latency_tracker=latency_tracker)
+    window.show()
+    window.set_action_status("Harness mode ready.", tone="idle", timeout_ms=2400)
+    app.aboutToQuit.connect(window.shutdown_background_tasks)
+    return window
+
+
+def _run_legacy_runtime(app, brain_mode: str):
     from api_client.brain_engine import BrainEngine, sanitize_tts_text
     from api_client.voai_client import prewarm_voai_http_session
     import config
@@ -177,19 +226,10 @@ def main():
     from sensors.stt_session_controller import STTSessionController
     from ui.transparent_window import TransparentWindow
 
-    app = QApplication(sys.argv)
-
-    # 讓 Ctrl+C 可以正常終止程序
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
-    # 每 200ms 讓 Python 處理一次訊號（PyQt 事件迴圈不會主動讓出 CPU 給 Python）
-    sigint_timer = QTimer()
-    sigint_timer.start(200)
-    sigint_timer.timeout.connect(lambda: None)
-
     latency_tracker = InteractionLatencyTracker()
-    window = TransparentWindow(latency_tracker=latency_tracker)
+    window = TransparentWindow(brain_mode=brain_mode, latency_tracker=latency_tracker)
     window.show()
-    window.set_action_status("正在預熱 OpenAI 大腦...", tone="working", timeout_ms=2500)
+    window.set_action_status("Starting LangchainDev runtime...", tone="working", timeout_ms=2500)
 
     brain_engine = BrainEngine(latency_tracker=latency_tracker, parent=app)
     memory_manager = SQLiteMemoryManager()
@@ -216,13 +256,13 @@ def main():
     def handle_developer_query(text: str):
         result = turn_manager.submit("developer-input", text)
         if not result["accepted"]:
-            window.set_action_status("Dev Query 送出失敗：請輸入非空白文字。", tone="warn", timeout_ms=3200)
+            window.set_action_status("Developer query busy.", tone="warn", timeout_ms=3200)
             return
         if result["started"]:
-            window.set_action_status("正在回覆", tone="working", timeout_ms=0)
+            window.set_action_status("Developer query sent.", tone="working", timeout_ms=0)
             return
         window.set_action_status(
-            f"上一輪尚未完成，Dev Query 已加入佇列（待處理 {int(result['queue_position'])} 則）。",
+            f"Developer query queued: {int(result['queue_position'])}",
             tone="working",
             timeout_ms=0,
         )
@@ -232,7 +272,7 @@ def main():
     def handle_cached_intent_request(intent_name: str, trigger_source: str):
         if not window.trigger_cached_intent(intent_name, trigger_source):
             return
-        window.set_action_status(f"{trigger_source}，正在準備固定回覆...", tone="working", timeout_ms=0)
+        window.set_action_status(f"{trigger_source} queued...", tone="working", timeout_ms=0)
 
     window.cached_intent_requested.connect(handle_cached_intent_request)
 
@@ -251,25 +291,22 @@ def main():
 
     def _source_label(source: str) -> str:
         if source == "stt":
-            return "使用者語音"
+            return "STT"
         if source == "developer-input":
             return "Dev Query"
-        return "使用者"
+        return "User"
 
     def handle_turn_started(trace_id: str, source: str, text: str):
         window.begin_conversation_turn(trace_id, _source_label(source), text)
-        window.set_action_status("正在回覆", tone="working", timeout_ms=0)
+        window.set_action_status("Thinking...", tone="working", timeout_ms=0)
 
     def handle_turn_completed(trace_id: str, _source: str, _text: str):
         window.finish_conversation_turn(trace_id)
-        if turn_manager.pending_count() > 0:
-            window.set_action_status(
-                f"本輪回應完成，下一輪待處理 {turn_manager.pending_count()} 則。",
-                tone="working",
-                timeout_ms=0,
-            )
+        pending = turn_manager.pending_count()
+        if pending > 0:
+            window.set_action_status(f"Queued turns remaining: {pending}", tone="working", timeout_ms=0)
             return
-        window.set_action_status("本輪互動完成。", tone="idle", timeout_ms=5200)
+        window.set_action_status("Turn complete.", tone="idle", timeout_ms=5200)
 
     turn_manager.turn_started.connect(handle_turn_started)
     turn_manager.turn_completed.connect(handle_turn_completed)
@@ -280,7 +317,7 @@ def main():
 
     def handle_stt_partial_preview(text: str):
         preview = text if len(text) <= 28 else f"{text[:28]}..."
-        window.set_action_status(f"STT 辨識中: {preview}", tone="working", timeout_ms=1200)
+        window.set_action_status(f"STT partial: {preview}", tone="working", timeout_ms=1200)
 
     def handle_stt_warning(message: str):
         window.set_action_status(message, tone="warn", timeout_ms=4800)
@@ -293,10 +330,9 @@ def main():
             return
         window.set_stt_state(state)
         if state == "listening":
-            window.set_action_status("STT 收音中，等待語音輸入...", tone="working", timeout_ms=2200)
-            return
-        if state == "idle":
-            window.set_action_status("STT 已停止收音", tone="idle", timeout_ms=2200)
+            window.set_action_status("STT listening...", tone="working", timeout_ms=2200)
+        elif state == "idle":
+            window.set_action_status("STT idle.", tone="idle", timeout_ms=2200)
 
     def handle_stt_preview(text: str, trace_id: str | None):
         preview = text if len(text) <= 24 else f"{text[:24]}..."
@@ -309,17 +345,13 @@ def main():
             return
         result = turn_manager.submit("stt", text, trace_id=trace_id)
         if not result["accepted"]:
-            window.set_action_status("STT 文字送出失敗。", tone="warn", timeout_ms=2800)
+            window.set_action_status("STT request rejected.", tone="warn", timeout_ms=2800)
             return
-        queued_trace_id = result["trace_id"]
-        if queued_trace_id:
-            print(f"[ECHOES][STT] 將辨識文字送入 BrainEngine: {preview} | trace={queued_trace_id}")
         if result["started"]:
-            window.set_action_status(f"STT 已送出: {preview}", tone="working", timeout_ms=0)
+            window.set_action_status(f"STT sent: {preview}", tone="working", timeout_ms=0)
             return
-        print(f"[ECHOES][STT] 已排入互動佇列: {preview} | waiting={int(result['queue_position'])}")
         window.set_action_status(
-            f"上一輪回應中，已排入新句子（待處理 {int(result['queue_position'])} 則）。",
+            f"STT queued: {int(result['queue_position'])}",
             tone="working",
             timeout_ms=0,
         )
@@ -346,24 +378,17 @@ def main():
 
     window.reset_requested.connect(handle_reset_requested)
 
-    if not config.AZURE_STT_ENABLED:
-        print("[ECHOES][STT] 提示: Azure STT 設定尚未完成；收音按鈕會顯示為不可用。")
-
-    WAVE_RESPONSE_COOLDOWN_S = 8.0  # 揮手動作結束後的冷卻秒數（兩次 dispatch 最短間隔）
-    _last_wave_time = float("-inf")
+    wave_cooldown_s = 8.0
+    last_wave_time = float("-inf")
 
     def _on_wave_detected(directive: str):
-        nonlocal _last_wave_time
+        nonlocal last_wave_time
         now = time.monotonic()
-        elapsed = now - _last_wave_time
-        if elapsed < WAVE_RESPONSE_COOLDOWN_S:
-            remaining = WAVE_RESPONSE_COOLDOWN_S - elapsed
-            print(f"[ECHOES] Wave response 略過：冷卻中（剩餘 {remaining:.1f}s）")
+        if now - last_wave_time < wave_cooldown_s:
             return
         if window.is_busy:
-            print("[ECHOES] Wave response 略過：STT 或 TTS 進行中")
             return
-        _last_wave_time = now  # 只在實際 dispatch 時更新計時器
+        last_wave_time = now
         window.dispatch_action(build_wave_response_directive(directive))
 
     if wave_sensor_config.detection_enabled:
@@ -372,10 +397,6 @@ def main():
             lambda message: window.set_action_status(message, tone="warn", timeout_ms=4800)
         )
         wave_sensor.start()
-        if wave_sensor_config.show_debug_window:
-            print("[ECHOES] 提示: OpenCV 偵測預覽視窗已啟用。")
-    else:
-        print("[ECHOES] 提示: OpenCV 揮手偵測已關閉，可到 sensors/camera_vision.py 將 boolean 改為 True。")
 
     def shutdown_brain_engine():
         turn_manager.shutdown()
@@ -402,6 +423,22 @@ def main():
     app.aboutToQuit.connect(shutdown_wave_sensor)
     app.aboutToQuit.connect(shutdown_stt_worker)
     app.aboutToQuit.connect(shutdown_window_workers)
+
+    return window
+
+
+def main():
+    args = _parse_args()
+    brain_mode = resolve_brain_mode(args.brain_mode)
+    print(f"[ECHOES] brain mode: {brain_mode}")
+
+    app = _create_application(sys.argv)
+    _configure_sigint_timer(app)
+
+    if brain_mode == "harness":
+        _run_harness_mode(app, brain_mode)
+    else:
+        _run_legacy_runtime(app, brain_mode)
 
     sys.exit(app.exec_())
 

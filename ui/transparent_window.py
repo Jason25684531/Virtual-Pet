@@ -3,12 +3,18 @@ ECHOES — PyQt5 透明無邊框桌面視窗
 使用 QWebEngineView 載入 HTML/JS WebM 播放器，實現去背精靈渲染。
 """
 
+from __future__ import annotations
+
+import ctypes
+import ctypes.wintypes
 import json
 import os
+import sys
 from uuid import uuid4
 
-from PyQt5.QtCore import QEvent, Qt, QTimer, QUrl, pyqtSignal
+from PyQt5.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer, QUrl, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
+from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWidgets import (
     QAction, QApplication, QLineEdit, QMainWindow, QMenu, QPushButton, QSystemTrayIcon, QWidget,
 )
@@ -17,6 +23,7 @@ from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineSettings, QWebEng
 from character_library import ASSETS_WEBM_DIR, CharacterLibrary, MOTION_MAP
 from interaction_trace import InteractionLatencyTracker
 from action_services import FIXED_NEWS_SCRIPT
+from pet_harness.ui.pyqt_harness_adapter import PyQtHarnessAdapter
 
 
 class EchoesWebPage(QWebEnginePage):
@@ -56,6 +63,63 @@ class DeveloperInputLineEdit(QLineEdit):
         super().focusOutEvent(event)
         if callable(self._focus_lost_callback):
             QTimer.singleShot(0, self._focus_lost_callback)
+
+
+class HarnessInteractionWorker(QThread):
+    finished_payload = pyqtSignal(dict)
+    failed_message = pyqtSignal(str)
+
+    def __init__(self, adapter: PyQtHarnessAdapter, text: str, provider: str, parent=None) -> None:
+        super().__init__(parent)
+        self._adapter = adapter
+        self._text = text
+        self._provider = provider
+
+    def run(self) -> None:
+        try:
+            payload = self._adapter.handle_text_input(self._text, provider=self._provider)
+        except Exception as exc:  # noqa: BLE001
+            self.failed_message.emit(str(exc))
+            return
+        self.finished_payload.emit(payload)
+
+
+class HarnessUiBridge(QObject):
+    def __init__(self, window: "TransparentWindow") -> None:
+        super().__init__(window)
+        self._window = window
+
+    @pyqtSlot()
+    def refreshState(self) -> None:
+        self._window.refresh_agentic_ui()
+
+    @pyqtSlot(str, str)
+    def sendText(self, text: str, provider: str) -> None:
+        self._window.submit_agentic_text(text, provider)
+
+    @pyqtSlot(str, bool)
+    def toggleSkill(self, skill_id: str, enabled: bool) -> None:
+        self._window.toggle_skill(skill_id, enabled)
+
+    @pyqtSlot(str, bool)
+    def toggleTool(self, tool_name: str, enabled: bool) -> None:
+        self._window.toggle_tool(tool_name, enabled)
+
+    @pyqtSlot(str)
+    def addSkill(self, payload_json: str) -> None:
+        self._window.add_skill(payload_json)
+
+    @pyqtSlot(str)
+    def deleteSkill(self, skill_id: str) -> None:
+        self._window.delete_skill(skill_id)
+
+    @pyqtSlot(str)
+    def addToolConfig(self, payload_json: str) -> None:
+        self._window.add_tool_config(payload_json)
+
+    @pyqtSlot(str)
+    def deleteToolConfig(self, tool_name: str) -> None:
+        self._window.delete_tool_config(tool_name)
 
 
 class TransparentWindow(QMainWindow):
@@ -107,11 +171,28 @@ class TransparentWindow(QMainWindow):
         "listen": "專心聆聽.webm",
     }
 
-    def __init__(self, latency_tracker: InteractionLatencyTracker | None = None):
+    XP_BADGE_TOP = 28
+    XP_BADGE_RIGHT = 30
+    XP_BADGE_WIDTH = 260
+    XP_BADGE_HEIGHT = 72
+    AGENTIC_PANEL_TOP = 104
+    AGENTIC_PANEL_RIGHT = 30
+    AGENTIC_PANEL_BOTTOM = 106
+    AGENTIC_PANEL_MAX_WIDTH = 420
+    AGENTIC_PANEL_WIDTH_RATIO = 0.34
+
+    def __init__(
+        self,
+        brain_mode: str = "harness",
+        latency_tracker: InteractionLatencyTracker | None = None,
+    ):
         super().__init__()
+        self._brain_mode = brain_mode
         self._library = CharacterLibrary()
         self._latency_tracker = latency_tracker
+        self._adapter = PyQtHarnessAdapter()
         self._settings_dialog = None
+        self._interaction_worker: HarnessInteractionWorker | None = None
         self._character_x_offset = self.DEFAULT_CHARACTER_X_OFFSET
         self._character_y_offset = self.DEFAULT_CHARACTER_Y_OFFSET
         self._character_scale = self.DEFAULT_CHARACTER_SCALE
@@ -122,6 +203,7 @@ class TransparentWindow(QMainWindow):
         self._stt_available = True
         self._stt_state = "idle"
         self._pending_javascript_calls: list[tuple[str, tuple[object, ...]]] = []
+        self._latest_agentic_event: dict[str, object] | None = None
         self._init_window()
         self._init_webview()
         self._init_drag_surface()
@@ -162,12 +244,17 @@ class TransparentWindow(QMainWindow):
         """建立 QWebEngineView 並載入本地 HTML 播放器"""
         self.web_view = QWebEngineView(self)
         self.web_view.setStyleSheet("background: transparent;")
+        self.web_view.page().setBackgroundColor(Qt.transparent)
 
         # 停用 Chromium 的任何預設右鍵選單，改由 Qt 視窗層統一處理。
         self.web_view.setContextMenuPolicy(Qt.NoContextMenu)
 
         # 掛上自訂 Page，讓前端 console 訊息可轉印至 Python Terminal。
         self.web_view.setPage(EchoesWebPage(self.web_view))
+        self._bridge = HarnessUiBridge(self)
+        self._channel = QWebChannel(self.web_view.page())
+        self._channel.registerObject("harnessBridge", self._bridge)
+        self.web_view.page().setWebChannel(self._channel)
 
         self.setCentralWidget(self.web_view)
 
@@ -457,6 +544,7 @@ class TransparentWindow(QMainWindow):
         self._flush_pending_javascript_calls()
         self._raise_overlay_widgets()
         QTimer.singleShot(120, self._restore_current_character)
+        QTimer.singleShot(160, self.refresh_agentic_ui)
 
     def _move_to_bottom_right(self):
         """將視窗定位到螢幕右下角"""
@@ -953,6 +1041,148 @@ class TransparentWindow(QMainWindow):
         self._developer_input.clear()
         self._hide_developer_input()
 
+    def submit_agentic_text(self, text: str, provider: str) -> None:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            self.set_action_status("Please enter text first.", tone="warn", timeout_ms=2200)
+            return
+        if self._interaction_worker is not None:
+            self.set_action_status("Interaction already running.", tone="warn", timeout_ms=2200)
+            return
+
+        self._set_agentic_busy(True)
+        self.set_action_status("Processing interaction...", tone="working", timeout_ms=0)
+        self._interaction_worker = HarnessInteractionWorker(self._adapter, cleaned, provider, self)
+        self._interaction_worker.finished_payload.connect(self._on_agentic_result)
+        self._interaction_worker.failed_message.connect(self._on_agentic_error)
+        self._interaction_worker.finished.connect(self._clear_interaction_worker)
+        self._interaction_worker.start()
+
+    def _on_agentic_result(self, payload: dict) -> None:
+        self._latest_agentic_event = dict(payload or {})
+        webm_key = str(payload.get("webm_key") or "").strip()
+        if webm_key:
+            self.play_action_motion(webm_key)
+        self.refresh_agentic_ui(
+            event_payload=payload,
+            message="Interaction complete.",
+            tone="idle",
+            timeoutMs=2400,
+        )
+        self._set_agentic_busy(False)
+
+    def _on_agentic_error(self, message: str) -> None:
+        self._set_agentic_busy(False)
+        self.refresh_agentic_ui(message=message, tone="error", timeoutMs=4800)
+
+    def _clear_interaction_worker(self) -> None:
+        if self._interaction_worker is not None:
+            self._interaction_worker.deleteLater()
+        self._interaction_worker = None
+
+    def toggle_skill(self, skill_id: str, enabled: bool) -> None:
+        try:
+            result = self._adapter.set_skill_enabled(skill_id, enabled)
+            status = "enabled" if result.get("enabled") else "disabled"
+            self.refresh_agentic_ui(message=f"Skill {skill_id} {status}.", tone="idle", timeoutMs=2200)
+        except Exception as exc:  # noqa: BLE001
+            self.refresh_agentic_ui(message=str(exc), tone="warn", timeoutMs=4200)
+
+    def toggle_tool(self, tool_name: str, enabled: bool) -> None:
+        try:
+            result = self._adapter.set_tool_enabled(tool_name, enabled)
+            status = "enabled" if result.get("enabled") else "disabled"
+            self.refresh_agentic_ui(message=f"Tool {tool_name} {status}.", tone="idle", timeoutMs=2200)
+        except Exception as exc:  # noqa: BLE001
+            self.refresh_agentic_ui(message=str(exc), tone="warn", timeoutMs=4200)
+
+    def add_skill(self, payload_json: str) -> None:
+        try:
+            self._adapter.add_skill(json.loads(payload_json))
+            self.refresh_agentic_ui(message="Skill added.", tone="idle", timeoutMs=2200)
+        except Exception as exc:  # noqa: BLE001
+            self.refresh_agentic_ui(message=str(exc), tone="warn", timeoutMs=4200)
+
+    def delete_skill(self, skill_id: str) -> None:
+        try:
+            result = self._adapter.delete_skill(skill_id)
+            message = "Skill disabled." if result.get("disabled") else "Skill deleted."
+            self.refresh_agentic_ui(message=message, tone="idle", timeoutMs=2200)
+        except Exception as exc:  # noqa: BLE001
+            self.refresh_agentic_ui(message=str(exc), tone="warn", timeoutMs=4200)
+
+    def add_tool_config(self, payload_json: str) -> None:
+        try:
+            self._adapter.add_tool_config(json.loads(payload_json))
+            self.refresh_agentic_ui(message="Tool config added.", tone="idle", timeoutMs=2200)
+        except Exception as exc:  # noqa: BLE001
+            self.refresh_agentic_ui(message=str(exc), tone="warn", timeoutMs=4200)
+
+    def delete_tool_config(self, tool_name: str) -> None:
+        try:
+            result = self._adapter.delete_tool_config(tool_name)
+            message = "Tool disabled." if result.get("disabled") else "Tool config deleted."
+            self.refresh_agentic_ui(message=message, tone="idle", timeoutMs=2200)
+        except Exception as exc:  # noqa: BLE001
+            self.refresh_agentic_ui(message=str(exc), tone="warn", timeoutMs=4200)
+
+    def refresh_agentic_ui(
+        self,
+        event_payload: dict | None = None,
+        message: str | None = None,
+        tone: str = "idle",
+        timeoutMs: int = 0,
+    ) -> None:
+        state = self._adapter.get_current_state()
+        state["voice"] = self._build_runtime_voice_state(state.get("voice"))
+        diagnostics = dict(state.get("diagnostics") or {})
+        diagnostics["brain_mode"] = self._brain_mode
+        state["diagnostics"] = diagnostics
+        payload = {
+            "state": state,
+            "skills": self._adapter.list_skills(),
+            "tools": self._adapter.list_tools(),
+            "message": message,
+            "tone": tone,
+            "timeoutMs": timeoutMs,
+        }
+        latest_event = event_payload or self._latest_agentic_event
+        if latest_event:
+            payload["event"] = latest_event
+        self._run_javascript("hydrateAgenticUI", payload)
+
+    def _build_runtime_voice_state(self, base_voice) -> dict:
+        voice = dict(base_voice or {})
+        stt = dict(voice.get("stt") or {})
+        tts = dict(voice.get("tts") or {})
+        if self._brain_mode != "harness":
+            import config
+
+            stt["implemented"] = True
+            stt["configured"] = bool(config.AZURE_STT_API_KEY and config.AZURE_STT_REGION)
+            stt["status"] = self._stt_state if self._stt_available else "missing"
+            stt["message"] = "STT controller ready" if self._stt_available else "STT unavailable"
+
+            tts["implemented"] = True
+            tts["configured"] = True
+            tts["status"] = "ready"
+            tts["message"] = "LangchainDev TTS runtime available"
+        voice["stt"] = stt
+        voice["tts"] = tts
+        return voice
+
+    def _set_agentic_busy(self, busy: bool) -> None:
+        self._run_javascript("setAgenticBusy", bool(busy))
+
+    def get_render_diagnostics(self) -> dict[str, object]:
+        return {
+            "brain_mode": self._brain_mode,
+            "stt_state": self._stt_state,
+            "stt_available": self._stt_available,
+            "webview_ready": self._webview_ready,
+            "latest_agentic_event": self._latest_agentic_event,
+        }
+
     def set_action_status(self, message: str, tone: str = "idle", timeout_ms: int = 0):
         self._run_javascript("setActionStatus", message, tone, timeout_ms)
 
@@ -1062,6 +1292,55 @@ class TransparentWindow(QMainWindow):
     ):
         self._run_javascript("moveCharacter", x_offset, y_offset, scale)
         self._run_javascript("setCharacterObjectPosition", object_position)
+
+    def nativeEvent(self, event_type, message):
+        if sys.platform != "win32":
+            return super().nativeEvent(event_type, message)
+
+        wm_nchittest = 0x0084
+        wm_ncrbuttonup = 0x00A5
+        htcaption = 2
+
+        try:
+            msg = ctypes.wintypes.MSG.from_address(int(message))
+            if msg.message == wm_ncrbuttonup:
+                sx = ctypes.c_short(msg.lParam & 0xFFFF).value
+                sy = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+                local = self.mapFromGlobal(QPoint(sx, sy))
+                if self.should_treat_point_as_caption(local.x(), local.y(), self.width(), self.height()):
+                    self._build_menu().exec_(QPoint(sx, sy))
+                    return True, 0
+                return super().nativeEvent(event_type, message)
+            if msg.message == wm_nchittest:
+                sx = ctypes.c_short(msg.lParam & 0xFFFF).value
+                sy = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+                local = self.mapFromGlobal(QPoint(sx, sy))
+                if self.should_treat_point_as_caption(local.x(), local.y(), self.width(), self.height()):
+                    return True, htcaption
+                return super().nativeEvent(event_type, message)
+            return super().nativeEvent(event_type, message)
+        except Exception:  # noqa: BLE001
+            return super().nativeEvent(event_type, message)
+
+    @classmethod
+    def should_treat_point_as_caption(cls, local_x: int, local_y: int, width: int, height: int) -> bool:
+        if local_x < 0 or local_y < 0 or local_x > width or local_y > height:
+            return True
+
+        panel_width = min(cls.AGENTIC_PANEL_MAX_WIDTH, int(width * cls.AGENTIC_PANEL_WIDTH_RATIO))
+        panel_left = width - cls.AGENTIC_PANEL_RIGHT - panel_width
+        panel_top = cls.AGENTIC_PANEL_TOP
+        panel_bottom = height - cls.AGENTIC_PANEL_BOTTOM
+        if panel_left <= local_x <= width - cls.AGENTIC_PANEL_RIGHT and panel_top <= local_y <= panel_bottom:
+            return False
+
+        xp_left = width - cls.XP_BADGE_RIGHT - cls.XP_BADGE_WIDTH
+        xp_top = cls.XP_BADGE_TOP
+        xp_bottom = xp_top + cls.XP_BADGE_HEIGHT
+        if xp_left <= local_x <= width - cls.XP_BADGE_RIGHT and xp_top <= local_y <= xp_bottom:
+            return False
+
+        return True
 
     @staticmethod
     def _coerce_int(value, default: int) -> int:
