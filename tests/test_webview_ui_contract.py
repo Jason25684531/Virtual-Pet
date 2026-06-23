@@ -695,3 +695,100 @@ class TestPetLayerStructureRegression:
         assert "width" in content, (
             ".room-character-anchor 應有明確 width（否則在 inset 失效時寬度為 0）"
         )
+
+
+class TestIntegratedRuntimePetPositioningContract:
+    """Runtime pet layout contract for the integrated harness/LangchainDev stage."""
+
+    def test_pet_selector_contract_uses_query_selector_all_video(self):
+        js = read_js()
+        assert 'document.querySelectorAll("video")' in js or "document.querySelectorAll('video')" in js
+        assert "actualVideoSelector" in js
+        assert "offsetParent" in js
+        assert "parentChain" in js
+
+    def test_stage_diagnostics_include_centering_and_container_fields(self):
+        js = read_js()
+        for token in (
+            "visible=",
+            "expectedCenteredX=",
+            "centeredDeltaX=",
+            "petContainerRect=",
+            "actualVideoSelector=",
+        ):
+            assert token in js
+
+    def test_pet_video_transform_is_none(self):
+        css = read_css()
+        import re
+        block = re.search(r'#pet-video\s*\{([^}]+)\}', css, re.DOTALL)
+        assert block, "#pet-video must have a canonical CSS block"
+        content = block.group(1)
+        assert "transform: none" in content or "transform:none" in content
+        assert "scale(" not in content
+        assert "translate" not in content
+
+    def test_pet_scale_is_applied_to_inner_container_not_video(self):
+        css = read_css()
+        import re
+        character_block = re.search(r'\.room-character\s*\{([^}]+)\}', css, re.DOTALL)
+        assert character_block, ".room-character CSS block must exist"
+        assert "scale(var(--pet-scale" in character_block.group(1)
+
+    def test_stage_background_clear_background(self):
+        css = read_css()
+        import re
+        block = re.search(r'#stage-background\s*\{([^}]+)\}', css, re.DOTALL)
+        assert block, "#stage-background CSS block must exist"
+        content = block.group(1)
+        assert "background: transparent" in content or "background:transparent" in content
+
+    def test_legacy_room_stage_positioning_removed(self):
+        css = read_css()
+        assert ".room-stage" not in css
+
+    def test_canonical_pet_video_selector_not_grouped_with_legacy_aliases(self):
+        css = read_css()
+        import re
+        block = re.search(r'#pet-video\s*\{([^}]+)\}', css, re.DOTALL)
+        assert block, "#pet-video must be controlled by canonical CSS"
+        prelude = css[max(0, block.start() - 80):block.start()]
+        assert "#character-video" not in prelude
+        assert ".pet-video" not in prelude
+        assert ".character-video" not in prelude
+        assert ".stage-pet" not in prelude
+
+    def test_panel_and_bottom_bar_are_overlays(self):
+        css = read_css()
+        import re
+        panel = re.search(r'#stage-agentic-panel\s*\{([^}]+)\}', css, re.DOTALL)
+        bottom = re.search(r'#stage-bottom-ui\s*\{([^}]+)\}', css, re.DOTALL)
+        assert panel and bottom
+        assert "position: fixed" in panel.group(1) or "position:fixed" in panel.group(1)
+        assert "position: fixed" in bottom.group(1) or "position:fixed" in bottom.group(1) or "position: absolute" in bottom.group(1)
+
+    def test_live_and_harness_route_attributes_and_results_remain_separate(self):
+        js = read_js()
+        assert "sendLiveText" in js
+        assert "sendText" in js
+        assert "path === 'live'" in js
+        live_branch = js[js.find("if (path === 'live')"):js.find("if (agenticBusy)")]
+        assert "sendLiveText" in live_branch
+        assert "sendText" not in live_branch
+
+    def test_no_configured_not_implemented_or_raw_secret_literals_in_ui(self):
+        combined = read_html() + read_js()
+        assert "configured_not_implemented" not in combined
+        for raw_secret in (
+            "sk-test-chatgpt-secret",
+            "azure-test-secret",
+            "eleven-test-secret",
+        ):
+            assert raw_secret not in combined
+
+    def test_project_relative_background_sources_are_normalized_for_web_container(self):
+        js = read_js()
+        assert "normalizeProjectAssetSource" in js
+        assert "'../../' + trimmed" in js or '"../../" + trimmed' in js
+        set_bg = js[js.find("window.setRoomBackground"):js.find("window.clearRoomBackground")]
+        assert "normalizeProjectAssetSource(source)" in set_bg

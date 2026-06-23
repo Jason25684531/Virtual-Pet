@@ -39,3 +39,4 @@ local_memory.db
 data/*.db
 debug/events/*.json
 debug/ui_smoke_*.txt
+debug/stage_verify/

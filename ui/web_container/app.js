@@ -134,6 +134,17 @@
             .replace(/'/g, '&#39;');
     }
 
+    function normalizeProjectAssetSource(source) {
+        var trimmed = String(source || '').trim();
+        if (!trimmed) {
+            return '';
+        }
+        if (/^(?:[a-z][a-z0-9+.-]*:|\/|\.\/|\.\.\/)/i.test(trimmed)) {
+            return trimmed;
+        }
+        return '../../' + trimmed.replace(/^\/+/, '');
+    }
+
     function setDiagBridgeStatus(text, isReady) {
         if (!bridgeStatusEl) return;
         bridgeStatusEl.textContent = 'Bridge: ' + text;
@@ -181,6 +192,97 @@
         return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
     }
 
+    var StageVideoDiagnostics = {
+        queryVideos: function () {
+            return Array.prototype.slice.call(document.querySelectorAll("video"));
+        },
+
+        selectorFor: function (element) {
+            if (!element || !element.tagName) {
+                return 'null';
+            }
+            var selector = element.tagName.toLowerCase();
+            if (element.id) {
+                selector += '#' + element.id;
+            }
+            if (element.className && typeof element.className === 'string') {
+                selector += '.' + element.className.trim().split(/\s+/).filter(Boolean).join('.');
+            }
+            return selector;
+        },
+
+        rectFor: function (element) {
+            if (!element) {
+                return 'null';
+            }
+            var rect = element.getBoundingClientRect();
+            return Math.round(rect.left) + ',' + Math.round(rect.top) +
+                ' ' + Math.round(rect.width) + 'x' + Math.round(rect.height);
+        },
+
+        parentChainFor: function (element) {
+            var chain = [];
+            var cursor = element;
+            while (cursor && cursor.nodeType === 1 && chain.length < 10) {
+                chain.push(this.selectorFor(cursor));
+                cursor = cursor.parentElement;
+            }
+            return chain.join(' <- ');
+        },
+
+        computedStyleFor: function (element) {
+            if (!element) {
+                return 'null';
+            }
+            var style = window.getComputedStyle(element);
+            return [
+                'display=' + style.display,
+                'visibility=' + style.visibility,
+                'position=' + style.position,
+                'left=' + style.left,
+                'right=' + style.right,
+                'bottom=' + style.bottom,
+                'width=' + style.width,
+                'height=' + style.height,
+                'objectFit=' + style.objectFit,
+                'transform=' + style.transform,
+                'zIndex=' + style.zIndex
+            ].join(';');
+        },
+
+        findActualPetVideo: function (videos) {
+            var petLayer = document.getElementById('stage-pet-layer');
+            var directPetVideo = null;
+            var firstPetLayerVideo = null;
+            videos.forEach(function (candidate) {
+                if (candidate.id === 'pet-video') {
+                    directPetVideo = candidate;
+                }
+                if (!firstPetLayerVideo && petLayer && petLayer.contains(candidate) && candidate.id !== 'panel-video') {
+                    firstPetLayerVideo = candidate;
+                }
+            });
+            return directPetVideo || firstPetLayerVideo || videos[0] || null;
+        },
+
+        logVideos: function (videos) {
+            var self = this;
+            videos.forEach(function (candidate, index) {
+                console.log(
+                    '[ECHOES VIDEO DIAG]',
+                    'index=' + index,
+                    'selector=' + self.selectorFor(candidate),
+                    'id=' + (candidate.id || '-'),
+                    'class=' + (candidate.className || '-'),
+                    'parentChain=' + self.parentChainFor(candidate),
+                    'offsetParent=' + self.selectorFor(candidate.offsetParent),
+                    'computed=' + self.computedStyleFor(candidate),
+                    'rect=' + self.rectFor(candidate)
+                );
+            });
+        }
+    };
+
     function renderStageDiagnostics() {
         var rect = stageRoot ? stageRoot.getBoundingClientRect() : { width: 0, height: 0 };
         setText(diagStageSize, Math.round(rect.width) + 'x' + Math.round(rect.height));
@@ -192,10 +294,17 @@
 
         var petLayer = document.getElementById('stage-pet-layer');
         var petLayerRect = petLayer ? petLayer.getBoundingClientRect() : null;
-        var vr = video ? video.getBoundingClientRect() : null;
+        var runtimeVideos = StageVideoDiagnostics.queryVideos();
+        var actualVideo = StageVideoDiagnostics.findActualPetVideo(runtimeVideos);
+        var petContainer = actualVideo
+            ? actualVideo.closest('#pet-character') || document.getElementById('pet-character')
+            : document.getElementById('pet-character');
+        var petContainerRect = petContainer ? petContainer.getBoundingClientRect() : null;
+        var vr = actualVideo ? actualVideo.getBoundingClientRect() : null;
+        var videoStyle = actualVideo ? window.getComputedStyle(actualVideo) : null;
         var agenticPanel = document.getElementById('agentic-panel');
         var panelWidth = agenticPanel ? Math.round(agenticPanel.getBoundingClientRect().width) : 0;
-        var videoLoaded = video && video.src && video.src !== '' && video.src !== window.location.href;
+        var videoLoaded = actualVideo && actualVideo.src && actualVideo.src !== '' && actualVideo.src !== window.location.href;
 
         var stageWidth = Math.round(rect.width);
         var stageHeight = Math.round(rect.height);
@@ -206,24 +315,42 @@
             ? Math.round((stageWidth - videoWidth) / 2) : 0;
         var centeredDeltaX = videoX - expectedCenteredX;
         var visible = vr
-            ? (vr.right > 0 && vr.left < stageWidth && vr.bottom > 0 && vr.top < stageHeight)
+            ? (
+                vr.width > 0 &&
+                vr.height > 0 &&
+                vr.right > 0 &&
+                vr.left < stageWidth &&
+                vr.bottom > 0 &&
+                vr.top < stageHeight &&
+                (!videoStyle || (videoStyle.display !== 'none' && videoStyle.visibility !== 'hidden'))
+            )
             : false;
+        var actualVideoSelector = StageVideoDiagnostics.selectorFor(actualVideo);
+        var backgroundState = backgroundStatusEl ? backgroundStatusEl.textContent : 'Background: pending';
+
+        StageVideoDiagnostics.logVideos(runtimeVideos);
 
         console.log(
             '[ECHOES STAGE DIAG]',
             'stage=' + stageWidth + 'x' + stageHeight,
             'petLayer=' + (petLayerRect ? Math.round(petLayerRect.width) + 'x' + Math.round(petLayerRect.height) : 'null'),
+            'petContainerRect=' + (petContainerRect ? Math.round(petContainerRect.left) + ',' + Math.round(petContainerRect.top) + ' ' + Math.round(petContainerRect.width) + 'x' + Math.round(petContainerRect.height) : 'null'),
             'videoRect=' + (vr ? videoX + ',' + videoY + ' ' + videoWidth + 'x' + Math.round(vr.height) : 'null'),
+            'actualVideoSelector=' + actualVideoSelector,
             'anchor=' + getComputedCssValue('--pet-anchor-x'),
             'scale=' + getComputedCssValue('--pet-scale'),
             'panelW=' + panelWidth,
             'videoLoaded=' + videoLoaded,
             'visible=' + visible,
-            'centeredDeltaX=' + centeredDeltaX
+            'expectedCenteredX=' + expectedCenteredX,
+            'centeredDeltaX=' + centeredDeltaX,
+            'videoCount=' + runtimeVideos.length,
+            'background=' + backgroundState
         );
     }
 
     window.echoes.debugStageRects = function () {
+        StageVideoDiagnostics.logVideos(StageVideoDiagnostics.queryVideos());
         var chain = [
             { label: '#stage-root', el: document.getElementById('stage-root') },
             { label: '.room-scene', el: document.querySelector('.room-scene') },
@@ -859,7 +986,7 @@
     window.setRoomBackground = function (source) {
         var bg = stageBackground ? stageBackground.querySelector('img.room-background') : null;
         if (bg && source) {
-            bg.src = source;
+            bg.src = normalizeProjectAssetSource(source);
         }
     };
 
