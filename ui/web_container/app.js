@@ -183,7 +183,7 @@
     function updateStageScale() {
         var viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1;
         var viewportHeight = window.innerHeight || document.documentElement.clientHeight || 1;
-        var scale = Math.min(viewportWidth / 2560, viewportHeight / 1440);
+        var scale = Math.min(viewportWidth / 1920, viewportHeight / 1080);
         document.documentElement.style.setProperty('--stage-scale', String(scale));
         renderStageDiagnostics();
     }

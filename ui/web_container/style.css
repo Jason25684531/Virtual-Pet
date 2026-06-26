@@ -10,17 +10,17 @@
     --success: #7bdfbb;
     --warning: #ffcf66;
     --danger: #ff8f8f;
-    --stage-design-width: 2560;
-    --stage-design-height: 1440;
+    --stage-design-width: 1920;
+    --stage-design-height: 1080;
     --stage-scale: 1;
     --agentic-panel-offset: 420px;
-    --pet-width: min(820px, 42vw);
-    --pet-height: min(980px, 76vh);
+    --pet-width: calc(820px * var(--stage-scale, 1));
+    --pet-height: calc(980px * var(--stage-scale, 1));
     --pet-z-index: 10;
     --pet-scale: 1;
     --pet-anchor-shift: 0px;
     --pet-floor-offset: 0px;
-    --pet-anchor-x: calc(50% + var(--pet-anchor-shift));
+    --pet-anchor-x: calc((100vw - var(--agentic-panel-offset)) / 2 + var(--pet-anchor-shift));
     --pet-floor-y: calc(2% + var(--pet-floor-offset));
 }
 
