@@ -23,7 +23,7 @@ from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineSettings, QWebEng
 from character_library import ASSETS_WEBM_DIR, CharacterLibrary, MOTION_MAP
 from interaction_trace import InteractionLatencyTracker
 from action_services import FIXED_NEWS_SCRIPT
-from brain_mode import build_runtime_mode_contract
+
 from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
 from pet_harness.ui.pyqt_harness_adapter import PyQtHarnessAdapter
 from ui.background_resolver import BackgroundResolver
@@ -241,7 +241,7 @@ class TransparentWindow(QMainWindow):
         self._brain_mode = brain_mode
         self._library = CharacterLibrary()
         self._latency_tracker = latency_tracker
-        self._runtime_contract = build_runtime_mode_contract(self._brain_mode)
+        self._runtime_contract = {"brain_mode": "harness", "harness_runtime_available": True, "live_runtime_available": False, "openclaw_enabled": False}
         self._background_resolver = BackgroundResolver()
         self._voice_status_adapter = VoiceRuntimeStatusAdapter()
         self._adapter = PyQtHarnessAdapter(
@@ -621,7 +621,7 @@ class TransparentWindow(QMainWindow):
         if runtime_contract is not None:
             self._runtime_contract = dict(runtime_contract)
         else:
-            self._runtime_contract = build_runtime_mode_contract(self._brain_mode)
+            self._runtime_contract = {"brain_mode": "harness", "harness_runtime_available": True, "live_runtime_available": False, "openclaw_enabled": False}
         if live_runtime_available is not None:
             self._runtime_contract["live_runtime_available"] = bool(live_runtime_available)
         self._live_runtime_available = bool(self._runtime_contract.get("live_runtime_available"))

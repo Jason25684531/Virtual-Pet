@@ -232,8 +232,7 @@ body {
 .conversation-panel__queue,
 .panel-card__eyebrow,
 .field-label,
-.action-status__label,
-.diag-grid span {
+.action-status__label {
     font-size: 11px;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -309,8 +308,7 @@ body {
 .inline-row,
 .details-summary,
 .entity-card__head,
-.entity-card__actions,
-.diag-row {
+.entity-card__actions {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -496,7 +494,6 @@ body[data-agentic-panel="collapsed"] .agentic-panel-toggle {
     right: 20px;
 }
 
-.dashboard-tabs,
 .panel-card {
     border: 2px solid var(--panel-border);
     border-radius: 18px;
@@ -505,29 +502,14 @@ body[data-agentic-panel="collapsed"] .agentic-panel-toggle {
     backdrop-filter: blur(14px);
 }
 
-.dashboard-tabs {
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 6px;
-    padding: 8px;
-}
-
-.tab-button,
 .primary-button,
 .ghost-button,
 .secondary-button,
-.danger-button,
-.scenario-button {
+.danger-button {
     border: none;
     border-radius: 12px;
     font: inherit;
     font-weight: 700;
-}
-
-.tab-button {
-    min-height: 34px;
-    background: rgba(255, 243, 233, 0.08);
-    color: var(--text-secondary);
 }
 
 .panel-card {
@@ -591,8 +573,7 @@ body[data-agentic-panel="collapsed"] .agentic-panel-toggle {
 .primary-button,
 .ghost-button,
 .secondary-button,
-.danger-button,
-.scenario-button {
+.danger-button {
     cursor: pointer;
     transition: transform 0.2s ease, opacity 0.2s ease, background 0.2s ease;
 }
@@ -600,8 +581,7 @@ body[data-agentic-panel="collapsed"] .agentic-panel-toggle {
 .primary-button:hover,
 .ghost-button:hover,
 .secondary-button:hover,
-.danger-button:hover,
-.scenario-button:hover {
+.danger-button:hover {
     transform: translateY(-1px);
 }
 
@@ -634,80 +614,12 @@ body[data-agentic-panel="collapsed"] .agentic-panel-toggle {
     color: var(--danger);
 }
 
-.scenario-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
-    margin-top: 12px;
-}
-
-.scenario-button {
-    min-height: 40px;
-    padding: 8px 10px;
-    background: rgba(255, 243, 233, 0.08);
-    color: var(--text-primary);
-    text-align: left;
-}
-
-.result-grid {
-    display: grid;
-    gap: 8px;
-}
-
-.result-grid--compact {
-    margin-top: 12px;
-}
-
-.result-row {
-    display: grid;
-    grid-template-columns: 120px 1fr;
-    gap: 10px;
-    align-items: start;
-    padding: 10px 12px;
+.entity-card {
     border-radius: 16px;
     background: rgba(255, 243, 233, 0.06);
 }
 
-.result-row span {
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--text-secondary);
-}
-
-.result-row p,
-.diag-grid p {
-    font-size: 12px;
-    line-height: 1.4;
-    word-break: break-word;
-}
-
-.warnings-box,
-.entity-card,
-.diag-grid div {
-    border-radius: 16px;
-    background: rgba(255, 243, 233, 0.06);
-}
-
-.warnings-box {
-    margin-top: 12px;
-    padding: 12px;
-}
-
-.warnings-box__label {
-    margin-bottom: 8px;
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--warning);
-}
-
-.warnings-list {
-    padding-left: 18px;
-    font-size: 12px;
-    line-height: 1.5;
-}
-
-.entity-list,
-.editor-form {
+.entity-list {
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -726,15 +638,12 @@ body[data-agentic-panel="collapsed"] .agentic-panel-toggle {
     font-weight: 700;
 }
 
-.entity-card__meta,
-.diag-last-action,
-.checkbox-field {
+.entity-card__meta {
     font-size: 12px;
     color: var(--text-secondary);
 }
 
-.status-pill,
-.diag-pill {
+.status-pill {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -750,56 +659,6 @@ body[data-agentic-panel="collapsed"] .agentic-panel-toggle {
     color: var(--text-primary);
 }
 
-.diag-card {
-    padding: 10px 14px;
-}
-
-.diag-pill {
-    background: rgba(255, 143, 143, 0.18);
-    color: var(--danger);
-}
-
-.diag-pill[data-ready="true"] {
-    background: rgba(123, 223, 187, 0.18);
-    color: var(--success);
-}
-
-.diag-last-action {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 220px;
-}
-
-.diag-error {
-    margin-top: 6px;
-    padding: 6px 10px;
-    border-radius: 10px;
-    background: rgba(255, 121, 121, 0.14);
-    color: var(--danger);
-    font-size: 11px;
-    line-height: 1.45;
-}
-
-.diag-group {
-    padding: 0 16px 16px;
-}
-
-.diag-group__title {
-    margin-bottom: 8px;
-    font-size: 13px;
-}
-
-.diag-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
-}
-
-.diag-grid div {
-    min-width: 0;
-    padding: 9px 10px;
-}
 
 @media (max-width: 1280px) {
     body[data-agentic-panel="expanded"] {
@@ -855,11 +714,6 @@ body[data-agentic-panel="collapsed"] .agentic-panel-toggle {
         width: 120px;
         height: 40px;
         writing-mode: horizontal-tb;
-    }
-
-    .scenario-grid,
-    .diag-grid {
-        grid-template-columns: 1fr;
     }
 
     .room-character-anchor {

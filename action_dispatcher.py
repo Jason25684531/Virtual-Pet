@@ -24,7 +24,7 @@ from action_services import (
     resolve_fixed_intent_source_label,
 )
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
-from api_client.brain_engine import sanitize_tts_text
+from text_utils import sanitize_tts_text
 from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker  # noqa: F401 — 保留供降級使用
 from api_client.voai_client import VoAIStreamingTTSWorker
 from audio_worker import AudioStreamWorker

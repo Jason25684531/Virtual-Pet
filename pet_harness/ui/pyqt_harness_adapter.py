@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from brain_mode import build_runtime_mode_contract
+
 from pet_harness.agent.provider_factory import create_provider
 from pet_harness.engine.harness_engine import PetHarnessEngine
 from pet_harness.models.events import PetEvent
@@ -56,7 +56,8 @@ class PyQtHarnessAdapter:
         self._brain_mode = str(brain_mode or "harness")
         self._background_resolver = background_resolver or BackgroundResolver(project_root=self._project_root)
         self._voice_status_adapter = voice_status_adapter or VoiceRuntimeStatusAdapter()
-        self._runtime_contract = dict(runtime_contract or build_runtime_mode_contract(self._brain_mode))
+        _default_contract = {"brain_mode": "harness", "harness_runtime_available": True, "live_runtime_available": False, "openclaw_enabled": False}
+        self._runtime_contract = dict(runtime_contract or _default_contract)
         self._bootstrap_primary_provider()
         self._refresh_runtime()
 
@@ -77,7 +78,7 @@ class PyQtHarnessAdapter:
         if runtime_contract is not None:
             self._runtime_contract = dict(runtime_contract)
         else:
-            self._runtime_contract = dict(build_runtime_mode_contract(self._brain_mode))
+            self._runtime_contract = {"brain_mode": "harness", "harness_runtime_available": True, "live_runtime_available": False, "openclaw_enabled": False}
 
     def handle_text_input(self, text: str, provider: str = "mock") -> dict[str, Any]:
         cleaned = str(text or "").strip()
