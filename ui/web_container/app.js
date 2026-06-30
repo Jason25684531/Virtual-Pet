@@ -90,10 +90,8 @@
     }
 
     function updateStageScale() {
-        var viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1;
-        var viewportHeight = window.innerHeight || document.documentElement.clientHeight || 1;
-        var scale = Math.min(viewportWidth / 2560, viewportHeight / 1440);
-        document.documentElement.style.setProperty('--stage-scale', String(scale));
+        // 1920x1080 鎖定，不需要動態縮放
+        document.documentElement.style.setProperty('--stage-scale', '1');
     }
 
     function syncAgenticPanelOffset() {
@@ -480,15 +478,11 @@
         if (bg) bg.removeAttribute('src');
     };
 
-    window.moveCharacter = function (x, y, scale, cropZoom) {
+    window.moveCharacter = function (x, y, scale) {
         document.documentElement.style.setProperty('--pet-anchor-shift', Number(x || 0) + 'px');
         document.documentElement.style.setProperty('--pet-floor-offset', Number(y || 0) + 'px');
         if (scale != null) {
             document.documentElement.style.setProperty('--pet-scale', String(scale));
-        }
-        if (cropZoom != null) {
-            var clamped = Math.min(8, Math.max(1, Number(cropZoom)));
-            document.documentElement.style.setProperty('--video-crop-zoom', String(clamped));
         }
     };
 

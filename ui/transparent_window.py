@@ -203,8 +203,8 @@ class TransparentWindow(QMainWindow):
     RAW_JAVASCRIPT_MARKER = "__raw_javascript__"
 
     # 視窗尺寸（可根據需求調整，或改為全螢幕）：
-    WINDOW_WIDTH = 2560
-    WINDOW_HEIGHT = 1440
+    WINDOW_WIDTH = 1920
+    WINDOW_HEIGHT = 1080
     DRAG_SURFACE_HEIGHT = 160
     DEV_INPUT_WIDTH = 560
     DEV_INPUT_HEIGHT = 44
@@ -276,7 +276,6 @@ class TransparentWindow(QMainWindow):
         self._character_y_offset = self.DEFAULT_CHARACTER_Y_OFFSET
         self._character_scale = self.DEFAULT_CHARACTER_SCALE
         self._character_object_position = self.DEFAULT_CHARACTER_OBJECT_POSITION
-        self._character_video_crop_zoom = 1.0
         self._background_status = "fallback_placeholder"
         self._background_url: str | None = None
         self._live_runtime_available = self._runtime_contract["live_runtime_available"]
@@ -1511,17 +1510,6 @@ class TransparentWindow(QMainWindow):
             layout.get("object_position"),
             self.DEFAULT_CHARACTER_OBJECT_POSITION,
         )
-        raw_crop_zoom = layout.get("video_crop_zoom")
-        if raw_crop_zoom is not None:
-            try:
-                parsed = float(raw_crop_zoom)
-            except (TypeError, ValueError):
-                parsed = 1.0
-            if parsed < 1.0 or parsed > 8.0:
-                print(f"[ECHOES] WARNING: video_crop_zoom {raw_crop_zoom} 超出範圍 [1.0, 8.0]，已 clamp。")
-            self._character_video_crop_zoom = max(1.0, min(8.0, parsed))
-        else:
-            self._character_video_crop_zoom = 1.0
         self.apply_character_position()
 
     def move_character_to(self, x_offset: int, y_offset: int):
@@ -1540,7 +1528,7 @@ class TransparentWindow(QMainWindow):
         scale: float,
         object_position: str,
     ):
-        self._run_javascript("moveCharacter", x_offset, y_offset, scale, self._character_video_crop_zoom)
+        self._run_javascript("moveCharacter", x_offset, y_offset, scale)
         self._run_javascript("setCharacterObjectPosition", object_position)
 
     def nativeEvent(self, event_type, message):

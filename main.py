@@ -19,10 +19,15 @@ def _configure_sigint_timer(app):
 
 
 def _create_application(argv):
+    import os
     from PyQt5.QtCore import QCoreApplication, Qt
     from PyQt5.QtWidgets import QApplication
 
+    # 禁用 Qt 自動 DPI 縮放，讓視窗以物理像素為準
+    os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "0"
+    os.environ["QT_SCALE_FACTOR"] = "1"
     QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
+    QCoreApplication.setAttribute(Qt.AA_DisableHighDpiScaling, True)
     return QApplication(argv)
 
 
