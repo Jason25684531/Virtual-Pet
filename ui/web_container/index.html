@@ -20,12 +20,14 @@
 
             <div id="stage-pet-layer" class="stage-pet-layer" aria-hidden="true">
                 <div class="room-floor-glow"></div>
+                <div id="panel-video-anchor" class="room-panel-anchor">
+                    <video id="panel-video" class="room-panel-video" muted playsinline></video>
+                </div>
                 <div id="pet-stage-anchor" class="room-character-anchor">
                     <div id="pet-character" class="room-character">
-                        <div class="room-character-shadow"></div>
                         <video id="pet-video" autoplay loop muted playsinline></video>
-                        <video id="panel-video" class="room-panel-video" muted playsinline></video>
                     </div>
+                    <div class="room-character-shadow"></div>
                 </div>
             </div>
 
@@ -79,6 +81,25 @@
                 </button>
 
                 <aside id="agentic-panel" class="agentic-panel" aria-label="Agentic controls">
+                    <details class="panel-card panel-card--details" open>
+                        <summary class="details-summary">
+                            <span>Runtime Controls</span>
+                            <span id="runtime-stt-status" class="status-pill">idle</span>
+                        </summary>
+                        <div id="runtime-controls" class="runtime-controls">
+                            <p class="panel-help">Primary runtime actions live here to avoid bottom overlay click conflicts.</p>
+                            <div class="runtime-control-grid runtime-control-grid--primary">
+                                <button id="runtime-stt-button" class="primary-button" type="button">Start STT</button>
+                                <button id="runtime-reset-button" class="ghost-button" type="button">Reset</button>
+                            </div>
+                            <div class="runtime-control-grid runtime-control-grid--quick">
+                                <button id="runtime-joke-button" class="secondary-button" type="button">Joke</button>
+                                <button id="runtime-share-button" class="secondary-button" type="button">share</button>
+                                <button id="runtime-music-button" class="secondary-button" type="button">Music</button>
+                                <button id="runtime-news-button" class="secondary-button" type="button">News</button>
+                            </div>
+                        </div>
+                    </details>
 
                     <details class="panel-card panel-card--details" open>
                         <summary class="details-summary">

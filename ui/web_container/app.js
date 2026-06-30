@@ -19,6 +19,13 @@
     var xpDisplay = document.getElementById('xp-display');
     var xpProgressBar = document.getElementById('xp-progress-bar');
     var xpThresholdDisplay = document.getElementById('xp-threshold-display');
+    var runtimeSttStatus = document.getElementById('runtime-stt-status');
+    var runtimeSttButton = document.getElementById('runtime-stt-button');
+    var runtimeResetButton = document.getElementById('runtime-reset-button');
+    var runtimeJokeButton = document.getElementById('runtime-joke-button');
+    var runtimeShareButton = document.getElementById('runtime-share-button');
+    var runtimeMusicButton = document.getElementById('runtime-music-button');
+    var runtimeNewsButton = document.getElementById('runtime-news-button');
     var skillList = document.getElementById('skill-list');
     var skillCountBadge = document.getElementById('skill-count-badge');
     var refreshSkillsButton = document.getElementById('refresh-skills-button');
@@ -85,7 +92,7 @@
     function updateStageScale() {
         var viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1;
         var viewportHeight = window.innerHeight || document.documentElement.clientHeight || 1;
-        var scale = Math.min(viewportWidth / 1920, viewportHeight / 1080);
+        var scale = Math.min(viewportWidth / 2560, viewportHeight / 1440);
         document.documentElement.style.setProperty('--stage-scale', String(scale));
     }
 
@@ -250,6 +257,23 @@
         renderBackgroundStatus(state.background || null);
     }
 
+    function renderRuntimeControls(runtimeControls) {
+        var controls = runtimeControls || {};
+        var stt = controls.stt || {};
+        if (runtimeSttStatus) {
+            runtimeSttStatus.textContent = stt.statusLabel || stt.state || 'idle';
+        }
+        if (runtimeSttButton) {
+            runtimeSttButton.textContent = stt.label || '開始收音';
+            runtimeSttButton.disabled = stt.enabled === false;
+            runtimeSttButton.dataset.state = stt.state || 'idle';
+        }
+        if (runtimeResetButton) {
+            runtimeResetButton.textContent = 'Reset';
+            runtimeResetButton.disabled = controls.reset && controls.reset.enabled === false;
+        }
+    }
+
     // ── Bridge 呼叫 ───────────────────────────────────────────
 
     function callBridge(method) {
@@ -268,6 +292,36 @@
     function setupForms() {
         if (panelToggleButton) {
             panelToggleButton.addEventListener('click', toggleAgenticPanel);
+        }
+        if (runtimeSttButton) {
+            runtimeSttButton.addEventListener('click', function () {
+                callBridge('toggleStt');
+            });
+        }
+        if (runtimeResetButton) {
+            runtimeResetButton.addEventListener('click', function () {
+                callBridge('resetRuntime');
+            });
+        }
+        if (runtimeJokeButton) {
+            runtimeJokeButton.addEventListener('click', function () {
+                callBridge('triggerQuickIntent', 'joke');
+            });
+        }
+        if (runtimeShareButton) {
+            runtimeShareButton.addEventListener('click', function () {
+                callBridge('triggerQuickIntent', 'share');
+            });
+        }
+        if (runtimeMusicButton) {
+            runtimeMusicButton.addEventListener('click', function () {
+                callBridge('triggerOverlayAction', 'play_music');
+            });
+        }
+        if (runtimeNewsButton) {
+            runtimeNewsButton.addEventListener('click', function () {
+                callBridge('triggerOverlayAction', 'report_news');
+            });
         }
         if (refreshSkillsButton) {
             refreshSkillsButton.addEventListener('click', function () {
@@ -383,10 +437,15 @@
     window.hydrateAgenticUI = function (payload) {
         payload = payload || {};
         renderState(payload.state || null);
+        renderRuntimeControls(payload.runtimeControls || null);
         renderSkills(payload.skills || []);
         if (payload.message) {
             setStatus(payload.message, payload.tone || 'idle', payload.timeoutMs || 0);
         }
+    };
+
+    window.updateRuntimeControls = function (runtimeControls) {
+        renderRuntimeControls(runtimeControls || null);
     };
 
     window.echoes.setIdleMotionCandidates = function (candidates) {
@@ -421,11 +480,15 @@
         if (bg) bg.removeAttribute('src');
     };
 
-    window.moveCharacter = function (x, y, scale) {
+    window.moveCharacter = function (x, y, scale, cropZoom) {
         document.documentElement.style.setProperty('--pet-anchor-shift', Number(x || 0) + 'px');
         document.documentElement.style.setProperty('--pet-floor-offset', Number(y || 0) + 'px');
         if (scale != null) {
             document.documentElement.style.setProperty('--pet-scale', String(scale));
+        }
+        if (cropZoom != null) {
+            var clamped = Math.min(8, Math.max(1, Number(cropZoom)));
+            document.documentElement.style.setProperty('--video-crop-zoom', String(clamped));
         }
     };
 

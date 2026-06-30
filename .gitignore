@@ -11,6 +11,7 @@ openspec/
 .cursor/
 .agent/
 .agentic/
+.serena/
 
 # 日誌檔案 (保留目錄結構)
 logs/*.log

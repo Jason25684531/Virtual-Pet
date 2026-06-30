@@ -65,8 +65,12 @@ BRIDGE_CONTRACT = {
         "deleteSkill",
         "deleteToolConfig",
         "refreshState",
+        "resetRuntime",
         "sendLiveText",
         "sendText",
+        "toggleStt",
+        "triggerOverlayAction",
+        "triggerQuickIntent",
         "toggleSkill",
         "toggleTool",
     ],
@@ -140,6 +144,10 @@ class HarnessUiBridge(QObject):
     def refreshState(self) -> None:
         self._window.refresh_agentic_ui()
 
+    @pyqtSlot()
+    def resetRuntime(self) -> None:
+        self._window.request_runtime_reset()
+
     @pyqtSlot(str, str)
     def sendText(self, text: str, provider: str) -> None:
         self._window.submit_agentic_text(text, provider)
@@ -155,6 +163,18 @@ class HarnessUiBridge(QObject):
     @pyqtSlot(str, bool)
     def toggleTool(self, tool_name: str, enabled: bool) -> None:
         self._window.toggle_tool(tool_name, enabled)
+
+    @pyqtSlot()
+    def toggleStt(self) -> None:
+        self._window.toggle_stt_from_bridge()
+
+    @pyqtSlot(str)
+    def triggerOverlayAction(self, action_name: str) -> None:
+        self._window.trigger_overlay_action_from_bridge(action_name)
+
+    @pyqtSlot(str)
+    def triggerQuickIntent(self, intent_name: str) -> None:
+        self._window.trigger_quick_intent_from_bridge(intent_name)
 
     @pyqtSlot(str)
     def addSkill(self, payload_json: str) -> None:
@@ -183,8 +203,8 @@ class TransparentWindow(QMainWindow):
     RAW_JAVASCRIPT_MARKER = "__raw_javascript__"
 
     # 視窗尺寸（可根據需求調整，或改為全螢幕）：
-    WINDOW_WIDTH = 1920
-    WINDOW_HEIGHT = 1080
+    WINDOW_WIDTH = 2560
+    WINDOW_HEIGHT = 1440
     DRAG_SURFACE_HEIGHT = 160
     DEV_INPUT_WIDTH = 560
     DEV_INPUT_HEIGHT = 44
@@ -256,13 +276,14 @@ class TransparentWindow(QMainWindow):
         self._character_y_offset = self.DEFAULT_CHARACTER_Y_OFFSET
         self._character_scale = self.DEFAULT_CHARACTER_SCALE
         self._character_object_position = self.DEFAULT_CHARACTER_OBJECT_POSITION
+        self._character_video_crop_zoom = 1.0
         self._background_status = "fallback_placeholder"
         self._background_url: str | None = None
         self._live_runtime_available = self._runtime_contract["live_runtime_available"]
         self._webview_ready = False
         self._drag_pos = None
         self._stt_listening = False
-        self._stt_available = True
+        self._stt_available = bool(self._runtime_contract["live_runtime_available"])
         self._stt_state = "idle"
         self._pending_javascript_calls: list[tuple[str, tuple[object, ...]]] = []
         self._latest_agentic_event: dict[str, object] | None = None
@@ -270,9 +291,6 @@ class TransparentWindow(QMainWindow):
         self._init_webview()
         self._init_drag_surface()
         self._init_developer_input()
-        self._init_stt_button()
-        self._init_reset_button()
-        self._init_fixed_intent_buttons()
         from action_dispatcher import ActionDispatcher
         self._action_dispatcher = ActionDispatcher(
             self,
@@ -471,9 +489,91 @@ class TransparentWindow(QMainWindow):
             "}"
         )
 
+    def _get_stt_control_descriptor(self) -> dict[str, object]:
+        state = "unavailable" if not self._stt_available else self._stt_state
+        if state == "unavailable":
+            return {
+                "label": "STT 不可用",
+                "statusLabel": "未連線",
+                "state": state,
+                "enabled": False,
+                "background": "rgba(92, 92, 92, 180)",
+                "border": "rgba(190, 190, 190, 110)",
+            }
+        if state == "starting":
+            return {
+                "label": "STT 啟動中",
+                "statusLabel": "啟動中",
+                "state": state,
+                "enabled": False,
+                "background": "rgba(88, 120, 160, 205)",
+                "border": "rgba(218, 234, 255, 140)",
+            }
+        if state == "listening":
+            return {
+                "label": "停止聆聽",
+                "statusLabel": "收音中",
+                "state": state,
+                "enabled": True,
+                "background": "rgba(176, 52, 52, 215)",
+                "border": "rgba(255, 214, 214, 160)",
+            }
+        if state == "stopping":
+            return {
+                "label": "STT 停止中",
+                "statusLabel": "停止中",
+                "state": state,
+                "enabled": False,
+                "background": "rgba(132, 96, 62, 205)",
+                "border": "rgba(255, 232, 208, 140)",
+            }
+        return {
+            "label": "開始聆聽",
+            "statusLabel": "待命中",
+            "state": "idle",
+            "enabled": True,
+            "background": "rgba(32, 126, 92, 215)",
+            "border": "rgba(210, 255, 239, 150)",
+        }
+
+    def _build_runtime_controls_state(self) -> dict[str, object]:
+        return {
+            "stt": self._get_stt_control_descriptor(),
+            "reset": {"enabled": True},
+        }
+
+    def _sync_runtime_controls_ui(self) -> None:
+        self._run_javascript("updateRuntimeControls", self._build_runtime_controls_state())
+
     def _apply_stt_button_state(self):
-        if not hasattr(self, "_stt_button"):
-            return
+        descriptor = self._get_stt_control_descriptor()
+        label = str(descriptor["label"])
+        enabled = bool(descriptor["enabled"])
+
+        if hasattr(self, "_stt_button"):
+            self._stt_button.setText(label)
+            self._stt_button.setEnabled(enabled)
+            self._stt_button.setStyleSheet(
+                f"""
+                QPushButton#stt-toggle-button {{
+                    background: {descriptor["background"]};
+                    color: #ffffff;
+                    border: 1px solid {descriptor["border"]};
+                    border-radius: 14px;
+                    font-size: 15px;
+                    font-weight: 600;
+                    padding: 0 14px;
+                }}
+                QPushButton#stt-toggle-button:disabled {{
+                    color: rgba(255, 255, 255, 0.75);
+                }}
+                """
+            )
+        if hasattr(self, "_tray_stt_toggle_action"):
+            self._tray_stt_toggle_action.setText(label)
+            self._tray_stt_toggle_action.setEnabled(enabled)
+        self._sync_runtime_controls_ui()
+        return
 
         state = "unavailable" if not self._stt_available else self._stt_state
 
@@ -706,7 +806,7 @@ class TransparentWindow(QMainWindow):
         action_menu.addAction(stop_music_action)
 
         reset_action = QAction("重置狀態", self)
-        reset_action.triggered.connect(self.reset_requested.emit)
+        reset_action.triggered.connect(self.reset_runtime_state)
         menu.addAction(reset_action)
 
         self._tray_stt_toggle_action = QAction("開始收音", self)
@@ -1069,8 +1169,42 @@ class TransparentWindow(QMainWindow):
             return
         self.stt_start_requested.emit()
 
+    def toggle_stt_from_bridge(self) -> None:
+        self._handle_stt_button_clicked()
+
+    def request_runtime_reset(self) -> None:
+        self.reset_runtime_state()
+
+    def trigger_quick_intent_from_bridge(self, intent_name: str) -> None:
+        normalized = str(intent_name or "").strip().lower()
+        if normalized not in {"joke", "share"}:
+            print(f"[ECHOES] Ignored unknown quick intent from web bridge: {intent_name}")
+            return
+        self.trigger_cached_intent(normalized, f"{normalized} 面板觸發")
+
+    def trigger_overlay_action_from_bridge(self, action_name: str) -> None:
+        normalized = str(action_name or "").strip().lower()
+        alias_map = {
+            "music": "play_music",
+            "news": "report_news",
+        }
+        resolved = alias_map.get(normalized, normalized)
+        if resolved == "play_music":
+            self.trigger_overlay_action("play_music")
+            return
+        if resolved == "report_news":
+            self.trigger_overlay_action(
+                "report_news",
+                synthetic_user_text="播放新聞",
+                synthetic_assistant_text=FIXED_NEWS_SCRIPT,
+            )
+            return
+        print(f"[ECHOES] Ignored unknown overlay action from web bridge: {action_name}")
+
     def _emit_cached_intent_request(self, intent_name: str, trigger_source: str):
-        self.cached_intent_requested.emit(str(intent_name or "").strip().lower(), trigger_source)
+        normalized = str(intent_name or "").strip().lower()
+        self.cached_intent_requested.emit(normalized, trigger_source)
+        self.trigger_cached_intent(normalized, trigger_source)
 
     def _handle_cached_intent_shortcut(self, event) -> bool:
         if (
@@ -1255,6 +1389,7 @@ class TransparentWindow(QMainWindow):
             "message": message,
             "tone": tone,
             "timeoutMs": timeoutMs,
+            "runtimeControls": self._build_runtime_controls_state(),
         }
         latest_event = event_payload or self._latest_agentic_event
         if latest_event:
@@ -1376,6 +1511,17 @@ class TransparentWindow(QMainWindow):
             layout.get("object_position"),
             self.DEFAULT_CHARACTER_OBJECT_POSITION,
         )
+        raw_crop_zoom = layout.get("video_crop_zoom")
+        if raw_crop_zoom is not None:
+            try:
+                parsed = float(raw_crop_zoom)
+            except (TypeError, ValueError):
+                parsed = 1.0
+            if parsed < 1.0 or parsed > 8.0:
+                print(f"[ECHOES] WARNING: video_crop_zoom {raw_crop_zoom} 超出範圍 [1.0, 8.0]，已 clamp。")
+            self._character_video_crop_zoom = max(1.0, min(8.0, parsed))
+        else:
+            self._character_video_crop_zoom = 1.0
         self.apply_character_position()
 
     def move_character_to(self, x_offset: int, y_offset: int):
@@ -1394,7 +1540,7 @@ class TransparentWindow(QMainWindow):
         scale: float,
         object_position: str,
     ):
-        self._run_javascript("moveCharacter", x_offset, y_offset, scale)
+        self._run_javascript("moveCharacter", x_offset, y_offset, scale, self._character_video_crop_zoom)
         self._run_javascript("setCharacterObjectPosition", object_position)
 
     def nativeEvent(self, event_type, message):
