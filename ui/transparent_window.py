@@ -127,11 +127,14 @@ class HarnessInteractionWorker(QThread):
         self._provider = provider
 
     def run(self) -> None:
+        print(f"[HARNESS] received text: {self._text!r} (provider={self._provider})")
         try:
             payload = self._adapter.handle_text_input(self._text, provider=self._provider)
         except Exception as exc:  # noqa: BLE001
+            print(f"[HARNESS] handle_text_input failed: {exc}")
             self.failed_message.emit(str(exc))
             return
+        print(f"[HARNESS] reply: {payload}")
         self.finished_payload.emit(payload)
 
 
@@ -388,6 +391,7 @@ class TransparentWindow(QMainWindow):
             """
         )
         self._developer_input.returnPressed.connect(self._submit_developer_query)
+        self.developer_query_submitted.connect(self._on_developer_query_submitted)
         self._developer_input._focus_lost_callback = self._hide_developer_input
         self._developer_input.hide()
         self._developer_input.setEnabled(False)
@@ -1276,6 +1280,9 @@ class TransparentWindow(QMainWindow):
             return
         self.developer_query_submitted.emit(cleaned)
         self.set_action_status("Live Conversation queued.", tone="working", timeout_ms=0)
+
+    def _on_developer_query_submitted(self, text: str) -> None:
+        self.submit_agentic_text(text, "mock")
 
     def submit_agentic_text(self, text: str, provider: str) -> None:
         cleaned = str(text or "").strip()

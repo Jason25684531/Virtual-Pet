@@ -8,6 +8,7 @@ from typing import Any
 
 
 from pet_harness.agent.provider_factory import create_provider
+from pet_harness.character.router import CharacterRouter
 from pet_harness.engine.harness_engine import PetHarnessEngine
 from pet_harness.models.events import PetEvent
 from pet_harness.models.provider import ProviderConfig, ProviderType
@@ -35,8 +36,7 @@ class PyQtHarnessAdapter:
     def __init__(
         self,
         agentic_root: str | Path = Path(".agentic"),
-        db_path: str | Path = Path("data") / "pet_state.db",
-        snapshot_path: str | Path = Path("debug") / "events" / "latest_pet_event.json",
+        default_character_id: str = "Choppr",
         background_resolver: BackgroundResolver | None = None,
         voice_status_adapter: VoiceRuntimeStatusAdapter | None = None,
         brain_mode: str = "harness",
@@ -45,12 +45,8 @@ class PyQtHarnessAdapter:
         self.agentic_root = Path(agentic_root)
         self.skills_root = self.agentic_root / "skills"
         self.user_skills_root = self.skills_root / "user"
-        self.engine = PetHarnessEngine(
-            agentic_root=self.agentic_root,
-            db_path=Path(db_path),
-            snapshot_path=Path(snapshot_path),
-        )
-        self.store: SQLiteStore = self.engine.store
+        self.router = CharacterRouter(agentic_root=str(self.agentic_root))
+        self.router.switch_character(default_character_id)
         self._project_root = self.agentic_root.parent
         self._project_env = self._load_project_env()
         self._brain_mode = str(brain_mode or "harness")
@@ -60,6 +56,24 @@ class PyQtHarnessAdapter:
         self._runtime_contract = dict(runtime_contract or _default_contract)
         self._bootstrap_primary_provider()
         self._refresh_runtime()
+        self._log_active_character_diagnostics()
+
+    def _log_active_character_diagnostics(self) -> None:
+        profile = self.router.get_active_character()
+        engine = self.router.get_active_engine()
+        print(f"[HARNESS] active_character: {profile.character_id if profile else None}")
+        print(f"[HARNESS] engine._character_id: {engine._character_id if engine else None}")
+        print(f"[HARNESS] sqlite_path: {profile.sqlite_path if profile else None}")
+        skill_names = ", ".join(skill.name for skill in engine.skills) if engine else ""
+        print(f"[HARNESS] skills loaded: {skill_names}")
+
+    @property
+    def engine(self) -> PetHarnessEngine:
+        return self.router.get_active_engine()
+
+    @property
+    def store(self) -> SQLiteStore:
+        return self.engine.store
 
     def configure_runtime_context(
         self,
@@ -87,7 +101,7 @@ class PyQtHarnessAdapter:
         self._refresh_runtime()
         self._set_provider(provider)
         previous_progress = self.store.get_user_progress()
-        event = self.engine.handle_event({"text": cleaned, "source": "pyqt_ui"})
+        event = self.router.dispatch_event({"text": cleaned, "source": "pyqt_ui"})
         self.store.set_setting(LAST_XP_KEY, event.xp_delta)
         return self._serialize_pet_event(event, previous_progress=previous_progress)
 
@@ -270,7 +284,7 @@ class PyQtHarnessAdapter:
         raise ValueError(f"unknown tool_name: {tool_name}")
 
     def _refresh_runtime(self) -> None:
-        self.engine.skills = self._load_enabled_skills()
+        self.engine.skills = self.engine.filter_skills_for_character(self._load_enabled_skills())
         self.engine.store.sync_skills(self._load_all_skills())
         self.engine.router = SkillRouter(self.engine.skills)
         self.engine.tool_registry = self._build_registry()

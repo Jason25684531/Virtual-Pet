@@ -11,3 +11,8 @@ class CharacterAlreadyExistsError(Exception):
 class CharacterNotFoundError(Exception):
     """操作的 character_id 不存在。"""
     pass
+
+
+class NoActiveCharacterError(Exception):
+    """尚未切換任何角色時，操作需要 active character 而拋出。"""
+    pass

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -11,9 +12,11 @@ from pet_harness.agent.provider_adapter import LLMProviderAdapter
 from pet_harness.agent.result_parser import ResultParser
 from pet_harness.asset.mock_asset_service import MockAssetService
 from pet_harness.behavior.behavior_manager import BehaviorManager
+from pet_harness.character.profile import CharacterProfile
 from pet_harness.models.events import PetEvent, ToolRequestEvent, UserEvent
 from pet_harness.models.agent_result import AgentResult
 from pet_harness.models.provider import ProviderConfig, ProviderType
+from pet_harness.models.skill import Skill
 from pet_harness.skills.skill_loader import SkillLoader
 from pet_harness.skills.skill_router import SkillRouter
 from pet_harness.storage.sqlite_store import SQLiteStore
@@ -22,6 +25,8 @@ from pet_harness.tools.safety_guard import SafetyGuard
 from pet_harness.tools.tool_models import ToolRequest, ToolResult
 from pet_harness.xp.reward_manager import RewardManager
 from pet_harness.xp.xp_manager import XPManager
+
+LOGGER = logging.getLogger(__name__)
 
 
 class PetHarnessEngine:
@@ -33,10 +38,19 @@ class PetHarnessEngine:
         provider: LLMProviderAdapter | None = None,
         provider_config: ProviderConfig | None = None,
         request_fn=None,
+        character_id: str | None = None,
     ) -> None:
         self.agentic_root = Path(agentic_root)
         self.snapshot_path = Path(snapshot_path)
-        self.store = SQLiteStore(db_path)
+
+        self._character_id = character_id
+        self._profile: CharacterProfile | None = None
+        effective_db_path = db_path
+        if character_id is not None:
+            self._profile = CharacterProfile.load(character_id)
+            effective_db_path = self._profile.sqlite_path
+
+        self.store = SQLiteStore(effective_db_path)
         self.store.initialize()
 
         if provider_config is not None:
@@ -45,6 +59,8 @@ class PetHarnessEngine:
         self.provider = provider or create_provider(self.provider_config, request_fn=request_fn)
 
         self.skills = SkillLoader(self.agentic_root / "skills").load_skills()
+        if self._profile is not None:
+            self.skills = self._filter_skills_by_config(self.skills, self._profile.skill_config)
         self.store.sync_skills(self.skills)
         self.router = SkillRouter(self.skills)
         self.xp_manager = XPManager(self.store)
@@ -60,6 +76,27 @@ class PetHarnessEngine:
         self.last_agent_result: AgentResult | None = None
         self.last_tool_result: ToolResult | None = None
         self.last_asset_result: dict[str, Any] | None = None
+
+    def filter_skills_for_character(self, skills: list[Skill]) -> list[Skill]:
+        """依 active character 的 skill_config 過濾傳入的技能清單；無 character_id 時原樣回傳。
+
+        供外部（例如 PyQtHarnessAdapter 熱重載技能時）在不需要碰觸
+        _profile 的前提下，重新套用 per-character 技能隔離。
+        """
+        if self._profile is None:
+            return skills
+        return self._filter_skills_by_config(skills, self._profile.skill_config)
+
+    def _filter_skills_by_config(self, skills: list[Skill], skill_config: list[str]) -> list[Skill]:
+        by_name = {skill.name: skill for skill in skills}
+        filtered: list[Skill] = []
+        for name in skill_config:
+            skill = by_name.get(name)
+            if skill is None:
+                LOGGER.warning("skill_config 引用不存在的 skill: %s", name)
+                continue
+            filtered.append(skill)
+        return filtered
 
     def handle_event(self, event: UserEvent | dict[str, Any]) -> PetEvent:
         user_event = event if isinstance(event, UserEvent) else UserEvent.from_dict(event)
