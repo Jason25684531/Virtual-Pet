@@ -1,13 +1,14 @@
 # ECHOES Virtual Pet
 
-以 `PyQt5 + QWebEngineView` 為六層 2K 舞台外殼的桌面虛擬寵物專案。目前主線已整合兩套運行模式：
+以 `PyQt5 + QWebEngineView` 為六層 2K 舞台外殼的桌面虛擬寵物專案。`main.py` 目前只有一條啟動路徑，且不接受 `--brain-mode` 參數：
 
-| 模式 | 啟動方式 | 大腦 | TTS | 離線安全 |
-|------|----------|------|-----|----------|
-| **Harness** | `--brain-mode harness`（目前預設） | `PetHarnessEngine`（Ollama / OpenAI API / Mock） | — | Yes |
-| **Auto (Live)** | `--brain-mode auto` | `BrainEngine`（OpenAI GPT-4o-mini streaming） | VoAI PCM → ElevenLabs fallback | No |
+| 項目 | 內容 |
+|------|------|
+| **對話大腦** | `PetHarnessEngine`（Ollama / OpenAI-compatible API / Mock），負責文字對話、skill 路由、XP/獎勵、behavior→WebM 映射 |
+| **本地快捷動作** | `ActionDispatcher` 子系統，獨立於對話大腦之外，驅動「新聞播報／播放音樂／揮手回應／固定笑話／固定分享」等 UI 按鈕，走 VoAI/ElevenLabs TTS |
+| **離線安全** | 對話大腦 Yes（Mock/Ollama 免 API key）；本地快捷動作 No（需要 VoAI 或 ElevenLabs API key 才有語音） |
 
-> **目前 `main.py` 只啟動 Harness 模式。** Live 模式的原始元件（Azure STT、OpenAI streaming、VoAI/ElevenLabs TTS、WaveSensor）仍保留在程式庫中供後續整合。
+> **舊版 LangChain `BrainEngine` + Azure STT 語音對話管線已經被移除**（見 `openspec/changes/archive/2026-06-26-remove-legacy-openclaw-runtime/`），`api_client/brain_engine.py`、`database.py`、`brain_mode.py` 皆已從程式庫刪除，`--brain-mode` CLI 參數也已不存在。`interaction_turn_manager.py`、`sensors/stt_session_controller.py`、以及依賴它們的 `scripts/smoke_test.py`、`scripts/live_stt_latency_probe.py` 已確認無任何主線程式碼引用，於後續清理中一併刪除。僅 `sensors/microphone_stt.py`、`sensors/camera_vision.py` 兩個更底層的感測器模組仍保留（同樣無人呼叫），詳見〈孤兒模組〉一節。
 
 參考文件：
 
@@ -41,19 +42,32 @@ flowchart LR
     ENGINE --> DB[(SQLite<br>pet_state.db)]
 ```
 
-### Live 模式流程（保留，未接入 main.py）
+### 本地快捷動作子系統流程（與 Harness 大腦並行運作）
 
 ```mermaid
 flowchart LR
-    U[使用者語音] --> STT[Azure STT]
-    STT --> TURN[InteractionTurnManager]
-    TURN --> BRAIN[BrainEngine<br>ChatOpenAI streaming]
-    BRAIN --> DISP[ActionDispatcher]
-    DISP --> MOTION[WebM 動作切換]
-    DISP --> TTSQ[TTS Queue]
-    TTSQ --> TTS[Adaptive TTS<br>VoAI primary → ElevenLabs fallback]
-    TTS --> PLAY[AudioStreamWorker<br>ffplay / pygame]
+    UI[UI 按鈕<br>新聞/音樂/揮手/笑話/分享] --> DISP[ActionDispatcher]
+    DISP --> SVC[action_services.py<br>QThread worker：news / wave / joke / share]
+    SVC --> TTS[VoAI PCM primary<br>→ ElevenLabs fallback]
+    TTS --> AW[AudioStreamWorker<br>daemon thread PCM/MP3 queue]
+    AW --> PLAY[audio_playback.py<br>pygame / ffplay]
+    DISP --> MOTION[character_library.py<br>WebM 動作切換]
+    DISP -.-> TRACE[InteractionLatencyTracker<br>mark_* 里程碑（目前為 no-op，見下方說明）]
 ```
+
+> 此子系統完全獨立於 `PetHarnessEngine`。`report_news`/`play_music`/`wave_response` 走固定腳本＋快取音檔；`cached_joke`/`cached_share` 首次觸發時會呼叫 `langchain_openai.ChatOpenAI`（需要 `OPENAI_API_KEY`）產生文字後寫入快取，之後皆直接讀快取，不再重新呼叫 LLM。
+
+### 孤兒感測器模組（已斷鏈，未被任何主線程式碼呼叫）
+
+```mermaid
+flowchart LR
+    U[使用者語音 / 畫面] -.-> STT[sensors/microphone_stt.py<br>Azure STT]
+    U -.-> CAM[sensors/camera_vision.py<br>OpenCV + MediaPipe]
+    STT -.-> X[無呼叫者]
+    CAM -.-> X
+```
+
+> 原本串接這兩個感測器的 `interaction_turn_manager.py`、`sensors/stt_session_controller.py`，以及依賴它們的開發腳本 `scripts/smoke_test.py`、`scripts/live_stt_latency_probe.py` 已於清理中刪除（確認無任何主線程式碼引用後移除）。`microphone_stt.py`、`camera_vision.py` 兩者本身目前仍保留，但同樣沒有任何呼叫者，是否復活語音/視覺輸入尚待決定。
 
 ---
 
@@ -61,16 +75,15 @@ flowchart LR
 
 ```text
 Virtual-Pet/
-├── main.py                         # 應用程式進入點（目前僅啟動 Harness 模式）
+├── main.py                         # 應用程式進入點（唯一路徑，無 CLI 參數，固定啟動 Harness）
 ├── config.py                       # 集中式設定中心（.env + persona + action 白名單）
-├── character_library.py            # 角色清單、manifest 讀取、motion 映射
-├── interaction_trace.py            # 互動延遲追蹤（STT / LLM / Action / TTS 里程碑）
-├── interaction_turn_manager.py     # 一輪一輪互動序列化（Live 模式用）
-├── action_dispatcher.py            # 動作派發、alias 正規化、TTS queue 管理
-├── action_services.py              # 背景 service worker（新聞 / 揮手 / 固定意圖快取）
-├── text_utils.py                   # 文字工具
-├── audio_playback.py               # Provider-neutral 播放器（ffplay / pygame）
-├── audio_worker.py                 # Trace-aware PCM session 播放 worker
+├── character_library.py            # 角色清單、manifest 讀取、motion 映射（快捷動作＋Harness 共用）
+├── interaction_trace.py            # 互動延遲追蹤（已清理 STT/brain 死碼）；⚠️ begin_interaction 目前無人呼叫，實際上是全域 no-op
+├── action_dispatcher.py            # 本地快捷動作派發中樞、alias 正規化、TTS queue 管理
+├── action_services.py              # 快捷動作背景 service worker（新聞 / 揮手 / 固定意圖快取）
+├── text_utils.py                   # sanitize_tts_text：去除 ACTION 標記供 TTS 朗讀
+├── audio_playback.py               # 快捷動作用 provider-neutral 播放器（ffplay / pygame）
+├── audio_worker.py                 # 快捷動作用 trace-aware PCM session 播放 worker（daemon thread）
 │
 ├── api_client/
 │   ├── adaptive_tts_fallback.py    # VoAI primary + ElevenLabs fallback 統一 contract
@@ -78,10 +91,9 @@ Virtual-Pet/
 │   ├── elevenlabs_client.py        # ElevenLabs fast-fallback TTS client
 │   └── comfyui_client.py           # ComfyUI 算圖 client（未來資產生成用）
 │
-├── sensors/
-│   ├── microphone_stt.py           # Azure STT 背景收音
-│   ├── stt_session_controller.py   # STT session 控制與狀態機
-│   └── camera_vision.py            # OpenCV + MediaPipe 揮手感測
+├── sensors/                         # 孤兒模組：以下皆無主線呼叫者，見下方孤兒清單
+│   ├── microphone_stt.py           # Azure STT 背景收音（已斷鏈）
+│   └── camera_vision.py            # OpenCV + MediaPipe 揮手感測（已斷鏈）
 │
 ├── pet_harness/                    # ★ Harness 模式核心引擎
 │   ├── __init__.py                 # 匯出 PetHarnessEngine
@@ -167,8 +179,6 @@ Virtual-Pet/
 │
 ├── scripts/
 │   ├── debug_harness.py            # Harness 引擎 CLI 除錯腳本
-│   ├── smoke_test.py               # 冒煙測試（Live 模式 API + latency probe）
-│   ├── live_stt_latency_probe.py   # 真實 STT 端到端延遲量測
 │   └── _verify_panel_video.py      # Panel video 驗證工具
 │
 ├── tests/                          # 單元測試
@@ -242,24 +252,37 @@ UI 固定以 `2560×1440` 設計空間、`min(vw/2560, vh/1440)` 縮放渲染：
 
 ---
 
-## Live 模式核心模組（保留）
+## 本地快捷動作子系統（Harness 模式下仍在運作）
 
-以下模組在 `--brain-mode auto` 時啟用，目前未接入 `main.py`：
+以下模組獨立於 `PetHarnessEngine`，由 UI 按鈕直接觸發固定動作，目前確實在運作：
 
-- **`interaction_turn_manager.py`** — STT 與 Dev Query 序列化成逐輪互動
-- **`api_client/brain_engine.py`** — OpenAI streaming，拆成 `token_streamed` / `streamed_fragment` / `sentence_ready`
-- **`action_dispatcher.py`** — Action 白名單、alias 正規化、WebM 動作切換、TTS queue
+- **`action_dispatcher.py`** — Action 白名單、alias 正規化、WebM 動作切換、TTS queue 管理中樞
+- **`action_services.py`** — 新聞播報 / 揮手回應 / 固定笑話 / 固定分享的背景 QThread worker
+- **`audio_worker.py`** — trace-aware PCM/MP3 串流播放 worker（daemon thread）
+- **`audio_playback.py`** — pygame / ffplay 播放器實作
+- **`character_library.py`** — 角色 motion 路徑解析（快捷動作與 Harness 共用）
+- **`text_utils.py`** — TTS 前的 ACTION 標記清理
 - **`api_client/adaptive_tts_fallback.py`** — VoAI primary + ElevenLabs fallback
 - **`api_client/voai_client.py`** — VoAI HTTP PCM 串流 TTS
 - **`api_client/elevenlabs_client.py`** — ElevenLabs fast-fallback TTS
+- **`interaction_trace.py`** — 已移除 STT/brain 相關的死碼方法（`begin_interaction` 以外的 STT/brain milestone、`abort`/`snapshot`/`get_completed_trace`）。⚠️ **目前整個追蹤機制實質上是 no-op**：`begin_interaction()` 是唯一會建立 trace 狀態的入口，但沒有任何主線程式碼呼叫它（原本的呼叫者 `interaction_turn_manager.py`/`stt_session_controller.py` 已刪除），`ActionDispatcher` 呼叫 `dispatch()`/`trigger_cached_intent()` 時也從未帶入真正的 `trace_id`（一律是 `None`）。因此 `mark_action_dispatched`/`mark_tts_enqueued` 等方法雖然仍被呼叫，但每次都在第一行 `if not trace_id: return` 就結束，永遠不會印出摘要。若要恢復功能，需要在 `ActionDispatcher.dispatch()` 進入點呼叫 `latency_tracker.begin_interaction()` 產生真正的 trace_id 並往下傳遞
+
+## 孤兒 / 已斷鏈模組（待決定去留）
+
+`interaction_turn_manager.py`、`sensors/stt_session_controller.py`，以及依賴它們且已 `ImportError` 的開發腳本 `scripts/smoke_test.py`、`scripts/live_stt_latency_probe.py`，經確認無任何主線程式碼（`main.py`、`ui/transparent_window.py`、`pet_harness/`）引用後，已一併刪除。
+
+以下兩個更底層的感測器模組目前仍保留在程式庫中，但同樣沒有任何呼叫者，是否復活語音/視覺輸入尚待決定：
+
 - **`sensors/microphone_stt.py`** — Azure STT 背景收音
-- **`sensors/camera_vision.py`** — OpenCV 揮手感測
+- **`sensors/camera_vision.py`** — OpenCV + MediaPipe 揮手感測
+
+> 舊版 `api_client/brain_engine.py`、`database.py`、`brain_mode.py` 已於 `remove-legacy-openclaw-runtime` 變更中實體刪除，不再存在於程式庫中。
 
 ---
 
 ## Action 白名單
 
-Host 支援的 action（兩種模式共用）：
+Host 支援的 action（Harness 對話與快捷動作共用同一份白名單）：
 
 `report_news` · `play_music` · `wave_response` · `laugh` · `angry` · `awkward` · `speechless` · `listen` · `idle`
 
@@ -311,13 +334,16 @@ OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL=gpt-4o-mini
 ```
 
-**Live 模式完整設定（需要 API key）：**
+**本地快捷動作子系統設定（需要 TTS API key 才有語音，沒有也能跑，只是動作靜音）：**
 
 ```bash
-OPENAI_API_KEY=your_openai_api_key
-OPENAI_MODEL=gpt-4o-mini
 VOAI_API_KEY=your_voai_api_key
 ELEVENLABS_API_KEY=your_elevenlabs_api_key
+```
+
+以下 Azure STT 變數只服務孤兒語音管線（`sensors/microphone_stt.py` 等），目前無主線程式碼讀取，設定與否不影響任何現行功能：
+
+```bash
 AZURE_STT_API_KEY=your_azure_speech_key
 AZURE_STT_REGION=eastus
 AZURE_STT_LANGUAGE=zh-TW
@@ -329,10 +355,6 @@ AZURE_STT_ENABLED=true
 
 ```bash
 VOAI_PCM_STREAMING_ENABLED=true
-CHATGPT_API_KEY=your_openai_api_key_fallback
-BRAIN_MEMORY_MAX_TURNS=6
-BRAIN_SENTENCE_MIN_CHARS=15
-OPENAI_TEMPERATURE=0.4
 ELEVENLABS_VOICE_ID=default_elevenlabs_voice_id
 ELEVENLABS_MIKU_VOICE_ID=optional_miku_fallback_voice_id
 ELEVENLABS_CHOPPER_VOICE_ID=optional_chopper_fallback_voice_id
@@ -344,11 +366,10 @@ AZURE_STT_SEGMENTATION_MAX_TIME_MS=4000
 ```
 
 說明：
-- `CHATGPT_API_KEY` 為 `OPENAI_API_KEY` 的 fallback
 - `VOAI_PCM_STREAMING_ENABLED=false` 可回退到 MP3 BytesIO 播放
 - `ACTION_SYNC_TIMEOUT_MS` 預設 `6000`，降低正常 VoAI 起播被誤判成 `timeout_promoted` 的機率
-- `BRAIN_SENTENCE_MIN_CHARS` 調整全句級 `sentence_ready` 最小字數門檻，預設 `15`
-- `BRAIN_MEMORY_MAX_TURNS` 限制保留的最近對話輪數，避免上下文膨脹
+- 以上 `AZURE_STT_*` 變數只服務孤兒語音管線，目前不影響任何現行功能
+- `BRAIN_MEMORY_MAX_TURNS`、`BRAIN_SENTENCE_MIN_CHARS`、`CHATGPT_API_KEY` 為舊版 `BrainEngine` 專用設定，該模組已刪除，這些變數現在已無任何程式碼讀取
 
 </details>
 
@@ -378,33 +399,16 @@ python scripts/debug_harness.py
 python -m pytest tests/ -v
 ```
 
-目前測試涵蓋：
+目前 `tests/` 底下實際只有 4 個測試檔，皆屬 `pet_harness` 角色系統：
 
-- Action / motion / TTS queue 播放順序
-- 同 trace PCM session 的 single `driver_started`、逐句 `playback_finished` 與中途中斷
-- `report_news` / `play_music` loop action 的重複觸發保護
-- 固定新聞音檔 cache miss / hit
-- `Joke/share` 固定意圖 cache miss / hit、角色隔離
-- Reset 對互動佇列與角色記憶的清理
-- OpenAI 串流切片、全句級緩衝與安全降級
-- VoAI HTTP PCM primary path、adaptive fallback、text-only 降級
-- Interaction turn 排隊與完成順序
-- STT 控制與延遲追蹤
-- Wave sensor 整合
+- `test_character_profile.py`
+- `test_character_registry.py`
+- `test_character_router.py`
+- `test_harness_per_character.py`
 
-### 冒煙測試（Live 模式）
-
-```bash
-python scripts/smoke_test.py
-python scripts/smoke_test.py --mock-tts-fail voai529      # VoAI 529 → ElevenLabs fallback
-python scripts/smoke_test.py --mock-tts-fail double-fail   # 雙 provider 失敗 → text-only 降級
-```
-
-### 真實 STT 端到端量測
-
-```bash
-python scripts/live_stt_latency_probe.py
-```
+> 本地快捷動作子系統（TTS queue、PCM session、news/joke/share cache）目前沒有對應的 `pytest` 測試。
+>
+> 舊版 Live 語音管線遺留的手動驗證工具 `scripts/smoke_test.py`、`scripts/live_stt_latency_probe.py` 因 import 已刪除的 `api_client.brain_engine` 而長期損壞，已隨 `interaction_turn_manager.py`、`sensors/stt_session_controller.py` 一併移除。
 
 ---
 
@@ -436,28 +440,17 @@ python scripts/live_stt_latency_probe.py
 
 ---
 
-## 延遲摘要判讀（Live 模式）
+## 延遲摘要判讀（目前實際上不會輸出——已知問題）
 
-每輪互動完成後，terminal 會輸出摘要：
+`InteractionLatencyTracker`（`interaction_trace.py`）設計上會在每輪快捷動作完成後於 terminal 印出摘要：
 
 ```text
-[ECHOES][TRACE][abcd1234] 互動完成摘要 source=stt total=1710ms | stages: stt_tail=212ms; ...
+[ECHOES][TRACE][abcd1234] 互動完成摘要 source=... total=...ms | stages: tts_startup=...ms; tts_to_driver_start=...ms | bottleneck=...(...ms) | milestones: first_action_dispatched=...ms; first_driver_started=...ms
 ```
 
-關鍵指標：
+> ⚠️ **目前這段摘要永遠不會出現。** `begin_interaction()` 是唯一會建立 trace 狀態的入口，過去只有已刪除的 `interaction_turn_manager.py`／`sensors/stt_session_controller.py` 呼叫它；`ActionDispatcher.dispatch()`／`trigger_cached_intent()` 從 UI 觸發時一律傳入 `trace_id=None`，從未呼叫 `begin_interaction()`。因此所有 `mark_*` 呼叫都在第一行 `if not trace_id: return` 結束，`_finalize()` 永遠不會執行，這段 log 目前形同裝飾。
 
-| 指標 | 意義 |
-|------|------|
-| `stt_tail` | Azure 停口偵測 → finalized text |
-| `llm_to_first_output` | OpenAI 開始推論 → 第一片段 |
-| `first_token_visible` | 第一個可見 token 到達 UI |
-| `eos_to_first_action` | 停口 → 第一個 action dispatch |
-| `first_driver_started` | 第一段音訊交給播放驅動 |
-| `eos_to_first_audio` | 停口 → 首次音訊交給播放驅動 |
-| `eos_to_complete` | 停口 → 整輪互動完成 |
-| `bottleneck` | 該輪最慢階段 |
-
-`smoke_test.py` 多輪量測預設需 `median_eos_to_complete <= 1800ms`。
+若要讓它恢復運作，需要在 `ActionDispatcher.dispatch()`／`trigger_cached_intent()` 的入口呼叫 `self._latency_tracker.begin_interaction(source, text)` 取得真正的 `trace_id`，並往下傳給 `_synthesize_tts()`／`speak_text()`。這與下方〈`action_dispatcher.py` 與 Harness 整合建議〉是同一類「補上缺失的呼叫端」問題，可以一併處理。
 
 ---
 
@@ -467,4 +460,5 @@ python scripts/live_stt_latency_probe.py
 - `docs/` 內文件為目前架構參考；歷史文件已清理。
 - Harness 模式目前使用 deterministic skill routing（Week 1 設計），tool use request 為 metadata-only。
 - ComfyUI 資產生成仍在 future FastAPI JSON contract 之後。
-- 舊 `OLLAMA_*` 設定保留在 `config.py` 做相容，但已不是 Live 模式互動主路徑。
+- 舊 `OLLAMA_*` 設定目前是 Harness 對話大腦（`HARNESS_PROVIDER_TYPE=ollama`）唯一使用它們的路徑，並非相容性殘留。
+- 本地快捷動作子系統、孤兒語音管線的去留是待決事項，尚未有明確結論；若要清理，建議先確認 `scripts/` 兩個開發腳本要修復還是直接刪除。
