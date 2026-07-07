@@ -103,24 +103,26 @@ class TestListCharacters:
 
 
 class TestCreateFromPreset:
-    def test_create_from_choppr_preset(self, service):
+    def test_create_from_choppr_preset_switches_directly_without_copy(self, service):
         ui_service, router, registry = service
         result = ui_service.create_from_preset("Choppr")
 
-        assert result["character_id"] == "Choppr_1"
-        assert router.get_active_character().character_id == "Choppr_1"
+        assert result["character_id"] == "Choppr"
+        assert router.get_active_character().character_id == "Choppr"
         new_profile = router.get_active_character()
         assert new_profile.skill_config == ["joke_skill", "mood_skill"]
-        assert new_profile.is_preset is False
+        assert new_profile.is_preset is True
         assert new_profile.motions == registry.load_character("Choppr").motions
 
-    def test_create_from_preset_increments_suffix(self, service):
+    def test_create_from_preset_is_idempotent_no_new_dirs(self, service, tmp_path):
         ui_service, _router, _registry = service
         first = ui_service.create_from_preset("Choppr")
         second = ui_service.create_from_preset("Choppr")
 
-        assert first["character_id"] == "Choppr_1"
-        assert second["character_id"] == "Choppr_2"
+        assert first["character_id"] == "Choppr"
+        assert second["character_id"] == "Choppr"
+        assert not (tmp_path / "assets" / "webm" / "characters" / "Choppr_1").exists()
+        assert not (tmp_path / "data" / "characters" / "Choppr_1").exists()
 
     def test_create_from_unknown_preset_raises_and_no_dirs(self, service, tmp_path):
         ui_service, _router, _registry = service
@@ -128,8 +130,8 @@ class TestCreateFromPreset:
         with pytest.raises(CharacterNotFoundError):
             ui_service.create_from_preset("ghost")
 
-        assert not (tmp_path / "assets" / "webm" / "characters" / "ghost_1").exists()
-        assert not (tmp_path / "data" / "characters" / "ghost_1").exists()
+        assert not (tmp_path / "assets" / "webm" / "characters" / "ghost").exists()
+        assert not (tmp_path / "data" / "characters" / "ghost").exists()
 
 
 class TestSwitchAndDelete:
@@ -147,18 +149,6 @@ class TestSwitchAndDelete:
             ui_service.delete_character("Choppr")
 
         assert (tmp_path / "assets" / "webm" / "characters" / "Choppr").exists()
-
-    def test_delete_user_save_removes_dirs_but_not_preset_assets(self, service, tmp_path):
-        ui_service, _router, _registry = service
-        ui_service.create_from_preset("Choppr")
-
-        result = ui_service.delete_character("Choppr_1")
-
-        assert result["deleted"] is True
-        assert not (tmp_path / "assets" / "webm" / "characters" / "Choppr_1").exists()
-        assert not (tmp_path / "data" / "characters" / "Choppr_1").exists()
-        assert (tmp_path / "assets" / "webm" / "characters" / "Choppr").exists()
-        assert (tmp_path / "assets" / "webm" / "characters" / "Choppr" / "manifest.json").exists()
 
 
 class TestGetActiveState:

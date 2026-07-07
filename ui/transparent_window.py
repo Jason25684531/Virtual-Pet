@@ -10,6 +10,7 @@ import ctypes.wintypes
 import json
 import os
 import sys
+import time
 from uuid import uuid4
 
 from PyQt5.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer, QUrl, pyqtSignal, pyqtSlot
@@ -25,6 +26,8 @@ from interaction_trace import InteractionLatencyTracker
 from action_services import FIXED_NEWS_SCRIPT
 
 from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
+from pet_harness.storage.sqlite_store import SQLiteStore
+from pet_harness.models.events import utc_now
 from pet_harness.ui.pyqt_harness_adapter import PyQtHarnessAdapter
 from ui.background_resolver import BackgroundResolver
 from ui.character_ui_bridge import CharacterUiBridge
@@ -75,6 +78,7 @@ BRIDGE_CONTRACT = {
         "toggleSkill",
         "toggleTool",
         "setDragEnabled",
+        "beginWindowDrag",
     ],
     "character_bridge": [
         "listCharacters",
@@ -85,6 +89,9 @@ BRIDGE_CONTRACT = {
         "getActiveState",
     ],
 }
+
+PLAYTIME_SECONDS_KEY = "ui_playtime_seconds"
+LAST_PLAYED_AT_KEY = "ui_last_played_at"
 
 
 class EchoesWebPage(QWebEnginePage):
@@ -192,6 +199,10 @@ class HarnessUiBridge(QObject):
     @pyqtSlot(bool)
     def setDragEnabled(self, enabled: bool) -> None:
         self._window.set_drag_surface_enabled(enabled)
+
+    @pyqtSlot()
+    def beginWindowDrag(self) -> None:
+        self._window.begin_window_drag()
 
     @pyqtSlot(str)
     def addSkill(self, payload_json: str) -> None:
@@ -303,6 +314,13 @@ class TransparentWindow(QMainWindow):
         self._stt_state = "idle"
         self._pending_javascript_calls: list[tuple[str, tuple[object, ...]]] = []
         self._latest_agentic_event: dict[str, object] | None = None
+        self._playtime_character_id: str | None = None
+        self._playtime_sqlite_path: str | None = None
+        self._playtime_started_at: float | None = None
+        self._playtime_timer = QTimer(self)
+        self._playtime_timer.setInterval(60000)
+        self._playtime_timer.timeout.connect(self._flush_playtime_tick)
+        self._playtime_timer.start()
         self._init_window()
         self._init_webview()
         self._init_drag_surface()
@@ -989,6 +1007,7 @@ class TransparentWindow(QMainWindow):
         self._library.set_current_character_id(character_id)
         self.restore_idle_video()
         self.apply_character_layout(character_id)
+        self._sync_playtime_session_from_active_character()
         self.set_room_character(character_name)
         self.set_action_status(f"{character_name} 已待命", tone="idle", timeout_ms=2200)
         self._apply_resolved_background(self._library.get_background_path(character_id))
@@ -1245,12 +1264,70 @@ class TransparentWindow(QMainWindow):
         if hasattr(self, "_drag_surface") and self._drag_surface is not None:
             self._drag_surface.setVisible(enabled)
 
+    def begin_window_drag(self) -> None:
+        """由前端（overlay 畫面的標題列）觸發的視窗拖曳：overlay 顯示中 _drag_surface 被隱藏、
+        mousePressEvent 也放行給 QWebEngineView，所以需要這個明確入口讓 HTML 標題列也能拖曳視窗。
+        """
+        window_handle = self.windowHandle()
+        if window_handle is not None:
+            window_handle.startSystemMove()
+
+    def _flush_playtime_tick(self) -> None:
+        self._flush_playtime(force=False)
+
+    def _sync_playtime_session_from_active_character(self) -> None:
+        profile = self._adapter.router.get_active_character()
+        if profile is None:
+            self._stop_playtime_session()
+            return
+
+        character_id = str(profile.character_id)
+        sqlite_path = str(profile.sqlite_path)
+        if (
+            character_id == self._playtime_character_id
+            and sqlite_path == self._playtime_sqlite_path
+            and self._playtime_started_at is not None
+        ):
+            return
+
+        self._flush_playtime(force=True)
+        self._playtime_character_id = character_id
+        self._playtime_sqlite_path = sqlite_path
+        self._playtime_started_at = time.monotonic()
+
+    def _stop_playtime_session(self) -> None:
+        self._flush_playtime(force=True)
+        self._playtime_character_id = None
+        self._playtime_sqlite_path = None
+        self._playtime_started_at = None
+
+    def _flush_playtime(self, force: bool) -> None:
+        if not self._playtime_sqlite_path or self._playtime_started_at is None:
+            return
+
+        elapsed_seconds = max(0, int(time.monotonic() - self._playtime_started_at))
+        if elapsed_seconds <= 0 and not force:
+            return
+
+        store = SQLiteStore(self._playtime_sqlite_path)
+        store.initialize()
+        total_seconds = int(store.get_setting(PLAYTIME_SECONDS_KEY, 0) or 0)
+        if elapsed_seconds > 0:
+            total_seconds += elapsed_seconds
+            store.set_setting(PLAYTIME_SECONDS_KEY, total_seconds)
+        store.set_setting(LAST_PLAYED_AT_KEY, utc_now())
+        self._playtime_started_at = time.monotonic()
+
     def on_character_switched(self, profile_payload: dict) -> None:
         """建立/切換角色成功後的回呼：套用 WebM 動作來源並重整 Agentic UI（Skills 清單）。"""
         character_id = str(profile_payload.get("character_id") or "").strip()
         if character_id:
             self.apply_character(character_id)
         self.refresh_agentic_ui(message="Character switched.", tone="idle", timeoutMs=2200)
+
+    def closeEvent(self, event) -> None:
+        self._stop_playtime_session()
+        super().closeEvent(event)
 
     def _emit_cached_intent_request(self, intent_name: str, trigger_source: str):
         normalized = str(intent_name or "").strip().lower()
@@ -1436,6 +1513,7 @@ class TransparentWindow(QMainWindow):
         diagnostics["brain_mode"] = self._brain_mode
         diagnostics["background_status"] = self._background_status
         state["diagnostics"] = diagnostics
+        xp_state = dict(state.get("xp") or {})
         payload = {
             "state": state,
             "skills": self._adapter.list_skills(),
@@ -1444,6 +1522,8 @@ class TransparentWindow(QMainWindow):
             "tone": tone,
             "timeoutMs": timeoutMs,
             "runtimeControls": self._build_runtime_controls_state(),
+            "xp_delta": int((event_payload or {}).get("xp_delta", xp_state.get("last_delta", 0)) or 0),
+            "progress_percent": int(xp_state.get("progress_percent", 0) or 0),
         }
         latest_event = event_payload or self._latest_agentic_event
         if latest_event:

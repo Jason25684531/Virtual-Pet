@@ -745,11 +745,14 @@ body {
     background: radial-gradient(circle at 50% 25%, #3c2215, #120a08);
 }
 
-/* overlay 顯示時隱藏 UC05 遊戲 UI 元素 */
+/* overlay 顯示時隱藏 UC05 遊戲 UI 元素與房間場景/角色層，
+   避免 U01(主選單)/U05(陪伴主畫面)共用同一份 stage 而互相透出、疊圖 */
 body.overlay-active #hud-score,
 body.overlay-active #companion-dock-root,
 body.overlay-active #stage-live-ui,
-body.overlay-active #stage-bottom-ui {
+body.overlay-active #stage-bottom-ui,
+body.overlay-active #stage-pet-layer,
+body.overlay-active #stage-background {
     display: none !important;
 }
 
@@ -1003,4 +1006,421 @@ body.overlay-active #stage-bottom-ui {
     display: flex;
     justify-content: flex-end;
     gap: 12px;
+}
+
+/* week2-day2 UIX refinement */
+
+.hud-score {
+    top: 26px;
+    right: 28px;
+    min-width: 210px;
+    padding: 10px 16px 12px;
+    gap: 8px;
+    flex-direction: column;
+    align-items: stretch;
+    border: 2px solid rgba(61, 116, 187, 0.92);
+    background: rgba(248, 250, 252, 0.9);
+    box-shadow: 0 12px 28px rgba(34, 58, 85, 0.18);
+    color: #27405f;
+}
+
+.hud-score__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.hud-score__text,
+.hud-score__level {
+    white-space: nowrap;
+}
+
+.hud-score__delta {
+    margin-left: auto;
+    color: #b96b14;
+    font-weight: 900;
+}
+
+.hud-score__progress {
+    width: 100%;
+    height: 7px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(61, 116, 187, 0.16);
+}
+
+.hud-score__progress-fill {
+    display: block;
+    width: 0%;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #5c91d9, #8fc0ff);
+    transition: width 0.24s ease;
+}
+
+.app-screens {
+    align-items: stretch;
+    justify-content: stretch;
+    background:
+        linear-gradient(180deg, rgba(18, 26, 37, 0.2) 0%, rgba(18, 26, 37, 0.42) 100%),
+        radial-gradient(circle at 72% 34%, rgba(255, 255, 255, 0.08), transparent 32%);
+}
+
+.app-screen {
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    overflow: hidden;
+}
+
+.app-screen__panel {
+    color: #22313f;
+}
+
+.app-screen__panel--menu,
+.app-screen__panel--save {
+    width: 100%;
+    height: 100%;
+    padding: 48px 52px;
+    border-radius: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+.app-screen__panel--menu {
+    align-items: stretch;
+    text-align: left;
+}
+
+/* U01-1 主選單專用底圖：獨立於 #stage-background/#stage-pet-layer 之外，
+   不隨當前角色/場景切換而改變。之後要換主選單底圖，只需替換這裡的圖片路徑。 */
+.app-screen--main-menu {
+    background-image:
+        linear-gradient(180deg, rgba(12, 9, 16, 0.32) 0%, rgba(12, 9, 16, 0.6) 100%),
+        url("../../assets/backgrounds/default_room.jpg");
+    background-size: cover;
+    background-position: center;
+}
+
+.app-screen__panel--carousel {
+    max-width: min(980px, 94vw);
+    margin: 42px auto;
+    color: var(--text-primary);
+}
+
+.app-screen__eyebrow {
+    color: rgba(43, 62, 87, 0.72);
+}
+
+.app-screen__title {
+    color: #22313f;
+}
+
+.menu-shell {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    gap: 32px;
+}
+
+.menu-hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding-top: 10px;
+    text-align: center;
+}
+
+.menu-layout {
+    display: grid;
+    grid-template-columns: minmax(260px, 320px) 1fr;
+    gap: clamp(28px, 5vw, 88px);
+    align-items: stretch;
+    min-height: 0;
+    flex: 1;
+}
+
+.menu-list {
+    width: min(320px, 100%);
+    justify-content: center;
+    gap: 18px;
+    padding: 26px 0;
+}
+
+.menu-item {
+    align-items: center;
+    min-height: 88px;
+    padding: 18px 22px;
+    border: 2px solid rgba(61, 116, 187, 0.55);
+    background: rgba(251, 252, 253, 0.88);
+    box-shadow: 0 12px 32px rgba(31, 52, 80, 0.08);
+    color: #24313a;
+}
+
+.menu-item--primary {
+    background: rgba(238, 245, 255, 0.92);
+    color: #2e5fa1;
+}
+
+.menu-item:disabled {
+    border-color: rgba(122, 136, 150, 0.26);
+    background: rgba(252, 252, 252, 0.58);
+    color: rgba(52, 61, 72, 0.5);
+}
+
+.menu-item__label {
+    font-size: 20px;
+}
+
+.menu-item__sub {
+    font-size: 14px;
+    opacity: 0.82;
+}
+
+.window-drag-handle {
+    cursor: grab;
+}
+
+.app-screen--load-save {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 42px 52px;
+}
+
+.app-screen__panel--save {
+    max-width: min(1180px, 96vw);
+    height: auto;
+    min-height: min(78vh, 760px);
+    margin: 0 auto;
+    padding: 34px 36px 30px;
+    border: 2px solid rgba(43, 62, 87, 0.54);
+    background: rgba(251, 252, 250, 0.94);
+    box-shadow: 0 20px 44px rgba(23, 36, 55, 0.16);
+}
+
+.save-screen__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 28px;
+}
+
+.save-card-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 28px;
+    align-content: start;
+    min-height: 420px;
+}
+
+.save-card,
+.save-card--empty {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 270px;
+    border: 2px solid rgba(50, 68, 88, 0.82);
+    background: rgba(255, 255, 255, 0.96);
+    color: #2a3642;
+    text-align: left;
+}
+
+.save-card {
+    padding: 0;
+    cursor: pointer;
+    transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.save-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 14px 28px rgba(38, 60, 87, 0.12);
+}
+
+.save-card.is-selected {
+    border-color: #4b82c8;
+    box-shadow: 0 0 0 3px rgba(75, 130, 200, 0.12);
+}
+
+.save-card__thumb {
+    flex: 1;
+    display: block;
+    border-bottom: 1px solid rgba(50, 68, 88, 0.24);
+    background:
+        linear-gradient(135deg, rgba(252, 252, 252, 0.9), rgba(238, 241, 244, 0.98)),
+        repeating-linear-gradient(
+            -45deg,
+            rgba(0, 0, 0, 0.018) 0,
+            rgba(0, 0, 0, 0.018) 10px,
+            rgba(255, 255, 255, 0.18) 10px,
+            rgba(255, 255, 255, 0.18) 20px
+        );
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: cover;
+}
+
+.save-card__meta {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 14px 18px 12px;
+    text-align: center;
+}
+
+.save-card__name {
+    font-size: 22px;
+    font-weight: 800;
+    color: #2b3138;
+}
+
+.save-card__sub {
+    font-size: 15px;
+    color: rgba(74, 81, 90, 0.78);
+}
+
+.save-card--empty {
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    border-style: dashed;
+    border-color: rgba(113, 124, 136, 0.26);
+    background:
+        linear-gradient(135deg, rgba(252, 252, 252, 0.84), rgba(247, 248, 249, 0.9)),
+        repeating-linear-gradient(
+            -45deg,
+            rgba(0, 0, 0, 0.015) 0,
+            rgba(0, 0, 0, 0.015) 11px,
+            rgba(255, 255, 255, 0.24) 11px,
+            rgba(255, 255, 255, 0.24) 22px
+        );
+    color: rgba(92, 98, 104, 0.84);
+}
+
+.save-card--empty span:first-child {
+    font-size: 56px;
+    line-height: 1;
+    font-weight: 300;
+}
+
+.save-actions {
+    margin-top: 32px;
+    justify-content: flex-end;
+    gap: 18px;
+}
+
+.save-card-empty {
+    display: none;
+}
+
+.agent-command {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 24px 26px;
+    border: 2px solid rgba(42, 50, 58, 0.3);
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: 0 16px 40px rgba(31, 42, 57, 0.14);
+}
+
+.agent-command__bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 14px;
+    align-items: center;
+}
+
+.agent-command__input {
+    min-width: 0;
+}
+
+.agent-command__submit {
+    min-width: 86px;
+}
+
+.icon-button {
+    width: 54px;
+    min-width: 54px;
+    height: 54px;
+    border-radius: 999px;
+    border: 2px solid rgba(42, 50, 58, 0.84);
+    background: rgba(255, 255, 255, 0.96);
+    color: #1f2833;
+    font-size: 24px;
+    cursor: pointer;
+}
+
+.agent-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.agent-chip {
+    min-height: 44px;
+    padding: 0 18px;
+    border: 2px solid rgba(54, 72, 96, 0.22);
+    border-radius: 999px;
+    background: #fff;
+    color: #404a58;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.agent-result {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 72px;
+    padding: 16px 18px;
+    border: 2px solid rgba(54, 72, 96, 0.16);
+    border-radius: 16px;
+    background: rgba(250, 251, 252, 0.94);
+    color: #2f3640;
+    font-size: 17px;
+}
+
+.agent-result::before {
+    content: "▸";
+    color: #3d74bb;
+    font-weight: 900;
+}
+
+.agent-result__delta {
+    margin-left: auto;
+    color: #b96b14;
+    font-weight: 900;
+    white-space: nowrap;
+}
+
+.agent-skill-cache {
+    display: none;
+}
+
+@media (max-width: 960px) {
+    .app-screen__panel--menu,
+    .app-screen__panel--save {
+        padding: 28px 22px;
+    }
+
+    .menu-layout {
+        grid-template-columns: 1fr;
+        gap: 24px;
+    }
+
+    .menu-list {
+        width: 100%;
+        padding: 0;
+    }
+
+    .save-card-grid {
+        grid-template-columns: 1fr;
+    }
 }

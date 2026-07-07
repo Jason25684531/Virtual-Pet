@@ -24,7 +24,7 @@ logs/*.log.*
 # # Ngrok 自動生成配置 (包含臨時 URL)
 # frontend/config.js
 
-
+FDSA
 AGENTS.md
 CLAUDE.md
 
@@ -42,3 +42,6 @@ debug/events/*.json
 debug/ui_smoke_*.txt
 debug/stage_verify/
 PNGSample/*
+ui/ref_pic/*
+
+*.db

@@ -3,11 +3,13 @@ from __future__ import annotations
 import gc
 from typing import Any
 
-from pet_harness.character.exceptions import CharacterNotFoundError
 from pet_harness.character.profile import CharacterProfile
 from pet_harness.character.registry import CharacterRegistry
 from pet_harness.character.router import CharacterRouter
 from pet_harness.storage.sqlite_store import SQLiteStore
+
+PLAYTIME_SECONDS_KEY = "ui_playtime_seconds"
+LAST_PLAYED_AT_KEY = "ui_last_played_at"
 
 
 def _level_for_xp(xp_total: int) -> int:
@@ -15,11 +17,6 @@ def _level_for_xp(xp_total: int) -> int:
 
 
 class CharacterUiService:
-    """UI 與 pet_harness 之間的角色管理橋接核心（純 Python，無 Qt 依賴）。
-
-    全數委派給既有 CharacterRegistry / CharacterRouter，本身不重寫任何 CRUD 邏輯。
-    """
-
     def __init__(self, router: CharacterRouter, registry: CharacterRegistry) -> None:
         self._router = router
         self._registry = registry
@@ -31,29 +28,10 @@ class CharacterUiService:
         return [item for item in self.list_characters() if item["is_preset"]]
 
     def create_from_preset(self, preset_id: str, name: str | None = None) -> dict[str, Any]:
-        preset = self._registry.load_character(preset_id)
-        new_id = self._next_available_id(preset_id)
-
-        self._registry.create_character(
-            character_id=new_id,
-            name=name or preset.name,
-            persona_description=preset.persona_description,
-            skill_config=list(preset.skill_config),
-            voice_id_env_key=preset.voice_id_env_key,
-            layout=dict(preset.layout),
-        )
-        self._registry.update_manifest(
-            new_id,
-            {
-                "motions_dir": preset.motions_dir,
-                "motions": dict(preset.motions),
-                "idle_pool": list(preset.idle_pool),
-                "background_image": preset.background_image,
-            },
-        )
-
-        profile = self._router.switch_character(new_id)
-        return self._summarize(profile)
+        # Select 直接切換成 preset 本體並開始遊玩，不再複製出 {preset_id}_{n} 分身。
+        # character_id 永遠維持 preset 原本的 id（如 "miku"），name 參數保留僅為
+        # 相容既有 bridge 呼叫介面，實際已無作用。
+        return self.switch_character(preset_id)
 
     def switch_character(self, character_id: str) -> dict[str, Any]:
         profile = self._router.switch_character(character_id)
@@ -63,8 +41,6 @@ class CharacterUiService:
         profile = self._registry.load_character(character_id)
         if profile.is_preset:
             raise ValueError(f"preset character cannot be deleted: {character_id}")
-        # Windows 上剛開過的 SQLite 連線可能形成參考循環，rmtree 前先強制 GC
-        # 釋放檔案鎖，避免 state.db 刪除被靜默忽略而殘留目錄。
         gc.collect()
         self._registry.delete_character(character_id)
         return {"character_id": character_id, "deleted": True}
@@ -106,17 +82,15 @@ class CharacterUiService:
         store = SQLiteStore(profile.sqlite_path)
         store.initialize()
         xp_total = int(store.get_user_progress().get("xp_total", 0))
+        playtime_seconds = int(store.get_setting(PLAYTIME_SECONDS_KEY, 0) or 0)
+        last_played_at = store.get_setting(LAST_PLAYED_AT_KEY)
         return {
             "character_id": profile.character_id,
             "name": profile.name,
             "is_preset": profile.is_preset,
             "xp_total": xp_total,
             "level": _level_for_xp(xp_total),
+            "background_image": profile.background_image,
+            "playtime_seconds": max(0, playtime_seconds),
+            "last_played_at": last_played_at,
         }
-
-    def _next_available_id(self, preset_id: str) -> str:
-        existing_ids = {item["character_id"] for item in self.list_characters()}
-        index = 1
-        while f"{preset_id}_{index}" in existing_ids:
-            index += 1
-        return f"{preset_id}_{index}"

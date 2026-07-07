@@ -29,6 +29,10 @@
 
     // ── UC01-1 / UC02-1 / UC03-1 / UC05-1 陪伴 dock DOM 參照 ────────
     var hudScore = document.getElementById('hud-score');
+    var hudScoreText = document.getElementById('hud-score-text');
+    var hudScoreLevel = document.getElementById('hud-score-level');
+    var hudScoreDelta = document.getElementById('hud-score-delta');
+    var hudScoreProgressFill = document.getElementById('hud-score-progress-fill');
     var appScreens = document.getElementById('app-screens');
     var screenMainMenu = document.getElementById('screen-main-menu');
     var screenPresetSelect = document.getElementById('screen-preset-select');
@@ -52,6 +56,14 @@
     var saveBackButton = document.getElementById('save-back-button');
     var saveDeleteButton = document.getElementById('save-delete-button');
     var saveContinueButton = document.getElementById('save-continue-button');
+    var agentCommandInput = document.getElementById('agent-command-input');
+    var agentCommandMic = document.getElementById('agent-command-mic');
+    var agentCommandSubmit = document.getElementById('agent-command-submit');
+    var agentChipJoke = document.getElementById('agent-chip-joke');
+    var agentChipMusic = document.getElementById('agent-chip-music');
+    var agentChipNews = document.getElementById('agent-chip-news');
+    var agentResultText = document.getElementById('agent-result-text');
+    var agentResultDelta = document.getElementById('agent-result-delta');
     var companionDockPanel = document.getElementById('companion-dock-panel');
     var dockButtons = Array.prototype.slice.call(document.querySelectorAll('.dock-icon'));
     var dockPanels = Array.prototype.slice.call(document.querySelectorAll('.dock-panel'));
@@ -82,6 +94,8 @@
     var conversationTurns = new Map();
     var maxConversationTurns = 3;
     var latestRuntimeState = null;
+    var latestHudState = null;
+    var hudDeltaTimer = null;
     var resizeObserver = null;
 
     window.echoes = window.echoes || {};
@@ -107,6 +121,39 @@
         if (!trimmed) return '';
         if (/^(?:[a-z][a-z0-9+.-]*:|\/|\.\/|\.\.\/)/i.test(trimmed)) return trimmed;
         return '../../' + trimmed.replace(/^\/+/, '');
+    }
+
+    function formatPlaytime(totalSeconds) {
+        var seconds = Math.max(0, Number(totalSeconds) || 0);
+        var totalMinutes = Math.floor(seconds / 60);
+        var hours = Math.floor(totalMinutes / 60);
+        var minutes = totalMinutes % 60;
+        if (hours > 0) return hours + 'h' + minutes + 'm';
+        return Math.max(0, totalMinutes) + 'm';
+    }
+
+    function formatLastPlayed(isoText) {
+        if (!isoText) return '--/--';
+        var parsed = new Date(String(isoText));
+        if (Number.isNaN(parsed.getTime())) return '--/--';
+        var month = String(parsed.getMonth() + 1).padStart(2, '0');
+        var day = String(parsed.getDate()).padStart(2, '0');
+        return month + '/' + day;
+    }
+
+    function setAgentResult(message, delta) {
+        if (agentResultText) {
+            agentResultText.textContent = message || '輸入問題或點選快捷指令。';
+        }
+        if (!agentResultDelta) return;
+        var normalizedDelta = Number(delta) || 0;
+        if (normalizedDelta > 0) {
+            agentResultDelta.hidden = false;
+            agentResultDelta.textContent = '+' + normalizedDelta;
+        } else {
+            agentResultDelta.hidden = true;
+            agentResultDelta.textContent = '';
+        }
     }
 
     function setStatus(message, tone, timeoutMs) {
@@ -240,6 +287,7 @@
                 '  </div>',
                 '  <p class="entity-card__meta">' + escapeHtml(item.description || '-') + '</p>',
                 '  <p class="entity-card__meta">triggers: ' + escapeHtml((item.triggers || []).join(', ') || '-') + '</p>',
+                '  <p class="entity-card__meta">path: ' + escapeHtml(item.file_path || 'built-in') + '</p>',
                 '  <div class="entity-card__actions">',
                 '    <button class="secondary-button" type="button" data-skill-toggle="' + escapeHtml(item.skill_id) + '" data-enabled="' + String(!item.enabled) + '">' + toggleLabel + '</button>',
                 '    <button class="danger-button" type="button" data-skill-delete="' + escapeHtml(item.skill_id) + '">' + deleteLabel + '</button>',
@@ -377,14 +425,14 @@
         console.log('[ECHOES UI] refreshMainMenu: calling listCharacters, characterBridge=' + (characterBridge ? 'ok' : 'null'));
         callCharacterBridge('listCharacters').then(function (characters) {
             console.log('[ECHOES UI] listCharacters result count=' + (Array.isArray(characters) ? characters.length : 'not-array'));
-            var hasSaves = Array.isArray(characters) && characters.length > 0;
+            var saves = Array.isArray(characters) ? characters.filter(function (item) { return !item.is_preset; }) : [];
+            var hasSaves = saves.length > 0;
             menuLoadButton.disabled = !hasSaves;
-            if (hasSaves) {
-                menuLoadButton.querySelector('.menu-item__sub').textContent = characters.length + ' 個存檔';
-            }
+            menuLoadButton.querySelector('.menu-item__sub').textContent = hasSaves ? (saves.length + ' 個存檔') : '無存檔';
         }).catch(function (err) {
             console.log('[ECHOES UI] listCharacters FAILED: ' + err.message);
             menuLoadButton.disabled = true;
+            menuLoadButton.querySelector('.menu-item__sub').textContent = '無存檔';
         });
     }
 
@@ -588,7 +636,18 @@
             saveBackButton.addEventListener('click', function () { showOverlay('screen-main-menu'); });
         }
 
+        setupWindowDragHandles();
         setupCompanionDock();
+    }
+
+    function setupWindowDragHandles() {
+        document.querySelectorAll('.window-drag-handle').forEach(function (handle) {
+            handle.addEventListener('mousedown', function (event) {
+                if (event.button !== 0) return;
+                if (event.target.closest('button, input, a, textarea, select')) return;
+                callBridge('beginWindowDrag');
+            });
+        });
     }
 
     // ── UC05-1 Companion Dock（Talk / Agent / Style / Scene）────
@@ -730,7 +789,9 @@
             }
             console.log('[ECHOES UI] bridge=ready');
             setStatus('Bridge ready.', 'idle', 1800);
+            callBridge('setDragEnabled', false);
             callBridge('refreshState');
+            refreshMainMenu();
             showOverlay('screen-main-menu');
             startHudPolling();
         });
@@ -1005,6 +1066,211 @@
     }
 
     // ── 初始化 ────────────────────────────────────────────────
+
+    function refreshMainMenu() {
+        if (!menuLoadButton) return;
+        callCharacterBridge('listCharacters').then(function (characters) {
+            var saves = Array.isArray(characters) ? characters.filter(function (item) { return Boolean(item.last_played_at); }) : [];
+            var hasSaves = saves.length > 0;
+            menuLoadButton.disabled = !hasSaves;
+            menuLoadButton.querySelector('.menu-item__sub').textContent = hasSaves ? (saves.length + ' 個存檔') : '無存檔';
+        }).catch(function (err) {
+            console.log('[ECHOES UI] listCharacters FAILED: ' + err.message);
+            menuLoadButton.disabled = true;
+            menuLoadButton.querySelector('.menu-item__sub').textContent = '無存檔';
+        });
+    }
+
+    function renderSaveGrid() {
+        if (!saveCardGrid) return;
+        if (!saveList.length) {
+            saveCardGrid.innerHTML = '<p class="save-card-empty">尚無已玩過的角色 · No played characters yet</p>';
+            updateSaveActionButtons();
+            return;
+        }
+        saveCardGrid.innerHTML = saveList.map(function (item) {
+            var selected = item.character_id === selectedSaveId;
+            var thumbStyle = '';
+            if (item.background_image) {
+                thumbStyle = ' style="background-image:url(\'' + escapeHtml(normalizeProjectAssetSource(item.background_image)) + '\')"';
+            }
+            return '<button type="button" class="save-card' + (selected ? ' is-selected' : '') + '" data-save-id="' + escapeHtml(item.character_id) + '">' +
+                '<span class="save-card__thumb" aria-hidden="true"' + thumbStyle + '></span>' +
+                '<span class="save-card__meta">' +
+                '<span class="save-card__name">' + escapeHtml(item.name) + ' · Lv.' + escapeHtml(item.level) + '</span>' +
+                '<span class="save-card__sub">' + escapeHtml(formatPlaytime(item.playtime_seconds)) + ' · ' + escapeHtml(formatLastPlayed(item.last_played_at)) + '</span>' +
+                '</span>' +
+                '</button>';
+        }).join('');
+        updateSaveActionButtons();
+    }
+
+    function loadSaveGrid() {
+        selectedSaveId = null;
+        callCharacterBridge('listCharacters').then(function (characters) {
+            saveList = Array.isArray(characters)
+                ? characters.filter(function (item) { return Boolean(item.last_played_at); })
+                : [];
+            renderSaveGrid();
+        }).catch(function (err) {
+            console.warn('[ECHOES UI] listCharacters failed:', err.message);
+            saveList = [];
+            renderSaveGrid();
+        });
+    }
+
+    function showHudDelta(delta) {
+        if (!hudScoreDelta) return;
+        if (hudDeltaTimer) {
+            window.clearTimeout(hudDeltaTimer);
+            hudDeltaTimer = null;
+        }
+        var normalized = Number(delta) || 0;
+        if (normalized > 0) {
+            hudScoreDelta.hidden = false;
+            hudScoreDelta.textContent = '+' + normalized;
+            hudDeltaTimer = window.setTimeout(function () {
+                hudScoreDelta.hidden = true;
+                hudScoreDelta.textContent = '';
+            }, 2400);
+        } else {
+            hudScoreDelta.hidden = true;
+            hudScoreDelta.textContent = '';
+        }
+    }
+
+    function renderCharacterHud(state, xpDeltaOverride) {
+        if (!hudScore) return;
+        if (!state || state.active === false) {
+            hudScore.hidden = true;
+            latestHudState = null;
+            return;
+        }
+        latestHudState = state;
+        var xpState = state.xp || {};
+        var xpTotal = Number(xpState.xp_total != null ? xpState.xp_total : state.xp_total) || 0;
+        var level = Number(xpState.level != null ? xpState.level : state.level) || 1;
+        var progressPercent = Number(
+            xpState.progress_percent != null
+                ? xpState.progress_percent
+                : (state.progress_percent != null ? state.progress_percent : 0)
+        ) || 0;
+        hudScore.hidden = false;
+        if (hudScoreText) hudScoreText.textContent = 'Score ' + xpTotal;
+        if (hudScoreLevel) hudScoreLevel.textContent = 'Lv.' + level;
+        if (hudScoreProgressFill) hudScoreProgressFill.style.width = Math.max(0, Math.min(100, progressPercent)) + '%';
+        showHudDelta(xpDeltaOverride != null ? xpDeltaOverride : xpState.last_delta);
+    }
+
+    function renderLatestAgentEvent(eventPayload, fallbackDelta) {
+        var eventData = eventPayload || {};
+        var rewardSummary = eventData.reward_summary || {};
+        var reply = eventData.reply
+            || eventData.message
+            || eventData.summary
+            || rewardSummary.summary
+            || rewardSummary.display
+            || '輸入問題或點選快捷指令。';
+        var delta = eventData.xp_delta;
+        if (delta == null) delta = fallbackDelta;
+        setAgentResult(reply, delta);
+    }
+
+    function renderState(state) {
+        if (!state) return;
+        latestRuntimeState = state;
+        renderBackgroundStatus(state.background || null);
+        renderCharacterHud({ active: true, xp: state.xp || {} }, state.xp && state.xp.last_delta);
+        renderLatestAgentEvent(state.latest_event || null, state.xp && state.xp.last_delta);
+    }
+
+    function refreshCharacterHud() {
+        callCharacterBridge('getActiveState').then(function (state) {
+            var mergedState = state || {};
+            if (latestRuntimeState && latestRuntimeState.xp) {
+                mergedState.xp = latestRuntimeState.xp;
+            }
+            renderCharacterHud(mergedState, latestRuntimeState && latestRuntimeState.xp ? latestRuntimeState.xp.last_delta : 0);
+        }).catch(function (err) {
+            console.warn('[ECHOES UI] getActiveState failed:', err.message);
+        });
+    }
+
+    window.hydrateAgenticUI = function (payload) {
+        payload = payload || {};
+        renderState(payload.state || null);
+        renderRuntimeControls(payload.runtimeControls || null);
+        renderSkills(payload.skills || []);
+        if (payload.message) {
+            setStatus(payload.message, payload.tone || 'idle', payload.timeoutMs || 0);
+        }
+        renderCharacterHud(
+            payload.state ? { active: true, xp: payload.state.xp || {}, progress_percent: payload.progress_percent } : null,
+            payload.xp_delta
+        );
+        renderLatestAgentEvent(payload.event || (payload.state && payload.state.latest_event), payload.xp_delta);
+    };
+
+    function sendAgentCommandText() {
+        if (!agentCommandInput) return;
+        var text = agentCommandInput.value.trim();
+        if (!text) return;
+        callBridge('sendText', text, 'mock');
+        agentCommandInput.value = '';
+    }
+
+    function setupCompanionDock() {
+        dockButtons.forEach(function (button) {
+            button.addEventListener('click', function () { activateCompanionDock(button); });
+        });
+        if (talkSendButton) {
+            talkSendButton.addEventListener('click', sendTalkText);
+        }
+        if (talkTextInput) {
+            talkTextInput.addEventListener('keydown', function (event) {
+                if (event.key === 'Enter') sendTalkText();
+            });
+        }
+        if (agentCommandSubmit) {
+            agentCommandSubmit.addEventListener('click', sendAgentCommandText);
+        }
+        if (agentCommandInput) {
+            agentCommandInput.addEventListener('keydown', function (event) {
+                if (event.key === 'Enter') sendAgentCommandText();
+            });
+        }
+        if (agentCommandMic) {
+            agentCommandMic.addEventListener('click', function () {
+                callBridge('toggleStt');
+            });
+        }
+        if (agentChipJoke) {
+            agentChipJoke.addEventListener('click', function () {
+                callBridge('triggerQuickIntent', 'joke');
+            });
+        }
+        if (agentChipMusic) {
+            agentChipMusic.addEventListener('click', function () {
+                callBridge('triggerOverlayAction', 'play_music');
+            });
+        }
+        if (agentChipNews) {
+            agentChipNews.addEventListener('click', function () {
+                callBridge('triggerOverlayAction', 'report_news');
+            });
+        }
+        if (companionSettingsButton) {
+            companionSettingsButton.addEventListener('click', function () {
+                setStatus('Settings 版位保留，後續會沿用既有流程。', 'idle', 2400);
+            });
+        }
+        if (companionLeaveButton) {
+            companionLeaveButton.addEventListener('click', function () {
+                collapseCompanionDock();
+                showOverlay('screen-main-menu');
+            });
+        }
+    }
 
     try {
         updateStageScale();
