@@ -27,6 +27,7 @@ from action_services import FIXED_NEWS_SCRIPT
 from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
 from pet_harness.ui.pyqt_harness_adapter import PyQtHarnessAdapter
 from ui.background_resolver import BackgroundResolver
+from ui.character_ui_bridge import CharacterUiBridge
 
 
 BRIDGE_CONTRACT = {
@@ -73,6 +74,15 @@ BRIDGE_CONTRACT = {
         "triggerQuickIntent",
         "toggleSkill",
         "toggleTool",
+        "setDragEnabled",
+    ],
+    "character_bridge": [
+        "listCharacters",
+        "listPresets",
+        "createFromPreset",
+        "switchCharacter",
+        "deleteCharacter",
+        "getActiveState",
     ],
 }
 
@@ -178,6 +188,10 @@ class HarnessUiBridge(QObject):
     @pyqtSlot(str)
     def triggerQuickIntent(self, intent_name: str) -> None:
         self._window.trigger_quick_intent_from_bridge(intent_name)
+
+    @pyqtSlot(bool)
+    def setDragEnabled(self, enabled: bool) -> None:
+        self._window.set_drag_surface_enabled(enabled)
 
     @pyqtSlot(str)
     def addSkill(self, payload_json: str) -> None:
@@ -334,9 +348,14 @@ class TransparentWindow(QMainWindow):
         # 掛上自訂 Page，讓前端 console 訊息可轉印至 Python Terminal。
         self.web_view.setPage(EchoesWebPage(self.web_view))
         self._bridge = HarnessUiBridge(self)
+        self._character_bridge = CharacterUiBridge(self._adapter.character_service, self)
         self._channel = QWebChannel(self.web_view.page())
         self._channel.registerObject("harnessBridge", self._bridge)
+        self._channel.registerObject("characterBridge", self._character_bridge)
         self.web_view.page().setWebChannel(self._channel)
+        # overlay 啟動時預設啟用 _overlay_active，讓 nativeEvent WM_NCHITTEST 回傳 HTCLIENT
+        # 不依賴非同步橋接呼叫，確保 Main Menu 開啟後按鈕可立即點擊
+        QTimer.singleShot(1500, lambda: setattr(self, "_overlay_active", True))
 
         self.setCentralWidget(self.web_view)
 
@@ -905,6 +924,10 @@ class TransparentWindow(QMainWindow):
         self._show_context_menu(event.globalPos())
 
     def mousePressEvent(self, event):
+        if getattr(self, "_overlay_active", False):
+            # overlay 顯示中：不啟動拖曳，交由 QWebEngineView 處理點擊
+            super().mousePressEvent(event)
+            return
         self._handle_drag_press(event)
         super().mousePressEvent(event)
 
@@ -1202,7 +1225,32 @@ class TransparentWindow(QMainWindow):
                 synthetic_assistant_text=FIXED_NEWS_SCRIPT,
             )
             return
+        if resolved == "quit":
+            QApplication.quit()
+            return
         print(f"[ECHOES] Ignored unknown overlay action from web bridge: {action_name}")
+
+    def set_drag_surface_enabled(self, enabled: bool) -> None:
+        """啟用或停用頂部拖曳層。
+
+        overlay 顯示(enabled=False)時:
+        - 設 _overlay_active = True：nativeEvent 收到 WM_NCHITTEST 時返回 HTCLIENT=1，
+          強制 Windows 把所有點擊路由到 client area，繞過 GPU 透明視窗的 alpha hit-test。
+        - 隱藏 _drag_surface，避免攔截 QWebEngineView 子視窗事件。
+
+        companion 模式(enabled=True)時恢復正常透明 hit-test 行為。
+        """
+        self._overlay_active = not enabled
+        print(f"[OVERLAY] set_drag_surface_enabled({enabled}) → _overlay_active={self._overlay_active}", flush=True)
+        if hasattr(self, "_drag_surface") and self._drag_surface is not None:
+            self._drag_surface.setVisible(enabled)
+
+    def on_character_switched(self, profile_payload: dict) -> None:
+        """建立/切換角色成功後的回呼：套用 WebM 動作來源並重整 Agentic UI（Skills 清單）。"""
+        character_id = str(profile_payload.get("character_id") or "").strip()
+        if character_id:
+            self.apply_character(character_id)
+        self.refresh_agentic_ui(message="Character switched.", tone="idle", timeoutMs=2200)
 
     def _emit_cached_intent_request(self, intent_name: str, trigger_source: str):
         normalized = str(intent_name or "").strip().lower()
@@ -1557,6 +1605,14 @@ class TransparentWindow(QMainWindow):
                     return True, 0
                 return super().nativeEvent(event_type, message)
             if msg.message == wm_nchittest:
+                # overlay 顯示時：強制 HTCLIENT=1
+                # should_treat_point_as_caption 對大部分區域回傳 True → htcaption=2
+                # Windows 收到 htcaption 送的是 WM_NCLBUTTONDOWN（視窗管理員接管拖曳）
+                # 而不是 WM_LBUTTONDOWN，導致 QWebEngineView 永遠收不到點擊。
+                # 改回 HTCLIENT 讓 Windows 送 WM_LBUTTONDOWN 到 client area，
+                # Qt 才能正確路由到 QWebEngineView → Chromium → HTML 按鈕。
+                if getattr(self, "_overlay_active", False):
+                    return True, 1  # HTCLIENT
                 sx = ctypes.c_short(msg.lParam & 0xFFFF).value
                 sy = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
                 local = self.mapFromGlobal(QPoint(sx, sy))

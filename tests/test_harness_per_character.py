@@ -148,6 +148,34 @@ class TestXpIsolation:
         assert miku.store.get_user_progress()["xp_total"] == 0
 
 
+class TestXpLevelConvenienceMethods:
+    def test_new_character_initial_values(self, harness_env):
+        tmp_path, agentic_root = harness_env
+        choppr = _build_engine(agentic_root, tmp_path, character_id="Choppr")
+
+        assert choppr.get_xp() == 0
+        assert choppr.get_level() == 1
+
+    def test_level_crosses_threshold(self, harness_env):
+        tmp_path, agentic_root = harness_env
+        choppr = _build_engine(agentic_root, tmp_path, character_id="Choppr")
+
+        choppr.store.add_user_xp(150)
+
+        assert choppr.get_xp() == 150
+        assert choppr.get_level() == 2
+
+    def test_per_character_isolation(self, harness_env):
+        tmp_path, agentic_root = harness_env
+        choppr = _build_engine(agentic_root, tmp_path, character_id="Choppr")
+        miku = _build_engine(agentic_root, tmp_path, character_id="miku")
+
+        choppr.store.add_user_xp(120)
+
+        assert choppr.get_xp() == 120
+        assert miku.get_xp() == 0
+
+
 class TestLegacyCompatibility:
     def test_no_character_id_keeps_legacy_behavior(self, harness_env):
         tmp_path, agentic_root = harness_env

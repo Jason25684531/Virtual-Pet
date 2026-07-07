@@ -28,6 +28,9 @@ class CharacterProfile:
     persona_description: str
     skill_config: list[str]
 
+    # 來自 manifest.json（可選，預設 False 以向後相容舊 manifest）
+    is_preset: bool = False
+
     # 自動計算
     sqlite_path: str = field(init=False)
     qdrant_collection: str = field(init=False)
@@ -69,6 +72,7 @@ class CharacterProfile:
             layout=manifest["layout"],
             persona_description=profile["persona_description"],
             skill_config=profile["skill_config"],
+            is_preset=bool(manifest.get("is_preset", False)),
         )
 
     def save(self) -> None:
@@ -99,6 +103,7 @@ class CharacterProfile:
             "layout": self.layout,
             "persona_description": self.persona_description,
             "skill_config": self.skill_config,
+            "is_preset": self.is_preset,
             "sqlite_path": self.sqlite_path,
             "qdrant_collection": self.qdrant_collection,
         }
@@ -119,4 +124,5 @@ class CharacterProfile:
             layout=data["layout"],
             persona_description=data["persona_description"],
             skill_config=data["skill_config"],
+            is_preset=bool(data.get("is_preset", False)),
         )

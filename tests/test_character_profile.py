@@ -1,8 +1,10 @@
+import json
 import os
 import time
 
 import pytest
 
+import pet_harness.character.profile as profile_module
 from pet_harness.character import CharacterProfile, InvalidCharacterIdError
 
 
@@ -18,6 +20,10 @@ class TestLoadChoppr:
         assert p.voice_id_env_key == "CHOPPER_VOICE_ID"
         assert isinstance(p.idle_pool, list)
         assert len(p.idle_pool) > 0
+
+    def test_choppr_is_preset(self):
+        p = CharacterProfile.load("Choppr")
+        assert p.is_preset is True
 
 
 class TestLoadMiku:
@@ -35,6 +41,51 @@ class TestLoadMissing:
     def test_load_missing_manifest(self):
         with pytest.raises(FileNotFoundError):
             CharacterProfile.load("ghost")
+
+
+class TestIsPresetDefault:
+    def test_manifest_without_is_preset_key_defaults_false(self, tmp_path, monkeypatch):
+        character_id = "no_preset_flag"
+        assets_dir = tmp_path / "assets" / "webm" / "characters" / character_id
+        (assets_dir / "motions").mkdir(parents=True)
+        manifest = {
+            "id": character_id,
+            "name": "test",
+            "background_image": "",
+            "motions_dir": f"assets/webm/characters/{character_id}/motions",
+            "motions": {},
+            "idle_pool": [],
+            "voice_id_env_key": "",
+            "layout": {},
+        }
+        (assets_dir / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+        )
+        data_dir = tmp_path / "data" / "characters" / character_id
+        data_dir.mkdir(parents=True)
+        (data_dir / "profile.json").write_text(
+            json.dumps({"persona_description": "", "skill_config": []}),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(profile_module, "_PROJECT_ROOT", tmp_path)
+        p = CharacterProfile.load(character_id)
+        assert p.is_preset is False
+
+    def test_direct_construction_defaults_false(self):
+        p = CharacterProfile(
+            character_id="no_preset_flag",
+            name="test",
+            background_image="",
+            motions_dir="",
+            motions={},
+            idle_pool=[],
+            voice_id_env_key="",
+            layout={},
+            persona_description="",
+            skill_config=[],
+        )
+        assert p.is_preset is False
 
 
 class TestSave:
@@ -76,6 +127,8 @@ class TestSerializationRoundtrip:
         assert p.skill_config == p2.skill_config
         assert p.sqlite_path == p2.sqlite_path
         assert p.qdrant_collection == p2.qdrant_collection
+        assert p.is_preset == p2.is_preset
+        assert p2.is_preset is True
 
 
 class TestInvalidCharacterId:

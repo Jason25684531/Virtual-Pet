@@ -16,9 +16,6 @@
     var actionStatusText = document.getElementById('action-status-text');
     var conversationList = document.getElementById('conversation-list');
     var conversationQueueText = document.getElementById('conversation-queue-text');
-    var xpDisplay = document.getElementById('xp-display');
-    var xpProgressBar = document.getElementById('xp-progress-bar');
-    var xpThresholdDisplay = document.getElementById('xp-threshold-display');
     var runtimeSttStatus = document.getElementById('runtime-stt-status');
     var runtimeSttButton = document.getElementById('runtime-stt-button');
     var runtimeResetButton = document.getElementById('runtime-reset-button');
@@ -29,7 +26,39 @@
     var skillList = document.getElementById('skill-list');
     var skillCountBadge = document.getElementById('skill-count-badge');
     var refreshSkillsButton = document.getElementById('refresh-skills-button');
-    var panelToggleButton = document.getElementById('agentic-panel-toggle');
+
+    // ── UC01-1 / UC02-1 / UC03-1 / UC05-1 陪伴 dock DOM 參照 ────────
+    var hudScore = document.getElementById('hud-score');
+    var appScreens = document.getElementById('app-screens');
+    var screenMainMenu = document.getElementById('screen-main-menu');
+    var screenPresetSelect = document.getElementById('screen-preset-select');
+    var screenLoadSave = document.getElementById('screen-load-save');
+    var menuCreateButton = document.getElementById('menu-create-button');
+    var menuLoadButton = document.getElementById('menu-load-button');
+    var menuSettingsButton = document.getElementById('menu-settings-button');
+    var menuQuitButton = document.getElementById('menu-quit-button');
+    var presetCarouselIndex = document.getElementById('preset-carousel-index');
+    var presetCarouselPrev = document.getElementById('preset-carousel-prev');
+    var presetCarouselNext = document.getElementById('preset-carousel-next');
+    var presetName = document.getElementById('preset-name');
+    var presetPersona = document.getElementById('preset-persona');
+    var presetSelectButton = document.getElementById('preset-select-button');
+    var presetCustomizeToggle = document.getElementById('preset-customize-toggle');
+    var presetCustomizePanel = document.getElementById('preset-customize-panel');
+    var presetCustomizeGenerate = document.getElementById('preset-customize-generate');
+    var presetThumbList = document.getElementById('preset-thumb-list');
+    var presetBackButton = document.getElementById('preset-back-button');
+    var saveCardGrid = document.getElementById('save-card-grid');
+    var saveBackButton = document.getElementById('save-back-button');
+    var saveDeleteButton = document.getElementById('save-delete-button');
+    var saveContinueButton = document.getElementById('save-continue-button');
+    var companionDockPanel = document.getElementById('companion-dock-panel');
+    var dockButtons = Array.prototype.slice.call(document.querySelectorAll('.dock-icon'));
+    var dockPanels = Array.prototype.slice.call(document.querySelectorAll('.dock-panel'));
+    var talkTextInput = document.getElementById('talk-text-input');
+    var talkSendButton = document.getElementById('talk-send-button');
+    var companionSettingsButton = document.getElementById('companion-settings-button');
+    var companionLeaveButton = document.getElementById('companion-leave-button');
 
     // ── 狀態變數 ──────────────────────────────────────────────
     var idleSource = '';
@@ -38,7 +67,13 @@
     var statusTimer = null;
     var defaultStatusText = 'Waiting for room updates.';
     var harnessBridge = null;
+    var characterBridge = null;
     var agenticBusy = false;
+    var presetList = [];
+    var presetIndex = 0;
+    var saveList = [];
+    var selectedSaveId = null;
+    var hudPollTimer = null;
     var motionLoopTimer = null;
     var motionLoopSource = null;
     var motionLoopActive = false;
@@ -92,25 +127,6 @@
     function updateStageScale() {
         // 1920x1080 鎖定，不需要動態縮放
         document.documentElement.style.setProperty('--stage-scale', '1');
-    }
-
-    function syncAgenticPanelOffset() {
-        var collapsed = document.body.dataset.agenticPanel === 'collapsed';
-        var panelWidth = 0;
-        if (!collapsed) {
-            var panel = document.getElementById('agentic-panel');
-            panelWidth = panel ? Math.round(panel.getBoundingClientRect().width) : 0;
-        }
-        document.documentElement.style.setProperty('--agentic-panel-offset', panelWidth + 'px');
-        if (panelToggleButton) {
-            panelToggleButton.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-        }
-    }
-
-    function toggleAgenticPanel() {
-        var collapsed = document.body.dataset.agenticPanel === 'collapsed';
-        document.body.dataset.agenticPanel = collapsed ? 'expanded' : 'collapsed';
-        syncAgenticPanelOffset();
     }
 
     // ── Idle Motion ───────────────────────────────────────────
@@ -233,16 +249,6 @@
         }).join('');
     }
 
-    function renderXpState(xp) {
-        if (!xp) return;
-        setText(xpDisplay, xp.display);
-        if (xpProgressBar) {
-            var percent = Number(xp.progress_percent || 0);
-            xpProgressBar.style.width = Math.max(0, Math.min(100, percent)) + '%';
-        }
-        setText(xpThresholdDisplay, String(xp.xp_total || 0) + ' / ' + String(xp.next_level_xp || 100) + ' XP');
-    }
-
     function renderBackgroundStatus(background) {
         var status = background && background.status ? background.status : 'missing';
         console.log('[ECHOES UI] background=' + status);
@@ -251,7 +257,6 @@
     function renderState(state) {
         if (!state) return;
         latestRuntimeState = state;
-        renderXpState(state.xp || null);
         renderBackgroundStatus(state.background || null);
     }
 
@@ -285,12 +290,364 @@
         return harnessBridge[method].apply(harnessBridge, args);
     }
 
+    // ── Character Bridge 呼叫（async，帶 callback → Promise）─────
+
+    function callCharacterBridge(method) {
+        var args = Array.prototype.slice.call(arguments, 1);
+        return new Promise(function (resolve, reject) {
+            if (!characterBridge || typeof characterBridge[method] !== 'function') {
+                reject(new Error('characterBridge not ready — cannot call: ' + method));
+                return;
+            }
+            var callArgs = args.concat([function (resultJson) {
+                var parsed;
+                try {
+                    parsed = JSON.parse(resultJson);
+                } catch (err) {
+                    reject(err);
+                    return;
+                }
+                if (parsed && parsed.ok) {
+                    resolve(parsed.data);
+                } else {
+                    reject(new Error((parsed && parsed.error) || ('unknown error from ' + method)));
+                }
+            }]);
+            characterBridge[method].apply(characterBridge, callArgs);
+        });
+    }
+
+    // ── UC05-1 HUD（Score/Lv pill，事件驅動 + 低頻輪詢）──────────
+
+    function renderCharacterHud(state) {
+        if (!hudScore) return;
+        if (!state || state.active === false) {
+            hudScore.hidden = true;
+            return;
+        }
+        hudScore.hidden = false;
+        hudScore.textContent = '★ Score ' + Number(state.xp_total || 0) + ' · Lv.' + Number(state.level || 1);
+    }
+
+    function refreshCharacterHud() {
+        callCharacterBridge('getActiveState').then(renderCharacterHud).catch(function (err) {
+            console.warn('[ECHOES UI] getActiveState failed:', err.message);
+        });
+    }
+
+    function startHudPolling() {
+        if (hudPollTimer) return;
+        hudPollTimer = window.setInterval(refreshCharacterHud, 5000);
+        refreshCharacterHud();
+    }
+
+    // ── App Screens 狀態機（UC01-1 / UC02-1 / UC03-1）────────────
+
+    function showOverlay(screenId) {
+        if (appScreens) appScreens.hidden = false;
+        [screenMainMenu, screenPresetSelect, screenLoadSave].forEach(function (screen) {
+            if (screen) screen.hidden = (screen.id !== screenId);
+        });
+        // 隱藏 UC05 遊戲 UI 元素（HUD / Dock / Live UI）
+        document.body.classList.add('overlay-active');
+        // 隱藏 Qt 拖曳層，讓 HTML 按鈕可接收點擊
+        console.log('[ECHOES UI] calling setDragEnabled(false), type=' + (harnessBridge ? typeof harnessBridge.setDragEnabled : 'NO_BRIDGE'));
+        callBridge('setDragEnabled', false);
+        if (screenId === 'screen-main-menu') refreshMainMenu();
+        if (screenId === 'screen-preset-select') loadPresetCarousel();
+        if (screenId === 'screen-load-save') loadSaveGrid();
+    }
+
+    function hideOverlay() {
+        if (appScreens) appScreens.hidden = true;
+        document.body.classList.remove('overlay-active');
+        callBridge('setDragEnabled', true);
+    }
+
+    function enterCompanionStage() {
+        hideOverlay();
+        refreshCharacterHud();
+        callBridge('refreshState');
+    }
+
+    // ── UC01-1 Main Menu ──────────────────────────────────────
+
+    function refreshMainMenu() {
+        if (!menuLoadButton) return;
+        console.log('[ECHOES UI] refreshMainMenu: calling listCharacters, characterBridge=' + (characterBridge ? 'ok' : 'null'));
+        callCharacterBridge('listCharacters').then(function (characters) {
+            console.log('[ECHOES UI] listCharacters result count=' + (Array.isArray(characters) ? characters.length : 'not-array'));
+            var hasSaves = Array.isArray(characters) && characters.length > 0;
+            menuLoadButton.disabled = !hasSaves;
+            if (hasSaves) {
+                menuLoadButton.querySelector('.menu-item__sub').textContent = characters.length + ' 個存檔';
+            }
+        }).catch(function (err) {
+            console.log('[ECHOES UI] listCharacters FAILED: ' + err.message);
+            menuLoadButton.disabled = true;
+        });
+    }
+
+    // ── UC02-1 Preset 聚光燈輪播 ───────────────────────────────
+
+    function renderPresetCarousel() {
+        var total = presetList.length;
+        var current = total ? presetList[presetIndex] : null;
+        setText(presetCarouselIndex, (total ? presetIndex + 1 : 0) + ' / ' + total);
+        setText(presetName, current ? current.name : '尚無預設角色');
+        setText(presetPersona, current ? (current.persona_description || '') : '[ 個性 / 簡介 ]');
+        if (presetSelectButton) presetSelectButton.disabled = !current;
+
+        if (presetThumbList) {
+            var slots = [];
+            for (var i = 0; i < 7; i++) {
+                var preset = presetList[i];
+                if (preset) {
+                    slots.push(
+                        '<button type="button" class="preset-thumb' + (i === presetIndex ? ' is-active' : '') + '" data-preset-index="' + i + '">' +
+                        escapeHtml(preset.name) + '</button>'
+                    );
+                } else {
+                    slots.push('<div class="preset-thumb preset-thumb--empty" aria-hidden="true"></div>');
+                }
+            }
+            presetThumbList.innerHTML = slots.join('');
+        }
+    }
+
+    function loadPresetCarousel() {
+        callCharacterBridge('listPresets').then(function (presets) {
+            presetList = Array.isArray(presets) ? presets : [];
+            presetIndex = 0;
+            renderPresetCarousel();
+        }).catch(function (err) {
+            console.warn('[ECHOES UI] listPresets failed:', err.message);
+            presetList = [];
+            renderPresetCarousel();
+        });
+    }
+
+    function stepPreset(delta) {
+        if (!presetList.length) return;
+        presetIndex = (presetIndex + delta + presetList.length) % presetList.length;
+        renderPresetCarousel();
+    }
+
+    function selectCurrentPreset() {
+        var current = presetList[presetIndex];
+        if (!current || !presetSelectButton) return;
+        presetSelectButton.disabled = true;
+        callCharacterBridge('createFromPreset', current.character_id, '').then(function () {
+            enterCompanionStage();
+        }).catch(function (err) {
+            console.warn('[ECHOES UI] createFromPreset failed:', err.message);
+            setStatus('建立角色失敗：' + err.message, 'error', 4800);
+        }).then(function () {
+            presetSelectButton.disabled = false;
+        });
+    }
+
+    // ── UC03-1 Load Save ──────────────────────────────────────
+
+    function updateSaveActionButtons() {
+        var selectedItem = null;
+        for (var i = 0; i < saveList.length; i++) {
+            if (saveList[i].character_id === selectedSaveId) {
+                selectedItem = saveList[i];
+                break;
+            }
+        }
+        if (saveContinueButton) saveContinueButton.disabled = !selectedItem;
+        if (saveDeleteButton) {
+            var isPreset = Boolean(selectedItem && selectedItem.is_preset);
+            saveDeleteButton.disabled = !selectedItem || isPreset;
+            saveDeleteButton.hidden = isPreset;
+        }
+    }
+
+    function renderSaveGrid() {
+        if (!saveCardGrid) return;
+        if (!saveList.length) {
+            saveCardGrid.innerHTML = '<p class="save-card-empty">尚無存檔 · No saves yet</p>';
+        } else {
+            saveCardGrid.innerHTML = saveList.map(function (item) {
+                var selected = item.character_id === selectedSaveId;
+                return '<button type="button" class="save-card' + (selected ? ' is-selected' : '') + '" data-save-id="' + escapeHtml(item.character_id) + '">' +
+                    '<span class="save-card__thumb" aria-hidden="true">char</span>' +
+                    '<span class="save-card__name">' + escapeHtml(item.name) + ' · Lv.' + escapeHtml(item.level) + '</span>' +
+                    '</button>';
+            }).join('');
+        }
+        updateSaveActionButtons();
+    }
+
+    function loadSaveGrid() {
+        selectedSaveId = null;
+        callCharacterBridge('listCharacters').then(function (characters) {
+            saveList = Array.isArray(characters) ? characters : [];
+            renderSaveGrid();
+        }).catch(function (err) {
+            console.warn('[ECHOES UI] listCharacters failed:', err.message);
+            saveList = [];
+            renderSaveGrid();
+        });
+    }
+
+    function continueSelectedSave() {
+        if (!selectedSaveId) return;
+        callCharacterBridge('switchCharacter', selectedSaveId).then(function () {
+            enterCompanionStage();
+        }).catch(function (err) {
+            console.warn('[ECHOES UI] switchCharacter failed:', err.message);
+            setStatus('載入存檔失敗：' + err.message, 'error', 4800);
+        });
+    }
+
+    function deleteSelectedSave() {
+        if (!selectedSaveId) return;
+        callCharacterBridge('deleteCharacter', selectedSaveId).then(function () {
+            selectedSaveId = null;
+            loadSaveGrid();
+        }).catch(function (err) {
+            console.warn('[ECHOES UI] deleteCharacter failed:', err.message);
+            setStatus('刪除存檔失敗：' + err.message, 'error', 4800);
+        });
+    }
+
+    // ── App Screens 事件綁定 ──────────────────────────────────
+
+    function setupAppScreens() {
+        if (menuCreateButton) {
+            menuCreateButton.addEventListener('click', function () {
+                showOverlay('screen-preset-select');
+            });
+        }
+        if (menuLoadButton) {
+            menuLoadButton.addEventListener('click', function () {
+                if (menuLoadButton.disabled) return;
+                showOverlay('screen-load-save');
+            });
+        }
+        if (menuSettingsButton) {
+            menuSettingsButton.addEventListener('click', function () {
+                setStatus('Settings 尚未串接（本次變更範圍外）。', 'idle', 2400);
+            });
+        }
+        if (menuQuitButton) {
+            menuQuitButton.addEventListener('click', function () {
+                callBridge('triggerOverlayAction', 'quit');
+            });
+        }
+        if (presetCarouselPrev) {
+            presetCarouselPrev.addEventListener('click', function () { stepPreset(-1); });
+        }
+        if (presetCarouselNext) {
+            presetCarouselNext.addEventListener('click', function () { stepPreset(1); });
+        }
+        if (presetSelectButton) {
+            presetSelectButton.addEventListener('click', selectCurrentPreset);
+        }
+        if (presetCustomizeToggle && presetCustomizePanel) {
+            presetCustomizeToggle.addEventListener('click', function () {
+                presetCustomizePanel.hidden = !presetCustomizePanel.hidden;
+            });
+        }
+        if (presetCustomizeGenerate) {
+            presetCustomizeGenerate.addEventListener('click', function () {
+                var current = presetList[presetIndex];
+                var label = current ? current.name : '預設角色';
+                setStatus('已套用 ' + label + ' 的預設造型（佔位邏輯，尚未接真實產圖）。', 'idle', 3200);
+            });
+        }
+        if (presetThumbList) {
+            presetThumbList.addEventListener('click', function (event) {
+                var thumb = event.target.closest('[data-preset-index]');
+                if (!thumb) return;
+                presetIndex = Number(thumb.dataset.presetIndex) || 0;
+                renderPresetCarousel();
+            });
+        }
+        if (presetBackButton) {
+            presetBackButton.addEventListener('click', function () { showOverlay('screen-main-menu'); });
+        }
+        if (saveCardGrid) {
+            saveCardGrid.addEventListener('click', function (event) {
+                var card = event.target.closest('[data-save-id]');
+                if (!card) return;
+                selectedSaveId = card.dataset.saveId;
+                renderSaveGrid();
+            });
+        }
+        if (saveContinueButton) {
+            saveContinueButton.addEventListener('click', continueSelectedSave);
+        }
+        if (saveDeleteButton) {
+            saveDeleteButton.addEventListener('click', deleteSelectedSave);
+        }
+        if (saveBackButton) {
+            saveBackButton.addEventListener('click', function () { showOverlay('screen-main-menu'); });
+        }
+
+        setupCompanionDock();
+    }
+
+    // ── UC05-1 Companion Dock（Talk / Agent / Style / Scene）────
+
+    function collapseCompanionDock() {
+        if (companionDockPanel) companionDockPanel.hidden = true;
+        dockPanels.forEach(function (panel) { panel.hidden = true; });
+        dockButtons.forEach(function (button) { button.classList.remove('is-active'); });
+    }
+
+    function activateCompanionDock(button) {
+        var targetId = button.dataset.dockPanel;
+        var alreadyActive = button.classList.contains('is-active');
+        collapseCompanionDock();
+        if (alreadyActive) return;
+        dockButtons.forEach(function (candidate) {
+            candidate.classList.toggle('is-active', candidate === button);
+        });
+        var targetPanel = document.getElementById(targetId);
+        if (targetPanel) targetPanel.hidden = false;
+        if (companionDockPanel) companionDockPanel.hidden = false;
+    }
+
+    function sendTalkText() {
+        if (!talkTextInput) return;
+        var text = talkTextInput.value.trim();
+        if (!text) return;
+        callBridge('sendText', text, 'mock');
+        talkTextInput.value = '';
+    }
+
+    function setupCompanionDock() {
+        dockButtons.forEach(function (button) {
+            button.addEventListener('click', function () { activateCompanionDock(button); });
+        });
+        if (talkSendButton) {
+            talkSendButton.addEventListener('click', sendTalkText);
+        }
+        if (talkTextInput) {
+            talkTextInput.addEventListener('keydown', function (event) {
+                if (event.key === 'Enter') sendTalkText();
+            });
+        }
+        if (companionSettingsButton) {
+            companionSettingsButton.addEventListener('click', function () {
+                setStatus('Settings 尚未串接(本次變更範圍外)。', 'idle', 2400);
+            });
+        }
+        if (companionLeaveButton) {
+            companionLeaveButton.addEventListener('click', function () {
+                collapseCompanionDock();
+                showOverlay('screen-main-menu');
+            });
+        }
+    }
+
     // ── 事件綁定 ──────────────────────────────────────────────
 
     function setupForms() {
-        if (panelToggleButton) {
-            panelToggleButton.addEventListener('click', toggleAgenticPanel);
-        }
         if (runtimeSttButton) {
             runtimeSttButton.addEventListener('click', function () {
                 callBridge('toggleStt');
@@ -362,14 +719,20 @@
         }
         new window.QWebChannel(window.qt.webChannelTransport, function (channel) {
             harnessBridge = channel.objects.harnessBridge || null;
+            characterBridge = channel.objects.characterBridge || null;
             if (!harnessBridge) {
                 console.error('[ECHOES UI] harnessBridge object not found in channel.objects');
                 setStatus('Bridge object missing. Check PyQt registration.', 'error', 0);
                 return;
             }
+            if (!characterBridge) {
+                console.warn('[ECHOES UI] characterBridge object not found in channel.objects');
+            }
             console.log('[ECHOES UI] bridge=ready');
             setStatus('Bridge ready.', 'idle', 1800);
             callBridge('refreshState');
+            showOverlay('screen-main-menu');
+            startHudPolling();
         });
     }
 
@@ -440,6 +803,7 @@
         if (payload.message) {
             setStatus(payload.message, payload.tone || 'idle', payload.timeoutMs || 0);
         }
+        refreshCharacterHud();
     };
 
     window.updateRuntimeControls = function (runtimeControls) {
@@ -643,21 +1007,18 @@
     // ── 初始化 ────────────────────────────────────────────────
 
     try {
-        document.body.dataset.agenticPanel = 'expanded';
         updateStageScale();
-        syncAgenticPanelOffset();
         if (typeof ResizeObserver !== 'undefined') {
             resizeObserver = new ResizeObserver(function () {
                 updateStageScale();
-                syncAgenticPanelOffset();
             });
             resizeObserver.observe(document.documentElement);
         } else {
             window.addEventListener('resize', updateStageScale);
-            window.addEventListener('resize', syncAgenticPanelOffset);
         }
         setupForms();
         wireDynamicActions();
+        setupAppScreens();
         setupWebChannel();
         setStatus('', 'idle', 0);
         window.setConversationQueueDepth(0);

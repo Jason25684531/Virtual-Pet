@@ -8,6 +8,7 @@ from typing import Any
 
 
 from pet_harness.agent.provider_factory import create_provider
+from pet_harness.character.registry import CharacterRegistry
 from pet_harness.character.router import CharacterRouter
 from pet_harness.engine.harness_engine import PetHarnessEngine
 from pet_harness.models.events import PetEvent
@@ -19,6 +20,7 @@ from pet_harness.storage.sqlite_store import SQLiteStore
 from pet_harness.tools.registry import ToolRegistry
 from pet_harness.tools.safety_guard import SafetyGuard
 from pet_harness.tools.tool_models import ToolDefinition, ToolExecutionClass, ToolRiskLevel
+from pet_harness.ui.character_ui_service import CharacterUiService
 from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
 from ui.background_resolver import BackgroundResolver
 
@@ -45,8 +47,10 @@ class PyQtHarnessAdapter:
         self.agentic_root = Path(agentic_root)
         self.skills_root = self.agentic_root / "skills"
         self.user_skills_root = self.skills_root / "user"
-        self.router = CharacterRouter(agentic_root=str(self.agentic_root))
+        self._character_registry = CharacterRegistry()
+        self.router = CharacterRouter(registry=self._character_registry, agentic_root=str(self.agentic_root))
         self.router.switch_character(default_character_id)
+        self.character_service = CharacterUiService(router=self.router, registry=self._character_registry)
         self._project_root = self.agentic_root.parent
         self._project_env = self._load_project_env()
         self._brain_mode = str(brain_mode or "harness")

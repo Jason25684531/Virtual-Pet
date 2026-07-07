@@ -209,6 +209,12 @@ class PetHarnessEngine:
     def state_snapshot(self) -> dict[str, Any]:
         return self.store.state_snapshot()
 
+    def get_xp(self) -> int:
+        return int(self.store.get_user_progress().get("xp_total", 0))
+
+    def get_level(self) -> int:
+        return max(1, (max(0, self.get_xp()) // 100) + 1)
+
     def recent_events(self, limit: int = 10) -> list[dict[str, Any]]:
         return self.store.recent_events(limit=limit)
 
