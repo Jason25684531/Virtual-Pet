@@ -1,271 +1,425 @@
 # ECHOES Virtual Pet
 
-以 `PyQt5 + QWebEngine` 為外殼、`Azure STT` 為語音輸入、`OpenAI GPT-4o-mini` 為串流大腦、`VoAI primary + ElevenLabs fallback + Python playback` 為語音播放、`WebM` 為角色動作載體的桌面虛擬寵物專案。
+以 `PyQt5 + QWebEngineView` 為六層 2K 舞台外殼的桌面虛擬寵物專案。目前主線已整合兩套運行模式：
 
-目前主線已完成：
+| 模式 | 啟動方式 | 大腦 | TTS | 離線安全 |
+|------|----------|------|-----|----------|
+| **Harness** | `--brain-mode harness`（目前預設） | `PetHarnessEngine`（Ollama / OpenAI API / Mock） | — | Yes |
+| **Auto (Live)** | `--brain-mode auto` | `BrainEngine`（OpenAI GPT-4o-mini streaming） | VoAI PCM → ElevenLabs fallback | No |
 
-- Azure STT 背景收音與開始 / 停止控制，按鈕狀態為 `idle / starting / listening / stopping / unavailable`
-- `InteractionTurnManager` 單輪互動序列化，避免上一輪還沒播完就插入下一輪
-- `BrainEngine` 的 OpenAI 串流回覆、action-first prompt、全句級 `sentence_ready` 緩衝、bounded message memory
-- `ActionDispatcher` 的動作前置、session-level `driver_started` 同步、TTS queue 與背景 worker 收尾
-- `TransparentWindow + app.js` 的 WebM 動作切換、狀態列與 conversation panel
-- `InteractionLatencyTracker` 的 STT / LLM / Action / TTS 延遲追蹤
-- `Joke` / `share` 固定意圖快取，支援 `1` / `2` 快捷鍵、overlay tag 與 STT `笑話` / `分享` 關鍵字直通
-- OpenCV `wave_response` 揮手感測，命中後直接說固定 `嗨 你好嗎`，不經 LLM，且加入更嚴格的水平跨度 / ROI / 位移門檻
-- 角色 layout override，可針對不同角色微調位置、縮放與 object-position
-- 可見 Reset 按鈕與右鍵選單重置，會停止 STT / 音樂 / TTS、清 UI conversation、清目前角色記憶並回 idle
-- 固定新聞播報音檔快取，第一次使用 VoAI 生成三則固定新聞音檔，後續直接播放本地 cache
+> **目前 `main.py` 只啟動 Harness 模式。** Live 模式的原始元件（Azure STT、OpenAI streaming、VoAI/ElevenLabs TTS、WaveSensor）仍保留在程式庫中供後續整合。
 
-延伸架構文件：
+參考文件：
 
-- [現階段 ArchViz（Phase 1 / Phase 2）](/home/norlan/projecgt/Virtual-Pet/docs/current_stage_archviz.md)
-- [執行緒 / Worker 拓樸圖](/home/norlan/projecgt/Virtual-Pet/docs/thread_worker_topology.md)
+- [六層舞台架構 (Stage ArchViz)](docs/current_stage_archviz.md)
+- [STT/TTS 運行狀態](docs/STTTTS.md)
+- [Harness Agentic 控制面板](docs/current_test_ui_agentic_controls.md)
+- [Linux 部署指南](docs/linux_deployment.md)
+
+---
 
 ## 架構概覽
+
+### Harness 模式流程
+
+```mermaid
+flowchart LR
+    USER[使用者輸入<br>UI sendText] --> ENGINE[PetHarnessEngine]
+
+    ENGINE --> PROMPT[PromptBuilder<br>soul.md + skills + state]
+    PROMPT --> LLM[LLM Provider<br>Ollama / OpenAI API / Mock]
+    LLM --> PARSER[ResultParser<br>抽取 skill + reply + tool_request]
+
+    PARSER --> ROUTER[SkillRouter<br>deterministic match → agent suggested]
+    ROUTER --> BEHAVIOR[BehaviorManager<br>behavior_map.json → WebM key]
+    ROUTER --> TOOLS[ToolRegistry + SafetyGuard<br>RSS / Music / Timer / SysMon / Random]
+    ROUTER --> XP[XPManager + RewardManager<br>經驗值 / 獎勵解鎖]
+
+    BEHAVIOR --> UI[TransparentWindow<br>六層 2K 舞台]
+    TOOLS --> UI
+    XP --> UI
+    ENGINE --> DB[(SQLite<br>pet_state.db)]
+```
+
+### Live 模式流程（保留，未接入 main.py）
 
 ```mermaid
 flowchart LR
     U[使用者語音] --> STT[Azure STT]
-    D[Dev Query] --> TURN[InteractionTurnManager]
-    W[WaveSensor] --> WAVE[Fixed wave greeting\n[ACTION:wave_response] 嗨 你好嗎]
-    F[Overlay Tag / 1,2 快捷鍵] --> CACHE[Cached intents\nJoke / share]
-
-    STT --> TURN
-    STT -->|笑話 / 分享| CACHE
-    TURN --> BRAIN[BrainEngine\nChatOpenAI streaming]
-    BRAIN --> PARSER[Action-first parser\nSentence buffering]
-    PARSER --> DISP
-    WAVE --> DISP
-    CACHE --> DISP
-
-    DISP --> MOTION[TransparentWindow\nWebM motion bridge]
-    DISP --> NEWS[Local news audio cache]
-    DISP --> FIXEDAUDIO[Fixed intent audio cache]
-    NEWS --> AUDIO[Room audio bridge]
-    FIXEDAUDIO --> AUDIO
+    STT --> TURN[InteractionTurnManager]
+    TURN --> BRAIN[BrainEngine<br>ChatOpenAI streaming]
+    BRAIN --> DISP[ActionDispatcher]
+    DISP --> MOTION[WebM 動作切換]
     DISP --> TTSQ[TTS Queue]
-    TTSQ --> TTS[Adaptive TTS fallback\nVoAI transport session -> ElevenLabs]
-    TTS --> PLAY[AudioStreamWorker PCM session\nffplay / pygame playback]
-
-    TURN --> CHAT[Conversation Panel]
-    BRAIN --> CHAT
+    TTSQ --> TTS[Adaptive TTS<br>VoAI primary → ElevenLabs fallback]
+    TTS --> PLAY[AudioStreamWorker<br>ffplay / pygame]
 ```
 
-目前系統的重點已不是單純的 `STT -> LLM -> TTS`，而是：
+---
 
-- 多輸入源整合
-- 一輪一輪的互動序列化
-- 動作與語句拆分後的低延遲回應
-- UI 狀態、對話文字、語音播放的同步完成
-
-## 目前目錄
+## 目錄結構
 
 ```text
 Virtual-Pet/
-├── main.py
-├── config.py
-├── interaction_trace.py
-├── interaction_turn_manager.py
-├── action_dispatcher.py
-├── action_services.py
-├── character_library.py
+├── main.py                         # 應用程式進入點（目前僅啟動 Harness 模式）
+├── config.py                       # 集中式設定中心（.env + persona + action 白名單）
+├── character_library.py            # 角色清單、manifest 讀取、motion 映射
+├── interaction_trace.py            # 互動延遲追蹤（STT / LLM / Action / TTS 里程碑）
+├── interaction_turn_manager.py     # 一輪一輪互動序列化（Live 模式用）
+├── action_dispatcher.py            # 動作派發、alias 正規化、TTS queue 管理
+├── action_services.py              # 背景 service worker（新聞 / 揮手 / 固定意圖快取）
+├── text_utils.py                   # 文字工具
+├── audio_playback.py               # Provider-neutral 播放器（ffplay / pygame）
+├── audio_worker.py                 # Trace-aware PCM session 播放 worker
+│
 ├── api_client/
-│   ├── brain_engine.py
-│   ├── adaptive_tts_fallback.py
-│   ├── voai_client.py
-│   ├── elevenlabs_client.py
-│   └── comfyui_client.py
-├── audio_playback.py
-├── audio_worker.py
+│   ├── adaptive_tts_fallback.py    # VoAI primary + ElevenLabs fallback 統一 contract
+│   ├── voai_client.py              # VoAI HTTP PCM 串流 TTS client
+│   ├── elevenlabs_client.py        # ElevenLabs fast-fallback TTS client
+│   └── comfyui_client.py           # ComfyUI 算圖 client（未來資產生成用）
+│
 ├── sensors/
-│   ├── microphone_stt.py
-│   ├── stt_session_controller.py
-│   └── camera_vision.py
+│   ├── microphone_stt.py           # Azure STT 背景收音
+│   ├── stt_session_controller.py   # STT session 控制與狀態機
+│   └── camera_vision.py            # OpenCV + MediaPipe 揮手感測
+│
+├── pet_harness/                    # ★ Harness 模式核心引擎
+│   ├── __init__.py                 # 匯出 PetHarnessEngine
+│   ├── voice_runtime_status_adapter.py  # 語音運行狀態正規化
+│   ├── engine/
+│   │   └── harness_engine.py       # 中央協調器：event → prompt → LLM → parse → route → XP → DB
+│   ├── agent/
+│   │   ├── provider_factory.py     # LLM provider 工廠（Ollama / API / LowSpec / Mock）
+│   │   ├── provider_adapter.py     # LLMProviderAdapter 抽象介面
+│   │   ├── ollama_provider.py      # Ollama 本地推論 provider
+│   │   ├── api_provider.py         # OpenAI-compatible REST provider
+│   │   ├── low_spec_provider.py    # 輕量回退 provider
+│   │   ├── mock_provider.py        # 離線測試用 Mock provider
+│   │   ├── langchain_adapter.py    # LangChain 整合 adapter
+│   │   ├── prompt_builder.py       # Prompt 組裝（soul.md + agentic.md + skills + state）
+│   │   └── result_parser.py        # LLM 回覆結構化解析（skill / reply / tool_request）
+│   ├── behavior/
+│   │   └── behavior_manager.py     # Skill → behavior_id / WebM key 映射
+│   ├── models/
+│   │   ├── events.py               # UserEvent / PetEvent / ToolRequestEvent / BehaviorEvent
+│   │   ├── agent_result.py         # AgentResult（parsed LLM output）
+│   │   ├── provider.py             # ProviderConfig / ProviderType / ProviderStatus
+│   │   ├── skill.py                # Skill dataclass
+│   │   └── reward.py               # RewardEvent / RewardRule
+│   ├── skills/
+│   │   ├── skill_loader.py         # 從 .agentic/skills/*.md 讀取 Skill 定義
+│   │   └── skill_router.py         # 關鍵字比對 + agent 建議的 Skill 路由
+│   ├── storage/
+│   │   ├── sqlite_store.py         # SQLite 持久層（XP / events / tool results / config）
+│   │   └── schema.sql              # DB schema 定義
+│   ├── tools/
+│   │   ├── registry.py             # Tool 註冊表（自動註冊內建工具）
+│   │   ├── safety_guard.py         # Tool 執行安全閘門（RiskLevel / ExecutionClass）
+│   │   ├── tool_models.py          # ToolRequest / ToolResult / ToolDefinition
+│   │   ├── rss_tool.py             # RSS 新聞抓取工具
+│   │   ├── music_search_tool.py    # 音樂搜尋工具
+│   │   ├── system_monitor_tool.py  # 系統監控工具
+│   │   ├── timer_tool.py           # 計時器工具
+│   │   └── random_tool.py          # 隨機數工具
+│   ├── xp/
+│   │   ├── xp_manager.py           # XP 經驗值結算（per-skill + per-user）
+│   │   └── reward_manager.py       # 獎勵解鎖檢查
+│   ├── asset/
+│   │   ├── service.py              # AssetService 抽象介面
+│   │   ├── asset_contract.py       # AssetRequest / AssetResponse dataclass
+│   │   ├── comfyui_asset_service.py # ComfyUI 實作（未來用）
+│   │   └── mock_asset_service.py   # 離線 Mock 資產服務
+│   └── ui/
+│       └── pyqt_harness_adapter.py # PyQt ↔ Harness Engine 橋接層
+│
 ├── ui/
-│   ├── transparent_window.py
-│   ├── settings_dialog.py
+│   ├── transparent_window.py       # 透明桌面視窗 + Python↔JS bridge
+│   ├── background_resolver.py      # 背景圖三級 fallback 解析
+│   ├── settings_dialog.py          # 設定對話框
 │   └── web_container/
-│       ├── index.html
-│       ├── style.css
-│       └── app.js
+│       ├── index.html              # 六層 2K 舞台 HTML
+│       ├── style.css               # 舞台 CSS（2560×1440 設計空間）
+│       └── app.js                  # 前端控制（idle/motion/conversation/agentic panel）
+│
+├── assets/webm/characters/         # 角色資產
+│   ├── miku/                       # 初音角色（manifest.json + motions/）
+│   └── Choppr/                     # 喬巴角色（manifest.json + motions/）
+│
+├── .agentic/                       # Harness 人格與技能定義
+│   ├── soul.md                     # 核心人格描述
+│   ├── agentic.md                  # Agentic runtime 說明
+│   ├── behavior/behavior_map.json  # Skill → 行為 / WebM 映射表
+│   ├── rewards/reward_rules.json   # 獎勵規則
+│   └── skills/                     # 技能定義（Markdown + frontmatter）
+│       ├── break_reminder.md
+│       ├── gacha_fortune.md
+│       ├── game_news.md
+│       ├── music_bgm.md
+│       └── system_monitor.md
+│
+├── data/
+│   └── pet_state.db                # SQLite 持久化資料庫
+│
+├── runtime_cache/                  # 執行期快取
+│   ├── news_audio/                 # 固定新聞播報 MP3
+│   ├── wave_audio/                 # 固定揮手問候 MP3
+│   └── fixed_intents/              # joke/share 的文字 metadata + MP3
+│
 ├── scripts/
-│   ├── smoke_test.py
-│   └── live_stt_latency_probe.py
-├── tests/
-│   ├── test_action_playback.py
-│   ├── test_adaptive_tts_fallback.py
-│   ├── test_audio_worker.py
-│   ├── test_b3_voice_routing.py
-│   ├── test_brain_streaming.py
-│   ├── test_character_layout.py
-│   ├── test_database.py
-│   ├── test_elevenlabs_streaming.py
-│   ├── test_frontend_reset_bridge.py
-│   ├── test_interaction_turn_manager.py
-│   ├── test_main_runtime.py
-│   ├── test_microphone_stt.py
-│   ├── test_news_audio_cache.py
-│   ├── test_settings_dialog.py
-│   ├── test_stt_controls_and_trace.py
-│   ├── test_voai_streaming.py
-│   └── test_wave_sensor.py
-├── docs/
-│   ├── current_stage_archviz.md
-│   ├── thread_worker_topology.md
-│   ├── linux_deployment.md
-│   ├── STTTTS.md
-│   └── archive/
-└── openspec/
+│   ├── debug_harness.py            # Harness 引擎 CLI 除錯腳本
+│   ├── smoke_test.py               # 冒煙測試（Live 模式 API + latency probe）
+│   ├── live_stt_latency_probe.py   # 真實 STT 端到端延遲量測
+│   └── _verify_panel_video.py      # Panel video 驗證工具
+│
+├── tests/                          # 單元測試
+├── docs/                           # 架構與部署文件
+├── ComfyUI_API/                    # ComfyUI workflow JSON
+└── requirements.txt
 ```
 
-## 核心模組
+---
 
-- `main.py`
-  啟動 `QApplication`、`TransparentWindow`、`BrainEngine`、`InteractionTurnManager`、`STTSessionController`、`WaveSensor`，並管理整體關閉流程。
+## Harness 引擎核心模組
 
-- `interaction_turn_manager.py`
-  把 STT 與 Dev Query 序列化成一輪一輪互動。上一輪尚未完成時，下一輪只會排隊，不會插隊；當新的一輪真正成為 active turn 時，也會以共享 `requests.Session` 背景觸發一次 VoAI HTTP prewarm，提前暖好後續 TTS request 的連線狀態。`reset()` 會清 pending queue、結束 active turn UI 狀態，並中止尚未完成的 trace。
+### PetHarnessEngine (`pet_harness/engine/harness_engine.py`)
 
-- `api_client/brain_engine.py`
-  使用 `ChatOpenAI(model="gpt-4o-mini", streaming=True)`。以 message history 保存最近幾輪對話，避免使用已棄用的 classic memory；同時在背景執行緒預熱 active profile，將串流拆成 `token_streamed`、`streamed_fragment` 與 `sentence_ready` 三條路徑，讓 UI 可逐 token 顯示、action 可先行解析、語音以較保守的全句 / 段落級邊界排入播放。`sentence_ready` 只會在硬句界與最小字數門檻成立時送出，但 `[ACTION:*]` 後的第一句仍保留即時發射豁免。
+中央協調器。接收 `UserEvent`，依序執行：
 
-- `action_dispatcher.py`
-  統一處理 action alias、白名單、WebM 動作切換、pending-action timeout、trace-scoped provider stickiness、TTS queue 與背景 worker 收尾；其中 `report_news` / `play_music` 在同一個未完成 lifecycle 內會忽略重複觸發，避免重新啟動 motion、panel 與背景 worker。`play_music` 的 panel WebM 只作視覺表演且一律靜音，實際可聽音樂只會透過 `playRoomAudio()` 播一次；同一 `reply_id + trace_id` 的 `driver_started` 也會被去重。
+1. **PromptBuilder** — 組裝 `soul.md` + `agentic.md` + 已載入 skills + 當前 state snapshot 成完整 prompt
+2. **LLM Provider** — 將 prompt 送給選定的 LLM（Ollama / OpenAI API / LowSpec / Mock）
+3. **ResultParser** — 從 LLM 回覆中抽取結構化結果（matched skill / reply / tool_request / confidence）
+4. **SkillRouter** — 先做關鍵字 deterministic match，再考慮 agent 建議，決定最終 matched skill
+5. **BehaviorManager** — 依 matched skill 查 `behavior_map.json`，決定 behavior_id 與 WebM key
+6. **ToolRegistry + SafetyGuard** — 若 skill 或 agent 要求工具，先過安全閘門再執行
+7. **XPManager + RewardManager** — 結算經驗值，檢查獎勵解鎖
+8. **SQLiteStore** — 持久化事件、XP、工具結果、provider 狀態
 
-- `action_services.py`
-  提供背景 service worker 與固定快取底座。`NewsFetchWorker`、`WaveGreetingWorker`、`FixedIntentReplyWorker` 都共用安全寫檔與 metadata cache；`joke` / `share` 第一次會用目前角色 persona 生成短句，再用對應 VoAI 聲線生成 MP3，之後直接讀本地 cache。
+最終組合為 `PetEvent` 回傳給 UI 層。
 
-- `api_client/adaptive_tts_fallback.py`
-  將 VoAI primary path 與 ElevenLabs fallback 包成單一 worker contract；負責轉發 `driver_started`、記錄 fallback 決策，並在雙重失敗時回報 text-only 降級。
+### LLM Provider 層 (`pet_harness/agent/`)
 
-- `api_client/voai_client.py`
-  預設 TTS provider。正式主路徑已收斂為文件化的 HTTP PCM 串流：固定走 `TTS/Speech`，以共享 `requests.Session` 送出 `x-output-format: pcm` 的 request；若只是 backend / content-type 類問題，仍可回退到同 provider 的 MP3 BytesIO 佇列。當 `InteractionTurnManager` 啟動新回合時，會先用同一個 shared session 對 VoAI 發送輕量 authenticated prewarm request；這個 prewarm 若失敗只會被記錄為 advisory outcome，不會直接觸發 ElevenLabs fallback。只有真正的 pre-`driver_started` synthesis fast-fail，例如 `HTTP 529` 或 definitive connect error，才會交由 adaptive fallback layer 切到 ElevenLabs。
+| Provider | 用途 | 需要網路 |
+|----------|------|----------|
+| `OllamaProvider` | 本地 Ollama 推論 | No（localhost） |
+| `APIProvider` | OpenAI-compatible REST API | Yes |
+| `LowSpecProvider` | 輕量回退（低規設備） | No |
+| `MockProvider` | 離線測試 | No |
 
-- `audio_worker.py`
-  將完整 MP3 buffer queue 與 trace-aware PCM session 收斂到同一個播放 worker。對同一個 trace 的多個 PCM 句段會共用一個連續播放 session，`driver_started` 只會在第一次真正交給播放驅動時發出一次；trace 完成或中斷時才關閉 session，避免每句重開播放器。
+透過 `provider_factory.py` 依 `ProviderConfig.provider_type` 分派。
 
-- `audio_playback.py`
-  放置 provider-neutral 播放器，包含 `FfplayPcmAudioPlayer` 與 `PygameInMemoryAudioPlayer`。
+### Skill 系統 (`pet_harness/skills/`)
 
-- `api_client/elevenlabs_client.py`
-  Fast-fallback client；當 VoAI primary path 被判定 fast-fail 時，接手同一個 `trace_id` 的後續句段，並沿用既有 Python-side playback contract。
+技能定義放在 `.agentic/skills/*.md`，使用 YAML frontmatter 描述觸發關鍵字、XP 獎勵、所需工具等。`SkillLoader` 在引擎初始化時掃描載入，`SkillRouter` 在每次事件中做路由。
 
-- `ui/transparent_window.py`
-  管理透明桌面視窗與 Python -> JS bridge，負責狀態列、對話卡片、WebM 動作切換、STT 狀態按鈕、`Joke/share` overlay tag、`1/2` 快捷鍵與 Reset 控制。`reset_runtime_state()` 會停止前端音訊 / 動作、清 conversation UI、回到目前角色 idle。
+目前內建技能：`break_reminder`、`gacha_fortune`、`game_news`、`music_bgm`、`system_monitor`。
 
-- `ui/web_container/app.js`
-  控制 idle / temporary motion、conversation panel、queue depth 顯示與前端狀態更新。新增 `clearConversationTurns()` 與 `resetRoomState()`，只清前端 state，不直接碰 Python 資料層。
+### Tool 系統 (`pet_harness/tools/`)
 
-- `interaction_trace.py`
-  追蹤每一輪互動的 STT / LLM / Action / TTS 里程碑，包含 `first_token_visible`、`first_driver_started`、`timeout_promoted`、`eos_to_first_audio`、`eos_to_complete` 與 bottleneck。
+內建五個工具：`rss_tool`、`music_search_tool`、`system_monitor_tool`、`timer_tool`、`random_tool`。所有工具執行前都會通過 `SafetyGuard` 檢查 `ToolRiskLevel` 與 `ToolExecutionClass`。
 
-## 互動流程
+### XP / 獎勵系統 (`pet_harness/xp/`)
 
-```text
-使用者輸入
--> Azure STT speech end / finalized text
--> InteractionTurnManager
--> active turn start 觸發 VoAI HTTP prewarm（shared session, advisory only）
--> BrainEngine(OpenAI streaming)
--> token_streamed 持續更新對話卡片
--> streamed_fragment 先解析 [ACTION:*] 並切到 pre-action / idle
--> sentence_ready 以硬句界 + 最小字數門檻排入 Adaptive TTS queue
--> AudioStreamWorker 維持同 trace 的連續 PCM session
--> driver_started 在第一段音訊真正交給播放驅動時觸發正式 Action Motion
--> VoAI PCM stream -> AudioStreamWorker -> ffplay playback
-   或 VoAI MP3 fallback -> pygame playback
-   或 VoAI fast-fail -> ElevenLabs fallback -> pygame playback
--> 對話卡片完成
--> 下一輪開始
-```
+- 每次互動自動結算 XP（matched skill 的 `xp_reward` 或預設 `chat_xp=2`）
+- 工具成功執行額外獎勵
+- `RewardManager` 依 XP 總量檢查 `reward_rules.json` 的解鎖條件
 
-補充：
+---
 
-- `wave_response` 可直接走 `ActionDispatcher`，不需經過大腦；主程式收到 camera wave 後會 dispatch `[ACTION:wave_response] 嗨 你好嗎`。
-- `report_news` 會播固定三則新聞文案的本地快取音檔，不再抓 RSS，也不送 LLM。
-- `Joke` / `share` 會走固定意圖快取，不進 `InteractionTurnManager`、不進即時 LLM/TTS；第一次 miss 才會背景生成文字與音檔。
-- STT finalized text 若含 `笑話` 或 `分享`，會在送入一般互動佇列前先被固定意圖 router 攔下。
-- `play_music` 在同一個 pending / active loop-action lifecycle 內只會啟動一次；panel WebM 靜音，實際聲音只由 room audio 播放。
-- `report_news` / `play_music` 要等本輪 cleanup 完成後才會接受下一次相同 action，避免動畫與 panel 被重啟打斷。
-- STT 停止後的晚到辨識事件會被忽略，避免停止收音後又偷偷塞進新互動。
-- Reset 後保留目前角色，只清目前角色對話記憶、前端 conversation、互動佇列與播放狀態，並回到該角色 idle。
-- 關閉程式時會先 shutdown 背景 worker，避免 `QThread: Destroyed while thread is still running`。
+## 六層 2K 舞台模型
+
+UI 固定以 `2560×1440` 設計空間、`min(vw/2560, vh/1440)` 縮放渲染：
+
+| 層級 | 用途 |
+|------|------|
+| 1. `stage-background` | 角色專屬背景圖（`BackgroundResolver` 三級 fallback） |
+| 2. `stage-pet-layer` | 角色 WebM 動作播放 |
+| 3. `stage-live-ui` | 即時 UI（conversation panel、狀態列） |
+| 4. `stage-bottom-ui` | 底部控制列 |
+| 5. `stage-agentic-panel` | Harness 模式 agentic 控制面板 |
+| 6. Browser overlays | 瀏覽器原生覆蓋層 |
+
+角色使用 CSS design token 定位（`--pet-anchor-x`、`--pet-floor-y`），底部置中錨定以確保 agentic panel 滑入時角色不偏移。
+
+---
+
+## Live 模式核心模組（保留）
+
+以下模組在 `--brain-mode auto` 時啟用，目前未接入 `main.py`：
+
+- **`interaction_turn_manager.py`** — STT 與 Dev Query 序列化成逐輪互動
+- **`api_client/brain_engine.py`** — OpenAI streaming，拆成 `token_streamed` / `streamed_fragment` / `sentence_ready`
+- **`action_dispatcher.py`** — Action 白名單、alias 正規化、WebM 動作切換、TTS queue
+- **`api_client/adaptive_tts_fallback.py`** — VoAI primary + ElevenLabs fallback
+- **`api_client/voai_client.py`** — VoAI HTTP PCM 串流 TTS
+- **`api_client/elevenlabs_client.py`** — ElevenLabs fast-fallback TTS
+- **`sensors/microphone_stt.py`** — Azure STT 背景收音
+- **`sensors/camera_vision.py`** — OpenCV 揮手感測
+
+---
 
 ## Action 白名單
 
-目前 Host 支援的 action：
+Host 支援的 action（兩種模式共用）：
 
-- `report_news`
-- `play_music`
-- `wave_response`
-- `laugh`
-- `angry`
-- `awkward`
-- `speechless`
-- `listen`
-- `idle`
+`report_news` · `play_music` · `wave_response` · `laugh` · `angry` · `awkward` · `speechless` · `listen` · `idle`
 
-常見 alias 會自動正規化，例如：
+常見 alias 自動正規化（`news` → `report_news`、`happy` → `laugh`、`music` → `play_music` 等）。
 
-- `news` -> `report_news`
-- `read_news` -> `report_news`
-- `music` -> `play_music`
-- `happy` -> `laugh`
-- `mad` -> `angry`
-- `thinking` -> `listen`
+---
 
-## 固定意圖與快取
+## 安裝
 
-- `Joke`
-  - Overlay tag 可點
-  - 快捷鍵 `1`
-  - STT 關鍵字：`笑話`
-  - 播放動作：`laugh`
-- `share`
-  - Overlay tag 可點
-  - 快捷鍵 `2`
-  - STT 關鍵字：`分享`
-  - 播放動作：`listen`
+### 1. 建立並啟用虛擬環境
 
-固定意圖快取目錄：
+```bash
+python -m venv venv
+```
 
-```text
-runtime_cache/
-├── news_audio/
-├── wave_audio/
-└── fixed_intents/
+Windows PowerShell：
+```powershell
+.\venv\Scripts\Activate.ps1
+```
+
+Linux / macOS：
+```bash
+source venv/bin/activate
+```
+
+### 2. 安裝依賴
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. 設定 `.env`
+
+**Harness 模式最小設定（離線可用）：**
+
+不需要任何 API key。預設使用 `MockProvider`。若要接 Ollama：
+
+```bash
+HARNESS_PROVIDER_TYPE=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=minimax-m2.7:cloud
+```
+
+若要接 OpenAI-compatible API：
+
+```bash
+HARNESS_PROVIDER_TYPE=api
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-4o-mini
+```
+
+**Live 模式完整設定（需要 API key）：**
+
+```bash
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-4o-mini
+VOAI_API_KEY=your_voai_api_key
+ELEVENLABS_API_KEY=your_elevenlabs_api_key
+AZURE_STT_API_KEY=your_azure_speech_key
+AZURE_STT_REGION=eastus
+AZURE_STT_LANGUAGE=zh-TW
+AZURE_STT_ENABLED=true
+```
+
+<details>
+<summary>可選環境變數</summary>
+
+```bash
+VOAI_PCM_STREAMING_ENABLED=true
+CHATGPT_API_KEY=your_openai_api_key_fallback
+BRAIN_MEMORY_MAX_TURNS=6
+BRAIN_SENTENCE_MIN_CHARS=15
+OPENAI_TEMPERATURE=0.4
+ELEVENLABS_VOICE_ID=default_elevenlabs_voice_id
+ELEVENLABS_MIKU_VOICE_ID=optional_miku_fallback_voice_id
+ELEVENLABS_CHOPPER_VOICE_ID=optional_chopper_fallback_voice_id
+ACTION_SYNC_TIMEOUT_MS=6000
+AZURE_STT_INITIAL_SILENCE_TIMEOUT_MS=5000
+AZURE_STT_END_SILENCE_TIMEOUT_MS=350
+AZURE_STT_SEGMENTATION_SILENCE_TIMEOUT_MS=300
+AZURE_STT_SEGMENTATION_MAX_TIME_MS=4000
 ```
 
 說明：
+- `CHATGPT_API_KEY` 為 `OPENAI_API_KEY` 的 fallback
+- `VOAI_PCM_STREAMING_ENABLED=false` 可回退到 MP3 BytesIO 播放
+- `ACTION_SYNC_TIMEOUT_MS` 預設 `6000`，降低正常 VoAI 起播被誤判成 `timeout_promoted` 的機率
+- `BRAIN_SENTENCE_MIN_CHARS` 調整全句級 `sentence_ready` 最小字數門檻，預設 `15`
+- `BRAIN_MEMORY_MAX_TURNS` 限制保留的最近對話輪數，避免上下文膨脹
 
-- `news_audio/`：固定新聞播報 MP3
-- `wave_audio/`：固定揮手問候 MP3
-- `fixed_intents/`：`joke/share` 的本地文字 metadata 與 MP3；cache key 會包含角色、意圖版本與 VoAI 聲音設定
+</details>
 
-## 資產規則
+---
 
-角色資產放在：
+## 啟動
 
-```text
-assets/webm/characters/<character_id>/
-├── manifest.json
-├── source/
-└── motions/
+```bash
+python main.py
 ```
 
-`manifest.json` 內的 `motions` 建議至少包含：
+目前預設啟動 Harness 模式。Linux 若遇到 Qt / WebEngine / WebGL 問題，請參考 [linux_deployment.md](docs/linux_deployment.md)。
 
-- `idle`
-- `report_news`
-- `play_music`
-- `wave_response`
-- `laugh`
-- `angry`
-- `awkward`
-- `speechless`
-- `listen`
+### Harness 引擎 CLI 除錯
 
-缺少 action 專用 WebM 時，系統會安全退回 idle。
+```bash
+python scripts/debug_harness.py
+```
+
+---
+
+## 測試
+
+### 單元測試
+
+```bash
+python -m pytest tests/ -v
+```
+
+目前測試涵蓋：
+
+- Action / motion / TTS queue 播放順序
+- 同 trace PCM session 的 single `driver_started`、逐句 `playback_finished` 與中途中斷
+- `report_news` / `play_music` loop action 的重複觸發保護
+- 固定新聞音檔 cache miss / hit
+- `Joke/share` 固定意圖 cache miss / hit、角色隔離
+- Reset 對互動佇列與角色記憶的清理
+- OpenAI 串流切片、全句級緩衝與安全降級
+- VoAI HTTP PCM primary path、adaptive fallback、text-only 降級
+- Interaction turn 排隊與完成順序
+- STT 控制與延遲追蹤
+- Wave sensor 整合
+
+### 冒煙測試（Live 模式）
+
+```bash
+python scripts/smoke_test.py
+python scripts/smoke_test.py --mock-tts-fail voai529      # VoAI 529 → ElevenLabs fallback
+python scripts/smoke_test.py --mock-tts-fail double-fail   # 雙 provider 失敗 → text-only 降級
+```
+
+### 真實 STT 端到端量測
+
+```bash
+python scripts/live_stt_latency_probe.py
+```
+
+---
+
+## 角色資產規則
+
+角色資產放在 `assets/webm/characters/<character_id>/`：
+
+```text
+<character_id>/
+├── manifest.json       # 動作清單、framing 設定
+├── BG_Final.png        # 角色專屬背景
+└── motions/            # 各動作 WebM 檔案
+```
+
+`manifest.json` 的 `motions` 建議至少包含：`idle`、`report_news`、`play_music`、`wave_response`、`laugh`、`angry`、`awkward`、`speechless`、`listen`。缺少時系統安全退回 idle。
 
 可選的角色 framing 設定：
 
@@ -280,216 +434,37 @@ assets/webm/characters/<character_id>/
 }
 ```
 
-## 安裝
+---
 
-以下指令都假設在專案根目錄，並且先進入虛擬環境。
+## 延遲摘要判讀（Live 模式）
 
-### 1. 建立並啟用虛擬環境
-
-```bash
-python -m venv venv
-```
-
-Linux / macOS：
-
-```bash
-source venv/bin/activate
-```
-
-Windows PowerShell：
-
-```bash
-.\venv\Scripts\Activate.ps1
-```
-
-### 2. 安裝依賴
-
-```bash
-pip install -r requirements.txt
-```
-
-### 3. 設定 `.env`
-
-建議至少提供：
-
-```bash
-OPENAI_API_KEY=your_openai_api_key
-OPENAI_MODEL=gpt-4o-mini
-VOAI_API_KEY=your_voai_api_key
-ELEVENLABS_API_KEY=your_elevenlabs_api_key
-AZURE_STT_API_KEY=your_azure_speech_key
-AZURE_STT_REGION=eastus
-AZURE_STT_LANGUAGE=zh-TW
-AZURE_STT_ENABLED=true
-```
-
-可選欄位：
-
-```bash
-VOAI_PCM_STREAMING_ENABLED=true
-CHATGPT_API_KEY=your_openai_api_key_fallback
-BRAIN_MEMORY_MAX_TURNS=6
-BRAIN_SENTENCE_MIN_CHARS=15
-OPENAI_TEMPERATURE=0.4
-ELEVENLABS_VOICE_ID=default_elevenlabs_voice_id
-ELEVENLABS_MIKU_VOICE_ID=optional_miku_fallback_voice_id
-ELEVENLABS_CHOPPER_VOICE_ID=optional_choppr_fallback_voice_id
-ACTION_SYNC_TIMEOUT_MS=6000
-AZURE_STT_INITIAL_SILENCE_TIMEOUT_MS=5000
-AZURE_STT_END_SILENCE_TIMEOUT_MS=350
-AZURE_STT_SEGMENTATION_SILENCE_TIMEOUT_MS=300
-AZURE_STT_SEGMENTATION_MAX_TIME_MS=4000
-```
-
-說明：
-
-- `OPENAI_API_KEY` 是目前主線必填。
-- `VOAI_API_KEY` 是目前預設 TTS 必填。
-- `ELEVENLABS_API_KEY` 是 adaptive fallback 啟用時的必要欄位。
-- `CHATGPT_API_KEY` 只作為 `OPENAI_API_KEY` 的 fallback。
-- `VOAI_PCM_STREAMING_ENABLED=false` 可暫時停用 PCM 串流，回退到 MP3 BytesIO 播放。
-- `VOAI_TRANSPORT_MODE` 已進入 deprecated shim；runtime 目前一律收斂到文件化 HTTP PCM 主路徑，舊值只會被正規化為 `http` 並輸出提示，不再提供正式 websocket 主路徑。
-- `ACTION_SYNC_TIMEOUT_MS` 預設已拉高到 `6000`，用來降低正常 VoAI 起播時被誤判成 `timeout_promoted` 的機率。
-- `BRAIN_SENTENCE_MIN_CHARS` 可調整全句級 `sentence_ready` 的最小字數門檻，預設為 `15`。
-- `ELEVENLABS_VOICE_ID` 是全域 fallback 聲線；`ELEVENLABS_MIKU_VOICE_ID`、`ELEVENLABS_CHOPPER_VOICE_ID` 可覆蓋角色專屬 fallback 聲線。
-- `BRAIN_MEMORY_MAX_TURNS` 用來限制保留的最近對話輪數，避免上下文無限制膨脹而拖慢延遲。
-- `AZURE_STT_*TIMEOUT_MS` 用來校調 Azure STT 的收音收尾與 segmentation；目前 README 內的預設值對應低延遲互動模式。
-- VoAI turn-start prewarm 會在新回合成為 active turn 時背景觸發；它只負責暖線與授權，不會建立音訊，也不會因為失敗就切到 ElevenLabs。
-- 舊的 `OLLAMA_*` 設定仍留在 `config.py` 內做相容保留，但已不是目前互動主路徑。
-
-## 啟動
-
-```bash
-venv/bin/python main.py
-```
-
-Linux 若遇到 Qt / WebEngine / WebGL 問題，請參考 [linux_deployment.md](/home/norlan/projecgt/Virtual-Pet/docs/linux_deployment.md)。
-
-## 測試與驗證
-
-### 單元測試
-
-```bash
-venv/bin/python -m unittest discover -s tests -v
-```
-
-目前測試涵蓋：
-
-- action / motion / TTS queue 播放順序
-- 同 trace PCM session 的 single `driver_started`、逐句 `playback_finished` 與中途中斷
-- `report_news` / `play_music` loop action 的重複觸發保護
-- 固定新聞音檔 cache miss / hit、不再抓 RSS
-- `Joke/share` 固定意圖 cache miss / hit、角色隔離與 synthetic turn
-- Reset 對互動佇列與角色記憶的清理
-- OpenAI 串流切片、全句級緩衝與安全降級
-- VoAI HTTP PCM primary path、shared-session prewarm、adaptive fallback、provider-neutral playback 與 critical text-only 降級
-- interaction turn 排隊與完成順序
-- STT 控制、partial preview 與延遲追蹤
-- wave sensor 整合
-
-### OpenCV wave tuning
-
-目前 `sensors/camera_vision.py` 的 wave 判定不只看 cooldown，還會同時檢查：
-
-- ROI 是否落在較收斂的偵測區域
-- `min_contour_area`
-- `min_displacement_px`
-- `required_direction_changes`
-- `min_wave_span_px`
-
-換句話說，必須是在有效視窗內發生足夠大的左右移動，且總水平跨度達標，才會觸發 `wave_response`。
-
-### 冒煙測試
-
-```bash
-venv/bin/python scripts/smoke_test.py
-```
-
-用途：
-
-- 檢查 `.env` 主要欄位
-- 檢查 OpenAI 串流是否能產出 action-first 片段
-- 檢查文件化的 VoAI HTTP PCM 主路徑是否能回傳有效音訊
-- 檢查 `timeout_promoted` 是否會抑制晚到音訊與重複 motion
-- 可用 `python scripts/smoke_test.py --mock-tts-fail voai529` 驗證 VoAI 529 -> ElevenLabs 自動 fallback
-- 可用 `python scripts/smoke_test.py --mock-tts-fail double-fail` 驗證雙 provider 失敗時的文字-only 降級
-- VoAI turn-start prewarm 失敗屬於 advisory only；smoke 不會因單獨的 prewarm failure 就把 provider 視為失效
-- 先 warmup 1 輪，再量測 3 輪 latency probe；確認 token-first UI、`driver_started` 與整輪中位數是否達標，並輸出 `fast_rounds` 供觀察穩定度
-
-### 真實 STT 端到端量測
-
-```bash
-venv/bin/python scripts/live_stt_latency_probe.py
-```
-
-用途：
-
-- 在真桌面、真麥克風、真 Azure STT 環境下量測 `speech_end_detected -> first_action / first_audio(driver_started) / complete`
-- 先 warmup 1 輪，再量測 5 輪，輸出每輪與中位數結果
-- 用來驗證短回覆互動是否達成 `median_eos_to_complete <= 1800ms`
-
-### 建議驗證流程
-
-1. 先啟用 `venv`
-2. 跑單元測試
-3. 跑 `venv/bin/python scripts/smoke_test.py`
-4. 若要驗證容錯，再跑 `venv/bin/python scripts/smoke_test.py --mock-tts-fail voai529`
-5. 若要驗證雙重失敗降級，再跑 `venv/bin/python scripts/smoke_test.py --mock-tts-fail double-fail`
-6. 啟動 `venv/bin/python main.py`
-7. 點 `開始收音`，說一句短句，例如：`請先聽我說，再鼓勵我一句。`
-8. 觀察是否依序出現：
-   - STT 按鈕從 `開始收音` -> `啟動中...` -> `結束收音`，停止時短暫顯示 `停止中...`
-   - STT finalized text
-   - 新的 conversation turn
-   - `[ACTION:listen]` 先切到 pre-action / idle
-   - UI 先看到 token-first 的逐字回覆
-   - sentence-ready 逐句進入 VoAI TTS queue
-   - `driver_started` 到達時才切入正式動作
-   - 本輪完成後才進下一輪
-9. 點 `重置`，確認音樂 / TTS / 動作停止、conversation panel 清空、佇列回 0、角色回到 idle
-10. 右鍵選單觸發 `播報新聞`，第一次應產生 `runtime_cache/news_audio/*.mp3`，第二次應直接播放同一個本地 cache 音檔
-11. 點 `Joke` 或按 `1`，第一次應生成 `runtime_cache/fixed_intents/` 內對應角色的 metadata + mp3，第二次應直接播本地快取
-12. 點 `share` 或按 `2`，應顯示一筆 `Dev Query` synthetic turn，assistant 文字等於快取文字
-13. 啟動 STT 後說出含 `笑話` 或 `分享` 的句子，確認不會進一般 LLM 互動佇列，而是直接走固定意圖播放
-
-### 延遲摘要判讀
-
-每輪互動完成後，terminal 會輸出摘要，例如：
+每輪互動完成後，terminal 會輸出摘要：
 
 ```text
-[ECHOES][TRACE][abcd1234] 互動完成摘要 source=stt total=1710ms | stages: stt_tail=212ms; brain_queue_wait=0ms; llm_to_first_output=781ms; eos_to_first_action=812ms; tts_startup=226ms; tts_to_driver_start=0ms; eos_to_first_audio=1048ms; tts_tail=451ms; post_brain_tail=443ms; eos_to_complete=1499ms | bottleneck=eos_to_complete(1499ms) | milestones: first_token_visible=786ms; first_action_dispatched=812ms; first_driver_started=1048ms
+[ECHOES][TRACE][abcd1234] 互動完成摘要 source=stt total=1710ms | stages: stt_tail=212ms; ...
 ```
 
-可快速判讀：
+關鍵指標：
 
-- `stt_tail`: Azure 偵測使用者停口後，到 finalized recognized text 的時間
-- `brain_queue_wait`: 進入腦引擎佇列後，真正開始處理前等待多久
-- `llm_to_first_output`: OpenAI 從開始推論到第一個片段輸出的時間
-- `first_token_visible`: 第一個真正顯示到 UI 的可見 token 時間
-- `eos_to_first_action`: 從 STT 停口到第一個 action 實際 dispatch 的時間
-- `tts_startup`: 第一段 TTS 進佇列到收到第一批可播放音訊的時間
-- `tts_to_driver_start`: 收到第一批音訊到播放驅動正式接手的時間
-- `first_driver_started`: 第一段音訊真正交給播放驅動的時間
-- `eos_to_first_audio`: 從 STT 停口到首次音訊交給播放驅動的時間
-- `tts_tail`: TTS 開始後到整輪完成還花了多久
-- `eos_to_complete`: 從 STT 停口到整輪互動完成的時間
-- `timeout_promoted`: 若語音逾時，正式動作會先升級，晚到音訊會被抑制
-- `bottleneck`: 這輪最慢的階段
+| 指標 | 意義 |
+|------|------|
+| `stt_tail` | Azure 停口偵測 → finalized text |
+| `llm_to_first_output` | OpenAI 開始推論 → 第一片段 |
+| `first_token_visible` | 第一個可見 token 到達 UI |
+| `eos_to_first_action` | 停口 → 第一個 action dispatch |
+| `first_driver_started` | 第一段音訊交給播放驅動 |
+| `eos_to_first_audio` | 停口 → 首次音訊交給播放驅動 |
+| `eos_to_complete` | 停口 → 整輪互動完成 |
+| `bottleneck` | 該輪最慢階段 |
 
-`scripts/smoke_test.py` 則會另外輸出多輪摘要，例如：
+`smoke_test.py` 多輪量測預設需 `median_eos_to_complete <= 1800ms`。
 
-```text
-[PASS] LatencyProbe: 多輪量測通過。 totals=[1288, 1365, 1332]ms, median_total=1332ms, median_token=802ms, median_action=914ms, median_driver_start=1089ms, fast_rounds=3/3
-```
-
-可快速判讀：
-
-- `median_total`: 3 輪量測的端到端中位數；目前 smoke 預設需 `<= 1800ms`
-- `median_token`: 3 輪量測的第一個可見 token 中位數
-- `median_driver_start`: 3 輪量測的播放驅動接手時間中位數
-- `fast_rounds`: 3 輪內有幾輪壓在 1800ms 內；作為多輪穩定度參考，不再是單獨的 fail gate
+---
 
 ## 開發備註
 
-- `docs/archive/` 存放歷史文件，不影響主流程。
-- 若要理解目前程式真實結構，請優先看本 README 與 `docs/current_stage_archviz.md`，不要以舊提交內的 Ollama 流程為準。
+- 若要理解目前程式真實結構，請優先看本 README 與 `docs/current_stage_archviz.md`。
+- `docs/` 內文件為目前架構參考；歷史文件已清理。
+- Harness 模式目前使用 deterministic skill routing（Week 1 設計），tool use request 為 metadata-only。
+- ComfyUI 資產生成仍在 future FastAPI JSON contract 之後。
+- 舊 `OLLAMA_*` 設定保留在 `config.py` 做相容，但已不是 Live 模式互動主路徑。

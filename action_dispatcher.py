@@ -24,7 +24,7 @@ from action_services import (
     resolve_fixed_intent_source_label,
 )
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
-from api_client.brain_engine import sanitize_tts_text
+from text_utils import sanitize_tts_text
 from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker  # noqa: F401 — 保留供降級使用
 from api_client.voai_client import VoAIStreamingTTSWorker
 from audio_worker import AudioStreamWorker
@@ -254,6 +254,10 @@ class ActionDispatcher(QObject):
     @property
     def has_active_motion(self) -> bool:
         return self._current_loop_action_key is not None or bool(self._pending_actions)
+
+    @property
+    def audio_worker(self) -> AudioStreamWorker:
+        return self._audio_worker
 
     def trigger_cached_intent(self, intent_name: str, source_label: str) -> bool:
         normalized_intent = str(intent_name or "").strip().lower()

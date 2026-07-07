@@ -1,55 +1,163 @@
-/**
- * ECHOES — WebM 熱切換控制器
- * 提供 changeVideo(filename) 給 Python (PyQt) 透過 runJavaScript 呼叫
- */
-
 (function () {
     'use strict';
 
+    console.log('[ECHOES APP.JS] IIFE started — DOM ready, binding handlers');
+
+    // ── DOM 參照（僅保留有效元素）────────────────────────────
+    var stageRoot = document.getElementById('stage-root');
+    var stageBackground = document.getElementById('stage-background');
     var video = document.getElementById('pet-video');
     var panelVideo = document.getElementById('panel-video');
     var character = document.getElementById('pet-character');
     var audio = document.getElementById('room-audio');
     var roomCharacterName = document.getElementById('room-character-name');
+    var runtimeModeBadge = document.getElementById('runtime-mode-badge');
     var actionStatus = document.getElementById('action-status');
     var actionStatusText = document.getElementById('action-status-text');
     var conversationList = document.getElementById('conversation-list');
     var conversationQueueText = document.getElementById('conversation-queue-text');
+    var xpDisplay = document.getElementById('xp-display');
+    var xpProgressBar = document.getElementById('xp-progress-bar');
+    var xpThresholdDisplay = document.getElementById('xp-threshold-display');
+    var runtimeSttStatus = document.getElementById('runtime-stt-status');
+    var runtimeSttButton = document.getElementById('runtime-stt-button');
+    var runtimeResetButton = document.getElementById('runtime-reset-button');
+    var runtimeJokeButton = document.getElementById('runtime-joke-button');
+    var runtimeShareButton = document.getElementById('runtime-share-button');
+    var runtimeMusicButton = document.getElementById('runtime-music-button');
+    var runtimeNewsButton = document.getElementById('runtime-news-button');
+    var skillList = document.getElementById('skill-list');
+    var skillCountBadge = document.getElementById('skill-count-badge');
+    var refreshSkillsButton = document.getElementById('refresh-skills-button');
+    var panelToggleButton = document.getElementById('agentic-panel-toggle');
+
+    // ── 狀態變數 ──────────────────────────────────────────────
     var idleSource = '';
     var idleMotionCandidates = [];
+    var idleMotionIndex = 0;
     var statusTimer = null;
+    var defaultStatusText = 'Waiting for room updates.';
+    var harnessBridge = null;
+    var agenticBusy = false;
     var motionLoopTimer = null;
     var motionLoopSource = null;
     var motionLoopActive = false;
     var motionLoopGeneration = 0;
-    var mainVideoGeneration = 0;
     var panelVideoGeneration = 0;
-    var defaultStatusText = '房間待命中';
     var conversationTurns = new Map();
     var maxConversationTurns = 3;
-    var characterOffsetX = 0;
-    var characterOffsetY = 0;
-    var characterScale = 1;
+    var latestRuntimeState = null;
+    var resizeObserver = null;
 
-    function updateCharacterTransform() {
-        var target = character || video;
+    window.echoes = window.echoes || {};
 
-        if (!target) {
-            console.warn('[ECHOES] 找不到角色容器，無法更新角色 transform');
+    // ── 通用工具 ──────────────────────────────────────────────
+
+    function setText(element, value, fallback) {
+        if (!element) return;
+        element.textContent = value == null || value === '' ? (fallback || '-') : String(value);
+    }
+
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function normalizeProjectAssetSource(source) {
+        var trimmed = String(source || '').trim();
+        if (!trimmed) return '';
+        if (/^(?:[a-z][a-z0-9+.-]*:|\/|\.\/|\.\.\/)/i.test(trimmed)) return trimmed;
+        return '../../' + trimmed.replace(/^\/+/, '');
+    }
+
+    function setStatus(message, tone, timeoutMs) {
+        if (statusTimer) {
+            clearTimeout(statusTimer);
+            statusTimer = null;
+        }
+        if (!actionStatus) return;
+        actionStatus.dataset.tone = tone || 'idle';
+        actionStatusText.textContent = message || defaultStatusText;
+        if (timeoutMs && timeoutMs > 0) {
+            statusTimer = window.setTimeout(function () {
+                window.clearActionStatus();
+            }, timeoutMs);
+        }
+    }
+
+    function updateStageScale() {
+        // 1920x1080 鎖定，不需要動態縮放
+        document.documentElement.style.setProperty('--stage-scale', '1');
+    }
+
+    function syncAgenticPanelOffset() {
+        var collapsed = document.body.dataset.agenticPanel === 'collapsed';
+        var panelWidth = 0;
+        if (!collapsed) {
+            var panel = document.getElementById('agentic-panel');
+            panelWidth = panel ? Math.round(panel.getBoundingClientRect().width) : 0;
+        }
+        document.documentElement.style.setProperty('--agentic-panel-offset', panelWidth + 'px');
+        if (panelToggleButton) {
+            panelToggleButton.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        }
+    }
+
+    function toggleAgenticPanel() {
+        var collapsed = document.body.dataset.agenticPanel === 'collapsed';
+        document.body.dataset.agenticPanel = collapsed ? 'expanded' : 'collapsed';
+        syncAgenticPanelOffset();
+    }
+
+    // ── Idle Motion ───────────────────────────────────────────
+
+    function normalizeIdleMotionCandidates(candidates) {
+        if (!Array.isArray(candidates)) return [];
+        return candidates.map(function (candidate) {
+            if (typeof candidate === 'string') return { source: candidate, weight: 1 };
+            if (!candidate || !candidate.source) return null;
+            return { source: String(candidate.source), weight: Math.max(1, Number(candidate.weight || 1)) };
+        }).filter(Boolean);
+    }
+
+    function nextIdleCandidateSource(fallbackSource) {
+        if (!idleMotionCandidates.length) return fallbackSource || idleSource;
+        var candidate = idleMotionCandidates[idleMotionIndex % idleMotionCandidates.length];
+        idleMotionIndex = (idleMotionIndex + 1) % idleMotionCandidates.length;
+        return candidate.source;
+    }
+
+    function setSource(source, shouldLoop) {
+        if (!source || typeof source !== 'string') {
+            console.warn('[ECHOES] invalid video source', source);
             return;
         }
+        video.loop = Boolean(shouldLoop);
+        video.src = source;
+        video.load();
+        video.play().catch(function (err) {
+            console.warn('[ECHOES] video playback failed:', err.message);
+        });
+    }
 
-        target.style.transform = (
-            'translate3d(' + characterOffsetX + 'px, ' + characterOffsetY + 'px, 0) ' +
-            'scale(' + characterScale + ')'
-        );
+    // ── Conversation Turns ────────────────────────────────────
+
+    function trimConversationTurns() {
+        while (conversationList && conversationList.children.length > maxConversationTurns) {
+            var firstChild = conversationList.firstElementChild;
+            if (!firstChild) break;
+            conversationTurns.delete(firstChild.dataset.turnId);
+            conversationList.removeChild(firstChild);
+        }
     }
 
     function ensureConversationTurn(turnId, sourceLabel) {
         var existing = conversationTurns.get(turnId);
-        if (existing) {
-            return existing;
-        }
+        if (existing) return existing;
 
         var article = document.createElement('article');
         article.className = 'conversation-turn';
@@ -60,258 +168,326 @@
         userRow.className = 'conversation-turn__row';
         var userLabel = document.createElement('p');
         userLabel.className = 'conversation-turn__label';
-        userLabel.textContent = sourceLabel || '使用者';
+        userLabel.textContent = sourceLabel || 'User';
+        var userCopy = document.createElement('div');
+        userCopy.className = 'conversation-turn__copy';
         var userText = document.createElement('p');
         userText.className = 'conversation-turn__text';
+        userCopy.appendChild(userText);
         userRow.appendChild(userLabel);
-        userRow.appendChild(userText);
+        userRow.appendChild(userCopy);
 
         var assistantRow = document.createElement('div');
         assistantRow.className = 'conversation-turn__row';
         var assistantLabel = document.createElement('p');
         assistantLabel.className = 'conversation-turn__label';
-        assistantLabel.textContent = 'ECHOES';
+        assistantLabel.textContent = 'Echoes';
+        var assistantCopy = document.createElement('div');
+        assistantCopy.className = 'conversation-turn__copy';
         var assistantText = document.createElement('p');
         assistantText.className = 'conversation-turn__text conversation-turn__text--muted';
-        assistantText.textContent = '等待回應中...';
+        assistantCopy.appendChild(assistantText);
         assistantRow.appendChild(assistantLabel);
-        assistantRow.appendChild(assistantText);
+        assistantRow.appendChild(assistantCopy);
 
         article.appendChild(userRow);
         article.appendChild(assistantRow);
-        conversationList.appendChild(article);
+        if (conversationList) conversationList.appendChild(article);
 
-        var turn = {
-            root: article,
-            userText: userText,
-            assistantText: assistantText
-        };
+        var turn = { root: article, userText: userText, assistantText: assistantText };
         conversationTurns.set(turnId, turn);
         trimConversationTurns();
         return turn;
     }
 
-    function trimConversationTurns() {
-        while (conversationList.children.length > maxConversationTurns) {
-            var firstChild = conversationList.firstElementChild;
-            if (!firstChild) {
-                break;
-            }
-            conversationTurns.delete(firstChild.dataset.turnId);
-            conversationList.removeChild(firstChild);
+    // ── 渲染函式 ──────────────────────────────────────────────
+
+    function renderSkills(skills) {
+        var items = Array.isArray(skills) ? skills : [];
+        if (skillCountBadge) skillCountBadge.textContent = items.length + ' skills';
+        if (!skillList) return;
+        if (!items.length) {
+            skillList.innerHTML = '<div class="entity-card"><p class="entity-card__title">No skills loaded.</p></div>';
+            return;
+        }
+        skillList.innerHTML = items.map(function (item) {
+            var toggleLabel = item.enabled ? 'Disable' : 'Enable';
+            var deleteLabel = item.is_builtin ? 'Disable only' : 'Delete';
+            return [
+                '<article class="entity-card">',
+                '  <div class="entity-card__head">',
+                '    <div>',
+                '      <p class="entity-card__title">' + escapeHtml(item.display_name || item.skill_id) + '</p>',
+                '      <p class="entity-card__meta">' + escapeHtml(item.skill_id) + '</p>',
+                '    </div>',
+                '    <span class="status-pill">' + (item.enabled ? 'enabled' : 'disabled') + '</span>',
+                '  </div>',
+                '  <p class="entity-card__meta">' + escapeHtml(item.description || '-') + '</p>',
+                '  <p class="entity-card__meta">triggers: ' + escapeHtml((item.triggers || []).join(', ') || '-') + '</p>',
+                '  <div class="entity-card__actions">',
+                '    <button class="secondary-button" type="button" data-skill-toggle="' + escapeHtml(item.skill_id) + '" data-enabled="' + String(!item.enabled) + '">' + toggleLabel + '</button>',
+                '    <button class="danger-button" type="button" data-skill-delete="' + escapeHtml(item.skill_id) + '">' + deleteLabel + '</button>',
+                '  </div>',
+                '</article>'
+            ].join('');
+        }).join('');
+    }
+
+    function renderXpState(xp) {
+        if (!xp) return;
+        setText(xpDisplay, xp.display);
+        if (xpProgressBar) {
+            var percent = Number(xp.progress_percent || 0);
+            xpProgressBar.style.width = Math.max(0, Math.min(100, percent)) + '%';
+        }
+        setText(xpThresholdDisplay, String(xp.xp_total || 0) + ' / ' + String(xp.next_level_xp || 100) + ' XP');
+    }
+
+    function renderBackgroundStatus(background) {
+        var status = background && background.status ? background.status : 'missing';
+        console.log('[ECHOES UI] background=' + status);
+    }
+
+    function renderState(state) {
+        if (!state) return;
+        latestRuntimeState = state;
+        renderXpState(state.xp || null);
+        renderBackgroundStatus(state.background || null);
+    }
+
+    function renderRuntimeControls(runtimeControls) {
+        var controls = runtimeControls || {};
+        var stt = controls.stt || {};
+        if (runtimeSttStatus) {
+            runtimeSttStatus.textContent = stt.statusLabel || stt.state || 'idle';
+        }
+        if (runtimeSttButton) {
+            runtimeSttButton.textContent = stt.label || '開始收音';
+            runtimeSttButton.disabled = stt.enabled === false;
+            runtimeSttButton.dataset.state = stt.state || 'idle';
+        }
+        if (runtimeResetButton) {
+            runtimeResetButton.textContent = 'Reset';
+            runtimeResetButton.disabled = controls.reset && controls.reset.enabled === false;
         }
     }
 
-    function setSource(source, shouldLoop) {
-        if (!source || typeof source !== 'string') {
-            console.warn('[ECHOES] 無效的影片來源:', source);
+    // ── Bridge 呼叫 ───────────────────────────────────────────
+
+    function callBridge(method) {
+        var args = Array.prototype.slice.call(arguments, 1);
+        if (!harnessBridge || typeof harnessBridge[method] !== 'function') {
+            var msg = 'Bridge not ready — cannot call: ' + method;
+            console.warn('[ECHOES UI] ' + msg);
+            setStatus('Bridge unavailable. Check qwebchannel.js.', 'error', 0);
             return;
         }
+        return harnessBridge[method].apply(harnessBridge, args);
+    }
 
-        mainVideoGeneration += 1;
-        var requestGeneration = mainVideoGeneration;
-        video.muted = true;
-        video.defaultMuted = true;
-        video.playsInline = true;
-        video.autoplay = true;
-        video.setAttribute('muted', '');
-        video.setAttribute('playsinline', '');
-        video.loop = Boolean(shouldLoop);
-        video.dataset.requestGeneration = String(requestGeneration);
-        video.src = source;
-        video.load();
-        var playPromise = video.play();
-        if (playPromise !== undefined) {
-            playPromise.then(function () {
-                if (requestGeneration !== mainVideoGeneration) {
-                    return;
-                }
-                console.log('[JS] 影片開始播放:', source);
-            }).catch(function (error) {
-                if (requestGeneration !== mainVideoGeneration) {
-                    return;
-                }
-                console.error('[JS] 播放被 Chromium 阻擋, Reason:', error.name, error.message);
+    // ── 事件綁定 ──────────────────────────────────────────────
+
+    function setupForms() {
+        if (panelToggleButton) {
+            panelToggleButton.addEventListener('click', toggleAgenticPanel);
+        }
+        if (runtimeSttButton) {
+            runtimeSttButton.addEventListener('click', function () {
+                callBridge('toggleStt');
+            });
+        }
+        if (runtimeResetButton) {
+            runtimeResetButton.addEventListener('click', function () {
+                callBridge('resetRuntime');
+            });
+        }
+        if (runtimeJokeButton) {
+            runtimeJokeButton.addEventListener('click', function () {
+                callBridge('triggerQuickIntent', 'joke');
+            });
+        }
+        if (runtimeShareButton) {
+            runtimeShareButton.addEventListener('click', function () {
+                callBridge('triggerQuickIntent', 'share');
+            });
+        }
+        if (runtimeMusicButton) {
+            runtimeMusicButton.addEventListener('click', function () {
+                callBridge('triggerOverlayAction', 'play_music');
+            });
+        }
+        if (runtimeNewsButton) {
+            runtimeNewsButton.addEventListener('click', function () {
+                callBridge('triggerOverlayAction', 'report_news');
+            });
+        }
+        if (refreshSkillsButton) {
+            refreshSkillsButton.addEventListener('click', function () {
+                console.log('[ECHOES UI] refresh skills clicked');
+                callBridge('refreshState');
             });
         }
     }
 
-    function normalizeIdleMotionCandidates(candidates) {
-        if (!Array.isArray(candidates)) {
-            return [];
-        }
-
-        return candidates.map(function (candidate) {
-            if (!candidate || typeof candidate !== 'object') {
-                return null;
+    function wireDynamicActions() {
+        if (!skillList) return;
+        skillList.addEventListener('click', function (event) {
+            var toggle = event.target.closest('[data-skill-toggle]');
+            var remove = event.target.closest('[data-skill-delete]');
+            if (toggle) {
+                var skillId = toggle.dataset.skillToggle;
+                var enabled = toggle.dataset.enabled === 'true';
+                console.log('[ECHOES UI] skill toggle clicked:', skillId, '->', enabled);
+                callBridge('toggleSkill', skillId, enabled);
+            } else if (remove) {
+                var skillIdDel = remove.dataset.skillDelete;
+                console.log('[ECHOES UI] skill delete clicked:', skillIdDel);
+                callBridge('deleteSkill', skillIdDel);
             }
-            var source = typeof candidate.source === 'string' ? candidate.source : '';
-            var weight = Number(candidate.weight) || 1;
-            if (!source) {
-                return null;
-            }
-            return {
-                source: source,
-                weight: Math.max(1, weight)
-            };
-        }).filter(Boolean);
+        });
     }
 
-    function chooseIdleMotionSource(fallbackSource) {
-        var candidates = idleMotionCandidates;
-        if (!candidates.length) {
-            return fallbackSource || idleSource;
-        }
-
-        var totalWeight = candidates.reduce(function (sum, candidate) {
-            return sum + candidate.weight;
-        }, 0);
-        if (totalWeight <= 0) {
-            return candidates[0].source;
-        }
-
-        var threshold = Math.random() * totalWeight;
-        var runningWeight = 0;
-        for (var index = 0; index < candidates.length; index += 1) {
-            runningWeight += candidates[index].weight;
-            if (threshold < runningWeight) {
-                return candidates[index].source;
-            }
-        }
-        return candidates[candidates.length - 1].source;
-    }
-
-    function restoreIdleMotionInternal(fallbackSource) {
-        var nextIdleSource = chooseIdleMotionSource(fallbackSource);
-        if (!nextIdleSource) {
-            console.warn('[ECHOES] 目前沒有可用的 idle motion candidate');
+    function setupWebChannel() {
+        if (typeof window.QWebChannel === 'undefined') {
+            var msg = 'QWebChannel not available (qwebchannel.js failed to load)';
+            console.error('[ECHOES UI]', msg);
+            setStatus('Bridge unavailable. Check qwebchannel.js.', 'error', 0);
             return;
         }
-
-        idleSource = nextIdleSource;
-        console.log('[ECHOES] 設定 idle 動畫:', nextIdleSource);
-        if (motionLoopActive) {
+        if (!window.qt || !window.qt.webChannelTransport) {
+            var msg2 = 'qt.webChannelTransport not available (not inside Qt WebEngine?)';
+            console.error('[ECHOES UI]', msg2);
+            setStatus('Qt transport missing. Run via PyQt5.', 'error', 0);
             return;
         }
-        setSource(nextIdleSource, true);
+        new window.QWebChannel(window.qt.webChannelTransport, function (channel) {
+            harnessBridge = channel.objects.harnessBridge || null;
+            if (!harnessBridge) {
+                console.error('[ECHOES UI] harnessBridge object not found in channel.objects');
+                setStatus('Bridge object missing. Check PyQt registration.', 'error', 0);
+                return;
+            }
+            console.log('[ECHOES UI] bridge=ready');
+            setStatus('Bridge ready.', 'idle', 1800);
+            callBridge('refreshState');
+        });
     }
 
-    function setStatus(message, tone, timeoutMs) {
-        if (statusTimer) {
-            clearTimeout(statusTimer);
-            statusTimer = null;
-        }
+    // ── Bridge 函式（window.* — Python → JS，完整保留）────────
 
-        actionStatus.dataset.tone = tone || 'idle';
-        actionStatusText.textContent = message || defaultStatusText;
-
-        if (timeoutMs && timeoutMs > 0) {
-            statusTimer = window.setTimeout(function () {
-                window.clearActionStatus();
-            }, timeoutMs);
-        }
-    }
-
-    video.onerror = function (event) {
-        var err = video.error;
-        var errCode = err ? err.code : 'unknown';
-        var errMsg = err ? err.message : '(no details)';
-        console.error('[ECHOES] 影片載入失敗 src=' + video.src + ' code=' + errCode + ' msg=' + errMsg);
+    window.beginConversationTurn = function (turnId, sourceLabel, userText) {
+        if (!turnId) return;
+        var turn = ensureConversationTurn(String(turnId), sourceLabel || 'User');
+        turn.root.dataset.state = 'active';
+        turn.userText.textContent = userText || '';
+        turn.assistantText.textContent = 'Waiting for reply...';
+        turn.assistantText.classList.add('conversation-turn__text--muted');
     };
 
-    video.addEventListener('ended', function () {
-        console.log('[ECHOES:MAIN_VIDEO_ENDED]');
-        if (!video.loop && !motionLoopActive) {
-            restoreIdleMotionInternal(idleSource);
+    window.appendConversationAssistant = function (turnId, fragment) {
+        if (!turnId || !fragment) return;
+        var turn = ensureConversationTurn(String(turnId), 'User');
+        if (turn.assistantText.classList.contains('conversation-turn__text--muted')) {
+            turn.assistantText.textContent = '';
+            turn.assistantText.classList.remove('conversation-turn__text--muted');
         }
-    });
+        turn.assistantText.textContent += String(fragment);
+    };
 
-    audio.addEventListener('ended', function () {
-        console.log('[ECHOES:ROOM_AUDIO_ENDED]');
-        if (audio.dataset.statusManaged === 'true') {
-            setStatus('音樂播放完畢', 'idle', 2200);
+    window.setConversationAssistant = function (turnId, message) {
+        if (!turnId) return;
+        var turn = ensureConversationTurn(String(turnId), 'User');
+        turn.assistantText.textContent = String(message || '') || 'No visible reply.';
+        if (turn.assistantText.textContent === 'No visible reply.') {
+            turn.assistantText.classList.add('conversation-turn__text--muted');
+        } else {
+            turn.assistantText.classList.remove('conversation-turn__text--muted');
         }
-    });
+    };
 
-    audio.addEventListener('error', function () {
-        console.warn('[ECHOES] 音訊載入失敗:', audio.src);
-        setStatus('音訊載入失敗', 'error', 4200);
-    });
+    window.finishConversationTurn = function (turnId) {
+        if (!turnId) return;
+        var turn = ensureConversationTurn(String(turnId), 'User');
+        turn.root.dataset.state = 'done';
+        if (!turn.assistantText.textContent) {
+            turn.assistantText.textContent = 'No visible reply.';
+            turn.assistantText.classList.add('conversation-turn__text--muted');
+        }
+    };
 
-    /**
-     * 設定目前角色的 idle 動畫。
-     * @param {string} source - 影片來源 URL
-     */
+    window.setConversationQueueDepth = function (queueDepth) {
+        var depth = Number(queueDepth) || 0;
+        setText(conversationQueueText, 'Queue ' + depth);
+    };
+
+    window.clearConversationTurns = function () {
+        conversationTurns.clear();
+        while (conversationList && conversationList.firstElementChild) {
+            conversationList.removeChild(conversationList.firstElementChild);
+        }
+        window.setConversationQueueDepth(0);
+    };
+
+    window.setAgenticBusy = function (busy) {
+        agenticBusy = Boolean(busy);
+    };
+
+    window.hydrateAgenticUI = function (payload) {
+        payload = payload || {};
+        renderState(payload.state || null);
+        renderRuntimeControls(payload.runtimeControls || null);
+        renderSkills(payload.skills || []);
+        if (payload.message) {
+            setStatus(payload.message, payload.tone || 'idle', payload.timeoutMs || 0);
+        }
+    };
+
+    window.updateRuntimeControls = function (runtimeControls) {
+        renderRuntimeControls(runtimeControls || null);
+    };
+
+    window.echoes.setIdleMotionCandidates = function (candidates) {
+        idleMotionCandidates = normalizeIdleMotionCandidates(candidates);
+        idleMotionIndex = 0;
+    };
+    window.setIdleMotionCandidates = window.echoes.setIdleMotionCandidates;
+
+    window.setRuntimeMode = function (mode) {
+        var normalized = String(mode || 'harness');
+        if (runtimeModeBadge) {
+            runtimeModeBadge.textContent = 'mode: ' + normalized;
+        }
+    };
+
     window.setIdleVideo = function (source) {
         idleSource = source;
-        console.log('[ECHOES] 設定 idle 動畫:', source);
         setSource(source, true);
     };
 
-    window.setIdleMotionCandidates = function (candidates) {
-        idleMotionCandidates = normalizeIdleMotionCandidates(candidates);
-        console.log('[ECHOES] 更新 idle motion candidates:', idleMotionCandidates.length);
-    };
-
-    window.restoreIdleMotion = function (fallbackSource) {
-        restoreIdleMotionInternal(fallbackSource || idleSource);
-    };
-
-    /**
-     * 播放一次性動作，結束後自動回到 idle。
-     * @param {string} source - 影片來源 URL
-     */
     window.playTemporaryVideo = function (source) {
-        var targetVideo = document.getElementById('pet-video');
-        if (!targetVideo) {
-            console.error('[JS ERROR] 找不到影片元素 #pet-video，無法播放動作');
-            return;
-        }
+        setSource(source, false);
+    };
 
-        targetVideo.muted = true;
-        targetVideo.defaultMuted = true;
-        targetVideo.playsInline = true;
-        targetVideo.autoplay = true;
-        targetVideo.setAttribute('muted', '');
-        targetVideo.setAttribute('playsinline', '');
-        targetVideo.loop = false;
+    window.setRoomBackground = function (source) {
+        var bg = stageBackground ? stageBackground.querySelector('img.room-background') : null;
+        if (bg && source) bg.src = normalizeProjectAssetSource(source);
+    };
 
-        mainVideoGeneration += 1;
-        var requestGeneration = mainVideoGeneration;
-        console.log('[JS] 準備切換動作:', source);
-        targetVideo.pause();
-        targetVideo.dataset.requestGeneration = String(requestGeneration);
-        targetVideo.src = source;
-        targetVideo.load();
-
-        var playPromise = targetVideo.play();
-        if (playPromise !== undefined) {
-            playPromise.then(function () {
-                if (requestGeneration !== mainVideoGeneration) {
-                    return;
-                }
-                console.log('[JS] 動作播放成功:', source);
-            }).catch(function (error) {
-                if (requestGeneration !== mainVideoGeneration) {
-                    return;
-                }
-                console.error('[JS ERROR] 動作切換失敗:', error.name, error.message);
-            });
-        }
+    window.clearRoomBackground = function () {
+        var bg = stageBackground ? stageBackground.querySelector('img.room-background') : null;
+        if (bg) bg.removeAttribute('src');
     };
 
     window.moveCharacter = function (x, y, scale) {
-        characterOffsetX = Number(x) || 0;
-        characterOffsetY = Number(y) || 0;
-        characterScale = Number(scale) || 1;
-        updateCharacterTransform();
-        console.log('[ECHOES] 角色 transform:', { x: characterOffsetX, y: characterOffsetY, scale: characterScale });
+        document.documentElement.style.setProperty('--pet-anchor-shift', Number(x || 0) + 'px');
+        document.documentElement.style.setProperty('--pet-floor-offset', Number(y || 0) + 'px');
+        if (scale != null) {
+            document.documentElement.style.setProperty('--pet-scale', String(scale));
+        }
     };
 
     window.setCharacterObjectPosition = function (objectPosition) {
-        var value = String(objectPosition || 'center bottom');
-        video.style.objectPosition = value;
-        console.log('[ECHOES] 角色 object-position:', value);
+        video.style.objectPosition = String(objectPosition || 'center bottom');
     };
 
     window.setActionStatus = function (message, tone, timeoutMs) {
@@ -323,110 +499,33 @@
     };
 
     window.setRoomCharacter = function (name) {
-        roomCharacterName.textContent = name || '未選擇角色';
+        if (roomCharacterName) roomCharacterName.textContent = name || 'Pet Preview';
     };
 
-    window.beginConversationTurn = function (turnId, sourceLabel, userText) {
-        if (!turnId) {
-            return;
-        }
-        var turn = ensureConversationTurn(String(turnId), sourceLabel || '使用者');
-        turn.root.dataset.state = 'active';
-        turn.userText.textContent = userText || '';
-        turn.assistantText.textContent = '等待回應中...';
-        turn.assistantText.classList.add('conversation-turn__text--muted');
-        conversationList.appendChild(turn.root);
-        trimConversationTurns();
-    };
-
-    window.appendConversationAssistant = function (turnId, fragment) {
-        if (!turnId || !fragment) {
-            return;
-        }
-        var turn = ensureConversationTurn(String(turnId), '使用者');
-        if (turn.assistantText.classList.contains('conversation-turn__text--muted')) {
-            turn.assistantText.textContent = '';
-            turn.assistantText.classList.remove('conversation-turn__text--muted');
-        }
-        turn.assistantText.textContent += String(fragment);
-    };
-
-    window.setConversationAssistant = function (turnId, message) {
-        if (!turnId) {
-            return;
-        }
-        var turn = ensureConversationTurn(String(turnId), '使用者');
-        turn.assistantText.textContent = String(message || '');
-        if (turn.assistantText.textContent) {
-            turn.assistantText.classList.remove('conversation-turn__text--muted');
-            return;
-        }
-        turn.assistantText.textContent = '本輪沒有可顯示的回覆。';
-        turn.assistantText.classList.add('conversation-turn__text--muted');
-    };
-
-    window.finishConversationTurn = function (turnId) {
-        if (!turnId) {
-            return;
-        }
-        var turn = ensureConversationTurn(String(turnId), '使用者');
-        turn.root.dataset.state = 'done';
-        if (!turn.assistantText.textContent) {
-            turn.assistantText.textContent = '本輪沒有可顯示的回覆。';
-            turn.assistantText.classList.add('conversation-turn__text--muted');
-        }
-    };
-
-    window.setConversationQueueDepth = function (queueDepth) {
-        var depth = Number(queueDepth) || 0;
-        conversationQueueText.textContent = '佇列 ' + depth;
-    };
-
-    window.clearConversationTurns = function () {
-        conversationTurns.clear();
-        while (conversationList.firstElementChild) {
-            conversationList.removeChild(conversationList.firstElementChild);
-        }
-        window.setConversationQueueDepth(0);
-    };
-
-    window.playRoomAudio = function (source, title, updateStatus) {
+    window.playRoomAudio = function (source, title) {
         if (!source || typeof source !== 'string') {
-            console.warn('[ECHOES] 無效的音訊來源:', source);
-            setStatus('找不到可播放音訊', 'warn', 3200);
+            setStatus('Audio source missing.', 'warn', 3200);
             return;
         }
-
-        var shouldUpdateStatus = updateStatus !== false;
-        audio.dataset.statusManaged = shouldUpdateStatus ? 'true' : 'false';
         audio.pause();
         audio.src = source;
         audio.load();
         audio.play().then(function () {
-            if (shouldUpdateStatus) {
-                setStatus(title ? '正在播放: ' + title : '音樂播放中', 'music', 0);
-            }
+            setStatus(title ? 'Now playing: ' + title : 'Playing room audio.', 'music', 0);
         }).catch(function (err) {
-            console.warn('[ECHOES] 音樂播放失敗:', err.message);
-            setStatus('音樂播放失敗: ' + err.message, 'error', 4800);
+            console.warn('[ECHOES] audio play failed:', err.message);
+            setStatus('Audio playback failed: ' + err.message, 'error', 4800);
         });
     };
 
     window.stopRoomAudio = function () {
         audio.pause();
-        audio.dataset.statusManaged = 'false';
         audio.removeAttribute('src');
         audio.load();
     };
 
-    panelVideo.addEventListener('ended', function () {
-        console.log('[ECHOES:PANEL_ENDED]');
-    });
-
     window.playPanelVideo = function (source, shouldLoop, muted) {
-        if (!source || !panelVideo) {
-            return;
-        }
+        if (!source || !panelVideo) return;
         panelVideoGeneration += 1;
         var requestGeneration = panelVideoGeneration;
         panelVideo.muted = (muted !== false);
@@ -436,24 +535,17 @@
         panelVideo.load();
         panelVideo.style.display = 'block';
         panelVideo.play().catch(function (err) {
-            if (requestGeneration !== panelVideoGeneration) {
-                return;
-            }
-            console.warn('[ECHOES] panel video 播放失敗:', err.message);
+            if (requestGeneration !== panelVideoGeneration) return;
+            console.warn('[ECHOES] panel video playback failed:', err.message);
         });
     };
 
     window.setPanelVideoMuted = function (muted) {
-        if (!panelVideo) {
-            return;
-        }
-        panelVideo.muted = (muted !== false);
+        if (panelVideo) panelVideo.muted = (muted !== false);
     };
 
     window.clearPanelVideo = function () {
-        if (!panelVideo) {
-            return;
-        }
+        if (!panelVideo) return;
         panelVideoGeneration += 1;
         panelVideo.pause();
         panelVideo.removeAttribute('src');
@@ -463,21 +555,18 @@
 
     window.startMotionLoop = function (source, intervalMs) {
         window.stopMotionLoop();
-        if (!source) { return; }
+        if (!source) return;
         motionLoopGeneration += 1;
         var loopGeneration = motionLoopGeneration;
         motionLoopSource = source;
         motionLoopActive = true;
         window.playTemporaryVideo(source);
         motionLoopTimer = setInterval(function () {
-            if (loopGeneration !== motionLoopGeneration) {
-                return;
-            }
+            if (loopGeneration !== motionLoopGeneration) return;
             if (motionLoopActive && motionLoopSource && (video.ended || video.paused)) {
                 window.playTemporaryVideo(motionLoopSource);
             }
         }, intervalMs || 1000);
-        console.log('[ECHOES] motionLoop 啟動:', source, 'interval=', intervalMs || 1000);
     };
 
     window.stopMotionLoop = function () {
@@ -488,7 +577,14 @@
         }
         motionLoopSource = null;
         motionLoopActive = false;
-        console.log('[ECHOES] motionLoop 停止');
+        console.log('[ECHOES] motionLoop stopped');
+    };
+
+    window.restoreIdleMotion = function (fallbackSource) {
+        if (fallbackSource) idleSource = fallbackSource;
+        var nextSource = nextIdleCandidateSource(idleSource);
+        if (!nextSource) return;
+        setSource(nextSource, true);
     };
 
     window.resetRoomState = function () {
@@ -497,30 +593,13 @@
         window.stopMotionLoop();
         window.clearConversationTurns();
         window.clearActionStatus();
-        if (idleSource) {
-            restoreIdleMotionInternal(idleSource);
-        }
+        if (idleSource) window.restoreIdleMotion(idleSource);
     };
 
-    window.setRoomBackground = function (source) {
-        if (!source) {
-            return;
-        }
-        var bg = document.querySelector('img.room-background');
-        if (bg) {
-            bg.src = source;
-        }
-    };
-
-    // 舊版橋接函式保留，避免其他模組呼叫失敗。
     window.changeVideo = function (source) {
         window.setIdleVideo(source);
     };
 
-    /**
-     * 取得目前播放狀態（供 Python 診斷用）
-     * @returns {object}
-     */
     window.getVideoStatus = function () {
         return {
             src: video.src,
@@ -528,13 +607,64 @@
             currentTime: video.currentTime,
             duration: video.duration,
             readyState: video.readyState,
-            statusText: actionStatusText.textContent,
+            statusText: actionStatusText ? actionStatusText.textContent : '',
             audioSrc: audio.src,
             audioPaused: audio.paused,
-            characterName: roomCharacterName.textContent
+            characterName: roomCharacterName ? roomCharacterName.textContent : ''
         };
     };
 
-    setStatus('', 'idle', 0);
-    window.setConversationQueueDepth(0);
+    // ── 媒體事件 ──────────────────────────────────────────────
+
+    video.addEventListener('error', function () {
+        console.warn('[ECHOES] video load failed:', video.src);
+    });
+
+    video.addEventListener('ended', function () {
+        if (!video.loop) window.restoreIdleMotion(idleSource);
+    });
+
+    audio.addEventListener('ended', function () {
+        console.log('[ECHOES:ROOM_AUDIO_ENDED]');
+        setStatus('Music playback finished.', 'idle', 2200);
+    });
+
+    audio.addEventListener('error', function () {
+        console.warn('[ECHOES] audio load failed:', audio.src);
+        setStatus('Audio playback failed.', 'error', 4200);
+    });
+
+    if (panelVideo) {
+        panelVideo.addEventListener('ended', function () {
+            console.log('[ECHOES:PANEL_ENDED]');
+        });
+    }
+
+    // ── 初始化 ────────────────────────────────────────────────
+
+    try {
+        document.body.dataset.agenticPanel = 'expanded';
+        updateStageScale();
+        syncAgenticPanelOffset();
+        if (typeof ResizeObserver !== 'undefined') {
+            resizeObserver = new ResizeObserver(function () {
+                updateStageScale();
+                syncAgenticPanelOffset();
+            });
+            resizeObserver.observe(document.documentElement);
+        } else {
+            window.addEventListener('resize', updateStageScale);
+            window.addEventListener('resize', syncAgenticPanelOffset);
+        }
+        setupForms();
+        wireDynamicActions();
+        setupWebChannel();
+        setStatus('', 'idle', 0);
+        window.setConversationQueueDepth(0);
+        window.setRuntimeMode('harness');
+    } catch (error) {
+        console.error('[ECHOES APP.JS] init error:', error.message);
+    }
+
+    console.log('[ECHOES APP.JS] init complete — harnessBridge:', typeof harnessBridge);
 })();

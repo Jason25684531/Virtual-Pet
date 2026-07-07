@@ -7,45 +7,116 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <main class="room-shell" aria-label="ECHOES room scene">
+    <main id="stage-root" class="room-shell stage-root" aria-label="ECHOES room scene">
         <section class="room-scene">
-            <img
-                class="room-background"
-                src="../../assets/webm/characters/miku/BG_Final.png"
-                alt="房間背景"
-            >
-            <div class="room-atmosphere"></div>
-            <div class="room-chrome">
-                <p class="room-eyebrow">ECHOES Room</p>
-                <h1 id="room-character-name">未選擇角色</h1>
+            <div id="stage-background" class="stage-background" aria-hidden="true">
+                <img
+                    class="room-background"
+                    src="../assets/backgrounds/default-room.jpg"
+                    alt="ECHOES room background"
+                >
+                <div class="room-atmosphere"></div>
             </div>
-            <div class="room-floor-glow"></div>
-            <div class="room-stage">
-                <video id="panel-video" muted playsinline></video>
-                <div class="room-character-anchor">
+
+            <div id="stage-pet-layer" class="stage-pet-layer" aria-hidden="true">
+                <div id="panel-video-anchor" class="room-panel-anchor">
+                    <video id="panel-video" class="room-panel-video" muted playsinline></video>
+                </div>
+                <div id="pet-stage-anchor" class="room-character-anchor">
                     <div id="pet-character" class="room-character">
-                        <div class="room-character-shadow"></div>
                         <video id="pet-video" autoplay loop muted playsinline></video>
                     </div>
                 </div>
             </div>
-            <section id="action-status" class="action-status" data-tone="idle" aria-live="polite">
-                <span class="action-status__dot"></span>
-                <div class="action-status__copy">
-                    <p class="action-status__label">行動狀態</p>
-                    <p id="action-status-text" class="action-status__text">房間待命中</p>
+
+            <div id="stage-live-ui" class="stage-live-ui">
+                <div class="room-chrome">
+                    <p class="room-eyebrow">ECHOES Room</p>
+                    <h1 id="room-character-name">Pet Preview</h1>
+                    <span id="runtime-mode-badge" class="status-pill">mode: harness</span>
                 </div>
-            </section>
-            <section id="conversation-panel" class="conversation-panel" aria-live="polite">
-                <div class="conversation-panel__header">
-                    <p class="conversation-panel__eyebrow">最近互動</p>
-                    <p id="conversation-queue-text" class="conversation-panel__queue">佇列 0</p>
-                </div>
-                <div id="conversation-list" class="conversation-list"></div>
-            </section>
+
+                <section class="xp-badge" aria-label="Bond XP">
+                    <p class="xp-badge__label">Bond XP</p>
+                    <p id="xp-display" class="xp-badge__value">XP: 0 | Lv. 1 | Last +0</p>
+                    <div class="xp-progress" aria-label="XP progress">
+                        <div id="xp-progress-bar" class="xp-progress__bar"></div>
+                    </div>
+                    <p id="xp-threshold-display" class="xp-badge__hint">0 / 100 XP</p>
+                </section>
+
+                <section id="conversation-panel" class="conversation-panel" aria-live="polite">
+                    <div class="conversation-panel__header">
+                        <div>
+                            <p class="conversation-panel__eyebrow">Recent Turns</p>
+                            <p class="conversation-panel__label">Live Conversation</p>
+                        </div>
+                        <p id="conversation-queue-text" class="conversation-panel__queue">Queue 0</p>
+                    </div>
+                    <div id="conversation-list" class="conversation-list"></div>
+                </section>
+            </div>
+
+            <div id="stage-bottom-ui" class="stage-bottom-ui">
+                <section id="action-status" class="action-status" data-tone="idle" aria-live="polite">
+                    <span class="action-status__dot"></span>
+                    <div class="action-status__copy">
+                        <p class="action-status__label">Status</p>
+                        <p id="action-status-text" class="action-status__text">Waiting for room updates.</p>
+                    </div>
+                </section>
+            </div>
+
+            <div id="stage-agentic-panel" class="stage-agentic-panel">
+                <button
+                    id="agentic-panel-toggle"
+                    class="agentic-panel-toggle"
+                    type="button"
+                    aria-controls="agentic-panel"
+                    aria-expanded="true"
+                >
+                    Agentic
+                </button>
+
+                <aside id="agentic-panel" class="agentic-panel" aria-label="Agentic controls">
+                    <details class="panel-card panel-card--details" open>
+                        <summary class="details-summary">
+                            <span>Runtime Controls</span>
+                            <span id="runtime-stt-status" class="status-pill">idle</span>
+                        </summary>
+                        <div id="runtime-controls" class="runtime-controls">
+                            <p class="panel-help">Primary runtime actions live here to avoid bottom overlay click conflicts.</p>
+                            <div class="runtime-control-grid runtime-control-grid--primary">
+                                <button id="runtime-stt-button" class="primary-button" type="button">Start STT</button>
+                                <button id="runtime-reset-button" class="ghost-button" type="button">Reset</button>
+                            </div>
+                            <div class="runtime-control-grid runtime-control-grid--quick">
+                                <button id="runtime-joke-button" class="secondary-button" type="button">Joke</button>
+                                <button id="runtime-share-button" class="secondary-button" type="button">share</button>
+                                <button id="runtime-music-button" class="secondary-button" type="button">Music</button>
+                                <button id="runtime-news-button" class="secondary-button" type="button">News</button>
+                            </div>
+                        </div>
+                    </details>
+
+                    <details class="panel-card panel-card--details" open>
+                        <summary class="details-summary">
+                            <span>Skills</span>
+                            <span id="skill-count-badge" class="status-pill">0 skills</span>
+                        </summary>
+                        <div class="list-actions">
+                            <button id="refresh-skills-button" class="ghost-button" type="button">Refresh skills</button>
+                        </div>
+                        <div id="skill-list" class="entity-list"></div>
+                    </details>
+
+                </aside>
+            </div>
         </section>
     </main>
+
     <audio id="room-audio" preload="none"></audio>
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

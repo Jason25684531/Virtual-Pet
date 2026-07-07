@@ -3,12 +3,18 @@ ECHOES — PyQt5 透明無邊框桌面視窗
 使用 QWebEngineView 載入 HTML/JS WebM 播放器，實現去背精靈渲染。
 """
 
+from __future__ import annotations
+
+import ctypes
+import ctypes.wintypes
 import json
 import os
+import sys
 from uuid import uuid4
 
-from PyQt5.QtCore import QEvent, Qt, QTimer, QUrl, pyqtSignal
+from PyQt5.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer, QUrl, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
+from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWidgets import (
     QAction, QApplication, QLineEdit, QMainWindow, QMenu, QPushButton, QSystemTrayIcon, QWidget,
 )
@@ -17,6 +23,58 @@ from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineSettings, QWebEng
 from character_library import ASSETS_WEBM_DIR, CharacterLibrary, MOTION_MAP
 from interaction_trace import InteractionLatencyTracker
 from action_services import FIXED_NEWS_SCRIPT
+
+from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
+from pet_harness.ui.pyqt_harness_adapter import PyQtHarnessAdapter
+from ui.background_resolver import BackgroundResolver
+
+
+BRIDGE_CONTRACT = {
+    "python_to_js": [
+        "appendConversationAssistant",
+        "beginConversationTurn",
+        "changeVideo",
+        "clearConversationTurns",
+        "clearPanelVideo",
+        "clearRoomBackground",
+        "finishConversationTurn",
+        "hydrateAgenticUI",
+        "moveCharacter",
+        "playPanelVideo",
+        "playRoomAudio",
+        "playTemporaryVideo",
+        "restoreIdleMotion",
+        "setActionStatus",
+        "setAgenticBusy",
+        "setCharacterObjectPosition",
+        "setConversationAssistant",
+        "setConversationQueueDepth",
+        "setIdleMotionCandidates",
+        "setIdleVideo",
+        "setPanelVideoMuted",
+        "setRoomBackground",
+        "setRoomCharacter",
+        "setRuntimeMode",
+        "startMotionLoop",
+        "stopMotionLoop",
+        "stopRoomAudio",
+    ],
+    "js_to_python": [
+        "addSkill",
+        "addToolConfig",
+        "deleteSkill",
+        "deleteToolConfig",
+        "refreshState",
+        "resetRuntime",
+        "sendLiveText",
+        "sendText",
+        "toggleStt",
+        "triggerOverlayAction",
+        "triggerQuickIntent",
+        "toggleSkill",
+        "toggleTool",
+    ],
+}
 
 
 class EchoesWebPage(QWebEnginePage):
@@ -56,6 +114,83 @@ class DeveloperInputLineEdit(QLineEdit):
         super().focusOutEvent(event)
         if callable(self._focus_lost_callback):
             QTimer.singleShot(0, self._focus_lost_callback)
+
+
+class HarnessInteractionWorker(QThread):
+    finished_payload = pyqtSignal(dict)
+    failed_message = pyqtSignal(str)
+
+    def __init__(self, adapter: PyQtHarnessAdapter, text: str, provider: str, parent=None) -> None:
+        super().__init__(parent)
+        self._adapter = adapter
+        self._text = text
+        self._provider = provider
+
+    def run(self) -> None:
+        try:
+            payload = self._adapter.handle_text_input(self._text, provider=self._provider)
+        except Exception as exc:  # noqa: BLE001
+            self.failed_message.emit(str(exc))
+            return
+        self.finished_payload.emit(payload)
+
+
+class HarnessUiBridge(QObject):
+    def __init__(self, window: "TransparentWindow") -> None:
+        super().__init__(window)
+        self._window = window
+
+    @pyqtSlot()
+    def refreshState(self) -> None:
+        self._window.refresh_agentic_ui()
+
+    @pyqtSlot()
+    def resetRuntime(self) -> None:
+        self._window.request_runtime_reset()
+
+    @pyqtSlot(str, str)
+    def sendText(self, text: str, provider: str) -> None:
+        self._window.submit_agentic_text(text, provider)
+
+    @pyqtSlot(str)
+    def sendLiveText(self, text: str) -> None:
+        self._window.submit_live_text(text)
+
+    @pyqtSlot(str, bool)
+    def toggleSkill(self, skill_id: str, enabled: bool) -> None:
+        self._window.toggle_skill(skill_id, enabled)
+
+    @pyqtSlot(str, bool)
+    def toggleTool(self, tool_name: str, enabled: bool) -> None:
+        self._window.toggle_tool(tool_name, enabled)
+
+    @pyqtSlot()
+    def toggleStt(self) -> None:
+        self._window.toggle_stt_from_bridge()
+
+    @pyqtSlot(str)
+    def triggerOverlayAction(self, action_name: str) -> None:
+        self._window.trigger_overlay_action_from_bridge(action_name)
+
+    @pyqtSlot(str)
+    def triggerQuickIntent(self, intent_name: str) -> None:
+        self._window.trigger_quick_intent_from_bridge(intent_name)
+
+    @pyqtSlot(str)
+    def addSkill(self, payload_json: str) -> None:
+        self._window.add_skill(payload_json)
+
+    @pyqtSlot(str)
+    def deleteSkill(self, skill_id: str) -> None:
+        self._window.delete_skill(skill_id)
+
+    @pyqtSlot(str)
+    def addToolConfig(self, payload_json: str) -> None:
+        self._window.add_tool_config(payload_json)
+
+    @pyqtSlot(str)
+    def deleteToolConfig(self, tool_name: str) -> None:
+        self._window.delete_tool_config(tool_name)
 
 
 class TransparentWindow(QMainWindow):
@@ -107,28 +242,54 @@ class TransparentWindow(QMainWindow):
         "listen": "專心聆聽.webm",
     }
 
-    def __init__(self, latency_tracker: InteractionLatencyTracker | None = None):
+    XP_BADGE_TOP = 28
+    XP_BADGE_RIGHT = 30
+    XP_BADGE_WIDTH = 260
+    XP_BADGE_HEIGHT = 72
+    AGENTIC_PANEL_TOP = 104
+    AGENTIC_PANEL_RIGHT = 30
+    AGENTIC_PANEL_BOTTOM = 106
+    AGENTIC_PANEL_MAX_WIDTH = 420
+    AGENTIC_PANEL_WIDTH_RATIO = 0.34
+
+    def __init__(
+        self,
+        brain_mode: str = "harness",
+        latency_tracker: InteractionLatencyTracker | None = None,
+    ):
         super().__init__()
+        self._brain_mode = brain_mode
         self._library = CharacterLibrary()
         self._latency_tracker = latency_tracker
+        self._runtime_contract = {"brain_mode": "harness", "harness_runtime_available": True, "live_runtime_available": False, "openclaw_enabled": False}
+        self._background_resolver = BackgroundResolver()
+        self._voice_status_adapter = VoiceRuntimeStatusAdapter()
+        self._adapter = PyQtHarnessAdapter(
+            background_resolver=self._background_resolver,
+            voice_status_adapter=self._voice_status_adapter,
+            brain_mode=self._brain_mode,
+            runtime_contract=self._runtime_contract,
+        )
         self._settings_dialog = None
+        self._interaction_worker: HarnessInteractionWorker | None = None
         self._character_x_offset = self.DEFAULT_CHARACTER_X_OFFSET
         self._character_y_offset = self.DEFAULT_CHARACTER_Y_OFFSET
         self._character_scale = self.DEFAULT_CHARACTER_SCALE
         self._character_object_position = self.DEFAULT_CHARACTER_OBJECT_POSITION
+        self._background_status = "fallback_placeholder"
+        self._background_url: str | None = None
+        self._live_runtime_available = self._runtime_contract["live_runtime_available"]
         self._webview_ready = False
         self._drag_pos = None
         self._stt_listening = False
-        self._stt_available = True
+        self._stt_available = bool(self._runtime_contract["live_runtime_available"])
         self._stt_state = "idle"
         self._pending_javascript_calls: list[tuple[str, tuple[object, ...]]] = []
+        self._latest_agentic_event: dict[str, object] | None = None
         self._init_window()
         self._init_webview()
         self._init_drag_surface()
         self._init_developer_input()
-        self._init_stt_button()
-        self._init_reset_button()
-        self._init_fixed_intent_buttons()
         from action_dispatcher import ActionDispatcher
         self._action_dispatcher = ActionDispatcher(
             self,
@@ -162,12 +323,17 @@ class TransparentWindow(QMainWindow):
         """建立 QWebEngineView 並載入本地 HTML 播放器"""
         self.web_view = QWebEngineView(self)
         self.web_view.setStyleSheet("background: transparent;")
+        self.web_view.page().setBackgroundColor(Qt.transparent)
 
         # 停用 Chromium 的任何預設右鍵選單，改由 Qt 視窗層統一處理。
         self.web_view.setContextMenuPolicy(Qt.NoContextMenu)
 
         # 掛上自訂 Page，讓前端 console 訊息可轉印至 Python Terminal。
         self.web_view.setPage(EchoesWebPage(self.web_view))
+        self._bridge = HarnessUiBridge(self)
+        self._channel = QWebChannel(self.web_view.page())
+        self._channel.registerObject("harnessBridge", self._bridge)
+        self.web_view.page().setWebChannel(self._channel)
 
         self.setCentralWidget(self.web_view)
 
@@ -322,9 +488,91 @@ class TransparentWindow(QMainWindow):
             "}"
         )
 
+    def _get_stt_control_descriptor(self) -> dict[str, object]:
+        state = "unavailable" if not self._stt_available else self._stt_state
+        if state == "unavailable":
+            return {
+                "label": "STT 不可用",
+                "statusLabel": "未連線",
+                "state": state,
+                "enabled": False,
+                "background": "rgba(92, 92, 92, 180)",
+                "border": "rgba(190, 190, 190, 110)",
+            }
+        if state == "starting":
+            return {
+                "label": "STT 啟動中",
+                "statusLabel": "啟動中",
+                "state": state,
+                "enabled": False,
+                "background": "rgba(88, 120, 160, 205)",
+                "border": "rgba(218, 234, 255, 140)",
+            }
+        if state == "listening":
+            return {
+                "label": "停止聆聽",
+                "statusLabel": "收音中",
+                "state": state,
+                "enabled": True,
+                "background": "rgba(176, 52, 52, 215)",
+                "border": "rgba(255, 214, 214, 160)",
+            }
+        if state == "stopping":
+            return {
+                "label": "STT 停止中",
+                "statusLabel": "停止中",
+                "state": state,
+                "enabled": False,
+                "background": "rgba(132, 96, 62, 205)",
+                "border": "rgba(255, 232, 208, 140)",
+            }
+        return {
+            "label": "開始聆聽",
+            "statusLabel": "待命中",
+            "state": "idle",
+            "enabled": True,
+            "background": "rgba(32, 126, 92, 215)",
+            "border": "rgba(210, 255, 239, 150)",
+        }
+
+    def _build_runtime_controls_state(self) -> dict[str, object]:
+        return {
+            "stt": self._get_stt_control_descriptor(),
+            "reset": {"enabled": True},
+        }
+
+    def _sync_runtime_controls_ui(self) -> None:
+        self._run_javascript("updateRuntimeControls", self._build_runtime_controls_state())
+
     def _apply_stt_button_state(self):
-        if not hasattr(self, "_stt_button"):
-            return
+        descriptor = self._get_stt_control_descriptor()
+        label = str(descriptor["label"])
+        enabled = bool(descriptor["enabled"])
+
+        if hasattr(self, "_stt_button"):
+            self._stt_button.setText(label)
+            self._stt_button.setEnabled(enabled)
+            self._stt_button.setStyleSheet(
+                f"""
+                QPushButton#stt-toggle-button {{
+                    background: {descriptor["background"]};
+                    color: #ffffff;
+                    border: 1px solid {descriptor["border"]};
+                    border-radius: 14px;
+                    font-size: 15px;
+                    font-weight: 600;
+                    padding: 0 14px;
+                }}
+                QPushButton#stt-toggle-button:disabled {{
+                    color: rgba(255, 255, 255, 0.75);
+                }}
+                """
+            )
+        if hasattr(self, "_tray_stt_toggle_action"):
+            self._tray_stt_toggle_action.setText(label)
+            self._tray_stt_toggle_action.setEnabled(enabled)
+        self._sync_runtime_controls_ui()
+        return
 
         state = "unavailable" if not self._stt_available else self._stt_state
 
@@ -455,8 +703,33 @@ class TransparentWindow(QMainWindow):
             return
         self._webview_ready = True
         self._flush_pending_javascript_calls()
+        self._run_javascript("setRuntimeMode", self._brain_mode)
         self._raise_overlay_widgets()
         QTimer.singleShot(120, self._restore_current_character)
+        QTimer.singleShot(160, self.refresh_agentic_ui)
+
+    def configure_runtime_context(
+        self,
+        *,
+        voice_status_adapter: VoiceRuntimeStatusAdapter | None = None,
+        live_runtime_available: bool | None = None,
+        runtime_contract: dict[str, object] | None = None,
+    ) -> None:
+        if voice_status_adapter is not None:
+            self._voice_status_adapter = voice_status_adapter
+        if runtime_contract is not None:
+            self._runtime_contract = dict(runtime_contract)
+        else:
+            self._runtime_contract = {"brain_mode": "harness", "harness_runtime_available": True, "live_runtime_available": False, "openclaw_enabled": False}
+        if live_runtime_available is not None:
+            self._runtime_contract["live_runtime_available"] = bool(live_runtime_available)
+        self._live_runtime_available = bool(self._runtime_contract.get("live_runtime_available"))
+        self._adapter.configure_runtime_context(
+            brain_mode=self._brain_mode,
+            background_resolver=self._background_resolver,
+            voice_status_adapter=self._voice_status_adapter,
+            runtime_contract=self._runtime_contract,
+        )
 
     def _move_to_bottom_right(self):
         """將視窗定位到螢幕右下角"""
@@ -532,7 +805,7 @@ class TransparentWindow(QMainWindow):
         action_menu.addAction(stop_music_action)
 
         reset_action = QAction("重置狀態", self)
-        reset_action.triggered.connect(self.reset_requested.emit)
+        reset_action.triggered.connect(self.reset_runtime_state)
         menu.addAction(reset_action)
 
         self._tray_stt_toggle_action = QAction("開始收音", self)
@@ -676,6 +949,7 @@ class TransparentWindow(QMainWindow):
             self.set_room_character("訪客模式")
             self.set_action_status("房間模式已載入", tone="idle", timeout_ms=2400)
             self.apply_character_position()
+            self._apply_resolved_background(None)
 
     def apply_character(self, character_id: str) -> bool:
         """套用指定角色並切回 idle。"""
@@ -690,13 +964,18 @@ class TransparentWindow(QMainWindow):
         self.apply_character_layout(character_id)
         self.set_room_character(character_name)
         self.set_action_status(f"{character_name} 已待命", tone="idle", timeout_ms=2200)
-
-        bg_path = self._library.get_background_path(character_id)
-        if bg_path and os.path.isfile(bg_path):
-            bg_url = QUrl.fromLocalFile(bg_path).toString()
-            self._run_javascript("setRoomBackground", bg_url)
+        self._apply_resolved_background(self._library.get_background_path(character_id))
 
         return True
+
+    def _apply_resolved_background(self, configured_path: str | None) -> None:
+        status, safe_url = self._background_resolver.resolve(configured_path=configured_path)
+        self._background_status = status
+        self._background_url = safe_url
+        if safe_url:
+            self._run_javascript("setRoomBackground", safe_url)
+            return
+        self._run_javascript("clearRoomBackground")
 
     def preview_character_motion(self, character_id: str, motion_key: str):
         """播放指定角色動作，單次動作播完後回到 idle。"""
@@ -889,8 +1168,42 @@ class TransparentWindow(QMainWindow):
             return
         self.stt_start_requested.emit()
 
+    def toggle_stt_from_bridge(self) -> None:
+        self._handle_stt_button_clicked()
+
+    def request_runtime_reset(self) -> None:
+        self.reset_runtime_state()
+
+    def trigger_quick_intent_from_bridge(self, intent_name: str) -> None:
+        normalized = str(intent_name or "").strip().lower()
+        if normalized not in {"joke", "share"}:
+            print(f"[ECHOES] Ignored unknown quick intent from web bridge: {intent_name}")
+            return
+        self.trigger_cached_intent(normalized, f"{normalized} 面板觸發")
+
+    def trigger_overlay_action_from_bridge(self, action_name: str) -> None:
+        normalized = str(action_name or "").strip().lower()
+        alias_map = {
+            "music": "play_music",
+            "news": "report_news",
+        }
+        resolved = alias_map.get(normalized, normalized)
+        if resolved == "play_music":
+            self.trigger_overlay_action("play_music")
+            return
+        if resolved == "report_news":
+            self.trigger_overlay_action(
+                "report_news",
+                synthetic_user_text="播放新聞",
+                synthetic_assistant_text=FIXED_NEWS_SCRIPT,
+            )
+            return
+        print(f"[ECHOES] Ignored unknown overlay action from web bridge: {action_name}")
+
     def _emit_cached_intent_request(self, intent_name: str, trigger_source: str):
-        self.cached_intent_requested.emit(str(intent_name or "").strip().lower(), trigger_source)
+        normalized = str(intent_name or "").strip().lower()
+        self.cached_intent_requested.emit(normalized, trigger_source)
+        self.trigger_cached_intent(normalized, trigger_source)
 
     def _handle_cached_intent_shortcut(self, event) -> bool:
         if (
@@ -952,6 +1265,161 @@ class TransparentWindow(QMainWindow):
         self.developer_query_submitted.emit(query)
         self._developer_input.clear()
         self._hide_developer_input()
+
+    def submit_live_text(self, text: str) -> None:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            self.set_action_status("Please enter text first.", tone="warn", timeout_ms=2200)
+            return
+        if not self._live_runtime_available:
+            self.set_action_status("Live Conversation is unavailable in harness mode.", tone="warn", timeout_ms=3200)
+            return
+        self.developer_query_submitted.emit(cleaned)
+        self.set_action_status("Live Conversation queued.", tone="working", timeout_ms=0)
+
+    def submit_agentic_text(self, text: str, provider: str) -> None:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            self.set_action_status("Please enter text first.", tone="warn", timeout_ms=2200)
+            return
+        if self._interaction_worker is not None:
+            self.set_action_status("Interaction already running.", tone="warn", timeout_ms=2200)
+            return
+
+        self._set_agentic_busy(True)
+        self.set_action_status("Processing interaction...", tone="working", timeout_ms=0)
+        self._interaction_worker = HarnessInteractionWorker(self._adapter, cleaned, provider, self)
+        self._interaction_worker.finished_payload.connect(self._on_agentic_result)
+        self._interaction_worker.failed_message.connect(self._on_agentic_error)
+        self._interaction_worker.finished.connect(self._clear_interaction_worker)
+        self._interaction_worker.start()
+
+    def _on_agentic_result(self, payload: dict) -> None:
+        self._latest_agentic_event = dict(payload or {})
+        webm_key = str(payload.get("webm_key") or "").strip()
+        if webm_key:
+            self.play_action_motion(webm_key)
+        self.refresh_agentic_ui(
+            event_payload=payload,
+            message="Interaction complete.",
+            tone="idle",
+            timeoutMs=2400,
+        )
+        self._set_agentic_busy(False)
+
+    def _on_agentic_error(self, message: str) -> None:
+        self._set_agentic_busy(False)
+        self.refresh_agentic_ui(message=message, tone="error", timeoutMs=4800)
+
+    def _clear_interaction_worker(self) -> None:
+        if self._interaction_worker is not None:
+            self._interaction_worker.deleteLater()
+        self._interaction_worker = None
+
+    def toggle_skill(self, skill_id: str, enabled: bool) -> None:
+        try:
+            result = self._adapter.set_skill_enabled(skill_id, enabled)
+            status = "enabled" if result.get("enabled") else "disabled"
+            self.refresh_agentic_ui(message=f"Skill {skill_id} {status}.", tone="idle", timeoutMs=2200)
+        except Exception as exc:  # noqa: BLE001
+            self.refresh_agentic_ui(message=str(exc), tone="warn", timeoutMs=4200)
+
+    def toggle_tool(self, tool_name: str, enabled: bool) -> None:
+        try:
+            result = self._adapter.set_tool_enabled(tool_name, enabled)
+            status = "enabled" if result.get("enabled") else "disabled"
+            self.refresh_agentic_ui(message=f"Tool {tool_name} {status}.", tone="idle", timeoutMs=2200)
+        except Exception as exc:  # noqa: BLE001
+            self.refresh_agentic_ui(message=str(exc), tone="warn", timeoutMs=4200)
+
+    def add_skill(self, payload_json: str) -> None:
+        try:
+            self._adapter.add_skill(json.loads(payload_json))
+            self.refresh_agentic_ui(message="Skill added.", tone="idle", timeoutMs=2200)
+        except Exception as exc:  # noqa: BLE001
+            self.refresh_agentic_ui(message=str(exc), tone="warn", timeoutMs=4200)
+
+    def delete_skill(self, skill_id: str) -> None:
+        try:
+            result = self._adapter.delete_skill(skill_id)
+            message = "Skill disabled." if result.get("disabled") else "Skill deleted."
+            self.refresh_agentic_ui(message=message, tone="idle", timeoutMs=2200)
+        except Exception as exc:  # noqa: BLE001
+            self.refresh_agentic_ui(message=str(exc), tone="warn", timeoutMs=4200)
+
+    def add_tool_config(self, payload_json: str) -> None:
+        try:
+            self._adapter.add_tool_config(json.loads(payload_json))
+            self.refresh_agentic_ui(message="Tool config added.", tone="idle", timeoutMs=2200)
+        except Exception as exc:  # noqa: BLE001
+            self.refresh_agentic_ui(message=str(exc), tone="warn", timeoutMs=4200)
+
+    def delete_tool_config(self, tool_name: str) -> None:
+        try:
+            result = self._adapter.delete_tool_config(tool_name)
+            message = "Tool disabled." if result.get("disabled") else "Tool config deleted."
+            self.refresh_agentic_ui(message=message, tone="idle", timeoutMs=2200)
+        except Exception as exc:  # noqa: BLE001
+            self.refresh_agentic_ui(message=str(exc), tone="warn", timeoutMs=4200)
+
+    def refresh_agentic_ui(
+        self,
+        event_payload: dict | None = None,
+        message: str | None = None,
+        tone: str = "idle",
+        timeoutMs: int = 0,
+    ) -> None:
+        self._adapter.configure_runtime_context(
+            brain_mode=self._brain_mode,
+            background_resolver=self._background_resolver,
+            voice_status_adapter=self._voice_status_adapter,
+            runtime_contract=self._runtime_contract,
+        )
+        state = self._adapter.get_current_state()
+        state["background"] = self._build_runtime_background_state(state.get("background"))
+        diagnostics = dict(state.get("diagnostics") or {})
+        diagnostics["brain_mode"] = self._brain_mode
+        diagnostics["background_status"] = self._background_status
+        state["diagnostics"] = diagnostics
+        payload = {
+            "state": state,
+            "skills": self._adapter.list_skills(),
+            "tools": self._adapter.list_tools(),
+            "message": message,
+            "tone": tone,
+            "timeoutMs": timeoutMs,
+            "runtimeControls": self._build_runtime_controls_state(),
+        }
+        latest_event = event_payload or self._latest_agentic_event
+        if latest_event:
+            payload["event"] = latest_event
+        self._run_javascript("hydrateAgenticUI", payload)
+
+    def _build_runtime_background_state(self, base_background) -> dict:
+        background = dict(base_background or {})
+        background["status"] = self._background_status
+        background["source"] = self._background_url or background.get("source") or "css:room-placeholder"
+        background["message"] = (
+            self._background_resolver.diagnostics().get("reason")
+            or background.get("message")
+            or "background diagnostics unavailable"
+        )
+        return background
+
+    def _set_agentic_busy(self, busy: bool) -> None:
+        self._run_javascript("setAgenticBusy", bool(busy))
+
+    def get_render_diagnostics(self) -> dict[str, object]:
+        return {
+            "brain_mode": self._brain_mode,
+            "runtime_contract": dict(self._runtime_contract),
+            "background_status": self._background_status,
+            "background_url": self._background_url,
+            "stt_state": self._stt_state,
+            "stt_available": self._stt_available,
+            "webview_ready": self._webview_ready,
+            "latest_agentic_event": self._latest_agentic_event,
+        }
 
     def set_action_status(self, message: str, tone: str = "idle", timeout_ms: int = 0):
         self._run_javascript("setActionStatus", message, tone, timeout_ms)
@@ -1063,6 +1531,55 @@ class TransparentWindow(QMainWindow):
         self._run_javascript("moveCharacter", x_offset, y_offset, scale)
         self._run_javascript("setCharacterObjectPosition", object_position)
 
+    def nativeEvent(self, event_type, message):
+        if sys.platform != "win32":
+            return super().nativeEvent(event_type, message)
+
+        wm_nchittest = 0x0084
+        wm_ncrbuttonup = 0x00A5
+        htcaption = 2
+
+        try:
+            msg = ctypes.wintypes.MSG.from_address(int(message))
+            if msg.message == wm_ncrbuttonup:
+                sx = ctypes.c_short(msg.lParam & 0xFFFF).value
+                sy = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+                local = self.mapFromGlobal(QPoint(sx, sy))
+                if self.should_treat_point_as_caption(local.x(), local.y(), self.width(), self.height()):
+                    self._build_menu().exec_(QPoint(sx, sy))
+                    return True, 0
+                return super().nativeEvent(event_type, message)
+            if msg.message == wm_nchittest:
+                sx = ctypes.c_short(msg.lParam & 0xFFFF).value
+                sy = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+                local = self.mapFromGlobal(QPoint(sx, sy))
+                if self.should_treat_point_as_caption(local.x(), local.y(), self.width(), self.height()):
+                    return True, htcaption
+                return super().nativeEvent(event_type, message)
+            return super().nativeEvent(event_type, message)
+        except Exception:  # noqa: BLE001
+            return super().nativeEvent(event_type, message)
+
+    @classmethod
+    def should_treat_point_as_caption(cls, local_x: int, local_y: int, width: int, height: int) -> bool:
+        if local_x < 0 or local_y < 0 or local_x > width or local_y > height:
+            return True
+
+        panel_width = min(cls.AGENTIC_PANEL_MAX_WIDTH, int(width * cls.AGENTIC_PANEL_WIDTH_RATIO))
+        panel_left = width - cls.AGENTIC_PANEL_RIGHT - panel_width
+        panel_top = cls.AGENTIC_PANEL_TOP
+        panel_bottom = height - cls.AGENTIC_PANEL_BOTTOM
+        if panel_left <= local_x <= width - cls.AGENTIC_PANEL_RIGHT and panel_top <= local_y <= panel_bottom:
+            return False
+
+        xp_left = width - cls.XP_BADGE_RIGHT - cls.XP_BADGE_WIDTH
+        xp_top = cls.XP_BADGE_TOP
+        xp_bottom = xp_top + cls.XP_BADGE_HEIGHT
+        if xp_left <= local_x <= width - cls.XP_BADGE_RIGHT and xp_top <= local_y <= xp_bottom:
+            return False
+
+        return True
+
     @staticmethod
     def _coerce_int(value, default: int) -> int:
         try:
@@ -1145,8 +1662,8 @@ class TransparentWindow(QMainWindow):
         js_args = ", ".join(json.dumps(arg) for arg in args)
         return (
             "(function(){"
-            f"var fn = window[{js_function_name}];"
-            f"if (typeof fn !== 'function') {{ console.warn('[ECHOES] JS bridge 缺少函式:', {js_function_name}); return false; }}"
+            f"var fn = window[{js_function_name}] || (window.echoes && window.echoes[{js_function_name}]);"
+            f"if (typeof fn !== 'function') {{ console.warn('[ECHOES] JS bridge missing function: ' + {js_function_name}); return false; }}"
             f"fn({js_args});"
             "return true;"
             "})();"

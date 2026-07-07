@@ -8,6 +8,10 @@ openspec/
 # .gitignore
 .vscode/
 .codex/
+.cursor/
+.agent/
+.agentic/
+.serena/
 
 # 日誌檔案 (保留目錄結構)
 logs/*.log
@@ -33,3 +37,7 @@ docs/
 runtime_cache/
 
 local_memory.db
+data/*.db
+debug/events/*.json
+debug/ui_smoke_*.txt
+debug/stage_verify/

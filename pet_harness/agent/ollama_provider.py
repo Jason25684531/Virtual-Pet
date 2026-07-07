@@ -1,0 +1,85 @@
+from __future__ import annotations
+
+import json
+from typing import Any, Callable
+
+import requests
+
+from pet_harness.agent.low_spec_provider import LowSpecProvider
+from pet_harness.agent.provider_adapter import ProviderReply
+from pet_harness.models.events import UserEvent
+from pet_harness.models.provider import ProviderConfig, ProviderStatus, ProviderType
+from pet_harness.models.skill import Skill
+
+
+class OllamaProvider:
+    def __init__(self, config: ProviderConfig, request_fn: Callable[..., Any] | None = None) -> None:
+        self.config = config
+        self.request_fn = request_fn or self._default_request
+
+    def generate_reply(
+        self,
+        event: UserEvent,
+        matched_skill: Skill | None = None,
+        prompt_text: str | None = None,
+    ) -> ProviderReply:
+        fallback = LowSpecProvider().generate_reply(event, matched_skill=matched_skill, prompt_text=prompt_text)
+        return ProviderReply(
+            reply=fallback.reply,
+            provider_status=ProviderStatus(
+                provider_type=ProviderType.OLLAMA,
+                healthy=False,
+                message="Ollama reply generation not enabled in Week 3.",
+                metadata={"error_category": "ollama_unavailable", "fallback_provider": "low_spec"},
+            ),
+            behavior_hint=fallback.behavior_hint,
+            raw_text=json.dumps({"reply": fallback.reply, "notes": "ollama prep fallback"}, ensure_ascii=False),
+            raw_json={"reply": fallback.reply},
+            prompt_text=prompt_text,
+        )
+
+    def health_check(self) -> dict[str, Any]:
+        base_url = self.config.base_url or "http://localhost:11434"
+        try:
+            response = self.request_fn("GET", f"{base_url}/api/tags", timeout=self.config.timeout_seconds)
+            if getattr(response, "status_code", 500) >= 400:
+                return self._status_payload(False, "ollama_http_error", base_url)
+            response.json()
+            return self._status_payload(True, None, base_url)
+        except Exception:
+            return self._status_payload(False, "ollama_unavailable", base_url)
+
+    def check_model(self, model_name: str) -> dict[str, Any]:
+        base_url = self.config.base_url or "http://localhost:11434"
+        try:
+            response = self.request_fn("GET", f"{base_url}/api/tags", timeout=self.config.timeout_seconds)
+            if getattr(response, "status_code", 500) >= 400:
+                return {"available": False, "model_name": model_name, "error_category": "ollama_http_error"}
+            payload = response.json()
+            models = payload.get("models", [])
+            names = {item.get("name") for item in models if isinstance(item, dict)}
+            return {"available": model_name in names, "model_name": model_name}
+        except Exception:
+            return {"available": False, "model_name": model_name, "error_category": "ollama_unavailable"}
+
+    def provider_status_from_health(self) -> ProviderStatus:
+        health = self.health_check()
+        return ProviderStatus(
+            provider_type=ProviderType.OLLAMA,
+            healthy=health["healthy"],
+            message=health["message"],
+            metadata=health["metadata"],
+        )
+
+    def _status_payload(self, healthy: bool, error_category: str | None, base_url: str) -> dict[str, Any]:
+        metadata = {"base_url": base_url}
+        if error_category:
+            metadata["error_category"] = error_category
+        return {
+            "healthy": healthy,
+            "message": "ollama ready" if healthy else "Ollama unavailable",
+            "metadata": metadata,
+        }
+
+    def _default_request(self, method: str, url: str, timeout: float):
+        return requests.request(method, url, timeout=timeout)
