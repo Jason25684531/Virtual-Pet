@@ -374,7 +374,7 @@ class TransparentWindow(QMainWindow):
         # 掛上自訂 Page，讓前端 console 訊息可轉印至 Python Terminal。
         self.web_view.setPage(EchoesWebPage(self.web_view))
         self._bridge = HarnessUiBridge(self)
-        self._character_bridge = CharacterUiBridge(self._adapter.character_service, self)
+        self._character_bridge = CharacterUiBridge(self._adapter.character_service, self, self._adapter)
         self._channel = QWebChannel(self.web_view.page())
         self._channel.registerObject("harnessBridge", self._bridge)
         self._channel.registerObject("characterBridge", self._character_bridge)

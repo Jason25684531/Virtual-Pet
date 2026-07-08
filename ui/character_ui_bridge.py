@@ -8,6 +8,7 @@ from PyQt5.QtCore import QObject, pyqtSlot
 from pet_harness.ui.character_ui_service import CharacterUiService
 
 if TYPE_CHECKING:
+    from pet_harness.ui.pyqt_harness_adapter import PyQtHarnessAdapter
     from ui.transparent_window import TransparentWindow
 
 
@@ -18,10 +19,11 @@ class CharacterUiBridge(QObject):
     service 拋出的例外在此捕捉，不讓例外穿透 QWebChannel。
     """
 
-    def __init__(self, service: CharacterUiService, window: "TransparentWindow") -> None:
+    def __init__(self, service: CharacterUiService, window: "TransparentWindow", adapter: "PyQtHarnessAdapter | None" = None) -> None:
         super().__init__(window)
         self._service = service
         self._window = window
+        self._adapter = adapter
 
     def _ok(self, data: Any) -> str:
         return json.dumps({"ok": True, "data": data}, ensure_ascii=False)
@@ -82,5 +84,25 @@ class CharacterUiBridge(QObject):
     def triggerSkill(self, skill_id: str) -> str:
         try:
             return self._ok(self._service.trigger_skill(skill_id))
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
+    @pyqtSlot(result=str)
+    def getProviderStatus(self) -> str:
+        try:
+            if not self._adapter:
+                raise RuntimeError("adapter not available")
+            result = self._adapter.get_provider_status()
+            return self._ok(result)
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
+    @pyqtSlot(str, bool, result=str)
+    def setSkillEnabled(self, skill_name: str, enabled: bool) -> str:
+        try:
+            if not self._adapter:
+                raise RuntimeError("adapter not available")
+            result = self._adapter.set_skill_enabled(skill_name, enabled)
+            return self._ok(result)
         except Exception as exc:  # noqa: BLE001
             return self._error(exc)

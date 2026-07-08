@@ -635,11 +635,27 @@
         if (companionDockPanel) companionDockPanel.hidden = false;
     }
 
-    function sendTalkText() {
+    async function sendTalkText() {
         if (!talkTextInput) return;
         var text = talkTextInput.value.trim();
         if (!text) return;
-        callBridge('sendText', text, 'mock');
+
+        // 動態獲取 AI provider
+        try {
+            var statusJson = await callCharacterBridge('getProviderStatus');
+            var response = typeof statusJson === 'string' ? JSON.parse(statusJson) : statusJson;
+            if (!response.ok) {
+                console.error('Failed to get provider status:', response.error);
+                callBridge('sendText', text, 'mock');
+                return;
+            }
+            var provider = response.data.ai.provider || 'mock';
+            callBridge('sendText', text, provider);
+        } catch (error) {
+            console.error('Error getting provider status:', error);
+            callBridge('sendText', text, 'mock');
+        }
+
         talkTextInput.value = '';
     }
 

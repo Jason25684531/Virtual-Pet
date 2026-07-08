@@ -35,6 +35,15 @@ DEFAULT_OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completion
 
 
 class PyQtHarnessAdapter:
+    """PyQt 應用與 PetHarnessEngine 的適配器。
+
+    主要功能：
+    - 管理角色的引擎、provider 配置、skills 狀態
+    - 暴露 provider 運行時狀態（get_provider_status）
+    - 支持 per-character skills CRUD（set_skill_enabled）
+    - 與 SQLiteStore 同步狀態
+    - 通過 QWebChannel bridge 與前端通訊
+    """
     def __init__(
         self,
         agentic_root: str | Path = Path(".agentic"),
@@ -148,8 +157,64 @@ class PyQtHarnessAdapter:
             "warnings": list((latest_event or {}).get("warnings") or []),
         }
 
+    def get_provider_status(self) -> dict[str, Any]:
+        """获取当前活跃角色的 provider 运行时状态，包括 TTS/AI/STT."""
+        self._refresh_runtime()
+        active_char = self.router.get_active_character()
+        provider_config = self.store.get_provider_config() if active_char else None
+
+        ai_status = self._build_ai_provider_status(provider_config)
+        tts_status = self._build_tts_provider_status()
+        stt_status = self._build_stt_provider_status()
+
+        return {
+            "ai": ai_status,
+            "tts": tts_status,
+            "stt": stt_status,
+        }
+
+    def _build_ai_provider_status(self, provider_config: ProviderConfig | None) -> dict[str, Any]:
+        """构建 AI provider 状态."""
+        if not provider_config:
+            return {"provider": "none", "status": "unconfigured", "api_key_available": False}
+
+        ai_provider = provider_config.model_name or "gpt-4o-mini"
+        env_var = provider_config.api_key_env_var
+        has_key = bool(env_var and str(env_var).strip()) or bool(os.environ.get(env_var or ""))
+
+        return {
+            "provider": ai_provider,
+            "status": "ready" if has_key else "missing_config",
+            "api_key_available": has_key,
+        }
+
+    def _build_tts_provider_status(self) -> dict[str, Any]:
+        """构建 TTS provider 状态."""
+        voice_status = self._voice_status_adapter.get_status()
+
+        return {
+            "requested_mode": "voai_first",
+            "resolved_mode": "voai_first",
+            "attempted_providers": ["voai"],
+            "selected_provider": "voai",
+            "fallback_reason": None,
+            "outcome": "success",
+            "status": voice_status.tts_primary_status,
+        }
+
+    def _build_stt_provider_status(self) -> dict[str, Any]:
+        """构建 STT provider 状态."""
+        voice_status = self._voice_status_adapter.get_status()
+
+        return {
+            "provider": "d_key",
+            "status": voice_status.stt_status,
+        }
+
     def list_skills(self) -> list[dict[str, Any]]:
         disabled = self._skill_disabled_map()
+        active_char = self.router.get_active_character()
+        char_skill_names = set(active_char.skill_config) if active_char else set()
         items: list[dict[str, Any]] = []
         for skill in self._load_all_skills():
             path = Path(skill.file_path or "")
@@ -163,6 +228,7 @@ class PyQtHarnessAdapter:
                     "required_tool": skill.required_tool,
                     "current_skill_xp": self.store.get_skill_progress(skill.name).get("xp_total", 0),
                     "enabled": not disabled.get(skill.name, False),
+                    "enabled_in_character": skill.name in char_skill_names,
                     "is_builtin": not self._is_user_skill_path(path),
                     "file_path": str(path) if skill.file_path else None,
                 }
@@ -194,6 +260,22 @@ class PyQtHarnessAdapter:
         all_skill_ids = {skill.name for skill in self._load_all_skills()}
         if skill_id not in all_skill_ids:
             raise ValueError(f"unknown skill_id: {skill_id}")
+
+        active_char = self.router.get_active_character()
+        if active_char and active_char.skill_config is not None:
+            current_skills = list(active_char.skill_config or [])
+            if enabled and skill_id not in current_skills:
+                current_skills.append(skill_id)
+            elif not enabled and skill_id in current_skills:
+                current_skills.remove(skill_id)
+
+            updated_profile = self._character_registry.update_profile(
+                active_char.character_id,
+                skill_config=current_skills
+            )
+            self.engine.skills = self.engine.filter_skills_for_character(self._load_enabled_skills())
+            return {"skill_id": skill_id, "enabled": enabled, "character_skill_config": updated_profile.skill_config}
+
         disabled = self._skill_disabled_map()
         if enabled:
             disabled.pop(skill_id, None)
@@ -299,7 +381,14 @@ class PyQtHarnessAdapter:
 
     def _load_enabled_skills(self) -> list[Skill]:
         disabled = self._skill_disabled_map()
-        return [skill for skill in self._load_all_skills() if not disabled.get(skill.name, False)]
+        all_skills = self._load_all_skills()
+        active_char = self.router.get_active_character()
+
+        if active_char and active_char.skill_config:
+            char_skill_names = set(active_char.skill_config)
+            return [skill for skill in all_skills if skill.name in char_skill_names and not disabled.get(skill.name, False)]
+
+        return [skill for skill in all_skills if not disabled.get(skill.name, False)]
 
     def build_provider_config(self, provider: str) -> ProviderConfig:
         provider_type = ProviderType(str(provider))
