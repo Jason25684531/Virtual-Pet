@@ -641,21 +641,17 @@
         if (!text) return;
 
         // 動態獲取 AI provider
+        var provider = 'mock';
         try {
-            var statusJson = await callCharacterBridge('getProviderStatus');
-            var response = typeof statusJson === 'string' ? JSON.parse(statusJson) : statusJson;
-            if (!response.ok) {
-                console.error('Failed to get provider status:', response.error);
-                callBridge('sendText', text, 'mock');
-                return;
+            var status = await callCharacterBridge('getProviderStatus');
+            if (status && status.ai && status.ai.provider) {
+                provider = status.ai.provider;
             }
-            var provider = response.data.ai.provider || 'mock';
-            callBridge('sendText', text, provider);
         } catch (error) {
             console.error('Error getting provider status:', error);
-            callBridge('sendText', text, 'mock');
         }
 
+        callBridge('sendText', text, provider);
         talkTextInput.value = '';
     }
 
@@ -1179,11 +1175,23 @@
         renderLatestAgentEvent(payload.event || (payload.state && payload.state.latest_event), payload.xp_delta);
     };
 
-    function sendAgentCommandText() {
+    async function sendAgentCommandText() {
         if (!agentCommandInput) return;
         var text = agentCommandInput.value.trim();
         if (!text) return;
-        callBridge('sendText', text, 'mock');
+
+        // 動態獲取 AI provider
+        var provider = 'mock';
+        try {
+            var status = await callCharacterBridge('getProviderStatus');
+            if (status && status.ai && status.ai.provider) {
+                provider = status.ai.provider;
+            }
+        } catch (error) {
+            console.error('Error getting provider status:', error);
+        }
+
+        callBridge('sendText', text, provider);
         agentCommandInput.value = '';
     }
 
