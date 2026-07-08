@@ -59,7 +59,7 @@
             </div>
 
             <div id="companion-dock-root" class="companion-dock-root">
-                <div id="companion-dock-panel" class="companion-dock-panel" hidden>
+                <div id="companion-dock-panel" class="companion-dock-panel window-drag-handle" hidden>
                     <section id="dock-panel-talk" class="dock-panel" hidden>
                         <div class="talk-input-row">
                             <input id="talk-text-input" class="text-field" type="text" placeholder="輸入訊息、問題或聊天內容...">
@@ -99,6 +99,12 @@
                                 <span id="agent-result-delta" class="agent-result__delta" hidden></span>
                             </div>
                         </div>
+                        <div class="character-skill-panel">
+                            <div class="list-actions agent-list-actions">
+                                <span id="character-skill-count" class="status-pill">0 skills</span>
+                            </div>
+                            <div id="character-skill-list" class="entity-list"></div>
+                        </div>
                         <div class="agent-skill-cache" hidden>
                             <div class="list-actions agent-list-actions">
                                 <span id="skill-count-badge" class="status-pill">0 skills</span>
@@ -117,7 +123,7 @@
                     </section>
                 </div>
 
-                <nav class="companion-dock" aria-label="Companion actions">
+                <nav class="companion-dock window-drag-handle" aria-label="Companion actions">
                     <button id="dock-talk-button" class="dock-icon" type="button" data-dock-panel="dock-panel-talk">
                         <span class="dock-icon__glyph" aria-hidden="true">&#9634;</span>
                         <span class="dock-icon__label">Talk<br>對話</span>

@@ -87,6 +87,7 @@ BRIDGE_CONTRACT = {
         "switchCharacter",
         "deleteCharacter",
         "getActiveState",
+        "triggerSkill",
     ],
 }
 
@@ -279,6 +280,13 @@ class TransparentWindow(QMainWindow):
     AGENTIC_PANEL_BOTTOM = 106
     AGENTIC_PANEL_MAX_WIDTH = 420
     AGENTIC_PANEL_WIDTH_RATIO = 0.34
+    DOCK_BAND_MAX_WIDTH = 520
+    DOCK_BAND_WIDTH_RATIO = 0.9
+    DOCK_BAND_HEIGHT_RATIO = 0.5
+    UTILITY_BAR_RIGHT = 30
+    UTILITY_BAR_BOTTOM = 26
+    UTILITY_BAR_WIDTH = 260
+    UTILITY_BAR_HEIGHT = 56
 
     def __init__(
         self,
@@ -1719,6 +1727,18 @@ class TransparentWindow(QMainWindow):
         xp_top = cls.XP_BADGE_TOP
         xp_bottom = xp_top + cls.XP_BADGE_HEIGHT
         if xp_left <= local_x <= width - cls.XP_BADGE_RIGHT and xp_top <= local_y <= xp_bottom:
+            return False
+
+        dock_width = min(cls.DOCK_BAND_MAX_WIDTH, int(width * cls.DOCK_BAND_WIDTH_RATIO))
+        dock_left = (width - dock_width) // 2
+        dock_top = height - int(height * cls.DOCK_BAND_HEIGHT_RATIO)
+        if dock_left <= local_x <= dock_left + dock_width and dock_top <= local_y <= height:
+            return False
+
+        utility_left = width - cls.UTILITY_BAR_RIGHT - cls.UTILITY_BAR_WIDTH
+        utility_top = height - cls.UTILITY_BAR_BOTTOM - cls.UTILITY_BAR_HEIGHT
+        utility_bottom = height - cls.UTILITY_BAR_BOTTOM
+        if utility_left <= local_x <= width - cls.UTILITY_BAR_RIGHT and utility_top <= local_y <= utility_bottom:
             return False
 
         return True

@@ -26,6 +26,8 @@
     var skillList = document.getElementById('skill-list');
     var skillCountBadge = document.getElementById('skill-count-badge');
     var refreshSkillsButton = document.getElementById('refresh-skills-button');
+    var characterSkillList = document.getElementById('character-skill-list');
+    var characterSkillCount = document.getElementById('character-skill-count');
 
     // ── UC01-1 / UC02-1 / UC03-1 / UC05-1 陪伴 dock DOM 參照 ────────
     var hudScore = document.getElementById('hud-score');
@@ -133,9 +135,9 @@
     }
 
     function formatLastPlayed(isoText) {
-        if (!isoText) return '--/--';
+        if (!isoText) return '尚未遊玩';
         var parsed = new Date(String(isoText));
-        if (Number.isNaN(parsed.getTime())) return '--/--';
+        if (Number.isNaN(parsed.getTime())) return '尚未遊玩';
         var month = String(parsed.getMonth() + 1).padStart(2, '0');
         var day = String(parsed.getDate()).padStart(2, '0');
         return month + '/' + day;
@@ -297,15 +299,35 @@
         }).join('');
     }
 
+    function renderCharacterSkills(skills) {
+        var items = Array.isArray(skills) ? skills : [];
+        if (characterSkillCount) characterSkillCount.textContent = items.length + ' skills';
+        if (!characterSkillList) return;
+        if (!items.length) {
+            characterSkillList.innerHTML = '<div class="entity-card"><p class="entity-card__title">目前角色尚無已配置的技能。</p></div>';
+            return;
+        }
+        characterSkillList.innerHTML = items.map(function (item) {
+            return [
+                '<article class="entity-card">',
+                '  <div class="entity-card__head">',
+                '    <div>',
+                '      <p class="entity-card__title">' + escapeHtml(item.display_name || item.skill_id) + '</p>',
+                '      <p class="entity-card__meta">' + escapeHtml(item.skill_id) + '</p>',
+                '    </div>',
+                '  </div>',
+                '  <p class="entity-card__meta">' + escapeHtml(item.description || '-') + '</p>',
+                '  <div class="entity-card__actions">',
+                '    <button class="secondary-button" type="button" data-skill-trigger="' + escapeHtml(item.skill_id) + '">觸發</button>',
+                '  </div>',
+                '</article>'
+            ].join('');
+        }).join('');
+    }
+
     function renderBackgroundStatus(background) {
         var status = background && background.status ? background.status : 'missing';
         console.log('[ECHOES UI] background=' + status);
-    }
-
-    function renderState(state) {
-        if (!state) return;
-        latestRuntimeState = state;
-        renderBackgroundStatus(state.background || null);
     }
 
     function renderRuntimeControls(runtimeControls) {
@@ -367,22 +389,6 @@
 
     // ── UC05-1 HUD（Score/Lv pill，事件驅動 + 低頻輪詢）──────────
 
-    function renderCharacterHud(state) {
-        if (!hudScore) return;
-        if (!state || state.active === false) {
-            hudScore.hidden = true;
-            return;
-        }
-        hudScore.hidden = false;
-        hudScore.textContent = '★ Score ' + Number(state.xp_total || 0) + ' · Lv.' + Number(state.level || 1);
-    }
-
-    function refreshCharacterHud() {
-        callCharacterBridge('getActiveState').then(renderCharacterHud).catch(function (err) {
-            console.warn('[ECHOES UI] getActiveState failed:', err.message);
-        });
-    }
-
     function startHudPolling() {
         if (hudPollTimer) return;
         hudPollTimer = window.setInterval(refreshCharacterHud, 5000);
@@ -416,24 +422,6 @@
         hideOverlay();
         refreshCharacterHud();
         callBridge('refreshState');
-    }
-
-    // ── UC01-1 Main Menu ──────────────────────────────────────
-
-    function refreshMainMenu() {
-        if (!menuLoadButton) return;
-        console.log('[ECHOES UI] refreshMainMenu: calling listCharacters, characterBridge=' + (characterBridge ? 'ok' : 'null'));
-        callCharacterBridge('listCharacters').then(function (characters) {
-            console.log('[ECHOES UI] listCharacters result count=' + (Array.isArray(characters) ? characters.length : 'not-array'));
-            var saves = Array.isArray(characters) ? characters.filter(function (item) { return !item.is_preset; }) : [];
-            var hasSaves = saves.length > 0;
-            menuLoadButton.disabled = !hasSaves;
-            menuLoadButton.querySelector('.menu-item__sub').textContent = hasSaves ? (saves.length + ' 個存檔') : '無存檔';
-        }).catch(function (err) {
-            console.log('[ECHOES UI] listCharacters FAILED: ' + err.message);
-            menuLoadButton.disabled = true;
-            menuLoadButton.querySelector('.menu-item__sub').textContent = '無存檔';
-        });
     }
 
     // ── UC02-1 Preset 聚光燈輪播 ───────────────────────────────
@@ -511,34 +499,6 @@
             saveDeleteButton.disabled = !selectedItem || isPreset;
             saveDeleteButton.hidden = isPreset;
         }
-    }
-
-    function renderSaveGrid() {
-        if (!saveCardGrid) return;
-        if (!saveList.length) {
-            saveCardGrid.innerHTML = '<p class="save-card-empty">尚無存檔 · No saves yet</p>';
-        } else {
-            saveCardGrid.innerHTML = saveList.map(function (item) {
-                var selected = item.character_id === selectedSaveId;
-                return '<button type="button" class="save-card' + (selected ? ' is-selected' : '') + '" data-save-id="' + escapeHtml(item.character_id) + '">' +
-                    '<span class="save-card__thumb" aria-hidden="true">char</span>' +
-                    '<span class="save-card__name">' + escapeHtml(item.name) + ' · Lv.' + escapeHtml(item.level) + '</span>' +
-                    '</button>';
-            }).join('');
-        }
-        updateSaveActionButtons();
-    }
-
-    function loadSaveGrid() {
-        selectedSaveId = null;
-        callCharacterBridge('listCharacters').then(function (characters) {
-            saveList = Array.isArray(characters) ? characters : [];
-            renderSaveGrid();
-        }).catch(function (err) {
-            console.warn('[ECHOES UI] listCharacters failed:', err.message);
-            saveList = [];
-            renderSaveGrid();
-        });
     }
 
     function continueSelectedSave() {
@@ -620,6 +580,11 @@
         }
         if (saveCardGrid) {
             saveCardGrid.addEventListener('click', function (event) {
+                var addCard = event.target.closest('[data-save-add]');
+                if (addCard) {
+                    showOverlay('screen-preset-select');
+                    return;
+                }
                 var card = event.target.closest('[data-save-id]');
                 if (!card) return;
                 selectedSaveId = card.dataset.saveId;
@@ -679,31 +644,6 @@
         talkTextInput.value = '';
     }
 
-    function setupCompanionDock() {
-        dockButtons.forEach(function (button) {
-            button.addEventListener('click', function () { activateCompanionDock(button); });
-        });
-        if (talkSendButton) {
-            talkSendButton.addEventListener('click', sendTalkText);
-        }
-        if (talkTextInput) {
-            talkTextInput.addEventListener('keydown', function (event) {
-                if (event.key === 'Enter') sendTalkText();
-            });
-        }
-        if (companionSettingsButton) {
-            companionSettingsButton.addEventListener('click', function () {
-                setStatus('Settings 尚未串接(本次變更範圍外)。', 'idle', 2400);
-            });
-        }
-        if (companionLeaveButton) {
-            companionLeaveButton.addEventListener('click', function () {
-                collapseCompanionDock();
-                showOverlay('screen-main-menu');
-            });
-        }
-    }
-
     // ── 事件綁定 ──────────────────────────────────────────────
 
     function setupForms() {
@@ -746,21 +686,38 @@
     }
 
     function wireDynamicActions() {
-        if (!skillList) return;
-        skillList.addEventListener('click', function (event) {
-            var toggle = event.target.closest('[data-skill-toggle]');
-            var remove = event.target.closest('[data-skill-delete]');
-            if (toggle) {
-                var skillId = toggle.dataset.skillToggle;
-                var enabled = toggle.dataset.enabled === 'true';
-                console.log('[ECHOES UI] skill toggle clicked:', skillId, '->', enabled);
-                callBridge('toggleSkill', skillId, enabled);
-            } else if (remove) {
-                var skillIdDel = remove.dataset.skillDelete;
-                console.log('[ECHOES UI] skill delete clicked:', skillIdDel);
-                callBridge('deleteSkill', skillIdDel);
-            }
-        });
+        if (skillList) {
+            skillList.addEventListener('click', function (event) {
+                var toggle = event.target.closest('[data-skill-toggle]');
+                var remove = event.target.closest('[data-skill-delete]');
+                if (toggle) {
+                    var skillId = toggle.dataset.skillToggle;
+                    var enabled = toggle.dataset.enabled === 'true';
+                    console.log('[ECHOES UI] skill toggle clicked:', skillId, '->', enabled);
+                    callBridge('toggleSkill', skillId, enabled);
+                } else if (remove) {
+                    var skillIdDel = remove.dataset.skillDelete;
+                    console.log('[ECHOES UI] skill delete clicked:', skillIdDel);
+                    callBridge('deleteSkill', skillIdDel);
+                }
+            });
+        }
+        if (characterSkillList) {
+            characterSkillList.addEventListener('click', function (event) {
+                var trigger = event.target.closest('[data-skill-trigger]');
+                if (!trigger) return;
+                var skillId = trigger.dataset.skillTrigger;
+                trigger.disabled = true;
+                callCharacterBridge('triggerSkill', skillId).then(function () {
+                    refreshCharacterHud();
+                }).catch(function (err) {
+                    console.warn('[ECHOES UI] triggerSkill failed:', err.message);
+                    setStatus('技能觸發失敗：' + err.message, 'error', 3200);
+                }).then(function () {
+                    trigger.disabled = false;
+                });
+            });
+        }
     }
 
     function setupWebChannel() {
@@ -854,17 +811,6 @@
 
     window.setAgenticBusy = function (busy) {
         agenticBusy = Boolean(busy);
-    };
-
-    window.hydrateAgenticUI = function (payload) {
-        payload = payload || {};
-        renderState(payload.state || null);
-        renderRuntimeControls(payload.runtimeControls || null);
-        renderSkills(payload.skills || []);
-        if (payload.message) {
-            setStatus(payload.message, payload.tone || 'idle', payload.timeoutMs || 0);
-        }
-        refreshCharacterHud();
     };
 
     window.updateRuntimeControls = function (runtimeControls) {
@@ -1070,25 +1016,29 @@
     function refreshMainMenu() {
         if (!menuLoadButton) return;
         callCharacterBridge('listCharacters').then(function (characters) {
-            var saves = Array.isArray(characters) ? characters.filter(function (item) { return Boolean(item.last_played_at); }) : [];
-            var hasSaves = saves.length > 0;
-            menuLoadButton.disabled = !hasSaves;
-            menuLoadButton.querySelector('.menu-item__sub').textContent = hasSaves ? (saves.length + ' 個存檔') : '無存檔';
+            var list = Array.isArray(characters) ? characters : [];
+            var hasCharacters = list.length > 0;
+            menuLoadButton.disabled = !hasCharacters;
+            menuLoadButton.querySelector('.menu-item__sub').textContent = hasCharacters ? (list.length + ' 個角色') : '尚無角色';
         }).catch(function (err) {
             console.log('[ECHOES UI] listCharacters FAILED: ' + err.message);
             menuLoadButton.disabled = true;
-            menuLoadButton.querySelector('.menu-item__sub').textContent = '無存檔';
+            menuLoadButton.querySelector('.menu-item__sub').textContent = '尚無角色';
+        });
+    }
+
+    function sortByLastPlayedDesc(items) {
+        return items.slice().sort(function (a, b) {
+            if (!a.last_played_at && !b.last_played_at) return 0;
+            if (!a.last_played_at) return 1;
+            if (!b.last_played_at) return -1;
+            return new Date(b.last_played_at).getTime() - new Date(a.last_played_at).getTime();
         });
     }
 
     function renderSaveGrid() {
         if (!saveCardGrid) return;
-        if (!saveList.length) {
-            saveCardGrid.innerHTML = '<p class="save-card-empty">尚無已玩過的角色 · No played characters yet</p>';
-            updateSaveActionButtons();
-            return;
-        }
-        saveCardGrid.innerHTML = saveList.map(function (item) {
+        var cards = saveList.map(function (item) {
             var selected = item.character_id === selectedSaveId;
             var thumbStyle = '';
             if (item.background_image) {
@@ -1101,16 +1051,21 @@
                 '<span class="save-card__sub">' + escapeHtml(formatPlaytime(item.playtime_seconds)) + ' · ' + escapeHtml(formatLastPlayed(item.last_played_at)) + '</span>' +
                 '</span>' +
                 '</button>';
-        }).join('');
+        });
+        cards.push(
+            '<button type="button" class="save-card save-card--empty" data-save-add="true">' +
+            '<span aria-hidden="true">+</span>' +
+            '<span>新增角色</span>' +
+            '</button>'
+        );
+        saveCardGrid.innerHTML = cards.join('');
         updateSaveActionButtons();
     }
 
     function loadSaveGrid() {
         selectedSaveId = null;
         callCharacterBridge('listCharacters').then(function (characters) {
-            saveList = Array.isArray(characters)
-                ? characters.filter(function (item) { return Boolean(item.last_played_at); })
-                : [];
+            saveList = sortByLastPlayedDesc(Array.isArray(characters) ? characters : []);
             renderSaveGrid();
         }).catch(function (err) {
             console.warn('[ECHOES UI] listCharacters failed:', err.message);
@@ -1191,6 +1146,7 @@
                 mergedState.xp = latestRuntimeState.xp;
             }
             renderCharacterHud(mergedState, latestRuntimeState && latestRuntimeState.xp ? latestRuntimeState.xp.last_delta : 0);
+            renderCharacterSkills(state && state.skills);
         }).catch(function (err) {
             console.warn('[ECHOES UI] getActiveState failed:', err.message);
         });

@@ -4,10 +4,11 @@ from pathlib import Path
 import pytest
 
 import pet_harness.character.profile as profile_module
-from pet_harness.character.exceptions import CharacterNotFoundError
+from pet_harness.character.exceptions import CharacterNotFoundError, NoActiveCharacterError
 from pet_harness.character.registry import CharacterRegistry
 from pet_harness.character.router import CharacterRouter
-from pet_harness.ui.character_ui_service import CharacterUiService
+from pet_harness.storage.sqlite_store import SQLiteStore
+from pet_harness.ui.character_ui_service import LAST_PLAYED_AT_KEY, CharacterUiService
 
 _SKILL_FIXTURES = {
     "joke_skill": {"trigger": "joke, funny", "behavior": "laugh", "xp_reward": "5"},
@@ -150,6 +151,14 @@ class TestSwitchAndDelete:
 
         assert (tmp_path / "assets" / "webm" / "characters" / "Choppr").exists()
 
+    def test_switch_character_writes_last_played_at(self, service):
+        ui_service, router, _registry = service
+        ui_service.switch_character("miku")
+
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        assert store.get_setting(LAST_PLAYED_AT_KEY)
+
 
 class TestGetActiveState:
     def test_no_active_character_returns_inactive_state(self, service):
@@ -182,3 +191,29 @@ class TestGetActiveState:
         skill_names = {item["skill_id"] for item in state["skills"]}
         assert skill_names == {"music_skill"}
         assert "joke_skill" not in skill_names
+
+
+class TestTriggerSkill:
+    def test_trigger_skill_owned_by_active_character_dispatches(self, service):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+
+        result = ui_service.trigger_skill("joke_skill")
+
+        assert result["matched_skill"] == "joke_skill"
+        assert router.get_active_engine().store.get_user_progress()["xp_total"] > 0
+
+    def test_trigger_skill_not_in_active_skill_config_raises(self, service):
+        ui_service, router, _registry = service
+        router.switch_character("miku")
+
+        with pytest.raises(ValueError):
+            ui_service.trigger_skill("joke_skill")
+
+        assert router.get_active_engine().store.get_user_progress()["xp_total"] == 0
+
+    def test_trigger_skill_without_active_character_raises(self, service):
+        ui_service, _router, _registry = service
+
+        with pytest.raises(NoActiveCharacterError):
+            ui_service.trigger_skill("joke_skill")

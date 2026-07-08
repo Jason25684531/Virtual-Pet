@@ -77,3 +77,10 @@ class CharacterUiBridge(QObject):
             return self._ok(self._service.get_active_state())
         except Exception as exc:  # noqa: BLE001
             return self._error(exc)
+
+    @pyqtSlot(str, result=str)
+    def triggerSkill(self, skill_id: str) -> str:
+        try:
+            return self._ok(self._service.trigger_skill(skill_id))
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
