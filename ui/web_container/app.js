@@ -267,6 +267,11 @@
 
     // ── 渲染函式 ──────────────────────────────────────────────
 
+    function skillCardTitleMeta(item) {
+        return '<p class="entity-card__title">' + escapeHtml(item.display_name || item.skill_id) + '</p>' +
+            '<p class="entity-card__meta">' + escapeHtml(item.skill_id) + '</p>';
+    }
+
     function renderSkills(skills) {
         var items = Array.isArray(skills) ? skills : [];
         if (skillCountBadge) skillCountBadge.textContent = items.length + ' skills';
@@ -281,10 +286,7 @@
             return [
                 '<article class="entity-card">',
                 '  <div class="entity-card__head">',
-                '    <div>',
-                '      <p class="entity-card__title">' + escapeHtml(item.display_name || item.skill_id) + '</p>',
-                '      <p class="entity-card__meta">' + escapeHtml(item.skill_id) + '</p>',
-                '    </div>',
+                '    <div>' + skillCardTitleMeta(item) + '</div>',
                 '    <span class="status-pill">' + (item.enabled ? 'enabled' : 'disabled') + '</span>',
                 '  </div>',
                 '  <p class="entity-card__meta">' + escapeHtml(item.description || '-') + '</p>',
@@ -311,10 +313,7 @@
             return [
                 '<article class="entity-card">',
                 '  <div class="entity-card__head">',
-                '    <div>',
-                '      <p class="entity-card__title">' + escapeHtml(item.display_name || item.skill_id) + '</p>',
-                '      <p class="entity-card__meta">' + escapeHtml(item.skill_id) + '</p>',
-                '    </div>',
+                '    <div>' + skillCardTitleMeta(item) + '</div>',
                 '  </div>',
                 '  <p class="entity-card__meta">' + escapeHtml(item.description || '-') + '</p>',
                 '  <div class="entity-card__actions">',
@@ -1029,10 +1028,7 @@
 
     function sortByLastPlayedDesc(items) {
         return items.slice().sort(function (a, b) {
-            if (!a.last_played_at && !b.last_played_at) return 0;
-            if (!a.last_played_at) return 1;
-            if (!b.last_played_at) return -1;
-            return new Date(b.last_played_at).getTime() - new Date(a.last_played_at).getTime();
+            return (b.last_played_at || '').localeCompare(a.last_played_at || '');
         });
     }
 
