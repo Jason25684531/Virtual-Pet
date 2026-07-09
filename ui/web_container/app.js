@@ -144,8 +144,13 @@
     }
 
     function setAgentResult(message, delta) {
+        var dockPanelAgent = document.getElementById('dock-panel-agent');
+        if (dockPanelAgent) {
+            dockPanelAgent.hidden = false;  // 確保對話面板可見
+        }
         if (agentResultText) {
-            agentResultText.textContent = message || '輸入問題或點選快捷指令。';
+            var finalMessage = message || '輸入問題或點選快捷指令。';
+            agentResultText.textContent = finalMessage;
         }
         if (!agentResultDelta) return;
         var normalizedDelta = Number(delta) || 0;
@@ -1131,6 +1136,7 @@
     }
 
     function renderLatestAgentEvent(eventPayload, fallbackDelta) {
+        console.log('[RENDER_EVENT] eventPayload:', eventPayload ? 'exists' : 'null');
         var eventData = eventPayload || {};
         var rewardSummary = eventData.reward_summary || {};
         var reply = eventData.reply
@@ -1139,8 +1145,10 @@
             || rewardSummary.summary
             || rewardSummary.display
             || '輸入問題或點選快捷指令。';
+        console.log('[RENDER_EVENT] reply:', reply);
         var delta = eventData.xp_delta;
         if (delta == null) delta = fallbackDelta;
+        console.log('[RENDER_EVENT] calling setAgentResult with reply:', reply.substring(0, 50));
         setAgentResult(reply, delta);
     }
 
@@ -1166,6 +1174,7 @@
     }
 
     window.hydrateAgenticUI = function (payload) {
+        console.log('[HYDRATE] called, payload keys:', payload ? Object.keys(payload) : 'null');
         payload = payload || {};
         renderState(payload.state || null);
         renderRuntimeControls(payload.runtimeControls || null);
@@ -1177,7 +1186,9 @@
             payload.state ? { active: true, xp: payload.state.xp || {}, progress_percent: payload.progress_percent } : null,
             payload.xp_delta
         );
-        renderLatestAgentEvent(payload.event || (payload.state && payload.state.latest_event), payload.xp_delta);
+        var eventData = payload.event || (payload.state && payload.state.latest_event);
+        console.log('[HYDRATE] renderLatestAgentEvent with event:', eventData ? eventData.reply : 'null');
+        renderLatestAgentEvent(eventData, payload.xp_delta);
     };
 
     async function sendAgentCommandText() {
