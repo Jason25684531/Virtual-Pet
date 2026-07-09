@@ -1435,20 +1435,16 @@ class TransparentWindow(QMainWindow):
         self._interaction_worker.start()
 
     def _on_agentic_result(self, payload: dict) -> None:
-        print(f"[DEBUG] _on_agentic_result() called with payload keys: {payload.keys() if payload else 'None'}")
         self._latest_agentic_event = dict(payload or {})
         webm_key = str(payload.get("webm_key") or "").strip()
         if webm_key:
-            print(f"[DEBUG] Playing motion: {webm_key}")
             self.play_action_motion(webm_key)
-        print(f"[DEBUG] Calling refresh_agentic_ui() with event_payload...")
         self.refresh_agentic_ui(
             event_payload=payload,
             message="Interaction complete.",
             tone="idle",
             timeoutMs=2400,
         )
-        print(f"[DEBUG] refresh_agentic_ui() completed")
         self._set_agentic_busy(False)
 
     def _on_agentic_error(self, message: str) -> None:
@@ -1538,13 +1534,9 @@ class TransparentWindow(QMainWindow):
             "progress_percent": int(xp_state.get("progress_percent", 0) or 0),
         }
         latest_event = event_payload or self._latest_agentic_event
-        print(f"[DEBUG] latest_event is: {'event_payload' if event_payload else 'self._latest_agentic_event'} (exists: {bool(latest_event)})")
         if latest_event:
             payload["event"] = latest_event
-            print(f"[DEBUG] payload['event'] set with keys: {list(latest_event.keys())[:5]}...")
-        print(f"[DEBUG] Calling _run_javascript('hydrateAgenticUI', ...)")
         self._run_javascript("hydrateAgenticUI", payload)
-        print(f"[DEBUG] _run_javascript() returned")
 
     def _build_runtime_background_state(self, base_background) -> dict:
         background = dict(base_background or {})
@@ -1808,19 +1800,15 @@ class TransparentWindow(QMainWindow):
 
     def _run_javascript(self, function_name: str, *args):
         if not self._webview_ready:
-            print(f"[DEBUG] WebView not ready, queueing JS call: {function_name}")
             self._pending_javascript_calls.append((function_name, args))
             return
 
-        print(f"[DEBUG] WebView ready, executing: {function_name} ({len(args)} args)")
         if function_name == self.RAW_JAVASCRIPT_MARKER:
             script = str(args[0]) if args else ""
-            print(f"[DEBUG] Running raw JS: {script[:100]}...")
             self.web_view.page().runJavaScript(script)
             return
 
         js_call = self._build_javascript_bridge_call(function_name, *args)
-        print(f"[DEBUG] Running bridge call: {js_call[:150]}...")
         self.web_view.page().runJavaScript(js_call)
 
     def _flush_pending_javascript_calls(self):

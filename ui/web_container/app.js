@@ -145,14 +145,11 @@
 
     function setAgentResult(message, delta) {
         var dockPanelAgent = document.getElementById('dock-panel-agent');
-        if (dockPanelAgent) {
-            dockPanelAgent.hidden = false;  // 確保對話面板可見
-        }
-        if (agentResultText) {
-            var finalMessage = message || '輸入問題或點選快捷指令。';
-            agentResultText.textContent = finalMessage;
-        }
+        if (dockPanelAgent) dockPanelAgent.hidden = false;
+
+        if (agentResultText) agentResultText.textContent = message || '輸入問題或點選快捷指令。';
         if (!agentResultDelta) return;
+
         var normalizedDelta = Number(delta) || 0;
         if (normalizedDelta > 0) {
             agentResultDelta.hidden = false;
@@ -645,23 +642,17 @@
         var text = talkTextInput.value.trim();
         if (!text) return;
 
-        // 動態獲取 AI provider
         var provider = 'mock';
         try {
-            console.log('[DEBUG] getProviderStatus() starting...');
             var status = await callCharacterBridge('getProviderStatus');
-            console.log('[DEBUG] getProviderStatus() result:', status);
             if (status && status.ai && status.ai.provider) {
                 provider = status.ai.provider;
-                console.log('[DEBUG] Using provider:', provider);
             }
         } catch (error) {
-            console.error('[ERROR] Error getting provider status:', error);
+            console.error('Error getting provider status:', error);
         }
 
-        console.log('[DEBUG] Calling sendText with:', {text, provider});
         callBridge('sendText', text, provider);
-        console.log('[DEBUG] sendText call completed');
         talkTextInput.value = '';
     }
 
@@ -1136,7 +1127,6 @@
     }
 
     function renderLatestAgentEvent(eventPayload, fallbackDelta) {
-        console.log('[RENDER_EVENT] eventPayload:', eventPayload ? 'exists' : 'null');
         var eventData = eventPayload || {};
         var rewardSummary = eventData.reward_summary || {};
         var reply = eventData.reply
@@ -1145,10 +1135,8 @@
             || rewardSummary.summary
             || rewardSummary.display
             || '輸入問題或點選快捷指令。';
-        console.log('[RENDER_EVENT] reply:', reply);
         var delta = eventData.xp_delta;
         if (delta == null) delta = fallbackDelta;
-        console.log('[RENDER_EVENT] calling setAgentResult with reply:', reply.substring(0, 50));
         setAgentResult(reply, delta);
     }
 
@@ -1174,7 +1162,6 @@
     }
 
     window.hydrateAgenticUI = function (payload) {
-        console.log('[HYDRATE] called, payload keys:', payload ? Object.keys(payload) : 'null');
         payload = payload || {};
         renderState(payload.state || null);
         renderRuntimeControls(payload.runtimeControls || null);
@@ -1187,7 +1174,6 @@
             payload.xp_delta
         );
         var eventData = payload.event || (payload.state && payload.state.latest_event);
-        console.log('[HYDRATE] renderLatestAgentEvent with event:', eventData ? eventData.reply : 'null');
         renderLatestAgentEvent(eventData, payload.xp_delta);
     };
 
