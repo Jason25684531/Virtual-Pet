@@ -643,15 +643,20 @@
         // 動態獲取 AI provider
         var provider = 'mock';
         try {
+            console.log('[DEBUG] getProviderStatus() starting...');
             var status = await callCharacterBridge('getProviderStatus');
+            console.log('[DEBUG] getProviderStatus() result:', status);
             if (status && status.ai && status.ai.provider) {
                 provider = status.ai.provider;
+                console.log('[DEBUG] Using provider:', provider);
             }
         } catch (error) {
-            console.error('Error getting provider status:', error);
+            console.error('[ERROR] Error getting provider status:', error);
         }
 
+        console.log('[DEBUG] Calling sendText with:', {text, provider});
         callBridge('sendText', text, provider);
+        console.log('[DEBUG] sendText call completed');
         talkTextInput.value = '';
     }
 
