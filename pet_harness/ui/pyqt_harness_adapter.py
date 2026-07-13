@@ -28,6 +28,7 @@ from ui.background_resolver import BackgroundResolver
 SAFE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 SKILL_STATE_KEY = "ui_skill_states"
+CHARACTER_SKILL_ENABLED_KEY = "character_skill_enabled"
 LAST_XP_KEY = "ui_last_xp_delta"
 TOOL_ENABLED_KEY = "enabled_overrides"
 TOOL_CONFIGS_KEY = "metadata_configs"
@@ -128,7 +129,9 @@ class PyQtHarnessAdapter:
         previous_progress = self.store.get_user_progress()
         event = self.router.dispatch_event({"text": cleaned, "source": "pyqt_ui"})
         self.store.set_setting(LAST_XP_KEY, event.xp_delta)
-        return self._serialize_pet_event(event, previous_progress=previous_progress)
+        payload = self._serialize_pet_event(event, previous_progress=previous_progress)
+        payload["user_text"] = cleaned
+        return payload
 
     def get_current_state(self) -> dict[str, Any]:
         self._refresh_runtime()
@@ -219,11 +222,13 @@ class PyQtHarnessAdapter:
         }
 
     def list_skills(self) -> list[dict[str, Any]]:
-        disabled = self._skill_disabled_map()
         active_char = self.router.get_active_character()
         char_skill_names = set(active_char.allowed_skill_refs) if active_char else set()
+        enabled_map = self._character_skill_enabled_map(char_skill_names)
         items: list[dict[str, Any]] = []
         for skill in self._load_all_skills():
+            if active_char and skill.name not in char_skill_names:
+                continue
             path = Path(skill.file_path or "")
             items.append(
                 {
@@ -234,8 +239,9 @@ class PyQtHarnessAdapter:
                     "default_behavior": skill.behavior,
                     "required_tool": skill.required_tool,
                     "current_skill_xp": self.store.get_skill_progress(skill.name).get("xp_total", 0),
-                    "enabled": not disabled.get(skill.name, False),
+                    "enabled": bool(enabled_map.get(skill.name, True)),
                     "enabled_in_character": skill.name in char_skill_names,
+                    "permitted": skill.name in char_skill_names if active_char else True,
                     "is_builtin": not self._is_user_skill_path(path),
                     "file_path": str(path) if skill.file_path else None,
                 }
@@ -264,24 +270,20 @@ class PyQtHarnessAdapter:
 
     def set_skill_enabled(self, skill_id: str, enabled: bool) -> dict[str, Any]:
         self._validate_safe_id(skill_id, field_name="skill_id")
+        active_char = self.router.get_active_character()
+        if active_char:
+            authorized = set(active_char.allowed_skill_refs)
+            if skill_id not in authorized:
+                raise ValueError(f"skill is not authorized for active character: {skill_id}")
+            overlay = self._character_skill_enabled_map(authorized)
+            overlay[skill_id] = bool(enabled)
+            self.store.set_setting(CHARACTER_SKILL_ENABLED_KEY, overlay)
+            self._refresh_runtime()
+            return {"skill_id": skill_id, "enabled": bool(enabled), "permitted": True}
+
         all_skill_ids = {skill.name for skill in self._load_all_skills()}
         if skill_id not in all_skill_ids:
             raise ValueError(f"unknown skill_id: {skill_id}")
-
-        active_char = self.router.get_active_character()
-        if active_char and active_char.skill_config is not None:
-            current_skills = list(active_char.skill_config or [])
-            if enabled and skill_id not in current_skills:
-                current_skills.append(skill_id)
-            elif not enabled and skill_id in current_skills:
-                current_skills.remove(skill_id)
-
-            updated_profile = self._character_registry.update_profile(
-                active_char.character_id,
-                skill_config=current_skills
-            )
-            self.engine.skills = self.engine.filter_skills_for_character(self._load_enabled_skills())
-            return {"skill_id": skill_id, "enabled": enabled, "character_skill_config": updated_profile.skill_config}
 
         disabled = self._skill_disabled_map()
         if enabled:
@@ -387,15 +389,33 @@ class PyQtHarnessAdapter:
         return SkillLoader(self.skills_root).load_skills()
 
     def _load_enabled_skills(self) -> list[Skill]:
-        disabled = self._skill_disabled_map()
         all_skills = self._load_all_skills()
         active_char = self.router.get_active_character()
 
         if active_char and active_char.allowed_skill_refs:
             char_skill_names = set(active_char.allowed_skill_refs)
-            return [skill for skill in all_skills if skill.name in char_skill_names and not disabled.get(skill.name, False)]
+            enabled_map = self._character_skill_enabled_map(char_skill_names)
+            return [
+                skill for skill in all_skills
+                if skill.name in char_skill_names and enabled_map.get(skill.name, True)
+            ]
 
+        disabled = self._skill_disabled_map()
         return [skill for skill in all_skills if not disabled.get(skill.name, False)]
+
+    def _character_skill_enabled_map(self, authorized_skill_ids: set[str] | list[str]) -> dict[str, bool]:
+        """讀取 active character 的私有 enablement overlay，並補齊首次預設值。"""
+        authorized = {str(skill_id) for skill_id in authorized_skill_ids}
+        current = self.store.get_setting(CHARACTER_SKILL_ENABLED_KEY, None)
+        overlay = dict(current) if isinstance(current, dict) else {}
+        changed = not isinstance(current, dict)
+        for skill_id in authorized:
+            if skill_id not in overlay:
+                overlay[skill_id] = True
+                changed = True
+        if changed:
+            self.store.set_setting(CHARACTER_SKILL_ENABLED_KEY, overlay)
+        return {skill_id: bool(value) for skill_id, value in overlay.items()}
 
     def build_provider_config(self, provider: str) -> ProviderConfig:
         provider_type = ProviderType(str(provider))

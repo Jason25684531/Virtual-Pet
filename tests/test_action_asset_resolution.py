@@ -2,6 +2,9 @@
 
 from unittest.mock import MagicMock
 
+from character_library import CharacterLibrary
+from pet_harness.agent.result_parser import ResultParser
+from pet_harness.models.events import PetEvent
 from ui.transparent_window import TransparentWindow
 
 
@@ -72,3 +75,39 @@ def test_restore_current_character_applies_snapshot_character():
 
     fake.apply_character.assert_called_once_with("Choppr")
     fake._show_no_active_character_state.assert_not_called()
+
+
+def test_manifest_action_tags_resolve_only_within_the_requested_character():
+    library = CharacterLibrary()
+
+    choppr = library.resolve_action_tag("Choppr", "laugh")
+    miku = library.resolve_action_tag("miku", "laugh")
+
+    assert choppr and "Choppr" in choppr["path"]
+    assert miku and "miku" in miku["path"]
+    assert choppr["motion_key"] == miku["motion_key"] == "laugh"
+    assert library.resolve_action_tag("Choppr", "play_music") is None
+    assert library.resolve_action_tag("Choppr", "not_declared") is None
+
+
+def test_action_tag_is_structured_and_never_part_of_reply_serialization():
+    result = ResultParser().parse(
+        '{"reply":"你好", "action_tag":"laugh", "matched_skill":null}',
+        provider_type="mock",
+    )
+    event = PetEvent(
+        source_event_id="source-1",
+        reply=result.reply,
+        matched_skill=None,
+        behavior_id="laugh",
+        webm_key="laugh",
+        xp_delta=0,
+        provider_status={},
+        saved_to_db=True,
+        action_tag=result.action_tag,
+        motion_source="action_tag",
+    )
+
+    assert result.reply == "你好"
+    assert result.action_tag == "laugh"
+    assert event.to_dict()["action_tag"] == "laugh"

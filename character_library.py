@@ -170,6 +170,50 @@ class CharacterLibrary:
             return None
         return self.get_motion_path(character_id, action_key)
 
+    def list_action_tags(self, character_id: str | None) -> list[str]:
+        """列出目前角色 manifest 明確宣告且可解析的 AI action tags。"""
+        manifest = self.get_character(character_id)
+        if not manifest:
+            return []
+        actions = manifest.get("actions")
+        if not isinstance(actions, dict):
+            return []
+        return [
+            tag for tag in actions
+            if isinstance(tag, str) and self.resolve_action_tag(str(character_id), tag) is not None
+        ]
+
+    def resolve_action_tag(self, character_id: str | None, action_tag: str | None) -> dict[str, str] | None:
+        """將 action tag 限定解析到指定角色的 manifest motion。
+
+        不接受其他角色、demo mapping 或任意路徑。找不到 tag 或檔案時回傳 None，
+        由呼叫端保留同角色 idle fallback。
+        """
+        normalized_character_id = str(character_id or "").strip()
+        normalized_tag = str(action_tag or "").strip()
+        if not normalized_character_id or not normalized_tag:
+            return None
+        manifest = self.get_character(normalized_character_id)
+        if not manifest:
+            return None
+        actions = manifest.get("actions")
+        if not isinstance(actions, dict):
+            return None
+        motion_key = actions.get(normalized_tag)
+        if not isinstance(motion_key, str) or not motion_key.strip():
+            return None
+        motion_key = motion_key.strip()
+        motions = manifest.get("motions")
+        if not isinstance(motions, dict) or motion_key not in motions:
+            return None
+        path = self.get_motion_path(normalized_character_id, motion_key)
+        if not path:
+            return None
+        return {"action_tag": normalized_tag, "motion_key": motion_key, "path": path}
+
+    def is_valid_action_tag(self, character_id: str | None, action_tag: str | None) -> bool:
+        return self.resolve_action_tag(character_id, action_tag) is not None
+
     def _resolve_idle_pool_entry(
         self,
         manifest: dict,

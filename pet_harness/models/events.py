@@ -98,6 +98,8 @@ class PetEvent:
     xp_delta: int
     provider_status: dict[str, Any]
     saved_to_db: bool
+    action_tag: str | None = None
+    motion_source: str = "fallback"
     reward_events: list[RewardEvent | dict[str, Any]] = field(default_factory=list)
     tool_request: ToolRequestEvent | dict[str, Any] | None = None
     event_id: str = field(default_factory=lambda: new_id("pet"))

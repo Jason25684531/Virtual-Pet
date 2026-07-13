@@ -97,6 +97,7 @@
     var maxConversationTurns = 3;
     var latestRuntimeState = null;
     var latestHudState = null;
+    var currentCharacterSkills = [];
     var hudDeltaTimer = null;
     var resizeObserver = null;
 
@@ -144,20 +145,9 @@
     }
 
     function setAgentResult(message, delta) {
-        var dockPanelAgent = document.getElementById('dock-panel-agent');
-        if (dockPanelAgent) dockPanelAgent.hidden = false;
-
-        if (agentResultText) agentResultText.textContent = message || '輸入問題或點選快捷指令。';
-        if (!agentResultDelta) return;
-
-        var normalizedDelta = Number(delta) || 0;
-        if (normalizedDelta > 0) {
-            agentResultDelta.hidden = false;
-            agentResultDelta.textContent = '+' + normalizedDelta;
-        } else {
-            agentResultDelta.hidden = true;
-            agentResultDelta.textContent = '';
-        }
+        // 回覆一律由 Conversation 區承接；不得為了結果自動打開 Skills。
+        void message;
+        void delta;
     }
 
     function setStatus(message, tone, timeoutMs) {
@@ -304,7 +294,9 @@
     }
 
     function renderCharacterSkills(skills) {
-        var items = Array.isArray(skills) ? skills : [];
+        if (!Array.isArray(skills)) return;
+        var items = skills;
+        currentCharacterSkills = items;
         if (characterSkillCount) characterSkillCount.textContent = items.length + ' skills';
         if (!characterSkillList) return;
         if (!items.length) {
@@ -312,14 +304,17 @@
             return;
         }
         characterSkillList.innerHTML = items.map(function (item) {
+            var isEnabled = item.enabled !== false;
             return [
                 '<article class="entity-card">',
                 '  <div class="entity-card__head">',
                 '    <div>' + skillCardTitleMeta(item) + '</div>',
+                '    <span class="status-pill">' + (isEnabled ? '啟用中' : '已關閉') + '</span>',
                 '  </div>',
                 '  <p class="entity-card__meta">' + escapeHtml(item.description || '-') + '</p>',
                 '  <div class="entity-card__actions">',
-                '    <button class="secondary-button" type="button" data-skill-trigger="' + escapeHtml(item.skill_id) + '">觸發</button>',
+                '    <button class="secondary-button" type="button" data-character-skill-toggle="' + escapeHtml(item.skill_id) + '" data-enabled="' + String(!isEnabled) + '">' + (isEnabled ? '關閉' : '啟動') + '</button>',
+                isEnabled ? '    <button class="primary-button" type="button" data-skill-trigger="' + escapeHtml(item.skill_id) + '">立即執行</button>' : '',
                 '  </div>',
                 '</article>'
             ].join('');
@@ -707,7 +702,12 @@
         }
         if (characterSkillList) {
             characterSkillList.addEventListener('click', function (event) {
+                var toggle = event.target.closest('[data-character-skill-toggle]');
                 var trigger = event.target.closest('[data-skill-trigger]');
+                if (toggle) {
+                    callBridge('toggleSkill', toggle.dataset.characterSkillToggle, toggle.dataset.enabled === 'true');
+                    return;
+                }
                 if (!trigger) return;
                 var skillId = trigger.dataset.skillTrigger;
                 trigger.disabled = true;
@@ -934,7 +934,8 @@
         var loopGeneration = motionLoopGeneration;
         motionLoopSource = source;
         motionLoopActive = true;
-        window.playTemporaryVideo(source);
+        // 以原生 loop 保持同一段 WebM；Python 只有在同輪 TTS 結束後才會停止它。
+        setSource(source, true);
         motionLoopTimer = setInterval(function () {
             if (loopGeneration !== motionLoopGeneration) return;
             if (motionLoopActive && motionLoopSource && (video.ended || video.paused)) {
@@ -995,6 +996,10 @@
     });
 
     video.addEventListener('ended', function () {
+        if (motionLoopActive && motionLoopSource) {
+            window.playTemporaryVideo(motionLoopSource);
+            return;
+        }
         if (!video.loop) window.restoreIdleMotion(idleSource);
     });
 
@@ -1146,7 +1151,6 @@
                 mergedState.xp = latestRuntimeState.xp;
             }
             renderCharacterHud(mergedState, latestRuntimeState && latestRuntimeState.xp ? latestRuntimeState.xp.last_delta : 0);
-            renderCharacterSkills(state && state.skills);
         }).catch(function (err) {
             console.warn('[ECHOES UI] getActiveState failed:', err.message);
         });
@@ -1157,6 +1161,7 @@
         renderState(payload.state || null);
         renderRuntimeControls(payload.runtimeControls || null);
         renderSkills(payload.skills || []);
+        renderCharacterSkills(payload.skills || []);
         if (payload.message) {
             setStatus(payload.message, payload.tone || 'idle', payload.timeoutMs || 0);
         }

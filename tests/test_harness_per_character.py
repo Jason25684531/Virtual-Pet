@@ -135,6 +135,32 @@ class TestSkillRouterIsolation:
 
         assert {skill.name for skill in engine.skills} == {"joke_skill"}
 
+    def test_disabled_skill_overlay_blocks_text_routing_and_reenable_restores_it(self, harness_env):
+        tmp_path, agentic_root = harness_env
+        engine = _build_engine(agentic_root, tmp_path, character_id="Choppr")
+
+        engine.store.set_setting("character_skill_enabled", {"joke_skill": False, "mood_skill": True})
+        engine.skills = engine.filter_skills_for_character(engine.skills)
+        engine.router = engine.router.__class__(engine.skills)
+        disabled_event = engine.handle_event({"text": "tell me a joke", "source": "test"})
+
+        assert disabled_event.matched_skill is None
+        engine.store.set_setting("character_skill_enabled", {"joke_skill": True, "mood_skill": True})
+        restored = _build_engine(agentic_root, tmp_path, character_id="Choppr")
+
+        assert {skill.name for skill in restored.skills} == {"joke_skill", "mood_skill"}
+        assert restored.handle_event({"text": "tell me a joke", "source": "test"}).matched_skill == "joke_skill"
+
+    def test_skill_behavior_takes_priority_over_action_tag(self, harness_env):
+        tmp_path, agentic_root = harness_env
+        engine = _build_engine(agentic_root, tmp_path, character_id="Choppr")
+        skill = next(skill for skill in engine.skills if skill.name == "joke_skill")
+
+        event = engine.behavior_manager.resolve(skill, action_motion_key="angry")
+
+        assert event.reason == "skill"
+        assert event.webm_key != "angry"
+
 
 class TestXpIsolation:
     def test_xp_isolation(self, harness_env):

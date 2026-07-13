@@ -71,6 +71,7 @@ class PendingActionState:
     has_tts: bool = False
     timeout_timer: QTimer | None = None
     fallback_grace_applied: bool = False
+    wait_for_tts_start: bool = False
 
 
 @dataclass(frozen=True)
@@ -294,6 +295,7 @@ class ActionDispatcher(QObject):
         directive: str,
         trace_id: str | None = None,
         allow_tts: bool = True,
+        wait_for_tts_start: bool = False,
     ) -> bool:
         raw_action_name, display_message = self._parse_directive(directive)
         action_name = config.canonicalize_host_action(raw_action_name)
@@ -367,7 +369,11 @@ class ActionDispatcher(QObject):
         use_pending_sync = bool(trace_id)
         intentional_tts_suppression = False
         if use_pending_sync:
-            self._start_pending_action(trace_id, binding)
+            self._start_pending_action(
+                trace_id,
+                binding,
+                wait_for_tts_start=wait_for_tts_start,
+            )
             motion_found = True
             if binding.skip_tts_sync and normalized_trace_id:
                 motion_found = self._activate_pending_action(normalized_trace_id, promoted=False)
@@ -602,7 +608,13 @@ class ActionDispatcher(QObject):
         if not motion_found:
             self._window.restore_idle_video()
 
-    def _start_pending_action(self, trace_id: str | None, binding: ActionBinding):
+    def _start_pending_action(
+        self,
+        trace_id: str | None,
+        binding: ActionBinding,
+        *,
+        wait_for_tts_start: bool = False,
+    ):
         normalized_trace_id = str(trace_id or "").strip()
         if not normalized_trace_id:
             return
@@ -616,9 +628,12 @@ class ActionDispatcher(QObject):
         state = PendingActionState(
             trace_id=normalized_trace_id,
             binding=binding,
+            wait_for_tts_start=wait_for_tts_start,
         )
         self._pending_actions[normalized_trace_id] = state
-        if QCoreApplication.instance() is None:
+        # 同步模式只在實際 audio driver 起播後播放 WebM，避免 provider 慢時
+        # timeout 先播完動作；TTS 失敗則保留文字並維持 idle。
+        if wait_for_tts_start or QCoreApplication.instance() is None:
             return
         timer = QTimer(self)
         timer.setSingleShot(True)
@@ -1239,6 +1254,11 @@ class ActionDispatcher(QObject):
                 self._trace_pending_tts_counts.pop(normalized_trace_id, None)
             else:
                 self._trace_pending_tts_counts[normalized_trace_id] = pending_count - 1
+            # 標記同輪最後一個 TTS producer 已完成；後續各結果分支會統一
+            # 關閉 PCM session。session 關閉後 AudioStreamWorker 才會發出
+            # queue_drained，讓角色動作回到 idle。
+            if self._trace_pending_tts_counts.get(normalized_trace_id, 0) == 0:
+                self._completed_tts_traces.add(normalized_trace_id)
         if normalized_trace_id in self._suppressed_traces and reply_id not in self._driver_started_replies and not skipped_by_design:
             success = False
             if "抑制" not in message:
@@ -1266,6 +1286,14 @@ class ActionDispatcher(QObject):
             )
         if not success and not skipped_by_design:
             print(f"[ECHOES] 提示: 串流 TTS 未播放，保留文字回覆。{message}")
+            pending_state = self._pending_actions.get(normalized_trace_id)
+            if (
+                pending_state is not None
+                and pending_state.wait_for_tts_start
+                and self._trace_pending_tts_counts.get(normalized_trace_id, 0) == 0
+            ):
+                self._clear_pending_action(normalized_trace_id)
+                self._window.restore_idle_video()
             self._maybe_close_trace_audio_session(normalized_trace_id)
             return
         print(f"[ECHOES] 提示: 語音播放完成。{message}")

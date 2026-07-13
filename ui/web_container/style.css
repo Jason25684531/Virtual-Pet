@@ -104,6 +104,45 @@ body {
     pointer-events: none;
 }
 
+.conversation-history-panel {
+    position: fixed;
+    z-index: 35;
+    top: 118px;
+    right: 30px;
+    bottom: 154px;
+    width: min(380px, 28vw);
+    min-width: 280px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    pointer-events: none;
+}
+
+.conversation-history-panel .conversation-panel {
+    flex: 1;
+    min-height: 0;
+    max-height: none;
+    pointer-events: auto;
+}
+
+.conversation-composer {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid rgba(255, 247, 241, 0.18);
+    border-radius: 18px;
+    background: var(--panel-bg);
+    box-shadow: var(--panel-shadow);
+    pointer-events: auto;
+}
+
+.conversation-history-panel .conversation-list {
+    flex: 1;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
 #companion-dock-root {
     position: fixed;
     inset: 0;
@@ -447,6 +486,30 @@ body {
     backdrop-filter: blur(14px);
 }
 
+#dock-panel-agent {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
+}
+
+#dock-panel-agent .character-skill-panel {
+    min-height: 0;
+    overflow-y: auto;
+}
+
+#dock-panel-agent .entity-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.companion-dock-panel button:focus-visible,
+.companion-dock-panel input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
 .companion-dock-panel[hidden] {
     display: none;
 }
@@ -711,6 +774,14 @@ body {
         max-height: 38vh;
     }
 
+    .conversation-history-panel {
+        top: 96px;
+        right: 16px;
+        bottom: 132px;
+        width: min(360px, calc(100vw - 32px));
+        min-width: 0;
+    }
+
     .action-status {
         left: 16px;
         right: 16px;
@@ -771,6 +842,7 @@ body {
    避免 U01(主選單)/U05(陪伴主畫面)共用同一份 stage 而互相透出、疊圖 */
 body.overlay-active #hud-score,
 body.overlay-active #companion-dock-root,
+body.overlay-active #conversation-history-panel,
 body.overlay-active #stage-live-ui,
 body.overlay-active #stage-bottom-ui,
 body.overlay-active #stage-pet-layer,

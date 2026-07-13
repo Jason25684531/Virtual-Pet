@@ -97,13 +97,9 @@ class CharacterUiService:
             raise ValueError(f"skill has no trigger phrase configured: {skill_id}")
 
         event = self._router.dispatch_event({"text": skill.triggers[0], "source": "character_ui"})
-        return {
-            "matched_skill": event.matched_skill,
-            "behavior_id": event.behavior_id,
-            "webm_key": event.webm_key,
-            "xp_delta": event.xp_delta,
-            "reply": event.reply,
-        }
+        payload = event.to_dict()
+        payload["user_text"] = f"立即執行：{skill.display_name or skill.name}"
+        return payload
 
     def _summarize(self, profile: CharacterProfile) -> dict[str, Any]:
         store = SQLiteStore(profile.sqlite_path)

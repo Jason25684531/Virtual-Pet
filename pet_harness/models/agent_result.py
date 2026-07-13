@@ -9,6 +9,7 @@ class AgentResult:
     reply: str
     matched_skill: str | None = None
     behavior_hint: str | None = None
+    action_tag: str | None = None
     confidence: float = 0.0
     tool_request: dict[str, Any] | None = None
     raw_text: str = ""

@@ -24,6 +24,7 @@ class PromptBuilder:
         state_snapshot: dict,
         matched_skill: Skill | None = None,
         persona: str | None = None,
+        action_tags: list[str] | None = None,
     ) -> PromptBuildResult:
         warnings: list[str] = []
         soul_text = self._read_optional(self.agentic_root / "soul.md", "Soul context unavailable.", warnings)
@@ -37,6 +38,7 @@ class PromptBuilder:
             for skill in skills
         ]
         matched_text = matched_skill.name if matched_skill else "none"
+        valid_action_tags = [str(tag).strip() for tag in (action_tags or []) if str(tag).strip()]
         prompt = "\n".join(
             [
                 "You are ECHOES, a local-first desktop companion.",
@@ -55,6 +57,9 @@ class PromptBuilder:
                 "",
                 f"## Deterministic Matched Skill\n{matched_text}",
                 "",
+                "## Available Character Action Tags",
+                ", ".join(valid_action_tags) if valid_action_tags else "none",
+                "",
                 "## Current Pet State",
                 str(state_snapshot),
                 "",
@@ -62,9 +67,10 @@ class PromptBuilder:
                 event.text,
                 "",
                 "## Output Contract",
-                'Return JSON only with keys: "reply", "matched_skill", "behavior_hint", "confidence", "tool_request", and either "notes" or "reasoning_summary".',
+                'Return JSON only with keys: "reply", "matched_skill", "action_tag", "confidence", "tool_request", and either "notes" or "reasoning_summary".',
                 "Do not include private chain-of-thought.",
                 "Only use a skill name from the provided skill list or null.",
+                "action_tag must be one of the available character action tags or null; never put control tags in reply.",
             ]
         )
         return PromptBuildResult(prompt=prompt, warnings=warnings)

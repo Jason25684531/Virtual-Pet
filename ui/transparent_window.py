@@ -501,7 +501,7 @@ class TransparentWindow(QMainWindow):
         self._music_button.setObjectName("overlay-play-music-button")
         self._music_button.setText("Music")
         self._music_button.setFixedSize(self.FIXED_INTENT_BUTTON_WIDTH, self.FIXED_INTENT_BUTTON_HEIGHT)
-        self._music_button.clicked.connect(lambda: self.trigger_overlay_action("play_music"))
+        self._music_button.clicked.connect(lambda: self.trigger_enabled_skill_for_behavior("play_music"))
         self._music_button.installEventFilter(self)
         self._music_button.setStyleSheet(self._fixed_intent_button_stylesheet("#456f3b", "#d7f5bf"))
 
@@ -509,13 +509,7 @@ class TransparentWindow(QMainWindow):
         self._news_button.setObjectName("overlay-report-news-button")
         self._news_button.setText("News")
         self._news_button.setFixedSize(self.FIXED_INTENT_BUTTON_WIDTH, self.FIXED_INTENT_BUTTON_HEIGHT)
-        self._news_button.clicked.connect(
-            lambda: self.trigger_overlay_action(
-                "report_news",
-                synthetic_user_text="播放新聞",
-                synthetic_assistant_text=FIXED_NEWS_SCRIPT,
-            )
-        )
+        self._news_button.clicked.connect(lambda: self.trigger_enabled_skill_for_behavior("report_news"))
         self._news_button.installEventFilter(self)
         self._news_button.setStyleSheet(self._fixed_intent_button_stylesheet("#6f4f8b", "#e2cdf7"))
         self._update_fixed_intent_buttons_geometry()
@@ -1130,11 +1124,13 @@ class TransparentWindow(QMainWindow):
         directive: str,
         trace_id: str | None = None,
         allow_tts: bool = True,
+        wait_for_tts_start: bool = False,
     ) -> bool:
         return self._action_dispatcher.dispatch(
             directive,
             trace_id=trace_id,
             allow_tts=allow_tts,
+            wait_for_tts_start=wait_for_tts_start,
         )
 
     def trigger_cached_intent(self, intent_name: str, trigger_source: str) -> bool:
@@ -1246,19 +1242,36 @@ class TransparentWindow(QMainWindow):
         }
         resolved = alias_map.get(normalized, normalized)
         if resolved == "play_music":
-            self.trigger_overlay_action("play_music")
+            self.trigger_enabled_skill_for_behavior("play_music")
             return
         if resolved == "report_news":
-            self.trigger_overlay_action(
-                "report_news",
-                synthetic_user_text="播放新聞",
-                synthetic_assistant_text=FIXED_NEWS_SCRIPT,
-            )
+            self.trigger_enabled_skill_for_behavior("report_news")
             return
         if resolved == "quit":
             QApplication.quit()
             return
         print(f"[ECHOES] Ignored unknown overlay action from web bridge: {action_name}")
+
+    def trigger_enabled_skill_for_behavior(self, behavior: str) -> bool:
+        """技能快捷入口一律經角色授權與 enabled overlay 後走 Harness。"""
+        target = str(behavior or "").strip()
+        skill = next(
+            (
+                item for item in self._adapter.list_skills()
+                if item.get("enabled") and item.get("default_behavior") == target
+            ),
+            None,
+        )
+        if skill is None:
+            self.set_action_status("此角色未啟用對應技能。", tone="warn", timeout_ms=2800)
+            return False
+        try:
+            result = self._adapter.character_service.trigger_skill(str(skill["skill_id"]))
+        except Exception as exc:  # noqa: BLE001
+            self.set_action_status(str(exc), tone="warn", timeout_ms=3200)
+            return False
+        self.consume_interaction_result(result, message="Skill executed.")
+        return True
 
     def set_drag_surface_enabled(self, enabled: bool) -> None:
         """啟用或停用頂部拖曳層。
@@ -1359,15 +1372,9 @@ class TransparentWindow(QMainWindow):
             self._emit_cached_intent_request("share", "share 按鈕觸發")
             return True
         if event.key() == Qt.Key_3:
-            return bool(self.trigger_overlay_action("play_music"))
+            return self.trigger_enabled_skill_for_behavior("play_music")
         if event.key() == Qt.Key_4:
-            return bool(
-                self.trigger_overlay_action(
-                    "report_news",
-                    synthetic_user_text="播放新聞",
-                    synthetic_assistant_text=FIXED_NEWS_SCRIPT,
-                )
-            )
+            return self.trigger_enabled_skill_for_behavior("report_news")
         return False
 
     def toggle_developer_input(self):
@@ -1438,21 +1445,52 @@ class TransparentWindow(QMainWindow):
         self._interaction_worker.start()
 
     def _on_agentic_result(self, payload: dict) -> None:
+        self.consume_interaction_result(payload, message="Interaction complete.")
+        self._set_agentic_busy(False)
+
+    def consume_interaction_result(self, payload: dict, message: str = "Interaction complete.") -> None:
+        """所有 Harness 結果（文字互動與立即執行）的唯一 Host 消費流程。"""
         self._latest_agentic_event = dict(payload or {})
-        webm_key = str(payload.get("webm_key") or "").strip()
-        if webm_key:
-            self.play_action_motion(webm_key)
+        webm_key = self._validated_event_motion_key(payload)
         reply_text = str(payload.get("reply") or "").strip()
-        if reply_text:
-            trace_id = f"agentic-{uuid4().hex}"
-            self.speak_text(reply_text, trace_id=trace_id, has_action=bool(webm_key))
+        trace_id = f"agentic-{uuid4().hex}"
+        source_label = "Skill" if payload.get("matched_skill") else "Talk"
+        user_text = str(payload.get("user_text") or "").strip() or (
+            f"立即執行：{payload.get('matched_skill')}"
+            if payload.get("matched_skill")
+            else "你的訊息"
+        )
+        self.begin_conversation_turn(trace_id, source_label, user_text)
+        self.set_conversation_assistant(trace_id, reply_text)
+        self.finish_conversation_turn(trace_id)
+        if webm_key:
+            self.dispatch_action(
+                f"[ACTION:{webm_key}] {reply_text}",
+                trace_id=trace_id,
+                allow_tts=bool(reply_text),
+                wait_for_tts_start=bool(reply_text),
+            )
+        elif reply_text:
+            self.speak_text(reply_text, trace_id=trace_id, has_action=False)
         self.refresh_agentic_ui(
             event_payload=payload,
-            message="Interaction complete.",
+            message=message,
             tone="idle",
             timeoutMs=2400,
         )
-        self._set_agentic_busy(False)
+
+    def _validated_event_motion_key(self, payload: dict) -> str:
+        """在播放前以 active snapshot 再驗證 action tag，失敗時安全回同角色 idle。"""
+        action_tag = str(payload.get("action_tag") or "").strip()
+        if not action_tag:
+            return str(payload.get("webm_key") or "").strip()
+        character_id = self.get_current_character_id()
+        resolved = self._library.resolve_action_tag(character_id, action_tag)
+        if resolved is None:
+            print(f"[ECHOES] 警告: 拒絕無效 action tag `{action_tag}`，回復 idle。")
+            self.restore_idle_video()
+            return ""
+        return resolved["motion_key"]
 
     def _on_agentic_error(self, message: str) -> None:
         self._set_agentic_busy(False)

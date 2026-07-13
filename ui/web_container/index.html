@@ -58,59 +58,39 @@
                 </section>
             </div>
 
+            <aside id="conversation-history-panel" class="conversation-history-panel" aria-label="聊天歷程">
+                <div class="conversation-composer">
+                    <div class="talk-input-row">
+                        <input id="talk-text-input" class="text-field" type="text" placeholder="輸入訊息、問題或聊天內容...">
+                        <button id="talk-send-button" class="primary-button" type="button">Send</button>
+                    </div>
+                    <div class="runtime-control-grid runtime-control-grid--primary">
+                        <button id="runtime-stt-button" class="primary-button" type="button">Start STT</button>
+                        <button id="runtime-reset-button" class="ghost-button" type="button">Reset</button>
+                        <span id="runtime-stt-status" class="status-pill">idle</span>
+                    </div>
+                </div>
+                <section id="conversation-panel" class="conversation-panel" aria-live="polite">
+                    <div class="conversation-panel__header">
+                        <div>
+                            <p class="conversation-panel__eyebrow">Recent Turns</p>
+                            <p class="conversation-panel__label">聊天歷程</p>
+                        </div>
+                        <p id="conversation-queue-text" class="conversation-panel__queue">Queue 0</p>
+                    </div>
+                    <div id="conversation-list" class="conversation-list"></div>
+                </section>
+            </aside>
+
             <div id="companion-dock-root" class="companion-dock-root">
                 <div id="companion-dock-panel" class="companion-dock-panel window-drag-handle" hidden>
-                    <section id="dock-panel-talk" class="dock-panel" hidden>
-                        <div class="talk-input-row">
-                            <input id="talk-text-input" class="text-field" type="text" placeholder="輸入訊息、問題或聊天內容...">
-                            <button id="talk-send-button" class="primary-button" type="button">Send</button>
-                        </div>
-                        <div class="runtime-control-grid runtime-control-grid--primary">
-                            <button id="runtime-stt-button" class="primary-button" type="button">Start STT</button>
-                            <button id="runtime-reset-button" class="ghost-button" type="button">Reset</button>
-                            <span id="runtime-stt-status" class="status-pill">idle</span>
-                        </div>
-                        <section id="conversation-panel" class="conversation-panel" aria-live="polite">
-                            <div class="conversation-panel__header">
-                                <div>
-                                    <p class="conversation-panel__eyebrow">Recent Turns</p>
-                                    <p class="conversation-panel__label">Live Conversation</p>
-                                </div>
-                                <p id="conversation-queue-text" class="conversation-panel__queue">Queue 0</p>
-                            </div>
-                            <div id="conversation-list" class="conversation-list"></div>
-                        </section>
-                    </section>
-
                     <section id="dock-panel-agent" class="dock-panel" hidden>
-                        <div class="agent-command">
-                            <div class="agent-command__bar">
-                                <input id="agent-command-input" class="text-field agent-command__input" type="text" placeholder="問我或下指令...">
-                                <button id="agent-command-mic" class="icon-button" type="button" aria-label="Toggle voice input">●</button>
-                                <button id="agent-command-submit" class="primary-button agent-command__submit" type="button">Go</button>
-                            </div>
-                            <div class="agent-chip-row">
-                                <button id="agent-chip-joke" class="agent-chip" type="button">抽卡 / 卜算</button>
-                                <button id="agent-chip-music" class="agent-chip" type="button">找音樂</button>
-                                <button id="agent-chip-news" class="agent-chip" type="button">遊戲新聞</button>
-                            </div>
-                            <div id="agent-result" class="agent-result" aria-live="polite">
-                                <span id="agent-result-text">輸入問題或點選快捷指令。</span>
-                                <span id="agent-result-delta" class="agent-result__delta" hidden></span>
-                            </div>
-                        </div>
                         <div class="character-skill-panel">
                             <div class="list-actions agent-list-actions">
+                                <span class="panel-help">Skills</span>
                                 <span id="character-skill-count" class="status-pill">0 skills</span>
                             </div>
                             <div id="character-skill-list" class="entity-list"></div>
-                        </div>
-                        <div class="agent-skill-cache" hidden>
-                            <div class="list-actions agent-list-actions">
-                                <span id="skill-count-badge" class="status-pill">0 skills</span>
-                                <button id="refresh-skills-button" class="ghost-button" type="button">Refresh skills</button>
-                            </div>
-                            <div id="skill-list" class="entity-list"></div>
                         </div>
                     </section>
 
@@ -124,10 +104,6 @@
                 </div>
 
                 <nav class="companion-dock window-drag-handle" aria-label="Companion actions">
-                    <button id="dock-talk-button" class="dock-icon" type="button" data-dock-panel="dock-panel-talk">
-                        <span class="dock-icon__glyph" aria-hidden="true">&#9634;</span>
-                        <span class="dock-icon__label">Talk<br>對話</span>
-                    </button>
                     <button id="dock-agent-button" class="dock-icon" type="button" data-dock-panel="dock-panel-agent">
                         <span class="dock-icon__glyph" aria-hidden="true">&#10022;</span>
                         <span class="dock-icon__label">Skills</span>

@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from character_library import CharacterLibrary
 from pet_harness.agent.prompt_builder import PromptBuilder
 from pet_harness.agent.provider_adapter import LLMProviderAdapter
 from pet_harness.agent.result_parser import ResultParser
@@ -25,6 +26,7 @@ from pet_harness.xp.reward_manager import RewardManager
 from pet_harness.xp.xp_manager import XPManager
 
 LOGGER = logging.getLogger(__name__)
+CHARACTER_SKILL_ENABLED_KEY = "character_skill_enabled"
 
 
 class PetHarnessEngine:
@@ -57,13 +59,16 @@ class PetHarnessEngine:
 
         self.skills = SkillLoader(self.agentic_root / "skills").load_skills()
         if self._profile is not None:
+            self._initialize_character_skill_overlay(self._profile.allowed_skill_refs)
             self.skills = self._filter_skills_by_config(self.skills, self._profile.allowed_skill_refs)
+            self.skills = self._filter_enabled_character_skills(self.skills)
             self.skills.extend(self._profile.load_local_skills())
         self.store.sync_skills(self.skills)
         self.router = SkillRouter(self.skills)
         self.xp_manager = XPManager(self.store)
         self.reward_manager = RewardManager(self.store, self.agentic_root / "rewards" / "reward_rules.json")
         self.behavior_manager = BehaviorManager(self.store, self.agentic_root / "behavior" / "behavior_map.json")
+        self.character_library = CharacterLibrary()
         self.prompt_builder = PromptBuilder(self.agentic_root)
         self.result_parser = ResultParser()
         self.tool_registry = ToolRegistry()
@@ -84,8 +89,26 @@ class PetHarnessEngine:
         if self._profile is None:
             return skills
         filtered = self._filter_skills_by_config(skills, self._profile.allowed_skill_refs)
+        filtered = self._filter_enabled_character_skills(filtered)
         filtered.extend(self._profile.load_local_skills())
         return filtered
+
+    def _initialize_character_skill_overlay(self, authorized_skill_ids: list[str]) -> None:
+        """首次使用角色時，以 profile 授權技能建立私有 SQLite enablement overlay。"""
+        current = self.store.get_setting(CHARACTER_SKILL_ENABLED_KEY, None)
+        overlay = dict(current) if isinstance(current, dict) else {}
+        changed = not isinstance(current, dict)
+        for skill_id in authorized_skill_ids:
+            if skill_id not in overlay:
+                overlay[skill_id] = True
+                changed = True
+        if changed:
+            self.store.set_setting(CHARACTER_SKILL_ENABLED_KEY, overlay)
+
+    def _filter_enabled_character_skills(self, skills: list[Skill]) -> list[Skill]:
+        enabled = self.store.get_setting(CHARACTER_SKILL_ENABLED_KEY, {})
+        enabled_map = dict(enabled) if isinstance(enabled, dict) else {}
+        return [skill for skill in skills if enabled_map.get(skill.name, True)]
 
     def _filter_skills_by_config(self, skills: list[Skill], skill_config: list[str]) -> list[Skill]:
         by_name = {skill.name: skill for skill in skills}
@@ -108,6 +131,7 @@ class PetHarnessEngine:
             state_snapshot=state_before,
             matched_skill=deterministic_skill,
             persona=self._profile.effective_persona if self._profile else None,
+            action_tags=self.character_library.list_action_tags(self._character_id),
         )
         self.last_prompt = prompt_result.prompt
         provider_reply = self.provider.generate_reply(
@@ -131,7 +155,19 @@ class PetHarnessEngine:
             confidence_threshold=self.provider_config.routing_confidence_threshold if self.provider_config else 0.7,
         )
 
-        behavior_event = self.behavior_manager.resolve(matched_skill)
+        resolved_action = None
+        if matched_skill is None and agent_result.action_tag:
+            resolved_action = self.character_library.resolve_action_tag(self._character_id, agent_result.action_tag)
+            if resolved_action is None:
+                LOGGER.warning(
+                    "Ignoring invalid action tag for character %s: %s",
+                    self._character_id,
+                    agent_result.action_tag,
+                )
+        behavior_event = self.behavior_manager.resolve(
+            matched_skill,
+            action_motion_key=resolved_action["motion_key"] if resolved_action else None,
+        )
         tool_candidate = self._build_tool_request_candidate(user_event, matched_skill, agent_result)
         tool_event = None
         tool_result_payload = None
@@ -173,6 +209,8 @@ class PetHarnessEngine:
             tool_request=tool_event,
             provider_status=provider_reply.provider_status.to_dict(),
             saved_to_db=False,
+            action_tag=resolved_action["action_tag"] if resolved_action else None,
+            motion_source=behavior_event.reason,
             metadata={
                 "behavior": behavior_event.to_dict(),
                 "agentic": {

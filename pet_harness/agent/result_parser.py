@@ -56,6 +56,7 @@ class ResultParser:
             reply=str(payload.get("reply") or self.default_reply),
             matched_skill=payload.get("matched_skill"),
             behavior_hint=payload.get("behavior_hint"),
+            action_tag=self._optional_action_tag(payload.get("action_tag")),
             confidence=float(payload.get("confidence", 0.0) or 0.0),
             tool_request=payload.get("tool_request"),
             raw_text=raw_text,
@@ -68,3 +69,10 @@ class ResultParser:
                 "reasoning_summary": payload.get("reasoning_summary"),
             },
         )
+
+    @staticmethod
+    def _optional_action_tag(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        return normalized or None

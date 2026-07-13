@@ -17,11 +17,21 @@ class BehaviorManager:
         self.behavior_map_path = Path(behavior_map_path)
         self.behavior_map = self._load_behavior_map()
 
-    def resolve(self, matched_skill: Skill | None = None) -> BehaviorEvent:
-        requested = matched_skill.behavior if matched_skill else self.store.get_behavior_state()
-        reason = "skill" if matched_skill else "fallback"
+    def resolve(self, matched_skill: Skill | None = None, action_motion_key: str | None = None) -> BehaviorEvent:
+        """解析動作優先序：技能 behavior、已驗證 action tag、同角色 fallback。"""
+        requested = (
+            matched_skill.behavior
+            if matched_skill
+            else (action_motion_key or self.store.get_behavior_state())
+        )
+        reason = "skill" if matched_skill else ("action_tag" if action_motion_key else "fallback")
         source_skill = matched_skill.name if matched_skill else None
-        behavior_id, webm_key = self._resolve_key(requested)
+        if action_motion_key and matched_skill is None:
+            # action tag 已由 CharacterLibrary 依 active manifest 驗證；它不必存在於
+            # 全域 behavior map，因為其 motion key 本身就是角色資產 key。
+            behavior_id, webm_key = action_motion_key, action_motion_key
+        else:
+            behavior_id, webm_key = self._resolve_key(requested)
         if matched_skill is None:
             self.store.set_behavior_state(behavior_id)
         return BehaviorEvent(
