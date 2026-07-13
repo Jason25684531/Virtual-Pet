@@ -40,8 +40,10 @@ def _get_api_key() -> str:
 def _classify_fast_fail(exc: Exception) -> tuple[str, str, bool]:
     response = getattr(exc, "response", None)
     status_code = getattr(response, "status_code", None)
-    if status_code == 529:
-        return "http_529", "VoAI concurrency limit exceeded", True
+    if status_code is not None:
+        # ponytail: any HTTP response (401/403 停用金鑰、429 額度、5xx 伺服器錯誤、529 併發上限)
+        # 都代表 VoAI 明確拒絕本次請求，應立即 fallback 到下一個 provider，而不是只認 529。
+        return f"http_{status_code}", f"VoAI request rejected (status {status_code})", True
     if isinstance(exc, requests.ConnectionError):
         return "connection_error", "VoAI connection failed before playback", True
     return "request_error", str(exc), False
@@ -180,7 +182,17 @@ class VoAIStreamingTTSWorker(QThread):
 
         api_key = _get_api_key()
         if not api_key:
-            self.finished_signal.emit(False, "略過 VoAI TTS：缺少 VOAI_API_KEY。", self._build_result_payload())
+            self.finished_signal.emit(
+                False,
+                "略過 VoAI TTS：缺少 VOAI_API_KEY。",
+                self._build_fast_fail_payload(
+                    stage="init",
+                    reason_code="missing_api_key",
+                    detail="VoAI TTS skipped: missing VOAI_API_KEY.",
+                    audio_format="mp3",
+                    transport="http",
+                ),
+            )
             return
 
         voice_cfg = config.get_voai_config_for_character(self._voice_id)
@@ -425,13 +437,29 @@ class VoAIStreamingTTSWorker(QThread):
                 self.finished_signal.emit(
                     False,
                     f"VoAI 回傳非音訊格式：{content_type}",
-                    self._build_result_payload(format="mp3"),
+                    self._build_fast_fail_payload(
+                        stage="mp3",
+                        reason_code="invalid_response",
+                        detail=f"VoAI returned non-audio content-type: {content_type}",
+                        audio_format="mp3",
+                        transport="http",
+                    ),
                 )
                 return
 
             audio_bytes = response.content
             if not audio_bytes:
-                self.finished_signal.emit(False, "VoAI 回傳空音訊。", self._build_result_payload(format="mp3"))
+                self.finished_signal.emit(
+                    False,
+                    "VoAI 回傳空音訊。",
+                    self._build_fast_fail_payload(
+                        stage="mp3",
+                        reason_code="empty_audio",
+                        detail="VoAI returned an empty audio body.",
+                        audio_format="mp3",
+                        transport="http",
+                    ),
+                )
                 return
 
             self.progress_signal.emit(
@@ -512,7 +540,13 @@ class VoAIStreamingTTSWorker(QThread):
             self.finished_signal.emit(
                 False,
                 f"VoAI TTS 取得失敗: {exc}",
-                self._build_result_payload(format="mp3"),
+                self._build_fast_fail_payload(
+                    stage="mp3",
+                    reason_code="unexpected_error",
+                    detail=str(exc),
+                    audio_format="mp3",
+                    transport="http",
+                ),
             )
         finally:
             if response is not None:

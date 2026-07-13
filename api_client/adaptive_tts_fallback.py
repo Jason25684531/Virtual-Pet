@@ -41,6 +41,7 @@ class AdaptiveTTSFallbackWorker(QObject):
         pcm_stream_sink=None,
         voai_worker_factory: Callable[..., object] | None = None,
         elevenlabs_worker_factory: Callable[..., object] | None = None,
+        resolved_tts_mode: str | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -57,11 +58,13 @@ class AdaptiveTTSFallbackWorker(QObject):
         self._pcm_stream_sink = pcm_stream_sink
         self._voai_worker_factory = voai_worker_factory or VoAIStreamingTTSWorker
         self._elevenlabs_worker_factory = elevenlabs_worker_factory or ElevenLabsStreamingTTSWorker
+        self._resolved_tts_mode = str(resolved_tts_mode or "voai_first").strip()
         self._running = False
         self._active_provider = ""
         self._active_worker = None
         self._workers: list[object] = []
         self._provider_chain: list[str] = []
+        self._fallback_reasons: list[tuple[str, str]] = []
         self._final_result_ready = False
 
     def start(self):
@@ -169,17 +172,25 @@ class AdaptiveTTSFallbackWorker(QObject):
         normalized_payload.setdefault("trace_id", self._trace_id)
         normalized_payload.setdefault("provider", provider)
         normalized_payload.setdefault("selected_provider", provider)
+        normalized_payload.setdefault("requested_mode", self._preferred_provider)
+        normalized_payload.setdefault("resolved_mode", self._resolved_tts_mode)
+        normalized_payload.setdefault("attempted_providers", list(self._provider_chain))
 
         if success:
+            normalized_payload["outcome"] = "success"
             self._finish(success, message, normalized_payload)
             return
 
         if provider == "voai" and normalized_payload.get("fast_fail"):
+            fallback_reason = normalized_payload.get("fast_fail", "unknown")
+            self._fallback_reasons.append(("voai", str(fallback_reason)))
             fallback_payload = dict(normalized_payload)
             fallback_payload.update(
                 {
                     "from_provider": "voai",
                     "to_provider": "elevenlabs",
+                    "fallback_reason": fallback_reason,
+                    "fallback_reasons": self._fallback_reasons,
                 }
             )
             self.progress_signal.emit("fallback_triggered", fallback_payload)
@@ -192,10 +203,13 @@ class AdaptiveTTSFallbackWorker(QObject):
                     "critical_tts_failure": True,
                     "text_only": True,
                     "provider_chain": list(self._provider_chain),
+                    "fallback_reasons": self._fallback_reasons,
+                    "outcome": "all_providers_failed",
                 }
             )
             self.progress_signal.emit("critical_tts_failure", normalized_payload)
 
+        normalized_payload.setdefault("outcome", "provider_failed")
         self._finish(False, message, normalized_payload)
 
     def _finish(self, success: bool, message: str, payload: dict):

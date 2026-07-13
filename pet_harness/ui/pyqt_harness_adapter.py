@@ -107,12 +107,13 @@ class PyQtHarnessAdapter:
         else:
             self._runtime_contract = {"brain_mode": "harness", "harness_runtime_available": True, "live_runtime_available": False, "openclaw_enabled": False}
 
-    def handle_text_input(self, text: str, provider: str = "mock") -> dict[str, Any]:
+    def handle_text_input(self, text: str, provider: str | None = None) -> dict[str, Any]:
         cleaned = str(text or "").strip()
         if not cleaned:
             raise ValueError("text input cannot be empty")
         self._refresh_runtime()
-        self._set_provider(provider)
+        if provider is not None:
+            self._set_provider(provider)
         previous_progress = self.store.get_user_progress()
         event = self.router.dispatch_event({"text": cleaned, "source": "pyqt_ui"})
         self.store.set_setting(LAST_XP_KEY, event.xp_delta)
@@ -191,14 +192,16 @@ class PyQtHarnessAdapter:
     def _build_tts_provider_status(self) -> dict[str, Any]:
         """构建 TTS provider 状态."""
         voice_status = self._voice_status_adapter.get_status()
+        resolved_mode, resolution_reason = config.resolve_tts_runtime_mode()
 
         return {
+            "resolved_mode": resolved_mode,
+            "resolution_reason": resolution_reason,
             "requested_mode": "voai_first",
-            "resolved_mode": "voai_first",
-            "attempted_providers": ["voai"],
-            "selected_provider": "voai",
+            "attempted_providers": [],
+            "selected_provider": None,
             "fallback_reason": None,
-            "outcome": "success",
+            "outcome": None,
             "status": voice_status.tts_primary_status,
         }
 
@@ -422,12 +425,18 @@ class PyQtHarnessAdapter:
         self.engine.provider = create_provider(config)
 
     def _bootstrap_primary_provider(self) -> None:
+        """bootstrap primary provider: use API if available, otherwise fallback to mock."""
+        api_key_var = self._select_existing_api_key_env_var()
+        if api_key_var:
+            config = self.build_provider_config("api")
+            self.store.set_provider_config(config)
+            self.engine.provider_config = config
+            self.engine.provider = create_provider(config)
+            return
         current = self.store.get_provider_config()
-        if current.provider_type is not ProviderType.MOCK:
+        if current.provider_type is ProviderType.MOCK:
             return
-        if self._select_existing_api_key_env_var() is None:
-            return
-        config = self.build_provider_config("api")
+        config = self.build_provider_config("mock")
         self.store.set_provider_config(config)
         self.engine.provider_config = config
         self.engine.provider = create_provider(config)

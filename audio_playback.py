@@ -107,7 +107,7 @@ class FfplayPcmAudioPlayer:
                 "s16le",
                 "-ar",
                 str(self._sample_rate),
-                "-ac",
+                "-ch_layout",
                 str(self._channels),
                 "-i",
                 "pipe:0",

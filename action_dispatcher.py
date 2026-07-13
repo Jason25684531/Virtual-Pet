@@ -973,6 +973,9 @@ class ActionDispatcher(QObject):
                 worker_kwargs["fallback_voice_id"] = config.get_elevenlabs_voice_id_for_character(current_character_id)
             if "preferred_provider" in signature.parameters and preferred_provider:
                 worker_kwargs["preferred_provider"] = preferred_provider
+            if "resolved_tts_mode" in signature.parameters:
+                resolved_mode, _ = config.resolve_tts_runtime_mode()
+                worker_kwargs["resolved_tts_mode"] = resolved_mode
             if "pcm_stream_sink" in signature.parameters:
                 worker_kwargs["pcm_stream_sink"] = self._audio_worker
         except (TypeError, ValueError):

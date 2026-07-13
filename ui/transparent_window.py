@@ -138,7 +138,7 @@ class HarnessInteractionWorker(QThread):
     finished_payload = pyqtSignal(dict)
     failed_message = pyqtSignal(str)
 
-    def __init__(self, adapter: PyQtHarnessAdapter, text: str, provider: str, parent=None) -> None:
+    def __init__(self, adapter: PyQtHarnessAdapter, text: str, provider: str | None, parent=None) -> None:
         super().__init__(parent)
         self._adapter = adapter
         self._text = text
@@ -1415,9 +1415,9 @@ class TransparentWindow(QMainWindow):
         self.set_action_status("Live Conversation queued.", tone="working", timeout_ms=0)
 
     def _on_developer_query_submitted(self, text: str) -> None:
-        self.submit_agentic_text(text, "mock")
+        self.submit_agentic_text(text, None)
 
-    def submit_agentic_text(self, text: str, provider: str) -> None:
+    def submit_agentic_text(self, text: str, provider: str | None) -> None:
         cleaned = str(text or "").strip()
         if not cleaned:
             self.set_action_status("Please enter text first.", tone="warn", timeout_ms=2200)
@@ -1439,6 +1439,10 @@ class TransparentWindow(QMainWindow):
         webm_key = str(payload.get("webm_key") or "").strip()
         if webm_key:
             self.play_action_motion(webm_key)
+        reply_text = str(payload.get("reply") or "").strip()
+        if reply_text:
+            trace_id = f"agentic-{uuid4().hex}"
+            self.speak_text(reply_text, trace_id=trace_id, has_action=bool(webm_key))
         self.refresh_agentic_ui(
             event_payload=payload,
             message="Interaction complete.",
