@@ -9,8 +9,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from pet_harness.agent.ollama_provider import OllamaProvider
 from pet_harness.engine.harness_engine import PetHarnessEngine
 from pet_harness.models.provider import ProviderConfig, ProviderType
+from pet_harness.runtime.provider_runtime import ProviderRuntime
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--snapshot-path",
         default=str(Path("debug") / "events" / "latest_pet_event.json"),
     )
-    parser.add_argument("--provider", choices=["mock", "api", "low_spec"])
+    parser.add_argument("--provider", choices=["api", "ollama"])
     parser.add_argument("--provider-base-url")
     parser.add_argument("--model")
     parser.add_argument("--show-prompt", action="store_true")
@@ -54,18 +56,22 @@ def build_provider_config(args: argparse.Namespace) -> ProviderConfig | None:
         base_url=args.provider_base_url,
         model_name=args.model or ("demo-model" if provider_type is ProviderType.API else None),
         api_key_env_var="ECHOES_API_KEY" if provider_type is ProviderType.API else None,
-        fallback_provider=ProviderType.LOW_SPEC,
         routing_fallback_enabled=provider_type is ProviderType.API,
     )
 
 
 def main() -> int:
     args = build_parser().parse_args()
+    runtime = ProviderRuntime()
+    provider_config = build_provider_config(args)
+    if provider_config is not None:
+        runtime.configure(provider_config)
     engine = PetHarnessEngine(
+        provider=runtime,
         agentic_root=Path(args.agentic_root),
         db_path=Path(args.db_path),
         snapshot_path=Path(args.snapshot_path),
-        provider_config=build_provider_config(args),
+        provider_config=provider_config,
     )
 
     if args.text is not None:
@@ -91,9 +97,17 @@ def main() -> int:
         if not args.show_asset_result:
             output = {"status": output["asset_result"]["status"]}
     elif args.ollama_health:
-        output = engine.ollama_health()
+        ollama = OllamaProvider(
+            runtime.get_config()
+            or ProviderConfig(provider_type=ProviderType.OLLAMA, base_url=args.provider_base_url)
+        )
+        output = {"provider_status": ollama.provider_status_from_health().to_dict()}
     elif args.ollama_model:
-        output = engine.ollama_model(args.ollama_model)
+        ollama = OllamaProvider(
+            runtime.get_config()
+            or ProviderConfig(provider_type=ProviderType.OLLAMA, base_url=args.provider_base_url)
+        )
+        output = {"model_check": ollama.check_model(args.ollama_model)}
     elif args.state:
         output = engine.state_snapshot()
     elif args.recent_events:

@@ -4,8 +4,8 @@ from pathlib import Path
 import pytest
 
 import pet_harness.character.profile as profile_module
-from pet_harness.agent.mock_provider import MockProvider
 from pet_harness.engine.harness_engine import PetHarnessEngine
+from tests.conftest import FakeProvider
 
 _SKILL_FIXTURES = {
     "joke_skill": {"trigger": "joke, funny", "behavior": "laugh", "xp_reward": "5"},
@@ -81,7 +81,7 @@ def _build_engine(agentic_root: Path, tmp_path: Path, character_id: str | None, 
         agentic_root=agentic_root,
         db_path=db_path or (tmp_path / "legacy_pet_state.db"),
         snapshot_path=tmp_path / "debug" / "latest_pet_event.json",
-        provider=MockProvider(),
+        provider=FakeProvider(),
         character_id=character_id,
     )
 

@@ -6,14 +6,14 @@ import re
 from pathlib import Path
 from typing import Any
 
-
-from pet_harness.agent.provider_factory import create_provider
+import config
 from pet_harness.character.registry import CharacterRegistry
 from pet_harness.character.router import CharacterRouter
 from pet_harness.engine.harness_engine import PetHarnessEngine
 from pet_harness.models.events import PetEvent
 from pet_harness.models.provider import ProviderConfig, ProviderType
 from pet_harness.models.skill import Skill
+from pet_harness.runtime.provider_runtime import ProviderRuntime, migrate_legacy_provider_config
 from pet_harness.skills.skill_loader import SkillLoader
 from pet_harness.skills.skill_router import SkillRouter
 from pet_harness.storage.sqlite_store import SQLiteStore
@@ -52,22 +52,33 @@ class PyQtHarnessAdapter:
         voice_status_adapter: VoiceRuntimeStatusAdapter | None = None,
         brain_mode: str = "harness",
         runtime_contract: dict[str, Any] | None = None,
+        provider_runtime: ProviderRuntime | None = None,
     ) -> None:
         self.agentic_root = Path(agentic_root)
         self.skills_root = self.agentic_root / "skills"
         self.user_skills_root = self.skills_root / "user"
-        self._character_registry = CharacterRegistry()
-        self.router = CharacterRouter(registry=self._character_registry, agentic_root=str(self.agentic_root))
-        self.router.switch_character(default_character_id)
-        self.character_service = CharacterUiService(router=self.router, registry=self._character_registry)
         self._project_root = self.agentic_root.parent
         self._project_env = self._load_project_env()
+        # composition root:一個 application session 只有一個 ProviderRuntime,
+        # 角色切換共用它;先遷移舊角色 DB 內的 provider 設定再啟動 router。
+        self.provider_runtime = provider_runtime or ProviderRuntime()
+        migration = migrate_legacy_provider_config(self.provider_runtime)
+        if migration.get("migrated_from"):
+            print(f"[HARNESS] provider config migrated from {migration['migrated_from']}")
+        self._character_registry = CharacterRegistry()
+        self.router = CharacterRouter(
+            registry=self._character_registry,
+            agentic_root=str(self.agentic_root),
+            provider_runtime=self.provider_runtime,
+        )
+        self._bootstrap_primary_provider()
+        self.router.switch_character(default_character_id)
+        self.character_service = CharacterUiService(router=self.router, registry=self._character_registry)
         self._brain_mode = str(brain_mode or "harness")
         self._background_resolver = background_resolver or BackgroundResolver(project_root=self._project_root)
         self._voice_status_adapter = voice_status_adapter or VoiceRuntimeStatusAdapter()
         _default_contract = {"brain_mode": "harness", "harness_runtime_available": True, "live_runtime_available": False, "openclaw_enabled": False}
         self._runtime_contract = dict(runtime_contract or _default_contract)
-        self._bootstrap_primary_provider()
         self._refresh_runtime()
         self._log_active_character_diagnostics()
 
@@ -107,13 +118,13 @@ class PyQtHarnessAdapter:
         else:
             self._runtime_contract = {"brain_mode": "harness", "harness_runtime_available": True, "live_runtime_available": False, "openclaw_enabled": False}
 
-    def handle_text_input(self, text: str, provider: str | None = None) -> dict[str, Any]:
+    def handle_text_input(self, text: str) -> dict[str, Any]:
+        """文字提交只接受 text;Provider 選擇是 application 層設定,
+        不可由訊息參數覆寫(要換 Provider 走 configure_provider)。"""
         cleaned = str(text or "").strip()
         if not cleaned:
             raise ValueError("text input cannot be empty")
         self._refresh_runtime()
-        if provider is not None:
-            self._set_provider(provider)
         previous_progress = self.store.get_user_progress()
         event = self.router.dispatch_event({"text": cleaned, "source": "pyqt_ui"})
         self.store.set_setting(LAST_XP_KEY, event.xp_delta)
@@ -125,8 +136,9 @@ class PyQtHarnessAdapter:
         latest_event = self._load_latest_snapshot()
         skills = self.list_skills()
         tools = self.list_tools()
-        provider_config = self.store.get_provider_config().to_dict()
-        provider_status = state.get("provider_status") or self.store.get_provider_status()
+        runtime_config = self.provider_runtime.get_config()
+        provider_config = runtime_config.to_dict() if runtime_config else {}
+        provider_status = self.provider_runtime.get_status().to_dict()
         xp_state = self._build_xp_state(
             state.get("user_progress") or self.store.get_user_progress(),
             self._last_xp_delta(),
@@ -159,34 +171,26 @@ class PyQtHarnessAdapter:
         }
 
     def get_provider_status(self) -> dict[str, Any]:
-        """获取当前活跃角色的 provider 运行时状态，包括 TTS/AI/STT."""
+        """全域 ProviderRuntime 狀態(角色切換前後一致),附 active character id 供 UI 對照。"""
         self._refresh_runtime()
-        active_char = self.router.get_active_character()
-        provider_config = self.store.get_provider_config() if active_char else None
-
-        ai_status = self._build_ai_provider_status(provider_config)
-        tts_status = self._build_tts_provider_status()
-        stt_status = self._build_stt_provider_status()
-
+        snapshot = self.router.get_active_snapshot()
         return {
-            "ai": ai_status,
-            "tts": tts_status,
-            "stt": stt_status,
+            "ai": self._build_ai_provider_status(),
+            "tts": self._build_tts_provider_status(),
+            "stt": self._build_stt_provider_status(),
+            "active_character_id": snapshot.character_id if snapshot else None,
         }
 
-    def _build_ai_provider_status(self, provider_config: ProviderConfig | None) -> dict[str, Any]:
-        """构建 AI provider 状态."""
-        if not provider_config:
-            return {"provider": "none", "status": "unconfigured", "api_key_available": False}
-
-        ai_provider = provider_config.model_name or "gpt-4o-mini"
-        env_var = provider_config.api_key_env_var
-        has_key = bool(env_var and str(env_var).strip()) or bool(os.environ.get(env_var or ""))
-
+    def _build_ai_provider_status(self) -> dict[str, Any]:
+        """AI provider 狀態一律來自全域 runtime,不讀角色 store,不含 secret。"""
+        payload = self.provider_runtime.status_payload()
         return {
-            "provider": ai_provider,
-            "status": "ready" if has_key else "missing_config",
-            "api_key_available": has_key,
+            "provider": payload.get("selected_provider") or "none",
+            "model_name": payload.get("model_name"),
+            "status": "ready" if payload.get("healthy") else (payload.get("error_category") or "unavailable"),
+            "healthy": bool(payload.get("healthy")),
+            "message": payload.get("message"),
+            "api_key_available": payload.get("api_key_status") == "configured",
         }
 
     def _build_tts_provider_status(self) -> dict[str, Any]:
@@ -217,7 +221,7 @@ class PyQtHarnessAdapter:
     def list_skills(self) -> list[dict[str, Any]]:
         disabled = self._skill_disabled_map()
         active_char = self.router.get_active_character()
-        char_skill_names = set(active_char.skill_config) if active_char else set()
+        char_skill_names = set(active_char.allowed_skill_refs) if active_char else set()
         items: list[dict[str, Any]] = []
         for skill in self._load_all_skills():
             path = Path(skill.file_path or "")
@@ -387,8 +391,8 @@ class PyQtHarnessAdapter:
         all_skills = self._load_all_skills()
         active_char = self.router.get_active_character()
 
-        if active_char and active_char.skill_config:
-            char_skill_names = set(active_char.skill_config)
+        if active_char and active_char.allowed_skill_refs:
+            char_skill_names = set(active_char.allowed_skill_refs)
             return [skill for skill in all_skills if skill.name in char_skill_names and not disabled.get(skill.name, False)]
 
         return [skill for skill in all_skills if not disabled.get(skill.name, False)]
@@ -406,40 +410,32 @@ class PyQtHarnessAdapter:
                 or self._project_env.get("OPENAI_MODEL")
                 or "gpt-4o-mini",
                 api_key_env_var=api_key_env_var,
-                fallback_provider=ProviderType.LOW_SPEC,
                 routing_fallback_enabled=True,
             )
         return ProviderConfig(
-            provider_type=provider_type,
-            base_url=None,
-            model_name=None,
+            provider_type=ProviderType.OLLAMA,
+            base_url=self._project_env.get("OLLAMA_BASE_URL") or "http://localhost:11434",
+            model_name=self._project_env.get("OLLAMA_MODEL"),
             api_key_env_var=None,
-            fallback_provider=ProviderType.LOW_SPEC,
             routing_fallback_enabled=False,
         )
 
-    def _set_provider(self, provider: str) -> None:
-        config = self.build_provider_config(provider)
-        self.store.set_provider_config(config)
-        self.engine.provider_config = config
-        self.engine.provider = create_provider(config)
+    def configure_provider(self, provider: str) -> dict[str, Any]:
+        """受控的 settings 入口:設定全域 Provider(api/ollama),回傳 secret-safe 狀態。"""
+        status = self.provider_runtime.configure(self.build_provider_config(provider))
+        return self._mask_payload(status.to_dict())
 
     def _bootstrap_primary_provider(self) -> None:
-        """bootstrap primary provider: use API if available, otherwise fallback to mock."""
-        api_key_var = self._select_existing_api_key_env_var()
-        if api_key_var:
-            config = self.build_provider_config("api")
-            self.store.set_provider_config(config)
-            self.engine.provider_config = config
-            self.engine.provider = create_provider(config)
+        """未設定全域 Provider 且環境有 API key 時,預設啟用 API;
+        否則維持未設定(fail-closed unavailable),絕不退回 mock。
+        測試注入的 provider_runtime 不得被自動配置覆寫。"""
+        if self.provider_runtime.is_test_injected:
             return
-        current = self.store.get_provider_config()
-        if current.provider_type is ProviderType.MOCK:
+        if self.provider_runtime.get_config() is not None:
+            self.provider_runtime.refresh_status()
             return
-        config = self.build_provider_config("mock")
-        self.store.set_provider_config(config)
-        self.engine.provider_config = config
-        self.engine.provider = create_provider(config)
+        if self._select_existing_api_key_env_var():
+            self.provider_runtime.configure(self.build_provider_config("api"))
 
     def _build_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
@@ -598,7 +594,7 @@ class PyQtHarnessAdapter:
         provider_config: dict[str, Any],
         provider_status: dict[str, Any],
     ) -> dict[str, Any]:
-        selected = str(provider_config.get("provider_type") or "mock")
+        selected = str(provider_config.get("provider_type") or "none")
         resolved = str(provider_status.get("provider_type") or selected)
         api_key_env_var = provider_config.get("api_key_env_var") or "OPENAI_API_KEY"
         key_available = bool(self._project_env.get(str(api_key_env_var)) or os.environ.get(str(api_key_env_var)))
@@ -619,7 +615,6 @@ class PyQtHarnessAdapter:
                 "api_key_env_var": api_key_env_var,
                 "api_key_status": "configured" if key_available else "missing",
                 "model_name": provider_config.get("model_name"),
-                "fallback_provider": provider_config.get("fallback_provider"),
             }
         )
 

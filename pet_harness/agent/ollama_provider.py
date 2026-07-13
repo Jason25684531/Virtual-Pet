@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import json
 from typing import Any, Callable
 
 import requests
 
-from pet_harness.agent.low_spec_provider import LowSpecProvider
 from pet_harness.agent.provider_adapter import ProviderReply
 from pet_harness.models.events import UserEvent
 from pet_harness.models.provider import ProviderConfig, ProviderStatus, ProviderType
@@ -23,19 +21,57 @@ class OllamaProvider:
         matched_skill: Skill | None = None,
         prompt_text: str | None = None,
     ) -> ProviderReply:
-        fallback = LowSpecProvider().generate_reply(event, matched_skill=matched_skill, prompt_text=prompt_text)
+        base_url = self.config.base_url or "http://localhost:11434"
+        prompt = prompt_text or event.text
+        try:
+            response = self.request_fn(
+                "POST",
+                f"{base_url}/api/generate",
+                timeout=self.config.timeout_seconds,
+                json={
+                    "model": self.config.model_name,
+                    "prompt": prompt,
+                    "stream": False,
+                },
+            )
+            if getattr(response, "status_code", 500) >= 400:
+                return self._unavailable_reply(
+                    prompt, "ollama_http_error",
+                    f"Ollama returned status {response.status_code}.",
+                )
+            payload = response.json()
+        except Exception as exc:  # noqa: BLE001 - fail-closed,不偽造回覆
+            return self._unavailable_reply(prompt, "ollama_unavailable", f"Ollama request failed: {exc}")
+
+        content = str(payload.get("response") or "").strip()
+        if not content:
+            return self._unavailable_reply(prompt, "invalid_response_shape", "Ollama response had no content.")
+
         return ProviderReply(
-            reply=fallback.reply,
+            reply=content,
+            provider_status=ProviderStatus(
+                provider_type=ProviderType.OLLAMA,
+                healthy=True,
+                message="ollama provider ready",
+                metadata={"model_name": self.config.model_name, "base_url": base_url},
+            ),
+            raw_text=content,
+            raw_json=payload,
+            prompt_text=prompt,
+        )
+
+    def _unavailable_reply(self, prompt_text: str, error_category: str, message: str) -> ProviderReply:
+        metadata = {"error_category": error_category, "requested_provider": ProviderType.OLLAMA.value}
+        return ProviderReply(
+            reply=f"AI provider unavailable: {message}",
             provider_status=ProviderStatus(
                 provider_type=ProviderType.OLLAMA,
                 healthy=False,
-                message="Ollama reply generation not enabled in Week 3.",
-                metadata={"error_category": "ollama_unavailable", "fallback_provider": "low_spec"},
+                message=message,
+                metadata=metadata,
             ),
-            behavior_hint=fallback.behavior_hint,
-            raw_text=json.dumps({"reply": fallback.reply, "notes": "ollama prep fallback"}, ensure_ascii=False),
-            raw_json={"reply": fallback.reply},
             prompt_text=prompt_text,
+            metadata=metadata,
         )
 
     def health_check(self) -> dict[str, Any]:
@@ -81,5 +117,5 @@ class OllamaProvider:
             "metadata": metadata,
         }
 
-    def _default_request(self, method: str, url: str, timeout: float):
-        return requests.request(method, url, timeout=timeout)
+    def _default_request(self, method: str, url: str, timeout: float, json: Any | None = None):
+        return requests.request(method, url, timeout=timeout, json=json)

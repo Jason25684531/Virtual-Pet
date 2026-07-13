@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import json
 import os
 from typing import Any, Callable
 
 import requests
 
-from pet_harness.agent.low_spec_provider import LowSpecProvider
-from pet_harness.agent.mock_provider import MockProvider
 from pet_harness.agent.provider_adapter import ProviderReply
 from pet_harness.models.events import UserEvent
 from pet_harness.models.provider import ProviderConfig, ProviderStatus, ProviderType
@@ -155,35 +152,21 @@ class APIProvider:
         message: str,
         extra_metadata: dict[str, Any] | None = None,
     ) -> ProviderReply:
-        fallback_provider = self._resolve_fallback_provider()
-        fallback_reply = fallback_provider.generate_reply(
-            event,
-            matched_skill=matched_skill,
-            prompt_text=prompt_text,
-        )
+        # fail-closed:不偽造回覆,回傳結構化 unavailable 結果。
         metadata = {
             "error_category": error_category,
-            "fallback_provider": fallback_reply.provider_status.provider_type.value,
             "requested_provider": ProviderType.API.value,
         }
         if extra_metadata:
             metadata.update(extra_metadata)
         return ProviderReply(
-            reply=fallback_reply.reply,
+            reply=f"AI provider unavailable: {message}",
             provider_status=ProviderStatus(
-                provider_type=fallback_reply.provider_status.provider_type,
+                provider_type=ProviderType.API,
                 healthy=False,
                 message=message,
                 metadata=metadata,
             ),
-            behavior_hint=fallback_reply.behavior_hint,
-            raw_text=fallback_reply.raw_text,
-            raw_json=fallback_reply.raw_json,
             prompt_text=prompt_text,
             metadata=metadata,
         )
-
-    def _resolve_fallback_provider(self):
-        if self.config.fallback_provider is ProviderType.MOCK:
-            return MockProvider()
-        return LowSpecProvider()

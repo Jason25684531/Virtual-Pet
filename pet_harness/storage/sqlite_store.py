@@ -7,7 +7,6 @@ from typing import Any
 
 from pet_harness.asset.asset_contract import AssetRequest, AssetResponse
 from pet_harness.models.events import RewardEvent, utc_now
-from pet_harness.models.provider import ProviderConfig, ProviderStatus
 from pet_harness.models.skill import Skill
 from pet_harness.tools.tool_models import ToolResult
 
@@ -43,9 +42,7 @@ class SQLiteStore:
                 """,
                 (utc_now(),),
             )
-            provider_row = conn.execute("SELECT 1 FROM provider_status LIMIT 1").fetchone()
-            if provider_row is None:
-                self._set_provider_status(conn, ProviderStatus())
+            # provider config/status 已全域化(ProviderRuntime),角色 store 不再讀寫。
 
     def sync_skills(self, skills: list[Skill]) -> None:
         with self.connect() as conn:
@@ -193,51 +190,6 @@ class SQLiteStore:
                 "SELECT behavior_id FROM behavior_state WHERE state_key = 'default'"
             ).fetchone()
         return str(row["behavior_id"]) if row else "idle"
-
-    def set_provider_status(self, status: ProviderStatus) -> None:
-        with self.connect() as conn:
-            self._set_provider_status(conn, status)
-
-    def _set_provider_status(self, conn: sqlite3.Connection, status: ProviderStatus) -> None:
-        payload = status.to_dict()
-        conn.execute(
-            """
-            INSERT INTO provider_status
-            (provider_type, healthy, message, checked_at, metadata_json)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(provider_type) DO UPDATE SET
-                healthy=excluded.healthy,
-                message=excluded.message,
-                checked_at=excluded.checked_at,
-                metadata_json=excluded.metadata_json
-            """,
-            (
-                payload["provider_type"],
-                int(payload["healthy"]),
-                payload["message"],
-                payload["checked_at"],
-                json.dumps(payload["metadata"], ensure_ascii=False),
-            ),
-        )
-
-    def get_provider_status(self) -> dict[str, Any]:
-        with self.connect() as conn:
-            row = conn.execute("SELECT * FROM provider_status ORDER BY checked_at DESC LIMIT 1").fetchone()
-        if not row:
-            return ProviderStatus().to_dict()
-        return {
-            "provider_type": row["provider_type"],
-            "healthy": bool(row["healthy"]),
-            "message": row["message"],
-            "checked_at": row["checked_at"],
-            "metadata": json.loads(row["metadata_json"] or "{}"),
-        }
-
-    def set_provider_config(self, config: ProviderConfig) -> None:
-        self.set_setting("provider_config", config.to_dict())
-
-    def get_provider_config(self) -> ProviderConfig:
-        return ProviderConfig.from_dict(self.get_setting("provider_config"))
 
     def set_setting(self, key: str, value: Any) -> None:
         with self.connect() as conn:
@@ -387,8 +339,6 @@ class SQLiteStore:
             "inventory": self.list_inventory(),
             "reward_unlocks": self.list_reward_unlocks(),
             "behavior_state": self.get_behavior_state(),
-            "provider_config": self.get_provider_config().to_dict(),
-            "provider_status": self.get_provider_status(),
             "tool_results": self.recent_tool_results(limit=10),
             "asset_manifest": self.list_asset_manifest(limit=10),
         }

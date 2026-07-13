@@ -1,9 +1,18 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 import json
+import logging
 import re
 
 from pet_harness.character.exceptions import InvalidCharacterIdError
+from pet_harness.character.personal import (
+    CharacterPersonal,
+    PersonalValidationError,
+    load_local_skills,
+    load_personal,
+)
+
+_LOGGER = logging.getLogger(__name__)
 
 _ID_PATTERN = re.compile(r"^[a-zA-Z0-9_]+$")
 
@@ -30,6 +39,9 @@ class CharacterProfile:
 
     # 來自 manifest.json（可選，預設 False 以向後相容舊 manifest）
     is_preset: bool = False
+
+    # 來自 personal.json(可選;驗證失敗時為 None,角色以 profile.json 預設運作)
+    personal: CharacterPersonal | None = None
 
     # 自動計算
     sqlite_path: str = field(init=False)
@@ -61,6 +73,16 @@ class CharacterProfile:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         profile = json.loads(profile_path.read_text(encoding="utf-8"))
 
+        character_data_dir = _PROJECT_ROOT / "data" / "characters" / character_id
+        try:
+            personal = load_personal(character_id, character_data_dir)
+            if personal is not None and personal.local_skill_refs:
+                # 先驗證 local skills;任一非法即整份 personal 拒絕,不部分啟用。
+                load_local_skills(character_id, personal.local_skill_refs, character_data_dir)
+        except PersonalValidationError as exc:
+            _LOGGER.warning("personal.json rejected for %s: %s", character_id, exc)
+            personal = None
+
         return cls(
             character_id=manifest["id"],
             name=manifest["name"],
@@ -73,7 +95,34 @@ class CharacterProfile:
             persona_description=profile["persona_description"],
             skill_config=profile["skill_config"],
             is_preset=bool(manifest.get("is_preset", False)),
+            personal=personal,
         )
+
+    @property
+    def effective_persona(self) -> str:
+        """personal.persona 優先;否則相容讀取舊 profile.json 的 persona_description。"""
+        if self.personal is not None and self.personal.persona:
+            return self.personal.persona
+        return self.persona_description
+
+    @property
+    def allowed_skill_refs(self) -> list[str]:
+        """profile.json skill_config + personal 宣告的內建 skill_refs(去重、保序)。"""
+        refs = list(self.skill_config)
+        if self.personal is not None:
+            refs.extend(ref for ref in self.personal.skill_refs if ref not in refs)
+        return refs
+
+    def load_local_skills(self) -> list:
+        """載入此角色 personal 宣告的 character-local metadata-only skills。"""
+        if self.personal is None or not self.personal.local_skill_refs:
+            return []
+        character_data_dir = _PROJECT_ROOT / "data" / "characters" / self.character_id
+        try:
+            return load_local_skills(self.character_id, self.personal.local_skill_refs, character_data_dir)
+        except PersonalValidationError as exc:
+            _LOGGER.warning("local skills rejected for %s: %s", self.character_id, exc)
+            return []
 
     def save(self) -> None:
         """只寫 profile.json，永不修改 manifest.json。"""

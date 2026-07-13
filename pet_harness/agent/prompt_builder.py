@@ -23,6 +23,7 @@ class PromptBuilder:
         skills: list[Skill],
         state_snapshot: dict,
         matched_skill: Skill | None = None,
+        persona: str | None = None,
     ) -> PromptBuildResult:
         warnings: list[str] = []
         soul_text = self._read_optional(self.agentic_root / "soul.md", "Soul context unavailable.", warnings)
@@ -45,6 +46,9 @@ class PromptBuilder:
                 "",
                 "## Agentic Notes",
                 agentic_text,
+                "",
+                "## Character Persona",
+                persona.strip() if persona else "No persona configured.",
                 "",
                 "## Available Skills",
                 "\n".join(skill_lines) if skill_lines else "- none",

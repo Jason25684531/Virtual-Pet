@@ -5,9 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from pet_harness.agent.ollama_provider import OllamaProvider
 from pet_harness.agent.prompt_builder import PromptBuilder
-from pet_harness.agent.provider_factory import create_provider
 from pet_harness.agent.provider_adapter import LLMProviderAdapter
 from pet_harness.agent.result_parser import ResultParser
 from pet_harness.asset.mock_asset_service import MockAssetService
@@ -15,7 +13,7 @@ from pet_harness.behavior.behavior_manager import BehaviorManager
 from pet_harness.character.profile import CharacterProfile
 from pet_harness.models.events import PetEvent, ToolRequestEvent, UserEvent
 from pet_harness.models.agent_result import AgentResult
-from pet_harness.models.provider import ProviderConfig, ProviderType
+from pet_harness.models.provider import ProviderConfig
 from pet_harness.models.skill import Skill
 from pet_harness.skills.skill_loader import SkillLoader
 from pet_harness.skills.skill_router import SkillRouter
@@ -32,12 +30,11 @@ LOGGER = logging.getLogger(__name__)
 class PetHarnessEngine:
     def __init__(
         self,
+        provider: LLMProviderAdapter,
         agentic_root: str | Path = Path(".agentic"),
         db_path: str | Path = Path("data") / "pet_state.db",
         snapshot_path: str | Path = Path("debug") / "events" / "latest_pet_event.json",
-        provider: LLMProviderAdapter | None = None,
         provider_config: ProviderConfig | None = None,
-        request_fn=None,
         character_id: str | None = None,
     ) -> None:
         self.agentic_root = Path(agentic_root)
@@ -53,14 +50,15 @@ class PetHarnessEngine:
         self.store = SQLiteStore(effective_db_path)
         self.store.initialize()
 
-        if provider_config is not None:
-            self.store.set_provider_config(provider_config)
-        self.provider_config = provider_config or self.store.get_provider_config()
-        self.provider = provider or create_provider(self.provider_config, request_fn=request_fn)
+        # provider 由 ProviderRuntime 注入;provider_config 僅保留路由偏好,
+        # 角色 store 不再持久化任何 provider 設定或狀態。
+        self.provider_config = provider_config
+        self.provider = provider
 
         self.skills = SkillLoader(self.agentic_root / "skills").load_skills()
         if self._profile is not None:
-            self.skills = self._filter_skills_by_config(self.skills, self._profile.skill_config)
+            self.skills = self._filter_skills_by_config(self.skills, self._profile.allowed_skill_refs)
+            self.skills.extend(self._profile.load_local_skills())
         self.store.sync_skills(self.skills)
         self.router = SkillRouter(self.skills)
         self.xp_manager = XPManager(self.store)
@@ -85,7 +83,9 @@ class PetHarnessEngine:
         """
         if self._profile is None:
             return skills
-        return self._filter_skills_by_config(skills, self._profile.skill_config)
+        filtered = self._filter_skills_by_config(skills, self._profile.allowed_skill_refs)
+        filtered.extend(self._profile.load_local_skills())
+        return filtered
 
     def _filter_skills_by_config(self, skills: list[Skill], skill_config: list[str]) -> list[Skill]:
         by_name = {skill.name: skill for skill in skills}
@@ -107,6 +107,7 @@ class PetHarnessEngine:
             skills=self.skills,
             state_snapshot=state_before,
             matched_skill=deterministic_skill,
+            persona=self._profile.effective_persona if self._profile else None,
         )
         self.last_prompt = prompt_result.prompt
         provider_reply = self.provider.generate_reply(
@@ -115,7 +116,6 @@ class PetHarnessEngine:
             prompt_text=prompt_result.prompt,
         )
         self.last_provider_raw_result = provider_reply.raw_text or provider_reply.reply
-        self.store.set_provider_status(provider_reply.provider_status)
         agent_result = self.result_parser.parse(
             self.last_provider_raw_result or provider_reply.reply,
             provider_type=provider_reply.provider_status.provider_type,
@@ -127,8 +127,8 @@ class PetHarnessEngine:
             user_event.text,
             suggested_skill_name=agent_result.matched_skill,
             suggested_confidence=agent_result.confidence,
-            allow_fallback=self.provider_config.routing_fallback_enabled,
-            confidence_threshold=self.provider_config.routing_confidence_threshold,
+            allow_fallback=self.provider_config.routing_fallback_enabled if self.provider_config else False,
+            confidence_threshold=self.provider_config.routing_confidence_threshold if self.provider_config else 0.7,
         )
 
         behavior_event = self.behavior_manager.resolve(matched_skill)
@@ -199,8 +199,6 @@ class PetHarnessEngine:
             "agentic_root": str(self.agentic_root),
             "skill_count": len(self.skills),
             "tool_count": len(self.tool_registry.list_definitions()),
-            "provider_config": self.store.get_provider_config().to_dict(),
-            "provider_status": self.store.get_provider_status(),
             "recent_tool_count": len(self.store.recent_tool_results(limit=10)),
             "asset_manifest_count": len(self.store.list_asset_manifest(limit=10)),
             "snapshot_path": str(self.snapshot_path),
@@ -247,30 +245,6 @@ class PetHarnessEngine:
             "asset_result": response.to_dict(),
             "asset_manifest": self.store.list_asset_manifest(limit=1),
         }
-
-    def ollama_health(self) -> dict[str, Any]:
-        config = ProviderConfig(
-            provider_type=ProviderType.OLLAMA,
-            base_url=self.provider_config.base_url or "http://localhost:11434",
-            model_name=self.provider_config.model_name,
-            timeout_seconds=self.provider_config.timeout_seconds,
-            fallback_provider=self.provider_config.fallback_provider,
-        )
-        provider = OllamaProvider(config)
-        status = provider.provider_status_from_health()
-        self.store.set_provider_status(status)
-        return {"provider_status": status.to_dict()}
-
-    def ollama_model(self, model_name: str) -> dict[str, Any]:
-        config = ProviderConfig(
-            provider_type=ProviderType.OLLAMA,
-            base_url=self.provider_config.base_url or "http://localhost:11434",
-            model_name=self.provider_config.model_name,
-            timeout_seconds=self.provider_config.timeout_seconds,
-            fallback_provider=self.provider_config.fallback_provider,
-        )
-        provider = OllamaProvider(config)
-        return {"model_check": provider.check_model(model_name)}
 
     def _write_snapshot(self, pet_event: PetEvent) -> None:
         self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)

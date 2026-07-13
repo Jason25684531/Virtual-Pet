@@ -11,8 +11,6 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from PyQt5.QtCore import QSettings
-
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 ASSETS_WEBM_DIR = PROJECT_ROOT / "assets" / "webm"
@@ -20,10 +18,6 @@ CHARACTER_LIBRARY_DIR = ASSETS_WEBM_DIR / "characters"
 UI_ASSETS_DIR = PROJECT_ROOT / "ui" / "assets"
 UI_BACKGROUNDS_DIR = UI_ASSETS_DIR / "backgrounds"
 UI_MUSIC_DIR = UI_ASSETS_DIR / "music"
-
-_SETTINGS_ORG = "ECHOES"
-_SETTINGS_APP = "VirtualPet"
-_SETTINGS_CURRENT_CHARACTER = "current_character_id"
 
 MOTION_SPECS = [
     {"key": "laugh", "title": "雀躍大笑", "filename": "laugh.webm", "play_once": True},
@@ -53,10 +47,10 @@ def _slugify(value: str) -> str:
 
 
 class CharacterLibrary:
-    """管理角色來源圖、輸出動作與目前套用角色。"""
+    """管理角色來源圖與輸出動作;只依傳入的 character_id 解析 manifest,
+    不保存 authoritative active character(唯一權威是 CharacterRouter snapshot)。"""
 
     def __init__(self):
-        self._settings = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
         CHARACTER_LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
         UI_MUSIC_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -132,7 +126,6 @@ class CharacterLibrary:
         manifest["positive_prompt"] = positive_prompt
         manifest["negative_prompt"] = negative_prompt
         self._save_manifest(character_id, manifest)
-        self.set_current_character_id(character_id)
         return manifest
 
     def get_motion_path(self, character_id: str, motion_key: str) -> str | None:
@@ -322,13 +315,6 @@ class CharacterLibrary:
         if not manifest:
             raise FileNotFoundError(f"找不到角色資料: {character_id}")
         return str(PROJECT_ROOT / manifest["motions_dir"])
-
-    def set_current_character_id(self, character_id: str):
-        self._settings.setValue(_SETTINGS_CURRENT_CHARACTER, character_id)
-
-    def get_current_character_id(self) -> str | None:
-        value = self._settings.value(_SETTINGS_CURRENT_CHARACTER, "", type=str)
-        return value or None
 
     def _manifest_path(self, character_id: str) -> Path:
         return CHARACTER_LIBRARY_DIR / character_id / "manifest.json"

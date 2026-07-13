@@ -8,37 +8,33 @@ from pet_harness.models.events import utc_now
 
 
 class ProviderType(str, Enum):
-    MOCK = "mock"
+    """產品 runtime 僅支援 api 與 ollama;mock/low_spec 已移除,測試請注入 fake adapter。"""
+
     API = "api"
     OLLAMA = "ollama"
-    OPENAI_COMPATIBLE = "openai_compatible"
-    LOW_SPEC = "low_spec"
 
 
 @dataclass
 class ProviderConfig:
-    provider_type: ProviderType = ProviderType.MOCK
+    provider_type: ProviderType
     base_url: str | None = None
     model_name: str | None = None
     api_key_env_var: str | None = None
     timeout_seconds: float = 15.0
-    fallback_provider: ProviderType = ProviderType.LOW_SPEC
     routing_fallback_enabled: bool = False
     routing_confidence_threshold: float = 0.7
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "ProviderConfig":
-        if not payload:
-            return cls()
-        fallback = payload.get("fallback_provider", ProviderType.LOW_SPEC.value)
+        if not payload or not payload.get("provider_type"):
+            raise ValueError("provider config requires provider_type ('api' or 'ollama')")
         return cls(
-            provider_type=ProviderType(payload.get("provider_type", ProviderType.MOCK.value)),
+            provider_type=ProviderType(payload["provider_type"]),
             base_url=payload.get("base_url"),
             model_name=payload.get("model_name"),
             api_key_env_var=payload.get("api_key_env_var"),
             timeout_seconds=float(payload.get("timeout_seconds", 15.0)),
-            fallback_provider=ProviderType(fallback),
             routing_fallback_enabled=bool(payload.get("routing_fallback_enabled", False)),
             routing_confidence_threshold=float(payload.get("routing_confidence_threshold", 0.7)),
             metadata=dict(payload.get("metadata") or {}),
@@ -47,15 +43,15 @@ class ProviderConfig:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["provider_type"] = self.provider_type.value
-        payload["fallback_provider"] = self.fallback_provider.value
         return payload
 
 
 @dataclass
 class ProviderStatus:
-    provider_type: ProviderType = ProviderType.MOCK
-    healthy: bool = True
-    message: str = "mock provider ready"
+    # provider_type=None 表示尚未設定任何 Provider(unconfigured)。
+    provider_type: ProviderType | None = None
+    healthy: bool = False
+    message: str = "provider not configured"
     checked_at: str = field(default_factory=utc_now)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -63,9 +59,10 @@ class ProviderStatus:
     def from_dict(cls, payload: dict[str, Any] | None) -> "ProviderStatus":
         if not payload:
             return cls()
+        raw_type = payload.get("provider_type")
         return cls(
-            provider_type=ProviderType(payload.get("provider_type", ProviderType.MOCK.value)),
-            healthy=bool(payload.get("healthy", True)),
+            provider_type=ProviderType(raw_type) if raw_type else None,
+            healthy=bool(payload.get("healthy", False)),
             message=str(payload.get("message", "")),
             checked_at=str(payload.get("checked_at") or utc_now()),
             metadata=dict(payload.get("metadata") or {}),
@@ -73,5 +70,5 @@ class ProviderStatus:
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
-        payload["provider_type"] = self.provider_type.value
+        payload["provider_type"] = self.provider_type.value if self.provider_type else None
         return payload

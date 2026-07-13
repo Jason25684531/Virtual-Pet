@@ -268,7 +268,7 @@ class ActionDispatcher(QObject):
         if self._current_loop_binding is not None or self._loop_action_service_pending or self.is_tts_busy:
             self._window.set_action_status("上一輪互動尚未完成，暫時無法觸發固定回覆。", tone="working", timeout_ms=2600)
             return False
-        current_character_id = self._call_library_method("get_current_character_id")
+        current_character_id = self._current_character_id()
         self._loop_action_service_pending = True
         self._window.set_action_status(binding.status_label, tone="working", timeout_ms=0)
         worker = self._create_service_worker(
@@ -479,7 +479,7 @@ class ActionDispatcher(QObject):
 
     def _handle_report_news(self, binding: ActionBinding, motion_found: bool):
         self._loop_action_service_pending = True
-        current_character_id = self._call_library_method("get_current_character_id")
+        current_character_id = self._current_character_id()
         if current_character_id:
             panel_path = self._call_library_method("get_panel_motion_path", current_character_id, "report_news")
             if panel_path and hasattr(self._window, "play_panel_video"):
@@ -506,7 +506,7 @@ class ActionDispatcher(QObject):
     def _handle_play_music(self, binding: ActionBinding, motion_found: bool):
         if hasattr(self._window, "stop_music"):
             self._window.stop_music()
-        current_character_id = self._call_library_method("get_current_character_id")
+        current_character_id = self._current_character_id()
         panel_path = None
         if current_character_id:
             panel_path = self._call_library_method("get_panel_motion_path", current_character_id, "play_music")
@@ -538,7 +538,7 @@ class ActionDispatcher(QObject):
 
     def _start_wave_response_worker(self, binding: ActionBinding, motion_found: bool):
         self._wave_greeting_delay_timer = None
-        current_character_id = self._call_library_method("get_current_character_id")
+        current_character_id = self._current_character_id()
         worker = self._create_service_worker(
             self._wave_worker_factory,
             parent=self,
@@ -761,7 +761,7 @@ class ActionDispatcher(QObject):
         if resolver_path:
             return resolver_path
 
-        current_character_id = self._call_library_method("get_current_character_id")
+        current_character_id = self._current_character_id()
         candidates: list[str | os.PathLike[str] | None] = []
         if current_character_id:
             candidates.append(
@@ -806,6 +806,17 @@ class ActionDispatcher(QObject):
         if not demo_filename:
             return None
         return os.path.join(os.fspath(animations_dir), demo_filename)
+
+    def _current_character_id(self) -> str | None:
+        """active character 唯一來源是 window 背後的 router snapshot,不讀持久化 UI 狀態。"""
+        getter = getattr(self._window, "get_current_character_id", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter()
+        except Exception as exc:  # noqa: BLE001 - 與 _call_library_method 相同的防禦策略
+            print(f"[ECHOES] 警告: 取得 active character 失敗: {exc}")
+            return None
 
     def _call_library_method(self, method_name: str, *args):
         method = getattr(self._library, method_name, None)
@@ -950,7 +961,7 @@ class ActionDispatcher(QObject):
             self._start_next_tts_worker()
             return
 
-        current_character_id = self._call_library_method("get_current_character_id")
+        current_character_id = self._current_character_id()
         factory_name = getattr(self._tts_worker_factory, "__name__", "")
         preferred_provider = self._trace_tts_providers.get(normalized_trace_id, "")
         if factory_name in {"VoAIStreamingTTSWorker", "AdaptiveTTSFallbackWorker"}:

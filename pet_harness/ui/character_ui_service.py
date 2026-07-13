@@ -88,10 +88,12 @@ class CharacterUiService:
         engine = self._router.get_active_engine()
         if profile is None or engine is None:
             raise NoActiveCharacterError("no active character to trigger a skill for")
-        if skill_id not in profile.skill_config:
-            raise ValueError(f"skill not available for active character: {skill_id}")
+        # engine.skills 即 active character 的 resolved skill 集合
+        # (profile skill_config + personal skill_refs + local skills)。
         skill = next((item for item in engine.skills if item.name == skill_id), None)
-        if skill is None or not skill.triggers:
+        if skill is None:
+            raise ValueError(f"skill not available for active character: {skill_id}")
+        if not skill.triggers:
             raise ValueError(f"skill has no trigger phrase configured: {skill_id}")
 
         event = self._router.dispatch_event({"text": skill.triggers[0], "source": "character_ui"})

@@ -112,7 +112,7 @@ class SettingsDialog(QDialog):
         self._worker: GenerationWorker | None = None
         self._pending_character_id: str | None = None
         self._init_ui()
-        self._reload_characters(select_id=self._library.get_current_character_id())
+        self._reload_characters(select_id=None)
 
     # ── UI 建構 ──────────────────────────────────────────
 
@@ -436,7 +436,6 @@ class SettingsDialog(QDialog):
             self._status.setText("請先選擇角色。")
             return
 
-        self._library.set_current_character_id(character_id)
         self.apply_character_requested.emit(character_id)
         self._status.setStyleSheet("font-size: 13px; color: #27ae60;")
         self._status.setText("已套用角色 idle 動畫。")

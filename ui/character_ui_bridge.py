@@ -97,6 +97,16 @@ class CharacterUiBridge(QObject):
         except Exception as exc:  # noqa: BLE001
             return self._error(exc)
 
+    @pyqtSlot(str, result=str)
+    def configureProvider(self, provider: str) -> str:
+        """受控 settings 入口:設定全域 Provider(api/ollama);文字提交不得夾帶 Provider。"""
+        try:
+            if not self._adapter:
+                raise RuntimeError("adapter not available")
+            return self._ok(self._adapter.configure_provider(provider))
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
     @pyqtSlot(str, bool, result=str)
     def setSkillEnabled(self, skill_name: str, enabled: bool) -> str:
         try:

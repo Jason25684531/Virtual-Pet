@@ -138,16 +138,15 @@ class HarnessInteractionWorker(QThread):
     finished_payload = pyqtSignal(dict)
     failed_message = pyqtSignal(str)
 
-    def __init__(self, adapter: PyQtHarnessAdapter, text: str, provider: str | None, parent=None) -> None:
+    def __init__(self, adapter: PyQtHarnessAdapter, text: str, parent=None) -> None:
         super().__init__(parent)
         self._adapter = adapter
         self._text = text
-        self._provider = provider
 
     def run(self) -> None:
-        print(f"[HARNESS] received text: {self._text!r} (provider={self._provider})")
+        print(f"[HARNESS] received text: {self._text!r}")
         try:
-            payload = self._adapter.handle_text_input(self._text, provider=self._provider)
+            payload = self._adapter.handle_text_input(self._text)
         except Exception as exc:  # noqa: BLE001
             print(f"[HARNESS] handle_text_input failed: {exc}")
             self.failed_message.emit(str(exc))
@@ -169,9 +168,10 @@ class HarnessUiBridge(QObject):
     def resetRuntime(self) -> None:
         self._window.request_runtime_reset()
 
-    @pyqtSlot(str, str)
-    def sendText(self, text: str, provider: str) -> None:
-        self._window.submit_agentic_text(text, provider)
+    @pyqtSlot(str)
+    def sendText(self, text: str) -> None:
+        # 文字提交只傳 text;Provider 設定經受控 global runtime API,不由訊息夾帶。
+        self._window.submit_agentic_text(text)
 
     @pyqtSlot(str)
     def sendLiveText(self, text: str) -> None:
@@ -987,32 +987,30 @@ class TransparentWindow(QMainWindow):
         if event.button() == Qt.LeftButton:
             self._drag_pos = None
 
-    _FALLBACK_CHARACTER_IDS = ("miku", "Choppr")
-
     def _restore_current_character(self):
-        current_character_id = self._library.get_current_character_id()
-        if current_character_id and self.apply_character(current_character_id):
+        """啟動時只信任 router 的 active snapshot;無 active 時顯示安全 no-active 狀態,
+        不做 miku-first fallback、不讀 QSettings。"""
+        snapshot = self._adapter.router.get_active_snapshot()
+        if snapshot is not None and self.apply_character(snapshot.character_id):
             return
 
-        for fallback_id in self._FALLBACK_CHARACTER_IDS:
-            if self.apply_character(fallback_id):
-                return
+        self._show_no_active_character_state()
 
-        if self.restore_idle_video():
-            self.set_room_character("訪客模式")
-            self.set_action_status("房間模式已載入", tone="idle", timeout_ms=2400)
-            self.apply_character_position()
-            self._apply_resolved_background(None)
+    def _show_no_active_character_state(self):
+        self._run_javascript("setIdleMotionCandidates", [])
+        self.set_room_character("尚未選擇角色")
+        self.set_action_status("尚未選擇角色,請從角色選單選擇。", tone="warn", timeout_ms=0)
+        self.apply_character_position()
+        self._apply_resolved_background(None)
 
     def apply_character(self, character_id: str) -> bool:
-        """套用指定角色並切回 idle。"""
+        """套用指定角色並切回 idle。character_id 一律來自 router snapshot。"""
         character_name = self._library.get_character_name(character_id) or character_id
         idle_path = self._library.get_motion_path(character_id, "idle")
         if not idle_path:
             print(f"[ECHOES] 警告: 角色 {character_id} 尚未生成 idle 動畫。")
             return False
 
-        self._library.set_current_character_id(character_id)
         self.restore_idle_video()
         self.apply_character_layout(character_id)
         self._sync_playtime_session_from_active_character()
@@ -1051,8 +1049,10 @@ class TransparentWindow(QMainWindow):
         return self.change_video(motion_path, loop=should_loop)
 
     def play_action_motion(self, motion_key: str) -> bool:
+        """只用 router snapshot 的角色解析動作;缺動作時回到同角色 idle,
+        絕不 fallback 到另一個角色的動作。"""
         should_loop = not MOTION_MAP.get(motion_key, {}).get("play_once", True)
-        current_character_id = self._library.get_current_character_id()
+        current_character_id = self.get_current_character_id()
         if current_character_id:
             motion_path = self._library.get_action_motion_path(current_character_id, motion_key)
             if not motion_path:
@@ -1060,6 +1060,9 @@ class TransparentWindow(QMainWindow):
             if motion_path:
                 print(f"[ECHOES] 播放角色動作 `{motion_key}`: {motion_path}")
                 return self.change_video(motion_path, loop=should_loop)
+            print(f"[ECHOES] 警告: 角色 {current_character_id} 缺少動作 {motion_key},維持同角色 idle。")
+            self.restore_idle_video()
+            return False
 
         demo_filename = self.DEMO_MOTION_MAPPING.get(motion_key)
         if demo_filename:
@@ -1093,7 +1096,7 @@ class TransparentWindow(QMainWindow):
         return payload
 
     def restore_idle_video(self) -> bool:
-        current_character_id = self._library.get_current_character_id()
+        current_character_id = self.get_current_character_id()
         if current_character_id:
             idle_candidates = self._set_idle_motion_candidates(current_character_id)
             if idle_candidates:
@@ -1415,9 +1418,9 @@ class TransparentWindow(QMainWindow):
         self.set_action_status("Live Conversation queued.", tone="working", timeout_ms=0)
 
     def _on_developer_query_submitted(self, text: str) -> None:
-        self.submit_agentic_text(text, None)
+        self.submit_agentic_text(text)
 
-    def submit_agentic_text(self, text: str, provider: str | None) -> None:
+    def submit_agentic_text(self, text: str) -> None:
         cleaned = str(text or "").strip()
         if not cleaned:
             self.set_action_status("Please enter text first.", tone="warn", timeout_ms=2200)
@@ -1428,7 +1431,7 @@ class TransparentWindow(QMainWindow):
 
         self._set_agentic_busy(True)
         self.set_action_status("Processing interaction...", tone="working", timeout_ms=0)
-        self._interaction_worker = HarnessInteractionWorker(self._adapter, cleaned, provider, self)
+        self._interaction_worker = HarnessInteractionWorker(self._adapter, cleaned, self)
         self._interaction_worker.finished_payload.connect(self._on_agentic_result)
         self._interaction_worker.failed_message.connect(self._on_agentic_error)
         self._interaction_worker.finished.connect(self._clear_interaction_worker)
@@ -1620,7 +1623,9 @@ class TransparentWindow(QMainWindow):
         self._action_dispatcher.shutdown()
 
     def get_current_character_id(self) -> str | None:
-        return self._library.get_current_character_id()
+        """UI 動作/idle/聲線一律以 router snapshot 為唯一 active character 來源。"""
+        snapshot = self._adapter.router.get_active_snapshot()
+        return snapshot.character_id if snapshot else None
 
     def apply_character_position(self):
         """套用目前由 Python 管理的角色位移設定。"""

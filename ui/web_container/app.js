@@ -637,22 +637,13 @@
         if (companionDockPanel) companionDockPanel.hidden = false;
     }
 
-    async function sendTalkText() {
+    function sendTalkText() {
         if (!talkTextInput) return;
         var text = talkTextInput.value.trim();
         if (!text) return;
 
-        var provider = 'mock';
-        try {
-            var status = await callCharacterBridge('getProviderStatus');
-            if (status && status.ai && status.ai.provider) {
-                provider = status.ai.provider;
-            }
-        } catch (error) {
-            console.error('Error getting provider status:', error);
-        }
-
-        callBridge('sendText', text, provider);
+        // 文字提交只傳 text;Provider 由全域 runtime 設定,前端不可覆寫。
+        callBridge('sendText', text);
         talkTextInput.value = '';
     }
 
@@ -1177,23 +1168,13 @@
         renderLatestAgentEvent(eventData, payload.xp_delta);
     };
 
-    async function sendAgentCommandText() {
+    function sendAgentCommandText() {
         if (!agentCommandInput) return;
         var text = agentCommandInput.value.trim();
         if (!text) return;
 
-        // 動態獲取 AI provider
-        var provider = 'mock';
-        try {
-            var status = await callCharacterBridge('getProviderStatus');
-            if (status && status.ai && status.ai.provider) {
-                provider = status.ai.provider;
-            }
-        } catch (error) {
-            console.error('Error getting provider status:', error);
-        }
-
-        callBridge('sendText', text, provider);
+        // 文字提交只傳 text;Provider 由全域 runtime 設定,前端不可覆寫。
+        callBridge('sendText', text);
         agentCommandInput.value = '';
     }
 
