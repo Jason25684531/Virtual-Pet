@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 from typing import Any
 
+from pet_harness.character.customization_service import CharacterCustomizationService
 from pet_harness.character.exceptions import NoActiveCharacterError
 from pet_harness.character.profile import CharacterProfile
 from pet_harness.character.registry import CharacterRegistry
@@ -19,9 +20,17 @@ def _level_for_xp(xp_total: int) -> int:
 
 
 class CharacterUiService:
-    def __init__(self, router: CharacterRouter, registry: CharacterRegistry) -> None:
+    def __init__(
+        self,
+        router: CharacterRouter,
+        registry: CharacterRegistry,
+        customization_service: CharacterCustomizationService | None = None,
+    ) -> None:
         self._router = router
         self._registry = registry
+        self._customization = customization_service or CharacterCustomizationService(
+            registry=registry, router=router
+        )
 
     def list_characters(self) -> list[dict[str, Any]]:
         return [self._summarize(profile) for profile in self._registry.list_characters()]
@@ -100,6 +109,26 @@ class CharacterUiService:
         payload = event.to_dict()
         payload["user_text"] = f"立即執行：{skill.display_name or skill.name}"
         return payload
+
+    def get_customization(self, character_id: str) -> dict[str, Any]:
+        return self._customization.get_customization(character_id)
+
+    def save_persona(self, character_id: str, persona: str | None) -> dict[str, Any]:
+        return self._customization.save_persona(character_id, persona)
+
+    def upsert_local_skill(self, character_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._customization.upsert_local_skill(character_id, payload)
+
+    def delete_local_skill(self, character_id: str, skill_id: str) -> dict[str, Any]:
+        return self._customization.delete_local_skill(character_id, skill_id)
+
+    def save_skill_override(
+        self, character_id: str, skill_id: str, aliases: list[str] | None, priority: int
+    ) -> dict[str, Any]:
+        return self._customization.save_skill_override(character_id, skill_id, aliases, priority)
+
+    def preview_skill_match(self, character_id: str, text: str) -> dict[str, Any]:
+        return self._customization.preview_skill_match(character_id, text)
 
     def _summarize(self, profile: CharacterProfile) -> dict[str, Any]:
         store = SQLiteStore(profile.sqlite_path)

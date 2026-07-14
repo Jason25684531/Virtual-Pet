@@ -1,0 +1,33 @@
+{
+  "schema_version": 2,
+  "display_name": null,
+  "persona": "我是一個超強超神的俠盜列車手 是一個盜賊",
+  "skill_refs": [],
+  "local_skill_refs": [],
+  "skill_overrides": {
+    "music_bgm": {
+      "aliases": [
+        "音樂",
+        "放歌",
+        "播放音樂"
+      ],
+      "priority": 0
+    },
+    "game_news": {
+      "aliases": [
+        "新聞",
+        "遊戲新聞",
+        "遊戲消息"
+      ],
+      "priority": 0
+    },
+    "gacha_fortune": {
+      "aliases": [
+        "抽籤",
+        "運勢",
+        "占卜"
+      ],
+      "priority": 0
+    }
+  }
+}

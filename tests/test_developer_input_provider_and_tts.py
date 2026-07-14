@@ -1,6 +1,7 @@
 """Regression tests: text submission carries text only, and replies must reach TTS."""
 
 import inspect
+import json
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,33 @@ def test_handle_text_input_rejects_provider_keyword(harness_env):
         adapter.handle_text_input("hello", provider="api")
 
 
+def test_personal_edits_apply_on_next_interaction_without_switch(harness_env):
+    """personal.json 改動(不經 switch_character)必須在下一次互動套用:persona 進 prompt、alias 可命中。"""
+    tmp_path, agentic_root = harness_env
+    adapter = PyQtHarnessAdapter(
+        default_character_id="Choppr",
+        agentic_root=str(agentic_root),
+        provider_runtime=ProviderRuntime(provider=FakeProvider()),
+    )
+    personal_path = tmp_path / "data" / "characters" / "Choppr" / "personal.json"
+    personal_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "persona": "HOT_RELOAD_PERSONA",
+                "skill_overrides": {"joke_skill": {"aliases": ["講笑話"], "priority": 1}},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = adapter.handle_text_input("講笑話")
+
+    assert payload["matched_skill"] == "joke_skill"
+    assert "HOT_RELOAD_PERSONA" in (adapter.engine.last_prompt or "")
+
+
 def test_get_provider_status_does_not_crash(harness_env):
     _tmp_path, agentic_root = harness_env
     adapter = PyQtHarnessAdapter(
@@ -59,16 +87,19 @@ def test_get_provider_status_does_not_crash(harness_env):
 
 def test_on_agentic_result_speaks_nonempty_reply():
     fake_self = MagicMock()
-    fake_self._validated_event_motion_key.return_value = "idle"
+    fake_self._validated_event_motion_key.return_value = "music_idle"
 
-    TransparentWindow.consume_interaction_result(fake_self, {"reply": "hello there", "webm_key": "idle"})
+    TransparentWindow.consume_interaction_result(fake_self, {"reply": "hello there", "webm_key": "music_idle"})
 
+    # harness motion key 一律走 dispatch_action 的 TTS 同步機制:
+    # 動畫由 TTS 起播觸發、維持到同輪 TTS 播畢(queue_drained)才回 idle。
     fake_self.dispatch_action.assert_called_once()
     args, kwargs = fake_self.dispatch_action.call_args
-    assert args == ("[ACTION:idle] hello there",)
+    assert args == ("[ACTION:music_idle] hello there",)
     assert kwargs["allow_tts"] is True
     assert kwargs["wait_for_tts_start"] is True
     assert kwargs["trace_id"]  # non-empty trace_id required by PCM session playback
+    fake_self.play_action_motion.assert_not_called()
     fake_self.speak_text.assert_not_called()
 
 
@@ -112,6 +143,42 @@ def test_action_waits_for_audio_driver_when_tts_sync_is_requested():
         dispatcher._on_driver_started("reply-1", "trace-1")
 
         dispatcher._play_binding_motion.assert_called_once_with(binding)
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_harness_motion_key_outside_whitelist_uses_tts_synced_binding():
+    dispatcher = ActionDispatcher(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._find_motion_path = MagicMock(return_value="assets/music_idle.webm")
+
+        ok = dispatcher.dispatch(
+            "[ACTION:music_idle] 好的，來點音樂",
+            trace_id="trace-1",
+            allow_tts=True,
+            wait_for_tts_start=True,
+        )
+
+        # 不再被 9-動作白名單吞掉:建立 pending action,動畫等 TTS 起播、
+        # 播畢(queue_drained)才回 idle。
+        assert ok is True
+        state = dispatcher._pending_actions["trace-1"]
+        assert state.binding.motion_key == "music_idle"
+        assert state.wait_for_tts_start is True
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_unknown_action_without_motion_file_still_fails_closed():
+    window = MagicMock()
+    dispatcher = ActionDispatcher(window, MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._find_motion_path = MagicMock(return_value=None)
+
+        ok = dispatcher.dispatch("[ACTION:no_such_motion] hi", trace_id="trace-1")
+
+        assert ok is False
+        window.restore_idle_video.assert_called_once()
     finally:
         dispatcher.shutdown(wait_ms=100)
 

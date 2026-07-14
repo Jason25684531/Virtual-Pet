@@ -1,10 +1,10 @@
 {
-  "provider_type": "api",
-  "base_url": "https://api.openai.com/v1/chat/completions",
-  "model_name": "gpt-4o-mini",
-  "api_key_env_var": "OPENAI_API_KEY",
-  "timeout_seconds": 15.0,
-  "routing_fallback_enabled": true,
+  "provider_type": "ollama",
+  "base_url": "http://localhost:11434",
+  "model_name": "gemma4:e2b",
+  "api_key_env_var": null,
+  "timeout_seconds": 60.0,
+  "routing_fallback_enabled": false,
   "routing_confidence_threshold": 0.7,
   "metadata": {}
 }

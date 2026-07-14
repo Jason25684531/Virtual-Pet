@@ -15,7 +15,6 @@ from pet_harness.models.provider import ProviderConfig, ProviderType
 from pet_harness.models.skill import Skill
 from pet_harness.runtime.provider_runtime import ProviderRuntime, migrate_legacy_provider_config
 from pet_harness.skills.skill_loader import SkillLoader
-from pet_harness.skills.skill_router import SkillRouter
 from pet_harness.storage.sqlite_store import SQLiteStore
 from pet_harness.tools.registry import ToolRegistry
 from pet_harness.tools.safety_guard import SafetyGuard
@@ -33,6 +32,9 @@ LAST_XP_KEY = "ui_last_xp_delta"
 TOOL_ENABLED_KEY = "enabled_overrides"
 TOOL_CONFIGS_KEY = "metadata_configs"
 DEFAULT_OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
+# 換模型的位置:先用本地已 pull 的 gemma4:e2b 驗證 Ollama 串接,之後穩定再換 gemma3 等模型。
+# 可用 OLLAMA_MODEL 環境變數覆寫,不需改這裡。
+DEFAULT_OLLAMA_MODEL = "gemma4:e2b"
 
 
 class PyQtHarnessAdapter:
@@ -379,9 +381,12 @@ class PyQtHarnessAdapter:
         raise ValueError(f"unknown tool_name: {tool_name}")
 
     def _refresh_runtime(self) -> None:
+        # 先熱重載 profile+personal,再重建 skills/router:persona、alias、local skill
+        # 的任何修改(面板或手動編輯)都在下一次互動生效,不依賴 switch_character。
+        self.engine.reload_profile()
         self.engine.skills = self.engine.filter_skills_for_character(self._load_enabled_skills())
         self.engine.store.sync_skills(self._load_all_skills())
-        self.engine.router = SkillRouter(self.engine.skills)
+        self.engine.rebuild_router()
         self.engine.tool_registry = self._build_registry()
         self.engine.safety_guard = SafetyGuard(self.engine.tool_registry)
 
@@ -435,8 +440,11 @@ class PyQtHarnessAdapter:
         return ProviderConfig(
             provider_type=ProviderType.OLLAMA,
             base_url=self._project_env.get("OLLAMA_BASE_URL") or "http://localhost:11434",
-            model_name=self._project_env.get("OLLAMA_MODEL"),
+            model_name=self._project_env.get("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL,
             api_key_env_var=None,
+            # ponytail: 本機首次推論常需冷啟動載入模型,實測 15s 預設會逾時;
+            # 60s 對本地生成足夠,雲端 API 逾時不受影響。
+            timeout_seconds=60.0,
             routing_fallback_enabled=False,
         )
 
@@ -446,16 +454,16 @@ class PyQtHarnessAdapter:
         return self._mask_payload(status.to_dict())
 
     def _bootstrap_primary_provider(self) -> None:
-        """未設定全域 Provider 且環境有 API key 時,預設啟用 API;
-        否則維持未設定(fail-closed unavailable),絕不退回 mock。
+        """未設定全域 Provider 時預設啟用本地 Ollama(local-first),不再依環境是否
+        有 API key 決定;要改用雲端 API 一律經 configure_provider("api") 明確切換。
+        已有持久化設定時只 refresh 健康狀態,不覆寫選擇。
         測試注入的 provider_runtime 不得被自動配置覆寫。"""
         if self.provider_runtime.is_test_injected:
             return
         if self.provider_runtime.get_config() is not None:
             self.provider_runtime.refresh_status()
             return
-        if self._select_existing_api_key_env_var():
-            self.provider_runtime.configure(self.build_provider_config("api"))
+        self.provider_runtime.configure(self.build_provider_config("ollama"))
 
     def _build_registry(self) -> ToolRegistry:
         registry = ToolRegistry()

@@ -162,9 +162,14 @@ def test_personal_with_traversal_skill_ref_is_rejected(env):
         {"schema_version": 1, "persona": "see https://evil.example/prompt"},
         {"schema_version": 1, "persona": "api_key = sk-12345"},
         {"schema_version": 1, "persona": "x" * 5000},
-        {"schema_version": 2, "persona": "future schema"},
+        {"schema_version": 3, "persona": "unsupported future schema"},
         {"schema_version": 1, "skill_refs": ["/abs/path"]},
         {"schema_version": 1, "skill_refs": ["good", "..\\bad"]},
+        {"schema_version": 2, "skill_overrides": {"music_skill": {"priority": -1}}},
+        {"schema_version": 2, "skill_overrides": {"music_skill": {"priority": 5, "unknown_key": True}}},
+        {"schema_version": 2, "skill_overrides": {"../bad": {"aliases": ["x"]}}},
+        {"schema_version": 2, "skill_overrides": {"music_skill": {"aliases": ["see https://evil.example"]}}},
+        {"schema_version": 1, "skill_overrides": {"music_skill": {"priority": 1}}},
     ],
 )
 def test_unsafe_personal_payloads_raise(tmp_path, payload):
@@ -204,3 +209,96 @@ def test_local_skill_behavior_must_be_plain_motion_key(tmp_path):
 
 def test_missing_personal_file_returns_none(tmp_path):
     assert load_personal("miku", tmp_path) is None
+
+
+def test_v1_document_loads_with_empty_overrides(tmp_path):
+    char_dir = tmp_path / "miku"
+    char_dir.mkdir()
+    (char_dir / "personal.json").write_text(
+        json.dumps({"schema_version": 1, "persona": "v1 persona", "skill_refs": ["music_skill"]}),
+        encoding="utf-8",
+    )
+
+    document = load_personal("miku", char_dir)
+
+    assert document.schema_version == 1
+    assert document.persona == "v1 persona"
+    assert document.skill_overrides == {}
+
+
+def test_v2_document_round_trips_with_overrides(tmp_path):
+    from pet_harness.character.personal import SCHEMA_V2, SkillOverride, CharacterPersonal, write_personal
+
+    char_dir = tmp_path / "miku"
+    char_dir.mkdir(parents=True)
+    document = CharacterPersonal(
+        schema_version=SCHEMA_V2,
+        display_name=None,
+        persona="v2 persona",
+        skill_refs=("music_skill",),
+        local_skill_refs=(),
+        skill_overrides={"music_skill": SkillOverride(aliases=("放歌",), priority=5)},
+    )
+
+    write_personal(char_dir, document)
+    reloaded = load_personal("miku", char_dir)
+
+    assert reloaded.schema_version == 2
+    assert reloaded.persona == "v2 persona"
+    assert reloaded.skill_overrides["music_skill"].aliases == ("放歌",)
+    assert reloaded.skill_overrides["music_skill"].priority == 5
+
+
+def test_write_personal_never_touches_another_character_dir(tmp_path):
+    from pet_harness.character.personal import SCHEMA_V2, CharacterPersonal, write_personal
+
+    miku_dir = tmp_path / "miku"
+    choppr_dir = tmp_path / "Choppr"
+    miku_dir.mkdir(parents=True)
+    choppr_dir.mkdir(parents=True)
+    (choppr_dir / "personal.json").write_text(
+        json.dumps({"schema_version": 1, "persona": "choppr persona"}), encoding="utf-8"
+    )
+
+    document = CharacterPersonal(
+        schema_version=SCHEMA_V2, display_name=None, persona="miku persona",
+        skill_refs=(), local_skill_refs=(), skill_overrides={},
+    )
+    write_personal(miku_dir, document)
+
+    assert json.loads((choppr_dir / "personal.json").read_text(encoding="utf-8"))["persona"] == "choppr persona"
+    assert (miku_dir / "personal.json").exists()
+    assert not (miku_dir / "personal.json.tmp").exists()
+
+
+def test_build_local_skill_document_rejects_unsafe_behavior_and_forbidden_content():
+    from pet_harness.character.personal import PersonalValidationError, build_local_skill_document
+
+    with pytest.raises(PersonalValidationError):
+        build_local_skill_document(
+            "sneaky",
+            {"description": "d", "trigger": "x", "behavior": "../escape", "xp_reward": 1},
+        )
+    with pytest.raises(PersonalValidationError):
+        build_local_skill_document(
+            "leaky",
+            {"description": "see https://evil.example", "trigger": "x", "behavior": "laugh", "xp_reward": 1},
+        )
+
+
+def test_write_local_skill_is_atomic_and_scoped_to_character_dir(tmp_path):
+    from pet_harness.character.personal import delete_local_skill_file, write_local_skill
+
+    char_dir = tmp_path / "miku"
+    char_dir.mkdir(parents=True)
+    skill = write_local_skill(
+        char_dir, "local_cheer",
+        {"description": "cheer up", "triggers": ["加油", "cheer"], "behavior": "laugh", "xp_reward": 1},
+    )
+
+    assert skill.name == "local_cheer"
+    assert (char_dir / "skills" / "local_cheer.md").exists()
+    assert not (char_dir / "skills" / "local_cheer.md.tmp").exists()
+
+    delete_local_skill_file(char_dir, "local_cheer")
+    assert not (char_dir / "skills" / "local_cheer.md").exists()

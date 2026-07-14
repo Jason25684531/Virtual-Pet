@@ -118,3 +118,48 @@ class CharacterUiBridge(QObject):
             return self._ok(result)
         except Exception as exc:  # noqa: BLE001
             return self._error(exc)
+
+    @pyqtSlot(str, result=str)
+    def getCustomization(self, character_id: str) -> str:
+        try:
+            return self._ok(self._service.get_customization(character_id))
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
+    @pyqtSlot(str, str, result=str)
+    def savePersona(self, character_id: str, persona: str) -> str:
+        try:
+            return self._ok(self._service.save_persona(character_id, persona or None))
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
+    @pyqtSlot(str, str, result=str)
+    def upsertLocalSkill(self, character_id: str, payload_json: str) -> str:
+        try:
+            payload = json.loads(payload_json)
+            return self._ok(self._service.upsert_local_skill(character_id, payload))
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
+    @pyqtSlot(str, str, result=str)
+    def deleteLocalSkill(self, character_id: str, skill_id: str) -> str:
+        try:
+            return self._ok(self._service.delete_local_skill(character_id, skill_id))
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
+    @pyqtSlot(str, str, str, int, result=str)
+    def saveSkillOverride(self, character_id: str, skill_id: str, aliases_json: str, priority: int) -> str:
+        try:
+            aliases = json.loads(aliases_json) if aliases_json else []
+            result = self._service.save_skill_override(character_id, skill_id, aliases, priority)
+            return self._ok(result)
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
+    @pyqtSlot(str, str, result=str)
+    def previewSkillMatch(self, character_id: str, text: str) -> str:
+        try:
+            return self._ok(self._service.preview_skill_match(character_id, text))
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)

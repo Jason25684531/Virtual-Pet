@@ -64,7 +64,7 @@ class PetHarnessEngine:
             self.skills = self._filter_enabled_character_skills(self.skills)
             self.skills.extend(self._profile.load_local_skills())
         self.store.sync_skills(self.skills)
-        self.router = SkillRouter(self.skills)
+        self.rebuild_router()
         self.xp_manager = XPManager(self.store)
         self.reward_manager = RewardManager(self.store, self.agentic_root / "rewards" / "reward_rules.json")
         self.behavior_manager = BehaviorManager(self.store, self.agentic_root / "behavior" / "behavior_map.json")
@@ -79,6 +79,35 @@ class PetHarnessEngine:
         self.last_agent_result: AgentResult | None = None
         self.last_tool_result: ToolResult | None = None
         self.last_asset_result: dict[str, Any] | None = None
+
+    def reload_profile(self) -> None:
+        """從磁碟重載 active character 的 profile+personal,讓 persona/alias/local skill 熱更新。
+
+        personal.json 無論經由 customization 面板、手動編輯或外部工具修改,
+        下一次互動都會套用;載入失敗時保留前一份 profile,不中斷互動。"""
+        if self._character_id is None:
+            return
+        try:
+            self._profile = CharacterProfile.load(self._character_id)
+        except Exception:  # noqa: BLE001 - 角色資料暫時不可讀時維持舊 profile
+            LOGGER.warning("profile reload failed for %s; keeping previous profile", self._character_id)
+
+    def rebuild_router(self, skills: list[Skill] | None = None) -> None:
+        """套用 active character 的 skill_overrides(別名/priority)並重建 router。
+
+        供 __init__ 與 PyQtHarnessAdapter._refresh_runtime 共用,確保兩者用同一套
+        resolved skill view 邏輯,不會出現 router 未套用最新 override 的分裂狀態。
+        """
+        base_skills = skills if skills is not None else self.skills
+        if self._profile is not None:
+            self.skills, priorities = self._profile.apply_skill_overrides(base_skills)
+        else:
+            self.skills, priorities = base_skills, {}
+        self.router = SkillRouter(self.skills, priorities=priorities)
+
+    def preview_skill_match(self, text: str) -> dict[str, Any]:
+        """非執行預覽:回傳命中診斷,絕不觸發工具、XP、事件或動畫。"""
+        return self.router.match_diagnostics(text)
 
     def filter_skills_for_character(self, skills: list[Skill]) -> list[Skill]:
         """依 active character 的 skill_config 過濾傳入的技能清單；無 character_id 時原樣回傳。

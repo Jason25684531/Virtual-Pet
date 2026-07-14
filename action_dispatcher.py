@@ -316,6 +316,21 @@ class ActionDispatcher(QObject):
         if raw_action_name and action_name and raw_action_name != action_name:
             print(f"[ECHOES] 提示: action alias `{raw_action_name}` 已正規化為 `{action_name}`。")
 
+        if raw_action_name and not action_name and self._find_motion_path(raw_action_name):
+            # harness skill 的 motion key(如 music_idle)不在 HOST_ACTION 白名單,
+            # 但角色有對應動作檔:合成 motion-only binding 走同一套 TTS 同步/收尾
+            # 機制,動畫維持到同輪 TTS 播畢(queue_drained)才回 idle。
+            action_name = raw_action_name
+            self._bindings.setdefault(
+                action_name,
+                ActionBinding(
+                    name=action_name,
+                    motion_key=action_name,
+                    status_label=REPLY_STATUS_LABEL,
+                    handler_name="_handle_motion_only",
+                ),
+            )
+
         if raw_action_name and not action_name:
             print(
                 "[ECHOES] 警告: 未支援的 action: "

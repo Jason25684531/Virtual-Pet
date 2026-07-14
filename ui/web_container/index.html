@@ -94,6 +94,50 @@
                         </div>
                     </section>
 
+                    <section id="dock-panel-persona" class="dock-panel" hidden>
+                        <div class="character-persona-panel">
+                            <div class="list-actions agent-list-actions">
+                                <span class="panel-help">Persona / 人設</span>
+                                <span id="persona-validation-status" class="status-pill">-</span>
+                            </div>
+                            <textarea id="persona-textarea" class="text-area persona-field" rows="4" placeholder="輸入角色人設，儲存後套用於目前角色..."></textarea>
+                            <div class="entity-card__actions persona-field">
+                                <button id="persona-save-button" class="primary-button" type="button">儲存人設</button>
+                                <button id="persona-cancel-button" class="ghost-button" type="button">取消</button>
+                            </div>
+
+                            <p class="panel-help persona-section-title persona-field">內建技能別名／優先度（僅本角色，不改動技能本體）</p>
+                            <div id="persona-builtin-skill-list" class="entity-list persona-field"></div>
+
+                            <div class="list-actions agent-list-actions persona-field">
+                                <span class="panel-help">角色專屬技能</span>
+                                <button id="persona-local-skill-new-button" class="secondary-button" type="button">+ 新增技能</button>
+                            </div>
+                            <div id="persona-local-skill-list" class="entity-list persona-field"></div>
+
+                            <div id="persona-local-skill-form" class="persona-local-skill-form persona-field" hidden>
+                                <input id="local-skill-id-input" class="text-field persona-field" type="text" placeholder="skill_id（英數/_/-，新增後不可改）">
+                                <input id="local-skill-display-name-input" class="text-field persona-field" type="text" placeholder="顯示名稱">
+                                <input id="local-skill-description-input" class="text-field persona-field" type="text" placeholder="描述">
+                                <input id="local-skill-triggers-input" class="text-field persona-field" type="text" placeholder="觸發詞（逗號分隔，例如：講笑話, 說個笑話）">
+                                <input id="local-skill-behavior-input" class="text-field persona-field" type="text" placeholder="behavior（動作 key，例如：laugh）">
+                                <input id="local-skill-required-tool-input" class="text-field persona-field" type="text" placeholder="required_tool（選填）">
+                                <p id="local-skill-form-error" class="panel-help persona-form-error persona-field" hidden></p>
+                                <div class="entity-card__actions persona-field">
+                                    <button id="local-skill-save-button" class="primary-button" type="button">儲存技能</button>
+                                    <button id="local-skill-form-cancel-button" class="ghost-button" type="button">取消</button>
+                                </div>
+                            </div>
+
+                            <p class="panel-help persona-section-title persona-field">命中預覽（僅預覽，不會執行技能）</p>
+                            <div class="persona-preview-row persona-field">
+                                <input id="persona-preview-input" class="text-field" type="text" placeholder="輸入文字測試命中結果...">
+                                <button id="persona-preview-button" class="secondary-button" type="button">預覽</button>
+                            </div>
+                            <div id="persona-preview-result" class="entity-card persona-field" hidden></div>
+                        </div>
+                    </section>
+
                     <section id="dock-panel-style" class="dock-panel" hidden>
                         <p class="panel-help">Style / 造型目前保留版位，後續沿用既有角色與素材流程。</p>
                     </section>
@@ -108,6 +152,10 @@
                         <span class="dock-icon__glyph" aria-hidden="true">&#10022;</span>
                         <span class="dock-icon__label">Skills</span>
                     </button>
+                    <button id="dock-persona-button" class="dock-icon" type="button" data-dock-panel="dock-panel-persona">
+                        <span class="dock-icon__glyph" aria-hidden="true">&#9998;</span>
+                        <span class="dock-icon__label">Persona<br>人設</span>
+                    </button>
                     <button id="dock-style-button" class="dock-icon" type="button" data-dock-panel="dock-panel-style">
                         <span class="dock-icon__glyph" aria-hidden="true">&#9670;</span>
                         <span class="dock-icon__label">Style<br>造型</span>
@@ -119,7 +167,7 @@
                 </nav>
 
                 <div class="companion-utility-bar">
-                    <button id="companion-settings-button" class="utility-link" type="button">&#9881; 設定</button>
+                    <!-- <button id="companion-settings-button" class="utility-link" type="button">&#9881; 設定</button> -->
                     <span class="utility-sep">&middot;</span>
                     <button id="companion-leave-button" class="utility-link" type="button">&#9211; 返回主選單</button>
                 </div>

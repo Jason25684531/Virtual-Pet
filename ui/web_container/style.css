@@ -504,6 +504,56 @@ body {
     gap: 10px;
 }
 
+#dock-panel-persona {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.character-persona-panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+/* 每個客製化欄位/區塊各自獨立留白，避免文字輸入區與清單互相覆蓋 */
+.persona-field {
+    margin-bottom: 14px;
+}
+
+.persona-field:last-child {
+    margin-bottom: 0;
+}
+
+.persona-section-title {
+    margin-bottom: 8px;
+}
+
+.persona-local-skill-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid rgba(255, 237, 225, 0.16);
+    border-radius: 16px;
+    background: rgba(255, 243, 233, 0.04);
+}
+
+.persona-form-error {
+    margin-bottom: 0;
+    color: var(--danger);
+}
+
+.persona-preview-row {
+    display: flex;
+    gap: 10px;
+}
+
+.persona-preview-row .text-field {
+    flex: 1;
+}
+
 .companion-dock-panel button:focus-visible,
 .companion-dock-panel input:focus-visible {
     outline: 2px solid var(--accent);

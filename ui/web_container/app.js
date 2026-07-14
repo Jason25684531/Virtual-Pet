@@ -28,6 +28,26 @@
     var refreshSkillsButton = document.getElementById('refresh-skills-button');
     var characterSkillList = document.getElementById('character-skill-list');
     var characterSkillCount = document.getElementById('character-skill-count');
+    var personaValidationStatus = document.getElementById('persona-validation-status');
+    var personaTextarea = document.getElementById('persona-textarea');
+    var personaSaveButton = document.getElementById('persona-save-button');
+    var personaCancelButton = document.getElementById('persona-cancel-button');
+    var personaBuiltinSkillList = document.getElementById('persona-builtin-skill-list');
+    var personaLocalSkillList = document.getElementById('persona-local-skill-list');
+    var personaLocalSkillNewButton = document.getElementById('persona-local-skill-new-button');
+    var personaLocalSkillForm = document.getElementById('persona-local-skill-form');
+    var localSkillIdInput = document.getElementById('local-skill-id-input');
+    var localSkillDisplayNameInput = document.getElementById('local-skill-display-name-input');
+    var localSkillDescriptionInput = document.getElementById('local-skill-description-input');
+    var localSkillTriggersInput = document.getElementById('local-skill-triggers-input');
+    var localSkillBehaviorInput = document.getElementById('local-skill-behavior-input');
+    var localSkillRequiredToolInput = document.getElementById('local-skill-required-tool-input');
+    var localSkillFormError = document.getElementById('local-skill-form-error');
+    var localSkillSaveButton = document.getElementById('local-skill-save-button');
+    var localSkillFormCancelButton = document.getElementById('local-skill-form-cancel-button');
+    var personaPreviewInput = document.getElementById('persona-preview-input');
+    var personaPreviewButton = document.getElementById('persona-preview-button');
+    var personaPreviewResult = document.getElementById('persona-preview-result');
 
     // ── UC01-1 / UC02-1 / UC03-1 / UC05-1 陪伴 dock DOM 參照 ────────
     var hudScore = document.getElementById('hud-score');
@@ -100,6 +120,9 @@
     var currentCharacterSkills = [];
     var hudDeltaTimer = null;
     var resizeObserver = null;
+    var personaCharacterId = null;
+    var personaOriginal = null;
+    var editingLocalSkillId = null;
 
     window.echoes = window.echoes || {};
 
@@ -319,6 +342,272 @@
                 '</article>'
             ].join('');
         }).join('');
+    }
+
+    // ── Character Persona / Skill Customization（人設與技能客製化）───
+
+    function setInputValue(el, value) {
+        if (el) el.value = value == null ? '' : value;
+    }
+
+    function discardPersonaDraft() {
+        personaCharacterId = null;
+        personaOriginal = null;
+        if (personaTextarea) personaTextarea.value = '';
+        if (personaBuiltinSkillList) personaBuiltinSkillList.innerHTML = '';
+        if (personaLocalSkillList) personaLocalSkillList.innerHTML = '';
+        hideLocalSkillForm();
+        hidePreviewResult();
+    }
+
+    function renderPersonaEditor(customization) {
+        personaOriginal = customization;
+        personaCharacterId = customization.character_id;
+        if (personaTextarea) personaTextarea.value = customization.persona || '';
+        if (personaValidationStatus) personaValidationStatus.textContent = 'schema v' + (customization.schema_version || 1);
+        renderBuiltinSkillOverrides(customization.builtin_skills || []);
+        renderLocalSkillsForCustomization(customization.local_skills || []);
+        hideLocalSkillForm();
+        hidePreviewResult();
+    }
+
+    function renderBuiltinSkillOverrides(items) {
+        if (!personaBuiltinSkillList) return;
+        if (!items.length) {
+            personaBuiltinSkillList.innerHTML = '<div class="entity-card"><p class="entity-card__title">此角色尚無已授權的內建技能。</p></div>';
+            return;
+        }
+        personaBuiltinSkillList.innerHTML = items.map(function (item) {
+            return [
+                '<article class="entity-card" data-builtin-skill-id="' + escapeHtml(item.skill_id) + '">',
+                '  <div class="entity-card__head">',
+                '    <div><p class="entity-card__title">' + escapeHtml(item.display_name) + '</p>' +
+                '<p class="entity-card__meta">' + escapeHtml(item.skill_id) + '</p></div>',
+                '  </div>',
+                '  <p class="entity-card__meta">canonical trigger: ' + escapeHtml((item.canonical_triggers || []).join(', ') || '-') + '</p>',
+                '  <input class="text-field persona-field" type="text" data-builtin-alias-input value="' + escapeHtml((item.aliases || []).join(', ')) + '" placeholder="別名（逗號分隔，例如：放歌, 來點音樂）">',
+                '  <input class="text-field persona-field" type="number" min="0" data-builtin-priority-input value="' + escapeHtml(String(item.priority || 0)) + '" placeholder="priority（數字越大優先度越高）">',
+                '  <div class="entity-card__actions">',
+                '    <button class="secondary-button" type="button" data-builtin-override-save="' + escapeHtml(item.skill_id) + '">儲存別名／優先度</button>',
+                '  </div>',
+                '</article>'
+            ].join('');
+        }).join('');
+    }
+
+    function renderLocalSkillsForCustomization(items) {
+        if (!personaLocalSkillList) return;
+        if (!items.length) {
+            personaLocalSkillList.innerHTML = '<div class="entity-card"><p class="entity-card__title">尚無角色專屬技能。</p></div>';
+            return;
+        }
+        personaLocalSkillList.innerHTML = items.map(function (item) {
+            return [
+                '<article class="entity-card">',
+                '  <div class="entity-card__head">',
+                '    <div>' + skillCardTitleMeta(item) + '</div>',
+                '  </div>',
+                '  <p class="entity-card__meta">' + escapeHtml(item.description || '-') + '</p>',
+                '  <p class="entity-card__meta">triggers: ' + escapeHtml((item.triggers || []).join(', ') || '-') + '</p>',
+                '  <div class="entity-card__actions">',
+                '    <button class="secondary-button" type="button" data-local-skill-edit="' + escapeHtml(item.skill_id) + '">編輯</button>',
+                '    <button class="danger-button" type="button" data-local-skill-delete="' + escapeHtml(item.skill_id) + '">刪除</button>',
+                '  </div>',
+                '</article>'
+            ].join('');
+        }).join('');
+    }
+
+    function showLocalSkillForm(item) {
+        editingLocalSkillId = item ? item.skill_id : null;
+        if (localSkillIdInput) {
+            localSkillIdInput.value = item ? item.skill_id : '';
+            localSkillIdInput.disabled = Boolean(item);
+        }
+        setInputValue(localSkillDisplayNameInput, item ? item.display_name : '');
+        setInputValue(localSkillDescriptionInput, item ? item.description : '');
+        setInputValue(localSkillTriggersInput, item ? (item.triggers || []).join(', ') : '');
+        setInputValue(localSkillBehaviorInput, item ? item.behavior : '');
+        setInputValue(localSkillRequiredToolInput, item ? (item.required_tool || '') : '');
+        if (localSkillFormError) {
+            localSkillFormError.hidden = true;
+            localSkillFormError.textContent = '';
+        }
+        if (personaLocalSkillForm) personaLocalSkillForm.hidden = false;
+    }
+
+    function hideLocalSkillForm() {
+        editingLocalSkillId = null;
+        if (personaLocalSkillForm) personaLocalSkillForm.hidden = true;
+    }
+
+    function showLocalSkillFormError(message) {
+        if (!localSkillFormError) return;
+        localSkillFormError.textContent = message;
+        localSkillFormError.hidden = false;
+    }
+
+    function findLocalSkillById(skillId) {
+        var list = (personaOriginal && personaOriginal.local_skills) || [];
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].skill_id === skillId) return list[i];
+        }
+        return null;
+    }
+
+    function saveLocalSkillForm() {
+        if (!personaCharacterId) return;
+        var skillId = ((localSkillIdInput && localSkillIdInput.value) || '').trim();
+        if (!skillId) {
+            showLocalSkillFormError('skill_id 為必填。');
+            return;
+        }
+        var payload = {
+            skill_id: skillId,
+            display_name: localSkillDisplayNameInput ? localSkillDisplayNameInput.value.trim() : '',
+            description: localSkillDescriptionInput ? localSkillDescriptionInput.value.trim() : '',
+            triggers: ((localSkillTriggersInput && localSkillTriggersInput.value) || '')
+                .split(',').map(function (item) { return item.trim(); }).filter(Boolean),
+            behavior: localSkillBehaviorInput ? localSkillBehaviorInput.value.trim() : '',
+            required_tool: localSkillRequiredToolInput ? localSkillRequiredToolInput.value.trim() : '',
+        };
+        callCharacterBridge('upsertLocalSkill', personaCharacterId, JSON.stringify(payload)).then(function (customization) {
+            renderPersonaEditor(customization);
+            setStatus('角色技能已儲存。', 'idle', 2400);
+        }).catch(function (err) {
+            showLocalSkillFormError(err.message);
+        });
+    }
+
+    function deleteLocalSkillById(skillId) {
+        if (!personaCharacterId) return;
+        callCharacterBridge('deleteLocalSkill', personaCharacterId, skillId).then(function (customization) {
+            renderPersonaEditor(customization);
+            setStatus('角色技能已刪除。', 'idle', 2400);
+        }).catch(function (err) {
+            console.warn('[ECHOES UI] deleteLocalSkill failed:', err.message);
+            setStatus('刪除技能失敗：' + err.message, 'error', 3200);
+        });
+    }
+
+    function saveBuiltinOverride(skillId, card) {
+        if (!personaCharacterId || !card) return;
+        var aliasInput = card.querySelector('[data-builtin-alias-input]');
+        var priorityInput = card.querySelector('[data-builtin-priority-input]');
+        var aliases = ((aliasInput && aliasInput.value) || '')
+            .split(',').map(function (item) { return item.trim(); }).filter(Boolean);
+        var priority = Math.max(0, parseInt((priorityInput && priorityInput.value) || '0', 10) || 0);
+        callCharacterBridge('saveSkillOverride', personaCharacterId, skillId, JSON.stringify(aliases), priority).then(function (customization) {
+            renderPersonaEditor(customization);
+            setStatus('別名／優先度已儲存。', 'idle', 2400);
+        }).catch(function (err) {
+            console.warn('[ECHOES UI] saveSkillOverride failed:', err.message);
+            setStatus('儲存別名失敗：' + err.message, 'error', 3200);
+        });
+    }
+
+    function savePersonaDraft() {
+        if (!personaCharacterId) return;
+        var value = personaTextarea ? personaTextarea.value : '';
+        callCharacterBridge('savePersona', personaCharacterId, value).then(function (customization) {
+            renderPersonaEditor(customization);
+            setStatus('人設已儲存。', 'idle', 2400);
+            refreshCharacterHud();
+        }).catch(function (err) {
+            console.warn('[ECHOES UI] savePersona failed:', err.message);
+            setStatus('儲存人設失敗：' + err.message, 'error', 3200);
+        });
+    }
+
+    function cancelPersonaDraft() {
+        if (personaOriginal) renderPersonaEditor(personaOriginal);
+    }
+
+    function hidePreviewResult() {
+        if (!personaPreviewResult) return;
+        personaPreviewResult.hidden = true;
+        personaPreviewResult.innerHTML = '';
+    }
+
+    function renderPreviewResult(diagnostics, errorMessage) {
+        if (!personaPreviewResult) return;
+        personaPreviewResult.hidden = false;
+        if (errorMessage) {
+            personaPreviewResult.innerHTML = '<p class="entity-card__title">預覽失敗</p><p class="entity-card__meta">' + escapeHtml(errorMessage) + '</p>';
+            return;
+        }
+        if (!diagnostics || !diagnostics.matched) {
+            personaPreviewResult.innerHTML = '<p class="entity-card__title">沒有命中的技能。</p>';
+            return;
+        }
+        var candidates = (diagnostics.candidates || []).map(function (candidate) {
+            return escapeHtml(candidate.skill_id) + '(' + escapeHtml(candidate.trigger) + ')';
+        }).join('、');
+        personaPreviewResult.innerHTML = [
+            '<p class="entity-card__title">命中：' + escapeHtml(diagnostics.skill_id) + '</p>',
+            '<p class="entity-card__meta">trigger: ' + escapeHtml(diagnostics.trigger) + ' · source: ' + escapeHtml(diagnostics.source) + '</p>',
+            '<p class="entity-card__meta">候選：' + (candidates || '-') + '</p>'
+        ].join('');
+    }
+
+    function previewSkillMatchText() {
+        if (!personaCharacterId || !personaPreviewInput) return;
+        var text = personaPreviewInput.value.trim();
+        if (!text) return;
+        callCharacterBridge('previewSkillMatch', personaCharacterId, text).then(function (diagnostics) {
+            renderPreviewResult(diagnostics);
+        }).catch(function (err) {
+            renderPreviewResult(null, err.message);
+        });
+    }
+
+    function loadPersonaEditor() {
+        callCharacterBridge('getActiveState').then(function (state) {
+            if (!state || state.active === false) {
+                discardPersonaDraft();
+                return null;
+            }
+            return callCharacterBridge('getCustomization', state.character_id);
+        }).then(function (customization) {
+            if (customization) renderPersonaEditor(customization);
+        }).catch(function (err) {
+            console.warn('[ECHOES UI] loadPersonaEditor failed:', err.message);
+            setStatus('載入人設編輯器失敗：' + err.message, 'error', 3200);
+        });
+    }
+
+    function wirePersonaEditor() {
+        if (personaSaveButton) personaSaveButton.addEventListener('click', savePersonaDraft);
+        if (personaCancelButton) personaCancelButton.addEventListener('click', cancelPersonaDraft);
+        if (personaLocalSkillNewButton) {
+            personaLocalSkillNewButton.addEventListener('click', function () { showLocalSkillForm(null); });
+        }
+        if (localSkillSaveButton) localSkillSaveButton.addEventListener('click', saveLocalSkillForm);
+        if (localSkillFormCancelButton) localSkillFormCancelButton.addEventListener('click', hideLocalSkillForm);
+        if (personaPreviewButton) personaPreviewButton.addEventListener('click', previewSkillMatchText);
+        if (personaPreviewInput) {
+            personaPreviewInput.addEventListener('keydown', function (event) {
+                if (event.key === 'Enter') previewSkillMatchText();
+            });
+        }
+        if (personaBuiltinSkillList) {
+            personaBuiltinSkillList.addEventListener('click', function (event) {
+                var saveButton = event.target.closest('[data-builtin-override-save]');
+                if (!saveButton) return;
+                saveBuiltinOverride(saveButton.dataset.builtinOverrideSave, saveButton.closest('[data-builtin-skill-id]'));
+            });
+        }
+        if (personaLocalSkillList) {
+            personaLocalSkillList.addEventListener('click', function (event) {
+                var editButton = event.target.closest('[data-local-skill-edit]');
+                var deleteButton = event.target.closest('[data-local-skill-delete]');
+                if (editButton) {
+                    showLocalSkillForm(findLocalSkillById(editButton.dataset.localSkillEdit));
+                    return;
+                }
+                if (deleteButton) deleteLocalSkillById(deleteButton.dataset.localSkillDelete);
+            });
+        }
     }
 
     function renderBackgroundStatus(background) {
@@ -617,6 +906,8 @@
         if (companionDockPanel) companionDockPanel.hidden = true;
         dockPanels.forEach(function (panel) { panel.hidden = true; });
         dockButtons.forEach(function (button) { button.classList.remove('is-active'); });
+        // 離開 Persona 面板(收合 dock、切換其他分頁、返回主選單)一律視為取消草稿。
+        discardPersonaDraft();
     }
 
     function activateCompanionDock(button) {
@@ -630,6 +921,7 @@
         var targetPanel = document.getElementById(targetId);
         if (targetPanel) targetPanel.hidden = false;
         if (companionDockPanel) companionDockPanel.hidden = false;
+        if (targetId === 'dock-panel-persona') loadPersonaEditor();
     }
 
     function sendTalkText() {
@@ -1184,6 +1476,7 @@
     }
 
     function setupCompanionDock() {
+        wirePersonaEditor();
         dockButtons.forEach(function (button) {
             button.addEventListener('click', function () { activateCompanionDock(button); });
         });

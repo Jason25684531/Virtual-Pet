@@ -1,8 +1,10 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 import json
 import logging
 import re
+
+from pet_harness.models.skill import Skill
 
 from pet_harness.character.exceptions import InvalidCharacterIdError
 from pet_harness.character.personal import (
@@ -112,6 +114,27 @@ class CharacterProfile:
         if self.personal is not None:
             refs.extend(ref for ref in self.personal.skill_refs if ref not in refs)
         return refs
+
+    def apply_skill_overrides(self, skills: list[Skill]) -> tuple[list[Skill], dict[str, int]]:
+        """套用此角色的 skill_overrides:合併別名觸發詞、回傳 priority map。
+
+        不改變任何 Skill 的 canonical name/description/behavior/xp_reward/required_tool,
+        只在觸發詞清單追加此角色專屬的 alias;供 HarnessEngine 建構 resolved skill view。
+        """
+        if self.personal is None or not self.personal.skill_overrides:
+            return skills, {}
+        overrides = self.personal.skill_overrides
+        priorities: dict[str, int] = {}
+        merged: list[Skill] = []
+        for skill in skills:
+            override = overrides.get(skill.name)
+            if override is None:
+                merged.append(skill)
+                continue
+            priorities[skill.name] = override.priority
+            extra_aliases = [alias for alias in override.aliases if alias not in skill.triggers]
+            merged.append(replace(skill, triggers=list(skill.triggers) + extra_aliases) if extra_aliases else skill)
+        return merged, priorities
 
     def load_local_skills(self) -> list:
         """載入此角色 personal 宣告的 character-local metadata-only skills。"""
