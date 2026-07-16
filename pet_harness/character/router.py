@@ -4,6 +4,7 @@ from pet_harness.character.exceptions import NoActiveCharacterError
 from pet_harness.character.profile import CharacterProfile
 from pet_harness.character.registry import CharacterRegistry
 from pet_harness.engine.harness_engine import PetHarnessEngine
+from pet_harness.memory.qdrant_memory_store import QdrantMemoryStore
 from pet_harness.models.events import PetEvent, UserEvent
 from pet_harness.runtime.provider_runtime import ProviderRuntime
 
@@ -52,12 +53,35 @@ class CharacterRouter:
     def switch_character(self, character_id: str) -> CharacterProfile:
         """切換 active 角色;character_id 不存在時拋出例外且不影響現有 active。"""
         profile = self._registry.load_character(character_id)
+
+        # 只在真正的桌面 App 內建立 QdrantMemoryStore(比照 refresh_semantic_index
+        # 的既有慣例:QApplication.instance() is not None 代表在真實執行環境,
+        # 而非 headless 測試);否則用零開銷的 NullMemoryStore,避免每個建構
+        # PyQtHarnessAdapter/CharacterRouter 的測試都各自觸發一次 onnxruntime
+        # 背景載入,拖慢整個測試套件。
+        memory_store = None
+        from PyQt5.QtWidgets import QApplication
+
+        if QApplication.instance() is not None:
+            import config
+
+            # per-character 獨立路徑:嵌入模式一個路徑只允許一個 client,skill 路由庫
+            # 已佔用 runtime_cache/qdrant,記憶庫需實體隔離避免檔案鎖衝突。
+            memory_store = QdrantMemoryStore(
+                character_id=character_id,
+                collection=profile.qdrant_collection,
+                path=f"data/characters/{character_id}/qdrant",
+                model=config.SEMANTIC_ROUTING_MODEL,
+                mode=config.QDRANT_MODE,
+                url=config.QDRANT_URL,
+            )
         # 注入 runtime 本身(滿足 LLMProviderAdapter 協定):configure() 之後
         # 不需要重建 engine,下一個請求自動使用新 adapter。
         engine = PetHarnessEngine(
             provider=self._provider_runtime,
             character_id=character_id,
             agentic_root=self._agentic_root,
+            memory_store=memory_store,
         )
         profile = engine.character_profile or profile
         snapshot = ActiveCharacterSnapshot(

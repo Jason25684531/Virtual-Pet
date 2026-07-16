@@ -96,6 +96,22 @@ def test_articles_are_filtered_sorted_and_limited():
     assert result.payload["articles"][0]["title"] == "new"
 
 
+def test_same_day_articles_with_only_query_string_differing_are_not_merged():
+    """回歸測試:GNN 文章識別碼在 ?sn= query string,去重 MUST NOT 以去掉 query 的
+    URL 為 key,否則當日全部文章會被誤併成一篇(fix-core-interaction-experience)。"""
+    now = datetime(2026, 7, 16, 12, tzinfo=timezone(timedelta(hours=8)))
+    articles = [
+        Article(f"https://gnn.gamer.com.tw/detail.php?sn={i}", f"title-{i}",
+                 f"https://gnn.gamer.com.tw/detail.php?sn={i}", now.replace(hour=8 + i), "A", f"summary-{i}")
+        for i in range(1, 6)
+    ]
+    tool = WebArticleTool([StaticFetcher(articles)], clock=lambda: now)
+    result = tool.execute(ToolRequest("web_article_tool", "test", {"action": "list_articles", "limit": 5}))
+    assert result.status == "success"
+    assert len(result.payload["articles"]) == 5
+    assert {item["title"] for item in result.payload["articles"]} == {f"title-{i}" for i in range(1, 6)}
+
+
 def test_lifecycle_retries_then_logs(tmp_path):
     from pet_harness.storage.sqlite_store import SQLiteStore
     from pet_harness.tools.safety_guard import SafetyGuard

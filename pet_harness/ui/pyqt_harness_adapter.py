@@ -146,7 +146,8 @@ class PyQtHarnessAdapter:
         return payload
 
     def get_current_state(self) -> dict[str, Any]:
-        self._refresh_runtime()
+        # ponytail: 讀取路徑不重建 runtime;handle_text_input 已在同一輪互動的
+        # worker thread 內重建過,UI 執行緒上再重建一次是每輪對話卡頓的主因。
         state = self.engine.state_snapshot()
         latest_event = self._load_latest_snapshot()
         skills = self.list_skills()
@@ -187,7 +188,6 @@ class PyQtHarnessAdapter:
 
     def get_provider_status(self) -> dict[str, Any]:
         """全域 ProviderRuntime 狀態(角色切換前後一致),附 active character id 供 UI 對照。"""
-        self._refresh_runtime()
         snapshot = self.router.get_active_snapshot()
         return {
             "ai": self._build_ai_provider_status(),

@@ -14,7 +14,10 @@ class PlaywrightBrowserRuntime(BaseBrowserRuntime):
         self._worker = BrowserWorker(self._handle)
         self._sessions = BrowserSessionManager()
         self._playwright: Any = None
-        self._browser: Any = None
+        # 持久化 context(而非一次性 Browser):讓 cookie／YouTube visitor data／
+        # 指紋跨啟動累積,避免每次都是全新無狀態瀏覽器觸發反自動化 403
+        # (見 fix-core-interaction-experience)。
+        self._context: Any = None
         self._availability: RuntimeCheckResult | None = None
 
     def ensure_started(self) -> RuntimeCheckResult:
@@ -40,11 +43,11 @@ class PlaywrightBrowserRuntime(BaseBrowserRuntime):
         if command.action == "ensure_started":
             return self._start()
         if command.action == "shutdown":
-            if self._browser:
-                self._browser.close()
+            if self._context:
+                self._context.close()
             if self._playwright:
                 self._playwright.stop()
-            self._browser = self._playwright = None
+            self._context = self._playwright = None
             return BrowserCommandResult("success")
         if command.action == "youtube":
             return self._youtube(command.payload)
@@ -53,9 +56,9 @@ class PlaywrightBrowserRuntime(BaseBrowserRuntime):
         return BrowserCommandResult("failed", error={"reason": "unknown_browser_action", "message": command.action, "retryable": False})
 
     def _start(self) -> BrowserCommandResult:
-        if self._browser and self._browser.is_connected():
+        if self._context and not self._context.is_closed():
             return BrowserCommandResult("success")
-        if self._browser:
+        if self._context:
             self._reset_runtime()
         try:
             from playwright.sync_api import sync_playwright
@@ -68,18 +71,20 @@ class PlaywrightBrowserRuntime(BaseBrowserRuntime):
             self._playwright = None
             return BrowserCommandResult("failed", error={"reason": "chromium_not_installed", "message": "Run playwright install chromium", "retryable": False})
         self._profile_dir.mkdir(parents=True, exist_ok=True)
-        self._browser = self._playwright.chromium.launch(headless=False, args=["--autoplay-policy=no-user-gesture-required"])
+        self._context = self._playwright.chromium.launch_persistent_context(
+            str(self._profile_dir), headless=False, args=["--autoplay-policy=no-user-gesture-required"]
+        )
         return BrowserCommandResult("success")
 
     def _reset_runtime(self) -> None:
-        """Drop stale Playwright objects; browser shutdown can make close() raise."""
-        for value in (self._browser, self._playwright):
+        """Drop stale Playwright objects; context shutdown can make close() raise."""
+        for value in (self._context, self._playwright):
             try:
                 if value:
-                    value.close() if value is self._browser else value.stop()
-            except Exception:  # noqa: BLE001 - already-disconnected browser
+                    value.close() if value is self._context else value.stop()
+            except Exception:  # noqa: BLE001 - already-disconnected context
                 pass
-        self._browser = self._playwright = None
+        self._context = self._playwright = None
         self._sessions = BrowserSessionManager()
 
     def _youtube(self, payload: dict[str, Any]) -> BrowserCommandResult:
@@ -117,19 +122,20 @@ class PlaywrightBrowserRuntime(BaseBrowserRuntime):
             try:
                 return self._play_youtube(session, page, str(payload.get("query", "")), recovery_reason)
             except Exception as exc:  # Playwright raises when a user closes Chromium mid-command.
-                recovery_reason = "browser_disconnected" if not self._browser or not self._browser.is_connected() else "page_or_context_closed"
+                recovery_reason = "browser_disconnected" if not self._context or self._context.is_closed() else "page_or_context_closed"
                 if attempt >= retries:
                     return BrowserCommandResult("failed", error={"reason": recovery_reason, "message": str(exc), "retryable": False})
                 self._recover_session(session, recovery_reason)
         return BrowserCommandResult("failed", error={"reason": "browser_recovery_exhausted", "message": "Browser session recovery exhausted", "retryable": False})
 
     def _prepare_youtube_page(self):
-        if not self._browser or not self._browser.is_connected():
+        if not self._context or self._context.is_closed():
             return None, None, "browser_disconnected"
         session = self._sessions.first("youtube_music")
         try:
             if session is None:
-                session = self._sessions.create("youtube_music", browser=self._browser, context=self._browser.new_context())
+                # 持久化 context 只有一份,音樂 session 共用同一個 context、各自開新分頁。
+                session = self._sessions.create("youtube_music", context=self._context)
             if session is None:
                 return None, None, "too_many_sessions"
             if session.page and not session.page.is_closed():
@@ -168,6 +174,6 @@ class PlaywrightBrowserRuntime(BaseBrowserRuntime):
         return BrowserCommandResult("success", payload=session.snapshot(), evidence=evidence)
 
     def _article_html(self, payload: dict[str, Any]) -> BrowserCommandResult:
-        page = self._browser.new_page()
+        page = self._context.new_page()
         page.goto(str(payload["url"]), wait_until="domcontentloaded", timeout=15000)
         return BrowserCommandResult("success", payload={"html": page.content(), "url": page.url})

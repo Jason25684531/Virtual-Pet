@@ -18,6 +18,7 @@ from pet_harness.character.registry import CharacterRegistry
 from pet_harness.character.router import CharacterRouter
 from pet_harness.models.skill import Skill
 from pet_harness.skills.skill_loader import SkillLoader
+from pet_harness.storage.sqlite_store import SQLiteStore
 
 _UNSET = object()
 
@@ -43,10 +44,26 @@ class CharacterCustomizationService:
 
     def save_persona(self, character_id: str, persona_text: str | None) -> dict[str, Any]:
         profile = self._registry.load_character(character_id)
+        previous_persona = profile.effective_persona
         candidate = self._mutate(profile, persona=persona_text)
         personal.write_personal(self._character_dir(character_id), candidate)
+        # 人設真的變了才清歷史:舊身份的問答殘留在對話歷史/記憶裡,會在下一次
+        # 互動時反過來蓋掉新人設(LLM 傾向跟隨歷史裡重複出現的答案)。
+        new_persona = candidate.persona or profile.persona_description
+        if new_persona != previous_persona:
+            self._clear_character_history(character_id)
         self._refresh_if_active(character_id)
         return self.get_customization(character_id)
+
+    def _clear_character_history(self, character_id: str) -> None:
+        profile = self._registry.load_character(character_id)
+        store = SQLiteStore(profile.sqlite_path)
+        store.initialize()
+        store.clear_events()
+        active = self._router.get_active_character()
+        active_engine = self._router.get_active_engine()
+        if active is not None and active.character_id == character_id and active_engine is not None:
+            active_engine.memory_store.clear()
 
     def upsert_local_skill(self, character_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         profile = self._registry.load_character(character_id)

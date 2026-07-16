@@ -907,7 +907,7 @@
         if (companionDockPanel) companionDockPanel.hidden = true;
         dockPanels.forEach(function (panel) { panel.hidden = true; });
         dockButtons.forEach(function (button) { button.classList.remove('is-active'); });
-        // 離開 Persona 面板(收合 dock、切換其他分頁、返回主選單)一律視為取消草稿。
+        // 離開 Skills／Persona 面板(收合 dock、切換其他分頁、返回主選單)一律視為取消草稿。
         discardPersonaDraft();
     }
 
@@ -922,7 +922,9 @@
         var targetPanel = document.getElementById(targetId);
         if (targetPanel) targetPanel.hidden = false;
         if (companionDockPanel) companionDockPanel.hidden = false;
-        if (targetId === 'dock-panel-persona') loadPersonaEditor();
+        // Skills 面板現在也含技能別名/優先度、角色專屬技能與命中預覽,
+        // 與 Persona 面板共用同一份 getCustomization() 資料來源。
+        if (targetId === 'dock-panel-persona' || targetId === 'dock-panel-agent') loadPersonaEditor();
     }
 
     function sendTalkText() {

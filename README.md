@@ -1,46 +1,56 @@
 # ECHOES Virtual Pet
 
-以 `PyQt5 + QWebEngineView` 為六層 2K 舞台外殼的桌面虛擬寵物專案。`main.py` 目前只有一條啟動路徑，且不接受 `--brain-mode` 參數：
+以 `PyQt5 + QWebEngineView` 為六層 2K 舞台外殼的桌面虛擬寵物專案。每個角色擁有獨立的 `PetHarnessEngine`（Skills / XP / Reward / Memory 全部隔離），`main.py` 只有一條啟動路徑，不接受 `--brain-mode` 參數。
 
 | 項目 | 內容 |
 |------|------|
-| **對話大腦** | `PetHarnessEngine`（Ollama / OpenAI-compatible API / Mock），負責文字對話、skill 路由、XP/獎勵、behavior→WebM 映射 |
+| **對話大腦** | `PetHarnessEngine`（Ollama / OpenAI-compatible API），負責文字對話、skill 路由、工具呼叫、對話記憶、XP/獎勵、behavior→WebM 映射 |
 | **本地快捷動作** | `ActionDispatcher` 子系統，獨立於對話大腦之外，驅動「新聞播報／播放音樂／揮手回應／固定笑話／固定分享」等 UI 按鈕，走 VoAI/ElevenLabs TTS |
-| **離線安全** | 對話大腦 Yes（Mock/Ollama 免 API key）；本地快捷動作 No（需要 VoAI 或 ElevenLabs API key 才有語音） |
-
-> **舊版 LangChain `BrainEngine` + Azure STT 語音對話管線已經被移除**（見 `openspec/changes/archive/2026-06-26-remove-legacy-openclaw-runtime/`），`api_client/brain_engine.py`、`database.py`、`brain_mode.py` 皆已從程式庫刪除，`--brain-mode` CLI 參數也已不存在。`interaction_turn_manager.py`、`sensors/stt_session_controller.py`、以及依賴它們的 `scripts/smoke_test.py`、`scripts/live_stt_latency_probe.py` 已確認無任何主線程式碼引用，於後續清理中一併刪除。僅 `sensors/microphone_stt.py`、`sensors/camera_vision.py` 兩個更底層的感測器模組仍保留（同樣無人呼叫），詳見〈孤兒模組〉一節。
+| **離線安全** | 對話大腦 Yes（Ollama 免 API key）；本地快捷動作 No（需要 VoAI 或 ElevenLabs API key 才有語音） |
 
 參考文件：
 
 - [六層舞台架構 (Stage ArchViz)](docs/current_stage_archviz.md)
 - [STT/TTS 運行狀態](docs/STTTTS.md)
 - [Harness Agentic 控制面板](docs/current_test_ui_agentic_controls.md)
+- [角色人設 (Personal)](docs/character_personal.md)
 - [Linux 部署指南](docs/linux_deployment.md)
 
 ---
 
 ## 架構概覽
 
-### Harness 模式流程
+### Harness 對話流程
 
 ```mermaid
 flowchart LR
     USER[使用者輸入<br>UI sendText] --> ENGINE[PetHarnessEngine]
 
-    ENGINE --> PROMPT[PromptBuilder<br>soul.md + skills + state]
-    PROMPT --> LLM[LLM Provider<br>Ollama / OpenAI API / Mock]
+    ENGINE --> ROUTE0[SkillRouter<br>deterministic match]
+    ROUTE0 -- required_tool 命中 --> TOOLFIRST[ToolExecutionLifecycle<br>工具先行執行]
+    TOOLFIRST --> PROMPT
+    ROUTE0 -- 未命中/無需工具 --> PROMPT
+
+    MEM[(QdrantMemoryStore<br>per-character 記憶)] -. recall .-> PROMPT
+    HIST[(SQLite<br>近期對話)] -. recent_events .-> PROMPT
+
+    PROMPT[PromptBuilder<br>soul.md + skills + state<br>+ 對話歷史 + 記憶 + 工具結果] --> LLM[LLM Provider<br>Ollama / OpenAI API]
     LLM --> PARSER[ResultParser<br>抽取 skill + reply + tool_request]
 
-    PARSER --> ROUTER[SkillRouter<br>deterministic match → agent suggested]
+    PARSER --> ROUTER[SkillRouter.route<br>deterministic → semantic → provider fallback]
+    ROUTER -- 未走工具先行時才執行 --> TOOLS[ToolRegistry + SafetyGuard]
     ROUTER --> BEHAVIOR[BehaviorManager<br>behavior_map.json → WebM key]
-    ROUTER --> TOOLS[ToolRegistry + SafetyGuard<br>RSS / Music / Timer / SysMon / Random]
-    ROUTER --> XP[XPManager + RewardManager<br>經驗值 / 獎勵解鎖]
+    ROUTER --> XP[XPManager + RewardManager]
 
     BEHAVIOR --> UI[TransparentWindow<br>六層 2K 舞台]
     TOOLS --> UI
     XP --> UI
-    ENGINE --> DB[(SQLite<br>pet_state.db)]
+    ENGINE --> DB[(SQLite<br>data/characters/id/state.db)]
+    ENGINE -. save_turn .-> MEM
 ```
+
+- **工具先行**：deterministic 命中且 skill 帶 `required_tool` 時（例如新聞、YouTube 音樂），先執行工具取得真實資料，再把 `ToolResult` 餵給 LLM 合成回覆——LLM 呼叫仍是一次，只是換了順序，避免回覆引用上一輪殘留的工具結果。
+- **對話記憶**：短期記憶是近 6 輪 `SQLite` 對話歷史；長期記憶是 per-character 的 `QdrantMemoryStore`（本地嵌入式向量庫），兩者都在組 prompt 前注入，任何一方未就緒或故障都 fail-open（不中斷對話）。
 
 ### 本地快捷動作子系統流程（與 Harness 大腦並行運作）
 
@@ -52,22 +62,22 @@ flowchart LR
     TTS --> AW[AudioStreamWorker<br>daemon thread PCM/MP3 queue]
     AW --> PLAY[audio_playback.py<br>pygame / ffplay]
     DISP --> MOTION[character_library.py<br>WebM 動作切換]
-    DISP -.-> TRACE[InteractionLatencyTracker<br>mark_* 里程碑（目前為 no-op，見下方說明）]
 ```
 
-> 此子系統完全獨立於 `PetHarnessEngine`。`report_news`/`play_music`/`wave_response` 走固定腳本＋快取音檔；`cached_joke`/`cached_share` 首次觸發時會呼叫 `langchain_openai.ChatOpenAI`（需要 `OPENAI_API_KEY`）產生文字後寫入快取，之後皆直接讀快取，不再重新呼叫 LLM。
+> 此子系統完全獨立於 `PetHarnessEngine`。`report_news`/`play_music`/`wave_response` 走固定腳本＋快取音檔；`cached_joke`/`cached_share` 首次觸發時會呼叫 LLM 產生文字後寫入快取，之後皆直接讀快取。
 
-### 孤兒感測器模組（已斷鏈，未被任何主線程式碼呼叫）
+---
 
-```mermaid
-flowchart LR
-    U[使用者語音 / 畫面] -.-> STT[sensors/microphone_stt.py<br>Azure STT]
-    U -.-> CAM[sensors/camera_vision.py<br>OpenCV + MediaPipe]
-    STT -.-> X[無呼叫者]
-    CAM -.-> X
-```
+## Per-character 隔離
 
-> 原本串接這兩個感測器的 `interaction_turn_manager.py`、`sensors/stt_session_controller.py`，以及依賴它們的開發腳本 `scripts/smoke_test.py`、`scripts/live_stt_latency_probe.py` 已於清理中刪除（確認無任何主線程式碼引用後移除）。`microphone_stt.py`、`camera_vision.py` 兩者本身目前仍保留，但同樣沒有任何呼叫者，是否復活語音/視覺輸入尚待決定。
+每個角色各自擁有：
+
+- `PetHarnessEngine` instance（含自己的 `SkillRouter`、`ToolRegistry`）
+- `data/characters/{character_id}/state.db` — SQLite 狀態（事件、XP、工具紀錄）
+- `data/characters/{character_id}/qdrant/` — 對話記憶向量庫（與 skill 語意路由共用的 `runtime_cache/qdrant` 實體隔離，避免嵌入式 Qdrant 的檔案鎖衝突）
+- `data/characters/{character_id}/profile.json`、`personal.json` — persona、技能授權、別名/優先度覆寫
+
+角色切換由 `CharacterRouter.switch_character()` 原子性地替換整組 engine/profile/snapshot，不會出現分裂狀態。
 
 ---
 
@@ -75,10 +85,10 @@ flowchart LR
 
 ```text
 Virtual-Pet/
-├── main.py                         # 應用程式進入點（唯一路徑，無 CLI 參數，固定啟動 Harness）
+├── main.py                         # 應用程式進入點（唯一路徑，固定啟動 Harness）
 ├── config.py                       # 集中式設定中心（.env + persona + action 白名單）
 ├── character_library.py            # 角色清單、manifest 讀取、motion 映射（快捷動作＋Harness 共用）
-├── interaction_trace.py            # 互動延遲追蹤（已清理 STT/brain 死碼）；⚠️ begin_interaction 目前無人呼叫，實際上是全域 no-op
+├── interaction_trace.py            # 快捷動作互動延遲追蹤
 ├── action_dispatcher.py            # 本地快捷動作派發中樞、alias 正規化、TTS queue 管理
 ├── action_services.py              # 快捷動作背景 service worker（新聞 / 揮手 / 固定意圖快取）
 ├── text_utils.py                   # sanitize_tts_text：去除 ACTION 標記供 TTS 朗讀
@@ -91,97 +101,81 @@ Virtual-Pet/
 │   ├── elevenlabs_client.py        # ElevenLabs fast-fallback TTS client
 │   └── comfyui_client.py           # ComfyUI 算圖 client（未來資產生成用）
 │
-├── sensors/                         # 孤兒模組：以下皆無主線呼叫者，見下方孤兒清單
-│   ├── microphone_stt.py           # Azure STT 背景收音（已斷鏈）
-│   └── camera_vision.py            # OpenCV + MediaPipe 揮手感測（已斷鏈）
-│
 ├── pet_harness/                    # ★ Harness 模式核心引擎
-│   ├── __init__.py                 # 匯出 PetHarnessEngine
-│   ├── voice_runtime_status_adapter.py  # 語音運行狀態正規化
 │   ├── engine/
-│   │   └── harness_engine.py       # 中央協調器：event → prompt → LLM → parse → route → XP → DB
+│   │   ├── harness_engine.py       # 中央協調器：event → (工具先行) → prompt → LLM → parse → route → XP → DB
+│   │   ├── tool_execution_lifecycle.py  # 工具執行閉環（安全授權/重試/預算/落庫）
+│   │   └── media_session_context.py     # 新聞/音樂 session 上下文（per-character）
 │   ├── agent/
-│   │   ├── provider_factory.py     # LLM provider 工廠（Ollama / API / LowSpec / Mock）
+│   │   ├── provider_factory.py     # LLM provider 工廠（Ollama / API）
 │   │   ├── provider_adapter.py     # LLMProviderAdapter 抽象介面
 │   │   ├── ollama_provider.py      # Ollama 本地推論 provider
 │   │   ├── api_provider.py         # OpenAI-compatible REST provider
-│   │   ├── low_spec_provider.py    # 輕量回退 provider
-│   │   ├── mock_provider.py        # 離線測試用 Mock provider
-│   │   ├── langchain_adapter.py    # LangChain 整合 adapter
-│   │   ├── prompt_builder.py       # Prompt 組裝（soul.md + agentic.md + skills + state）
+│   │   ├── prompt_builder.py       # Prompt 組裝（soul.md + agentic.md + skills + state + 對話歷史 + 記憶 + 工具結果）
 │   │   └── result_parser.py        # LLM 回覆結構化解析（skill / reply / tool_request）
+│   ├── memory/
+│   │   ├── base_memory_store.py    # BaseMemoryStore ABC + NullMemoryStore（零開銷預設值）
+│   │   └── qdrant_memory_store.py  # per-character 本地嵌入式向量記憶（背景寫入、fail-open 檢索）
+│   ├── character/
+│   │   ├── profile.py              # CharacterProfile（sqlite_path / qdrant_collection 等）
+│   │   ├── registry.py             # CharacterRegistry（載入/建立/刪除角色）
+│   │   ├── router.py               # CharacterRouter（角色切換中樞，持有 active engine）
+│   │   └── customization_service.py # persona / local skill / 內建 skill 別名覆寫的驗證式讀寫
 │   ├── behavior/
 │   │   └── behavior_manager.py     # Skill → behavior_id / WebM key 映射
 │   ├── models/
 │   │   ├── events.py               # UserEvent / PetEvent / ToolRequestEvent / BehaviorEvent
 │   │   ├── agent_result.py         # AgentResult（parsed LLM output）
 │   │   ├── provider.py             # ProviderConfig / ProviderType / ProviderStatus
-│   │   ├── skill.py                # Skill dataclass
-│   │   └── reward.py               # RewardEvent / RewardRule
+│   │   └── skill.py                # Skill dataclass
 │   ├── skills/
 │   │   ├── skill_loader.py         # 從 .agentic/skills/*.md 讀取 Skill 定義
-│   │   └── skill_router.py         # 關鍵字比對 + agent 建議的 Skill 路由
+│   │   ├── skill_router.py         # deterministic → semantic → provider fallback 路由
+│   │   └── semantic_skill_retriever.py # Qdrant + fastembed 語意路由（shadow mode 預設開）
 │   ├── storage/
 │   │   ├── sqlite_store.py         # SQLite 持久層（XP / events / tool results / config）
 │   │   └── schema.sql              # DB schema 定義
 │   ├── tools/
 │   │   ├── registry.py             # Tool 註冊表（自動註冊內建工具）
 │   │   ├── safety_guard.py         # Tool 執行安全閘門（RiskLevel / ExecutionClass）
-│   │   ├── tool_models.py          # ToolRequest / ToolResult / ToolDefinition
-│   │   ├── rss_tool.py             # RSS 新聞抓取工具
-│   │   ├── music_search_tool.py    # 音樂搜尋工具
-│   │   ├── system_monitor_tool.py  # 系統監控工具
-│   │   ├── timer_tool.py           # 計時器工具
-│   │   └── random_tool.py          # 隨機數工具
+│   │   ├── web_article_tool.py     # 巴哈 GNN 今日新聞（RSS → HTTP → Playwright 三層 fallback）
+│   │   ├── youtube_music_tool.py   # YouTube 播放（Playwright 持久化 context）
+│   │   ├── music_search_tool.py / system_monitor_tool.py / timer_tool.py / random_tool.py
+│   ├── runtime/
+│   │   ├── playwright_browser_runtime.py  # 持久化 Chromium context（cookie 跨啟動保留，降低反自動化 403）
+│   │   ├── browser_session_manager.py
+│   │   └── provider_runtime.py     # 全域 LLM Provider 設定/健康狀態持有者
 │   ├── xp/
 │   │   ├── xp_manager.py           # XP 經驗值結算（per-skill + per-user）
 │   │   └── reward_manager.py       # 獎勵解鎖檢查
-│   ├── asset/
-│   │   ├── service.py              # AssetService 抽象介面
-│   │   ├── asset_contract.py       # AssetRequest / AssetResponse dataclass
-│   │   ├── comfyui_asset_service.py # ComfyUI 實作（未來用）
-│   │   └── mock_asset_service.py   # 離線 Mock 資產服務
 │   └── ui/
-│       └── pyqt_harness_adapter.py # PyQt ↔ Harness Engine 橋接層
+│       ├── pyqt_harness_adapter.py # PyQt ↔ Harness Engine 橋接層
+│       └── character_ui_service.py # 角色 CRUD / persona 面板服務
 │
 ├── ui/
 │   ├── transparent_window.py       # 透明桌面視窗 + Python↔JS bridge
 │   ├── background_resolver.py      # 背景圖三級 fallback 解析
 │   ├── settings_dialog.py          # 設定對話框
 │   └── web_container/
-│       ├── index.html              # 六層 2K 舞台 HTML
+│       ├── index.html              # 六層 2K 舞台 HTML（Skills / Persona / Style / Scene 面板見下）
 │       ├── style.css               # 舞台 CSS（2560×1440 設計空間）
 │       └── app.js                  # 前端控制（idle/motion/conversation/agentic panel）
 │
-├── assets/webm/characters/         # 角色資產
-│   ├── miku/                       # 初音角色（manifest.json + motions/）
-│   └── Choppr/                     # 喬巴角色（manifest.json + motions/）
+├── assets/webm/characters/         # 角色資產（miku / Choppr：manifest.json + motions/）
 │
 ├── .agentic/                       # Harness 人格與技能定義
-│   ├── soul.md                     # 核心人格描述
-│   ├── agentic.md                  # Agentic runtime 說明
+│   ├── soul.md / agentic.md        # 核心人格與 agentic runtime 說明
 │   ├── behavior/behavior_map.json  # Skill → 行為 / WebM 映射表
 │   ├── rewards/reward_rules.json   # 獎勵規則
-│   └── skills/                     # 技能定義（Markdown + frontmatter）
-│       ├── break_reminder.md
-│       ├── gacha_fortune.md
-│       ├── game_news.md
-│       ├── music_bgm.md
-│       └── system_monitor.md
+│   └── skills/                     # 技能定義（Markdown + frontmatter）：bahamut_daily_news / gacha_fortune / game_news / music_bgm / youtube_music_playback
 │
-├── data/
-│   └── pet_state.db                # SQLite 持久化資料庫
-│
-├── runtime_cache/                  # 執行期快取
-│   ├── news_audio/                 # 固定新聞播報 MP3
-│   ├── wave_audio/                 # 固定揮手問候 MP3
-│   └── fixed_intents/              # joke/share 的文字 metadata + MP3
-│
+├── data/characters/{id}/           # per-character 狀態：state.db、qdrant/、profile.json、personal.json
+├── runtime_cache/                  # 執行期快取（news_audio / wave_audio / fixed_intents / qdrant 語意路由索引）
 ├── scripts/
 │   ├── debug_harness.py            # Harness 引擎 CLI 除錯腳本
-│   └── _verify_panel_video.py      # Panel video 驗證工具
+│   └── _verify_panel_video.py      # Panel video 手動驗證工具（QWebEngine headless-ish 截圖比對）
 │
-├── tests/                          # 單元測試
+├── tests/                          # 單元測試（pytest -q）
 ├── docs/                           # 架構與部署文件
 ├── ComfyUI_API/                    # ComfyUI workflow JSON
 └── requirements.txt
@@ -195,16 +189,25 @@ Virtual-Pet/
 
 中央協調器。接收 `UserEvent`，依序執行：
 
-1. **PromptBuilder** — 組裝 `soul.md` + `agentic.md` + 已載入 skills + 當前 state snapshot 成完整 prompt
-2. **LLM Provider** — 將 prompt 送給選定的 LLM（Ollama / OpenAI API / LowSpec / Mock）
-3. **ResultParser** — 從 LLM 回覆中抽取結構化結果（matched skill / reply / tool_request / confidence）
-4. **SkillRouter** — 先做關鍵字 deterministic match，再考慮 agent 建議，決定最終 matched skill
-5. **BehaviorManager** — 依 matched skill 查 `behavior_map.json`，決定 behavior_id 與 WebM key
-6. **ToolRegistry + SafetyGuard** — 若 skill 或 agent 要求工具，先過安全閘門再執行
-7. **XPManager + RewardManager** — 結算經驗值，檢查獎勵解鎖
-8. **SQLiteStore** — 持久化事件、XP、工具結果、provider 狀態
+1. **SkillRouter.match** — 對輸入文字做 deterministic 關鍵字比對
+2. **工具先行**（若命中的 skill 帶 `required_tool`）— 先執行 `ToolExecutionLifecycle`，取得真實 `ToolResult`
+3. **PromptBuilder** — 組裝 `soul.md` + `agentic.md` + 已載入 skills + state snapshot + 近期對話歷史 + 記憶檢索命中 + 工具結果
+4. **LLM Provider** — 送給選定的 LLM（Ollama / OpenAI-compatible API）
+5. **ResultParser** — 從回覆中抽取結構化結果（matched skill / reply / tool_request / confidence）
+6. **SkillRouter.route** — deterministic → semantic（Qdrant shadow mode）→ provider 建議 → none
+7. **BehaviorManager** — 依 matched skill 查 `behavior_map.json`，決定 behavior_id 與 WebM key
+8. **ToolRegistry + SafetyGuard** — 若上一步未走工具先行且仍需要工具，過安全閘門後執行
+9. **XPManager + RewardManager** — 結算經驗值，檢查獎勵解鎖
+10. **SQLiteStore + QdrantMemoryStore** — 落庫事件，背景寫入本輪對話記憶
 
 最終組合為 `PetEvent` 回傳給 UI 層。
+
+### 對話記憶 (`pet_harness/memory/`)
+
+- `BaseMemoryStore`（ABC）定義 `save_turn` / `recall` / `status`；呼叫端（`PetHarnessEngine`）只依賴介面，可替換。
+- `NullMemoryStore` 是零開銷預設值：headless／測試環境下 `CharacterRouter` 不會建構真正的記憶庫。
+- `QdrantMemoryStore` 是正式實作：本地嵌入式向量庫，寫入在背景執行緒完成，檢索 fail-open（未就緒或例外一律回空清單，絕不中斷對話）；FIFO 上限預設 500 筆。
+- `CharacterRouter.switch_character()` 只在真正的桌面 App 內（`QApplication.instance() is not None`）才建構 `QdrantMemoryStore`，比照既有的語意路由索引慣例，避免 headless 測試觸發不必要的模型載入。
 
 ### LLM Provider 層 (`pet_harness/agent/`)
 
@@ -212,20 +215,18 @@ Virtual-Pet/
 |----------|------|----------|
 | `OllamaProvider` | 本地 Ollama 推論 | No（localhost） |
 | `APIProvider` | OpenAI-compatible REST API | Yes |
-| `LowSpecProvider` | 輕量回退（低規設備） | No |
-| `MockProvider` | 離線測試 | No |
 
-透過 `provider_factory.py` 依 `ProviderConfig.provider_type` 分派。
+透過 `provider_factory.py` 依 `ProviderConfig.provider_type` 分派；全域 `ProviderRuntime` 是唯一持有者，角色切換不影響 Provider 選擇。
 
 ### Skill 系統 (`pet_harness/skills/`)
 
-技能定義放在 `.agentic/skills/*.md`，使用 YAML frontmatter 描述觸發關鍵字、XP 獎勵、所需工具等。`SkillLoader` 在引擎初始化時掃描載入，`SkillRouter` 在每次事件中做路由。
+技能定義放在 `.agentic/skills/*.md`，使用 frontmatter 描述觸發關鍵字、XP 獎勵、`required_tool`、`tool_policy`（含 `allowed_actions`/`defaults`）等。`SkillLoader` 在引擎初始化時掃描載入，`SkillRouter` 依 deterministic → semantic（Qdrant，預設 shadow mode 只記錄不生效）→ provider 建議的順序路由。
 
-目前內建技能：`break_reminder`、`gacha_fortune`、`game_news`、`music_bgm`、`system_monitor`。
+目前內建技能：`bahamut_daily_news`、`gacha_fortune`、`game_news`、`music_bgm`、`youtube_music_playback`。
 
 ### Tool 系統 (`pet_harness/tools/`)
 
-內建五個工具：`rss_tool`、`music_search_tool`、`system_monitor_tool`、`timer_tool`、`random_tool`。所有工具執行前都會通過 `SafetyGuard` 檢查 `ToolRiskLevel` 與 `ToolExecutionClass`。
+所有工具執行前都會通過 `SafetyGuard` 檢查 `ToolRiskLevel` 與 `ToolExecutionClass`。媒體類工具（`web_article_tool`、`youtube_music_tool`）走 `PlaywrightBrowserRuntime` 的持久化 Chromium context。
 
 ### XP / 獎勵系統 (`pet_harness/xp/`)
 
@@ -245,16 +246,27 @@ UI 固定以 `2560×1440` 設計空間、`min(vw/2560, vh/1440)` 縮放渲染：
 | 2. `stage-pet-layer` | 角色 WebM 動作播放 |
 | 3. `stage-live-ui` | 即時 UI（conversation panel、狀態列） |
 | 4. `stage-bottom-ui` | 底部控制列 |
-| 5. `stage-agentic-panel` | Harness 模式 agentic 控制面板 |
+| 5. `stage-agentic-panel` | Companion Dock（Skills / Persona / Style / Scene，見下） |
 | 6. Browser overlays | 瀏覽器原生覆蓋層 |
 
 角色使用 CSS design token 定位（`--pet-anchor-x`、`--pet-floor-y`），底部置中錨定以確保 agentic panel 滑入時角色不偏移。
+
+### Companion Dock 面板職責分離
+
+| 面板 | 內容 |
+|------|------|
+| **Skills** (`dock-panel-agent`) | 技能清單（啟用/停用/立即執行）、內建技能別名／優先度覆寫、角色專屬 local skill CRUD、命中預覽 |
+| **Persona** (`dock-panel-persona`) | 僅角色人設文字編輯（儲存／取消） |
+| **Style** (`dock-panel-style`) | 造型版位（沿用既有角色與素材流程） |
+| **Scene** (`dock-panel-scene`) | 場景版位（沿用既有背景與房間流程） |
+
+四個面板互不包含彼此的介面元素；Skills 與 Persona 共用同一份 `getCustomization()` 後端資料（開啟任一面板都會重新載入），Style/Scene 目前僅占位。
 
 ---
 
 ## 本地快捷動作子系統（Harness 模式下仍在運作）
 
-以下模組獨立於 `PetHarnessEngine`，由 UI 按鈕直接觸發固定動作，目前確實在運作：
+以下模組獨立於 `PetHarnessEngine`，由 UI 按鈕直接觸發固定動作：
 
 - **`action_dispatcher.py`** — Action 白名單、alias 正規化、WebM 動作切換、TTS queue 管理中樞
 - **`action_services.py`** — 新聞播報 / 揮手回應 / 固定笑話 / 固定分享的背景 QThread worker
@@ -263,20 +275,7 @@ UI 固定以 `2560×1440` 設計空間、`min(vw/2560, vh/1440)` 縮放渲染：
 - **`character_library.py`** — 角色 motion 路徑解析（快捷動作與 Harness 共用）
 - **`text_utils.py`** — TTS 前的 ACTION 標記清理
 - **`api_client/adaptive_tts_fallback.py`** — VoAI primary + ElevenLabs fallback
-- **`api_client/voai_client.py`** — VoAI HTTP PCM 串流 TTS
-- **`api_client/elevenlabs_client.py`** — ElevenLabs fast-fallback TTS
-- **`interaction_trace.py`** — 已移除 STT/brain 相關的死碼方法（`begin_interaction` 以外的 STT/brain milestone、`abort`/`snapshot`/`get_completed_trace`）。⚠️ **目前整個追蹤機制實質上是 no-op**：`begin_interaction()` 是唯一會建立 trace 狀態的入口，但沒有任何主線程式碼呼叫它（原本的呼叫者 `interaction_turn_manager.py`/`stt_session_controller.py` 已刪除），`ActionDispatcher` 呼叫 `dispatch()`/`trigger_cached_intent()` 時也從未帶入真正的 `trace_id`（一律是 `None`）。因此 `mark_action_dispatched`/`mark_tts_enqueued` 等方法雖然仍被呼叫，但每次都在第一行 `if not trace_id: return` 就結束，永遠不會印出摘要。若要恢復功能，需要在 `ActionDispatcher.dispatch()` 進入點呼叫 `latency_tracker.begin_interaction()` 產生真正的 trace_id 並往下傳遞
-
-## 孤兒 / 已斷鏈模組（待決定去留）
-
-`interaction_turn_manager.py`、`sensors/stt_session_controller.py`，以及依賴它們且已 `ImportError` 的開發腳本 `scripts/smoke_test.py`、`scripts/live_stt_latency_probe.py`，經確認無任何主線程式碼（`main.py`、`ui/transparent_window.py`、`pet_harness/`）引用後，已一併刪除。
-
-以下兩個更底層的感測器模組目前仍保留在程式庫中，但同樣沒有任何呼叫者，是否復活語音/視覺輸入尚待決定：
-
-- **`sensors/microphone_stt.py`** — Azure STT 背景收音
-- **`sensors/camera_vision.py`** — OpenCV + MediaPipe 揮手感測
-
-> 舊版 `api_client/brain_engine.py`、`database.py`、`brain_mode.py` 已於 `remove-legacy-openclaw-runtime` 變更中實體刪除，不再存在於程式庫中。
+- **`api_client/voai_client.py`** / **`api_client/elevenlabs_client.py`** — TTS client
 
 ---
 
@@ -312,24 +311,18 @@ source venv/bin/activate
 
 ```bash
 pip install -r requirements.txt
+playwright install chromium
 ```
+
+`playwright install chromium` 是使用 YouTube 播放與巴哈 GNN 今日新聞的必要步驟；若缺少 Chromium，工具會回傳可讀取的錯誤而不影響其他功能。
 
 ### 3. 設定 `.env`
 
-**Harness 模式最小設定（離線可用）：**
+**對話大腦最小設定（離線可用）：**
 
-不需要任何 API key。預設使用 `MockProvider`。若要接 Ollama：
-
-```bash
-HARNESS_PROVIDER_TYPE=ollama
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=minimax-m2.7:cloud
-```
-
-若要接 OpenAI-compatible API：
+不需要任何 API key，預設走 Ollama（`OLLAMA_BASE_URL=http://localhost:11434`）。若要接 OpenAI-compatible API：
 
 ```bash
-HARNESS_PROVIDER_TYPE=api
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL=gpt-4o-mini
 ```
@@ -341,15 +334,6 @@ VOAI_API_KEY=your_voai_api_key
 ELEVENLABS_API_KEY=your_elevenlabs_api_key
 ```
 
-以下 Azure STT 變數只服務孤兒語音管線（`sensors/microphone_stt.py` 等），目前無主線程式碼讀取，設定與否不影響任何現行功能：
-
-```bash
-AZURE_STT_API_KEY=your_azure_speech_key
-AZURE_STT_REGION=eastus
-AZURE_STT_LANGUAGE=zh-TW
-AZURE_STT_ENABLED=true
-```
-
 <details>
 <summary>可選環境變數</summary>
 
@@ -359,17 +343,30 @@ ELEVENLABS_VOICE_ID=default_elevenlabs_voice_id
 ELEVENLABS_MIKU_VOICE_ID=optional_miku_fallback_voice_id
 ELEVENLABS_CHOPPER_VOICE_ID=optional_chopper_fallback_voice_id
 ACTION_SYNC_TIMEOUT_MS=6000
-AZURE_STT_INITIAL_SILENCE_TIMEOUT_MS=5000
-AZURE_STT_END_SILENCE_TIMEOUT_MS=350
-AZURE_STT_SEGMENTATION_SILENCE_TIMEOUT_MS=300
-AZURE_STT_SEGMENTATION_MAX_TIME_MS=4000
+
+# 語意 skill 路由（預設 shadow mode，只記錄候選不生效）
+SEMANTIC_ROUTING_ENABLED=true
+SEMANTIC_ROUTING_SHADOW_MODE=true
+SEMANTIC_ROUTING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+SEMANTIC_ROUTING_TOP_K=3
+SEMANTIC_ROUTING_ACCEPT_THRESHOLD=0.60
+SEMANTIC_ROUTING_MARGIN_THRESHOLD=0.08
+QDRANT_MODE=local
+QDRANT_PATH=runtime_cache/qdrant
+
+# provider fallback
+PROVIDER_ROUTING_FALLBACK_ENABLED=true
+PROVIDER_ROUTING_CONFIDENCE_THRESHOLD=0.7
+
+# 瀏覽器 session 復原
+BROWSER_SESSION_RECOVERY_ENABLED=true
+BROWSER_SESSION_RECOVERY_MAX_RETRIES=1
 ```
 
 說明：
 - `VOAI_PCM_STREAMING_ENABLED=false` 可回退到 MP3 BytesIO 播放
 - `ACTION_SYNC_TIMEOUT_MS` 預設 `6000`，降低正常 VoAI 起播被誤判成 `timeout_promoted` 的機率
-- 以上 `AZURE_STT_*` 變數只服務孤兒語音管線，目前不影響任何現行功能
-- `BRAIN_MEMORY_MAX_TURNS`、`BRAIN_SENTENCE_MIN_CHARS`、`CHATGPT_API_KEY` 為舊版 `BrainEngine` 專用設定，該模組已刪除，這些變數現在已無任何程式碼讀取
+- 對話記憶（`QdrantMemoryStore`）沿用 `QDRANT_MODE`/`QDRANT_PATH`/`SEMANTIC_ROUTING_MODEL` 設定，但走獨立的 per-character 路徑（`data/characters/{id}/qdrant/`），不會與語意路由索引互相鎖檔
 
 </details>
 
@@ -381,7 +378,7 @@ AZURE_STT_SEGMENTATION_MAX_TIME_MS=4000
 python main.py
 ```
 
-目前預設啟動 Harness 模式。Linux 若遇到 Qt / WebEngine / WebGL 問題，請參考 [linux_deployment.md](docs/linux_deployment.md)。
+Linux 若遇到 Qt / WebEngine / WebGL 問題，請參考 [linux_deployment.md](docs/linux_deployment.md)。
 
 ### Harness 引擎 CLI 除錯
 
@@ -393,22 +390,11 @@ python scripts/debug_harness.py
 
 ## 測試
 
-### 單元測試
-
 ```bash
-python -m pytest tests/ -v
+python -m pytest -q
 ```
 
-目前 `tests/` 底下實際只有 4 個測試檔，皆屬 `pet_harness` 角色系統：
-
-- `test_character_profile.py`
-- `test_character_registry.py`
-- `test_character_router.py`
-- `test_harness_per_character.py`
-
-> 本地快捷動作子系統（TTS queue、PCM session、news/joke/share cache）目前沒有對應的 `pytest` 測試。
->
-> 舊版 Live 語音管線遺留的手動驗證工具 `scripts/smoke_test.py`、`scripts/live_stt_latency_probe.py` 因 import 已刪除的 `api_client.brain_engine` 而長期損壞，已隨 `interaction_turn_manager.py`、`sensors/stt_session_controller.py` 一併移除。
+涵蓋角色系統（profile / registry / router / customization）、Harness 引擎（skill 路由、工具先行、對話記憶、去重）、UI bridge（runtime refresh gating、面板結構）、瀏覽器 session 復原等。真實 `QdrantMemoryStore` 生命週期驗證（`tests/test_memory_store.py`）在獨立子行程執行，避開 onnxruntime 在 Windows 上與 pytest 全套件執行順序相關的原生層級環境限制。
 
 ---
 
@@ -440,31 +426,10 @@ python -m pytest tests/ -v
 
 ---
 
-## 延遲摘要判讀（目前實際上不會輸出——已知問題）
+## 媒體工具
 
-`InteractionLatencyTracker`（`interaction_trace.py`）設計上會在每輪快捷動作完成後於 terminal 印出摘要：
-
-```text
-[ECHOES][TRACE][abcd1234] 互動完成摘要 source=... total=...ms | stages: tts_startup=...ms; tts_to_driver_start=...ms | bottleneck=...(...ms) | milestones: first_action_dispatched=...ms; first_driver_started=...ms
-```
-
-> ⚠️ **目前這段摘要永遠不會出現。** `begin_interaction()` 是唯一會建立 trace 狀態的入口，過去只有已刪除的 `interaction_turn_manager.py`／`sensors/stt_session_controller.py` 呼叫它；`ActionDispatcher.dispatch()`／`trigger_cached_intent()` 從 UI 觸發時一律傳入 `trace_id=None`，從未呼叫 `begin_interaction()`。因此所有 `mark_*` 呼叫都在第一行 `if not trace_id: return` 結束，`_finalize()` 永遠不會執行，這段 log 目前形同裝飾。
-
-若要讓它恢復運作，需要在 `ActionDispatcher.dispatch()`／`trigger_cached_intent()` 的入口呼叫 `self._latency_tracker.begin_interaction(source, text)` 取得真正的 `trace_id`，並往下傳給 `_synthesize_tts()`／`speak_text()`。這與下方〈`action_dispatcher.py` 與 Harness 整合建議〉是同一類「補上缺失的呼叫端」問題，可以一併處理。
-
----
-
-## 開發備註
-
-- 若要理解目前程式真實結構，請優先看本 README 與 `docs/current_stage_archviz.md`。
-- `docs/` 內文件為目前架構參考；歷史文件已清理。
-- Harness 模式目前使用 deterministic skill routing（Week 1 設計），tool use request 為 metadata-only。
-- ComfyUI 資產生成仍在 future FastAPI JSON contract 之後。
-- 舊 `OLLAMA_*` 設定目前是 Harness 對話大腦（`HARNESS_PROVIDER_TYPE=ollama`）唯一使用它們的路徑，並非相容性殘留。
-- 本地快捷動作子系統、孤兒語音管線的去留是待決事項，尚未有明確結論；若要清理，建議先確認 `scripts/` 兩個開發腳本要修復還是直接刪除。
-# 媒體工具
-
-安裝 Python 依賴後，另執行 `playwright install chromium`，即可使用 YouTube 播放與巴哈 GNN 今日新聞。若缺少 Chromium，工具會回傳可讀取的錯誤而不影響其他功能；自動播放被瀏覽器阻擋時會回報「未驗證播放」，不會誤稱已播放。
+- **巴哈 GNN 今日新聞**（`bahamut_daily_news` skill → `web_article_tool`）：RSS → HTTP → Playwright 三層 fallback；以文章 `id`（RSS guid）去重，不用去除 query string 的 URL（GNN 文章識別碼在 `?sn=` 參數，否則會把當日文章誤併成一篇）；回覆為前 5 篇逐篇重點整理。
+- **YouTube 播放**（`youtube_music_playback` skill → `youtube_music_tool`）：`PlaywrightBrowserRuntime` 使用 `launch_persistent_context`，cookie／視覺指紋跨啟動累積，降低反自動化 403 斷流；自動播放被瀏覽器阻擋時回報「未驗證播放」，不會誤稱已播放。
 
 ## Skill routing
 

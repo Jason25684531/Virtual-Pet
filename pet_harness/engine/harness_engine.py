@@ -14,6 +14,7 @@ from pet_harness.agent.result_parser import ResultParser
 from pet_harness.asset.mock_asset_service import MockAssetService
 from pet_harness.behavior.behavior_manager import BehaviorManager
 from pet_harness.character.profile import CharacterProfile
+from pet_harness.memory.base_memory_store import BaseMemoryStore, NullMemoryStore
 from pet_harness.models.events import PetEvent, ToolRequestEvent, UserEvent
 from pet_harness.models.agent_result import AgentResult
 from pet_harness.models.provider import ProviderConfig
@@ -52,9 +53,11 @@ class PetHarnessEngine:
         snapshot_path: str | Path = Path("debug") / "events" / "latest_pet_event.json",
         provider_config: ProviderConfig | None = None,
         character_id: str | None = None,
+        memory_store: BaseMemoryStore | None = None,
     ) -> None:
         self.agentic_root = Path(agentic_root)
         self.snapshot_path = Path(snapshot_path)
+        self.memory_store = memory_store or NullMemoryStore()
 
         self._character_id = character_id
         self._profile: CharacterProfile | None = None
@@ -65,7 +68,6 @@ class PetHarnessEngine:
 
         self.store = SQLiteStore(effective_db_path)
         self.store.initialize()
-        self._warned_missing_skill_refs: set[str] = set()
 
         # provider 由 ProviderRuntime 注入;provider_config 僅保留路由偏好,
         # 角色 store 不再持久化任何 provider 設定或狀態。
@@ -218,25 +220,6 @@ class PetHarnessEngine:
         if changed:
             self.store.set_setting(CHARACTER_SKILL_ENABLED_KEY, overlay)
 
-    def _filter_enabled_character_skills(self, skills: list[Skill]) -> list[Skill]:
-        enabled = self.store.get_setting(CHARACTER_SKILL_ENABLED_KEY, {})
-        enabled_map = dict(enabled) if isinstance(enabled, dict) else {}
-        return [skill for skill in skills if enabled_map.get(skill.name, True)]
-
-    def _filter_skills_by_config(self, skills: list[Skill], skill_config: list[str]) -> list[Skill]:
-        by_name = {skill.name: skill for skill in skills}
-        filtered: list[Skill] = []
-        for name in skill_config:
-            skill = by_name.get(name)
-            if skill is None:
-                warning_key = f"{self._character_id}:{name}"
-                if warning_key not in self._warned_missing_skill_refs:
-                    LOGGER.warning("[SKILL SKIPPED] character=%s name=%s reason=not_loaded", self._character_id, name)
-                    self._warned_missing_skill_refs.add(warning_key)
-                continue
-            filtered.append(skill)
-        return filtered
-
     def _migrate_media_skills(self) -> None:
         if self.store.get_setting(MEDIA_SKILL_MIGRATION_KEY, False):
             return
@@ -258,6 +241,23 @@ class PetHarnessEngine:
         state_before = self.store.state_snapshot()
         active_capabilities = self._active_capabilities()
         deterministic_skill = self.router.match(user_event.text, active_capabilities)
+
+        # 工具先行:deterministic 命中且帶 required_tool 時,先執行工具再讓 LLM 合成回覆,
+        # 讓回覆能引用本輪真實取得的資料,而非上一輪殘留的 tool_result(見
+        # fix-core-interaction-experience)。LLM 呼叫次數維持一次。
+        tool_first_event = None
+        tool_first_result = None
+        if deterministic_skill is not None and deterministic_skill.required_tool:
+            tool_first_candidate = self._build_tool_request_candidate(user_event, deterministic_skill)
+            if tool_first_candidate is not None:
+                tool_first_event, tool_first_result, _payload, _bonus = self._execute_tool_candidate(
+                    user_event, tool_first_candidate, deterministic_skill.name
+                )
+
+        conversation_history = list(reversed(self.store.recent_events(limit=6)))
+        memory_hits = self.memory_store.recall(user_event.text, top_k=3)
+        memory_status = self.memory_store.status()
+
         prompt_result = self.prompt_builder.build(
             event=user_event,
             skills=self.skills,
@@ -265,6 +265,9 @@ class PetHarnessEngine:
             matched_skill=deterministic_skill,
             persona=self._profile.effective_persona if self._profile else None,
             action_tags=self.character_library.list_action_tags(self._character_id),
+            tool_result=tool_first_result,
+            conversation_history=conversation_history,
+            memory_hits=memory_hits,
         )
         self.last_prompt = prompt_result.prompt
         provider_reply = self.provider.generate_reply(
@@ -305,23 +308,25 @@ class PetHarnessEngine:
             matched_skill,
             action_motion_key=resolved_action["motion_key"] if resolved_action else None,
         )
-        tool_candidate = self._build_tool_request_candidate(user_event, matched_skill, agent_result)
         tool_event = None
         tool_result_payload = None
         tool_xp_bonus = 0
         self.last_tool_result = None
-        if tool_candidate is not None:
-            tool_event = ToolRequestEvent(
-                tool_name=tool_candidate.tool_name,
-                source_skill=matched_skill.name if matched_skill else tool_candidate.source,
-                metadata={"source": tool_candidate.source, "arguments": tool_candidate.arguments},
-            )
-            tool_result = self._run_tool_request(tool_candidate)
-            self.last_tool_result = tool_result
-            tool_result_payload = tool_result.to_dict()
-            if tool_result.status in {"completed", "success"}:
-                definition = self.tool_registry.get(tool_result.tool_name)
+        if tool_first_result is not None:
+            # 工具已在生成回覆前執行過(見上方工具先行區塊),沿用同一份結果,不重複呼叫工具。
+            tool_event = tool_first_event
+            self.last_tool_result = tool_first_result
+            tool_result_payload = tool_first_result.to_dict()
+            if tool_first_result.status in {"completed", "success"}:
+                definition = self.tool_registry.get(tool_first_result.tool_name)
                 tool_xp_bonus = definition.xp_reward if definition is not None else 0
+        else:
+            tool_candidate = self._build_tool_request_candidate(user_event, matched_skill, agent_result)
+            if tool_candidate is not None:
+                tool_event, tool_result, tool_result_payload, tool_xp_bonus = self._execute_tool_candidate(
+                    user_event, tool_candidate, matched_skill.name if matched_skill else None
+                )
+                self.last_tool_result = tool_result
 
         xp_delta = self.xp_manager.award_for_event(matched_skill)
         if tool_xp_bonus:
@@ -359,6 +364,9 @@ class PetHarnessEngine:
                     "prompt_warnings": prompt_result.warnings,
                     **self.router.last_route_diagnostics,
                     "skip_diagnostics": self.skip_diagnostics,
+                    "memory_status": memory_status.state,
+                    "memory_status_reason": memory_status.reason,
+                    "memory_hit_count": len(memory_hits),
                 },
                 "tool_result": tool_result_payload,
                 "asset_result": asset_result,
@@ -368,6 +376,7 @@ class PetHarnessEngine:
         self.store.log_event(user_event.to_dict(), pet_event.to_dict())
         pet_event.saved_to_db = True
         self._write_snapshot(pet_event)
+        self.memory_store.save_turn(user_event.event_id, user_event.text, pet_event.reply)
         return pet_event
 
     def debug_status(self) -> dict[str, Any]:
@@ -434,7 +443,7 @@ class PetHarnessEngine:
         self,
         user_event: UserEvent,
         matched_skill,
-        agent_result: AgentResult,
+        agent_result: AgentResult | None = None,
     ) -> ToolRequest | None:
         article_index = self.media_session_context.follow_up_index(user_event.text)
         media_context = self.media_session_context.load()
@@ -458,7 +467,7 @@ class PetHarnessEngine:
                 arguments=arguments,
                 metadata={"source_event_id": user_event.event_id, "raw_text": user_event.text},
             )
-        if agent_result.tool_request and agent_result.tool_request.get("tool_name"):
+        if agent_result is not None and agent_result.tool_request and agent_result.tool_request.get("tool_name"):
             return ToolRequest(
                 tool_name=agent_result.tool_request["tool_name"],
                 source="agent_result",
@@ -466,6 +475,24 @@ class PetHarnessEngine:
                 metadata={"source_event_id": user_event.event_id},
             )
         return None
+
+    def _execute_tool_candidate(
+        self,
+        user_event: UserEvent,
+        tool_candidate: ToolRequest,
+        source_skill_name: str | None,
+    ) -> tuple[ToolRequestEvent, ToolResult, dict[str, Any], int]:
+        tool_event = ToolRequestEvent(
+            tool_name=tool_candidate.tool_name,
+            source_skill=source_skill_name or tool_candidate.source,
+            metadata={"source": tool_candidate.source, "arguments": tool_candidate.arguments},
+        )
+        tool_result = self._run_tool_request(tool_candidate)
+        tool_xp_bonus = 0
+        if tool_result.status in {"completed", "success"}:
+            definition = self.tool_registry.get(tool_result.tool_name)
+            tool_xp_bonus = definition.xp_reward if definition is not None else 0
+        return tool_event, tool_result, tool_result.to_dict(), tool_xp_bonus
 
     def _active_capabilities(self) -> set[str]:
         context = self.media_session_context.load()

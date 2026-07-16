@@ -50,7 +50,10 @@ class WebArticleTool:
             if not all((article.id, article.title, article.url, article.published_at, article.category is not None, article.summary is not None)):
                 continue
             if article.published_at.astimezone(taipei).date() == today:
-                normalized[article.url.split("?", 1)[0]] = article
+                # ponytail: 以 article.id(RSS guid,或抓取器填入的完整 URL)去重;
+                # GNN 文章識別碼在 query string(?sn=...),去除 query 會把當日全部
+                # 文章誤併成一篇。
+                normalized[article.id or article.url] = article
         category = str(request.arguments.get("category", "")).strip()
         result = sorted(normalized.values(), key=lambda item: item.published_at, reverse=True)
         if category:

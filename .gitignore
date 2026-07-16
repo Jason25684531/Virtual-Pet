@@ -54,3 +54,5 @@ ui/ref_pic/*
 data/characters/miku/*
 agentic.md
 soul.md
+data/runtime/*
+data/characters/*/qdrant/

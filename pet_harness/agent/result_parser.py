@@ -27,6 +27,16 @@ class ResultParser:
             fenced_payload = self._parse_fenced_json(raw_text)
             if fenced_payload is not None:
                 return self._from_payload(fenced_payload, raw_text, normalized_provider, "parsed_fenced_json")
+        reply_only = self._extract_reply_field(raw_text)
+        if reply_only is not None:
+            return AgentResult(
+                reply=reply_only,
+                raw_text=raw_text,
+                parser_status="parsed_reply_field_only",
+                provider_type=normalized_provider,
+                fallback_used=True,
+                metadata={"reason": "outer_json_malformed"},
+            )
         return AgentResult(
             reply=fallback_reply or self.default_reply,
             raw_text=raw_text,
@@ -37,11 +47,47 @@ class ResultParser:
         )
 
     def _parse_fenced_json(self, raw_text: str) -> dict | None:
-        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, re.DOTALL)
+        """找出第一個「括號平衡」的 {...} 區塊再交給 json.loads;比非貪婪 regex
+        更耐長內容/巢狀結構,也不要求一定要有收尾的 ``` fence(小型本地模型偶爾
+        會忘記把 fence 補完整)。"""
+        start = raw_text.find("{")
+        if start == -1:
+            return None
+        depth = 0
+        in_string = False
+        escape = False
+        for index in range(start, len(raw_text)):
+            char = raw_text[index]
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(raw_text[start : index + 1])
+                    except json.JSONDecodeError:
+                        return None
+        return None
+
+    @staticmethod
+    def _extract_reply_field(raw_text: str) -> str | None:
+        """外層 JSON 整段救不回來時的最後手段:單獨抓出 "reply" 欄位的值,
+        交給 json.loads 正確處理跳脫字元,避免使用者看到帶 \\n 的原始文字。"""
+        match = re.search(r'"reply"\s*:\s*"((?:[^"\\]|\\.)*)"', raw_text, re.DOTALL)
         if not match:
             return None
         try:
-            return json.loads(match.group(1))
+            return json.loads(f'"{match.group(1)}"')
         except json.JSONDecodeError:
             return None
 

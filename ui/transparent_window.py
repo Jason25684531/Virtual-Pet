@@ -26,8 +26,6 @@ from interaction_trace import InteractionLatencyTracker
 from action_services import FIXED_NEWS_SCRIPT
 
 from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
-from pet_harness.storage.sqlite_store import SQLiteStore
-from pet_harness.models.events import utc_now
 from pet_harness.ui.pyqt_harness_adapter import PyQtHarnessAdapter
 from ui.background_resolver import BackgroundResolver
 from ui.character_ui_bridge import CharacterUiBridge
@@ -91,10 +89,6 @@ BRIDGE_CONTRACT = {
     ],
 }
 
-PLAYTIME_SECONDS_KEY = "ui_playtime_seconds"
-LAST_PLAYED_AT_KEY = "ui_last_played_at"
-
-
 class EchoesWebPage(QWebEnginePage):
     """自訂 WebPage，將前端 console 訊息轉印至 Python Terminal。"""
 
@@ -144,6 +138,8 @@ class HarnessInteractionWorker(QThread):
         self._text = text
 
     def run(self) -> None:
+        # ponytail: print,不是 logging——這個 App 從未呼叫 logging.basicConfig(),
+        # LOGGER.info/warning 預設不會輸出到主控台。
         print(f"[HARNESS] received text: {self._text!r}")
         try:
             payload = self._adapter.handle_text_input(self._text)
@@ -151,7 +147,11 @@ class HarnessInteractionWorker(QThread):
             print(f"[HARNESS] handle_text_input failed: {exc}")
             self.failed_message.emit(str(exc))
             return
-        print(f"[HARNESS] reply: {payload}")
+        reply_preview = str(payload.get("reply") or "")[:120]
+        print(
+            f"[HARNESS] reply={reply_preview!r} matched_skill={payload.get('matched_skill')} "
+            f"tool_status={(payload.get('tool') or {}).get('status')}"
+        )
         self.finished_payload.emit(payload)
 
 
@@ -323,7 +323,6 @@ class TransparentWindow(QMainWindow):
         self._pending_javascript_calls: list[tuple[str, tuple[object, ...]]] = []
         self._latest_agentic_event: dict[str, object] | None = None
         self._playtime_character_id: str | None = None
-        self._playtime_sqlite_path: str | None = None
         self._playtime_started_at: float | None = None
         self._playtime_timer = QTimer(self)
         self._playtime_timer.setInterval(60000)
@@ -1306,40 +1305,27 @@ class TransparentWindow(QMainWindow):
             return
 
         character_id = str(profile.character_id)
-        sqlite_path = str(profile.sqlite_path)
-        if (
-            character_id == self._playtime_character_id
-            and sqlite_path == self._playtime_sqlite_path
-            and self._playtime_started_at is not None
-        ):
+        if character_id == self._playtime_character_id and self._playtime_started_at is not None:
             return
 
         self._flush_playtime(force=True)
         self._playtime_character_id = character_id
-        self._playtime_sqlite_path = sqlite_path
         self._playtime_started_at = time.monotonic()
 
     def _stop_playtime_session(self) -> None:
         self._flush_playtime(force=True)
         self._playtime_character_id = None
-        self._playtime_sqlite_path = None
         self._playtime_started_at = None
 
     def _flush_playtime(self, force: bool) -> None:
-        if not self._playtime_sqlite_path or self._playtime_started_at is None:
+        if not self._playtime_character_id or self._playtime_started_at is None:
             return
 
         elapsed_seconds = max(0, int(time.monotonic() - self._playtime_started_at))
         if elapsed_seconds <= 0 and not force:
             return
 
-        store = SQLiteStore(self._playtime_sqlite_path)
-        store.initialize()
-        total_seconds = int(store.get_setting(PLAYTIME_SECONDS_KEY, 0) or 0)
-        if elapsed_seconds > 0:
-            total_seconds += elapsed_seconds
-            store.set_setting(PLAYTIME_SECONDS_KEY, total_seconds)
-        store.set_setting(LAST_PLAYED_AT_KEY, utc_now())
+        self._adapter.character_service.add_playtime(self._playtime_character_id, elapsed_seconds)
         self._playtime_started_at = time.monotonic()
 
     def on_character_switched(self, profile_payload: dict) -> None:

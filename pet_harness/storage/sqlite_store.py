@@ -332,6 +332,11 @@ class SQLiteStore:
             ).fetchall()
         return [self._event_row(row) for row in rows]
 
+    def clear_events(self) -> None:
+        """清空對話事件歷史;人設變更時用來避免舊身份的問答殘留在短期記憶裡。"""
+        with self.connect() as conn:
+            conn.execute("DELETE FROM event_log")
+
     def state_snapshot(self) -> dict[str, Any]:
         return {
             "user_progress": self.get_user_progress(),

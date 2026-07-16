@@ -121,6 +121,37 @@ def test_history_panel_is_independent_of_talk_and_skills_docks():
     assert 'id="dock-panel-talk"' not in html
 
 
+def _extract_section(html: str, section_id: str) -> str:
+    start = html.index(f'id="{section_id}"')
+    end = html.index("</section>", start)
+    return html[start:end]
+
+
+def test_skills_and_persona_panels_are_cleanly_separated():
+    """Skills 面板規 skills、Persona 面板規 persona；Style/Scene 不含兩者
+    (fix-core-interaction-experience)。"""
+    html = (Path(__file__).parents[1] / "ui" / "web_container" / "index.html").read_text(encoding="utf-8")
+
+    agent_panel = _extract_section(html, "dock-panel-agent")
+    persona_panel = _extract_section(html, "dock-panel-persona")
+    style_panel = _extract_section(html, "dock-panel-style")
+    scene_panel = _extract_section(html, "dock-panel-scene")
+
+    # Skills 面板容納全部技能管理:清單、別名/優先度、local skill CRUD、命中預覽。
+    for marker in ("character-skill-list", "persona-builtin-skill-list", "persona-local-skill-list", "persona-local-skill-form", "persona-preview-input"):
+        assert marker in agent_panel, f"expected {marker} inside Skills panel"
+
+    # Persona 面板僅剩人設文字編輯,不含任何技能管理元素。
+    assert "persona-textarea" in persona_panel
+    for marker in ("persona-builtin-skill-list", "persona-local-skill-list", "persona-local-skill-form", "persona-preview-input", "character-skill-list"):
+        assert marker not in persona_panel, f"{marker} leaked into Persona panel"
+
+    # Style / Scene 不含 skills 或 persona 的任何介面元素。
+    for panel_html, name in ((style_panel, "Style"), (scene_panel, "Scene")):
+        for marker in ("persona-", "character-skill-list"):
+            assert marker not in panel_html, f"{marker} leaked into {name} panel"
+
+
 def test_motion_loop_does_not_restore_idle_until_host_stops_it():
     app_js = (Path(__file__).parents[1] / "ui" / "web_container" / "app.js").read_text(encoding="utf-8")
 

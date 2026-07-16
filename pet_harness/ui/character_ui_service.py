@@ -51,6 +51,17 @@ class CharacterUiService:
         store.set_setting(LAST_PLAYED_AT_KEY, utc_now())
         return self._summarize(profile)
 
+    def add_playtime(self, character_id: str, seconds: int) -> None:
+        """累加指定角色的遊玩秒數並更新最後遊玩時間戳記;供 UI 層週期性 flush 呼叫,
+        取代直接開 SQLiteStore 寫入(見 week2-day2-uiux-layout-refinement 的封裝缺口)。"""
+        profile = self._registry.load_character(character_id)
+        store = SQLiteStore(profile.sqlite_path)
+        store.initialize()
+        if seconds > 0:
+            total_seconds = int(store.get_setting(PLAYTIME_SECONDS_KEY, 0) or 0) + seconds
+            store.set_setting(PLAYTIME_SECONDS_KEY, total_seconds)
+        store.set_setting(LAST_PLAYED_AT_KEY, utc_now())
+
     def delete_character(self, character_id: str) -> dict[str, Any]:
         profile = self._registry.load_character(character_id)
         if profile.is_preset:

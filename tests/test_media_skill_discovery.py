@@ -25,6 +25,21 @@ class ConflictProvider:
         )
 
 
+class RecordingProvider:
+    """記錄每次 generate_reply 收到的 prompt_text,用來驗證工具先行順序。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str | None] = []
+
+    def generate_reply(self, event, matched_skill=None, prompt_text=None):
+        self.calls.append(prompt_text)
+        return ProviderReply(
+            reply="今日新聞整理完畢",
+            raw_text=json.dumps({"reply": "今日新聞整理完畢"}),
+            provider_status=ProviderStatus(provider_type=ProviderType.API, healthy=True, message="test"),
+        )
+
+
 def _write_workspace(root: Path, monkeypatch) -> Path:
     monkeypatch.chdir(root)
     monkeypatch.setattr(profile_module, "_PROJECT_ROOT", root)
@@ -40,7 +55,7 @@ def _write_workspace(root: Path, monkeypatch) -> Path:
         "music_bgm": "name: music_bgm\ndescription: old\ntrigger: music\nbehavior: music_idle\nxp_reward: 1\nrequired_tool: music_search\n",
         "game_news": "name: game_news\ndescription: old\ntrigger: news\nbehavior: news_idle\nxp_reward: 1\nrequired_tool: rss_news\n",
         "youtube_music_playback": "name: youtube_music_playback\ndescription: music\ntrigger: 播歌\nbehavior: music_idle\nxp_reward: 8\nrequired_tool: youtube_music_tool\ntool_policy_json: {\"allowed_domains\":[\"www.youtube.com\"],\"allowed_actions\":[\"search_and_play\",\"pause\",\"resume\",\"stop\",\"get_status\"],\"priority\":100}\n",
-        "bahamut_daily_news": "name: bahamut_daily_news\ndescription: news\ntrigger: 巴哈新聞\nbehavior: news_idle\nxp_reward: 7\nrequired_tool: web_article_tool\npriority: 100\ncapability: news\ntool_policy_json: {\"allowed_domains\":[\"gnn.gamer.com.tw\"],\"allowed_actions\":[\"list_articles\",\"get_article_detail\",\"open_article\"]}\n",
+        "bahamut_daily_news": "name: bahamut_daily_news\ndescription: news\ntrigger: 巴哈新聞\nbehavior: news_idle\nxp_reward: 7\nrequired_tool: web_article_tool\npriority: 100\ncapability: news\ntool_policy_json: {\"allowed_domains\":[\"gnn.gamer.com.tw\"],\"allowed_actions\":[\"list_articles\",\"get_article_detail\",\"open_article\"],\"defaults\":{\"action\":\"list_articles\",\"limit\":5,\"url\":\"https://gnn.gamer.com.tw/rss.xml\"}}\n",
     }
     for name, content in files.items():
         (skills / f"{name}.md").write_text(content, encoding="utf-8")
@@ -85,6 +100,32 @@ def test_migration_discovery_and_conflicting_agent_tool(tmp_path, monkeypatch):
     assert event.tool_request.source_skill == "youtube_music_playback"
     assert event.tool_request.metadata["arguments"]["query"] == "周杰倫的晴天"
     assert event.metadata["tool_result"]["tool_name"] == "youtube_music_tool"
+
+
+def test_required_tool_skill_executes_tool_before_llm_call(tmp_path, monkeypatch):
+    """deterministic 命中帶 required_tool 的 skill 時,工具 MUST 先執行,LLM 只呼叫一次,
+    且 prompt 必須包含本輪真實工具結果(而非事後才附加)(fix-core-interaction-experience)。"""
+    agentic = _write_workspace(tmp_path, monkeypatch)
+    provider = RecordingProvider()
+    engine = PetHarnessEngine(provider, agentic_root=agentic, character_id="Miku")
+    registry = ToolRegistry()
+    definition = registry.get("web_article_tool")
+    registry.register_definition(
+        definition,
+        lambda request: ToolResult(
+            "web_article_tool", "success",
+            payload={"articles": [{"title": "今日新聞頭條", "summary": "重點摘要"}]},
+            request_id=request.request_id,
+        ),
+    )
+    engine.refresh_tool_registry(registry)
+
+    event = engine.handle_event({"text": "跟我說今天的巴哈新聞", "source": "test"})
+
+    assert len(provider.calls) == 1
+    assert "今日新聞頭條" in (provider.calls[0] or "")
+    assert event.tool_request.tool_name == "web_article_tool"
+    assert event.metadata["tool_result"]["payload"]["articles"][0]["title"] == "今日新聞頭條"
 
 
 def test_adapter_returns_and_persists_normalized_discovery(tmp_path, monkeypatch):

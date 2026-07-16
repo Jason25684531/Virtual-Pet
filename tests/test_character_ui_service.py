@@ -8,7 +8,7 @@ from pet_harness.character.exceptions import CharacterNotFoundError, NoActiveCha
 from pet_harness.character.registry import CharacterRegistry
 from pet_harness.character.router import CharacterRouter
 from pet_harness.storage.sqlite_store import SQLiteStore
-from pet_harness.ui.character_ui_service import LAST_PLAYED_AT_KEY, CharacterUiService
+from pet_harness.ui.character_ui_service import LAST_PLAYED_AT_KEY, PLAYTIME_SECONDS_KEY, CharacterUiService
 
 _SKILL_FIXTURES = {
     "joke_skill": {"trigger": "joke, funny", "behavior": "laugh", "xp_reward": "5"},
@@ -191,6 +191,39 @@ class TestGetActiveState:
         skill_names = {item["skill_id"] for item in state["skills"]}
         assert skill_names == {"music_skill"}
         assert "joke_skill" not in skill_names
+
+
+class TestPlaytime:
+    def test_new_character_defaults_to_zero_playtime_and_no_last_played(self, service):
+        ui_service, _router, _registry = service
+        item = {entry["character_id"]: entry for entry in ui_service.list_characters()}["Choppr"]
+
+        assert item["playtime_seconds"] == 0
+        assert item["last_played_at"] is None
+        assert item["background_image"] == "assets/webm/characters/Choppr/bg.png"
+
+    def test_add_playtime_accumulates_across_calls(self, service):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+
+        ui_service.add_playtime("Choppr", 30)
+        ui_service.add_playtime("Choppr", 45)
+
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        assert int(store.get_setting(PLAYTIME_SECONDS_KEY, 0)) == 75
+        assert store.get_setting(LAST_PLAYED_AT_KEY)
+
+    def test_add_playtime_with_zero_seconds_still_touches_last_played_at(self, service):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+
+        ui_service.add_playtime("Choppr", 0)
+
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        assert int(store.get_setting(PLAYTIME_SECONDS_KEY, 0)) == 0
+        assert store.get_setting(LAST_PLAYED_AT_KEY)
 
 
 class TestTriggerSkill:
