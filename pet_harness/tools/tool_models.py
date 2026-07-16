@@ -18,6 +18,16 @@ class ToolExecutionClass(str, Enum):
     SHELL = "shell"
     FILE_SYSTEM = "file_system"
     OS_COMMAND = "os_command"
+    BROWSER = "browser"
+    NETWORK = "network"
+
+
+class ToolResultStatus(str, Enum):
+    SUCCESS = "success"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -57,9 +67,19 @@ class ToolResult:
     status: str
     payload: dict[str, Any] = field(default_factory=dict)
     error: dict[str, Any] | None = None
+    evidence: dict[str, Any] = field(default_factory=dict)
     request_id: str | None = None
     created_at: str = field(default_factory=utc_now)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.error is not None:
+            self.error = {
+                "reason": str(self.error.get("reason", "unknown_error")),
+                "message": str(self.error.get("message", self.error.get("reason", "Tool execution failed"))),
+                "retryable": bool(self.error.get("retryable", False)),
+                **{key: value for key, value in self.error.items() if key not in {"reason", "message", "retryable"}},
+            }
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from pet_harness.tools import music_search_tool, random_tool, rss_tool, system_monitor_tool, timer_tool
+from pet_harness.tools import music_search_tool, random_tool, rss_tool, system_monitor_tool, timer_tool, web_article_tool, youtube_music_tool
 from pet_harness.tools.tool_models import ToolDefinition, ToolExecutionClass, ToolRequest, ToolResult, ToolRiskLevel
 
 
@@ -41,6 +41,14 @@ class ToolRegistry:
             ToolDefinition("system_monitor_tool", "Mock-safe system monitor tool.", ToolRiskLevel.LOW, ToolExecutionClass.INTERNAL, xp_reward=1),
             system_monitor_tool.execute,
             aliases=["system_monitor"],
+        )
+        self._register(
+            ToolDefinition("youtube_music_tool", "Play and control YouTube music.", ToolRiskLevel.MEDIUM, ToolExecutionClass.BROWSER, xp_reward=2),
+            youtube_music_tool.execute,
+        )
+        self._register(
+            ToolDefinition("web_article_tool", "Fetch current game news.", ToolRiskLevel.MEDIUM, ToolExecutionClass.NETWORK, xp_reward=2),
+            web_article_tool.execute,
         )
 
     def _register(self, definition: ToolDefinition, executor: ToolExecutor, aliases: list[str] | None = None) -> None:

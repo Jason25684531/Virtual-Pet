@@ -11,6 +11,7 @@ LOGGER = logging.getLogger(__name__)
 class SkillLoader:
     def __init__(self, skills_dir: str | Path) -> None:
         self.skills_dir = Path(skills_dir)
+        self.load_errors: dict[str, str] = {}
 
     def load_skills(self) -> list[Skill]:
         if not self.skills_dir.exists():
@@ -24,6 +25,7 @@ class SkillLoader:
                 skills.append(Skill.from_metadata(metadata, file_path=path))
             except Exception as exc:  # noqa: BLE001 - bad skill files must degrade safely.
                 LOGGER.warning("Skipping invalid skill %s: %s", path, exc)
+                self.load_errors[str(path)] = str(exc)
         return skills
 
     def _parse_metadata(self, path: Path) -> dict[str, str]:
@@ -45,6 +47,9 @@ class SkillLoader:
                 "xp_reward",
                 "required_tool",
                 "unlock_reward",
+                "tool_policy_json",
+                "priority",
+                "capability",
             }:
                 metadata[normalized] = value.strip()
         return metadata

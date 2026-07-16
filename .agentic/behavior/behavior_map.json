@@ -1,0 +1,46 @@
+{
+  "behaviors": {
+    "idle": {
+      "webm_key": "idle"
+    },
+    "laugh": {
+      "webm_key": "laugh"
+    },
+    "awkward": {
+      "webm_key": "awkward"
+    },
+    "angry": {
+      "webm_key": "angry"
+    },
+    "speechless": {
+      "webm_key": "speechless"
+    },
+    "listen": {
+      "webm_key": "listen"
+    },
+    "wave_response": {
+      "webm_key": "wave_response"
+    },
+    "report_news": {
+      "webm_key": "report_news"
+    },
+    "play_music": {
+      "webm_key": "play_music"
+    },
+    "music_idle": {
+      "webm_key": "music_idle"
+    },
+    "news_idle": {
+      "webm_key": "news_idle"
+    },
+    "break_idle": {
+      "webm_key": "break_idle"
+    },
+    "gacha_idle": {
+      "webm_key": "gacha_idle"
+    },
+    "monitor_idle": {
+      "webm_key": "monitor_idle"
+    }
+  }
+}

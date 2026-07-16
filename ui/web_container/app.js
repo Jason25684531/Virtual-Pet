@@ -306,6 +306,7 @@
                 '  </div>',
                 '  <p class="entity-card__meta">' + escapeHtml(item.description || '-') + '</p>',
                 '  <p class="entity-card__meta">triggers: ' + escapeHtml((item.triggers || []).join(', ') || '-') + '</p>',
+                '  <p class="entity-card__meta">tool: ' + escapeHtml(item.required_tool || '-') + ' · priority: ' + escapeHtml(String(item.priority || 0)) + (item.capability && item.capability !== 'general' ? ' · ' + escapeHtml(item.capability) : '') + '</p>',
                 '  <p class="entity-card__meta">path: ' + escapeHtml(item.file_path || 'built-in') + '</p>',
                 '  <div class="entity-card__actions">',
                 '    <button class="secondary-button" type="button" data-skill-toggle="' + escapeHtml(item.skill_id) + '" data-enabled="' + String(!item.enabled) + '">' + toggleLabel + '</button>',

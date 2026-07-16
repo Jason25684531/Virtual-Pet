@@ -13,3 +13,8 @@ python-dotenv==1.2.2
 azure-cognitiveservices-speech==1.46.0
 pygame==2.6.1
 pytest>=9.1
+playwright>=1.55
+beautifulsoup4>=4.13
+feedparser>=6.0
+qdrant-client>=1.13
+fastembed>=0.5

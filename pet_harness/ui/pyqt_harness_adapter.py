@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -35,6 +36,7 @@ DEFAULT_OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completion
 # 換模型的位置:先用本地已 pull 的 gemma4:e2b 驗證 Ollama 串接,之後穩定再換 gemma3 等模型。
 # 可用 OLLAMA_MODEL 環境變數覆寫,不需改這裡。
 DEFAULT_OLLAMA_MODEL = "gemma4:e2b"
+LOGGER = logging.getLogger(__name__)
 
 
 class PyQtHarnessAdapter:
@@ -82,6 +84,7 @@ class PyQtHarnessAdapter:
         self._voice_status_adapter = voice_status_adapter or VoiceRuntimeStatusAdapter()
         _default_contract = {"brain_mode": "harness", "harness_runtime_available": True, "live_runtime_available": False, "openclaw_enabled": False}
         self._runtime_contract = dict(runtime_contract or _default_contract)
+        self._last_skill_discovery_log: tuple[int, int, int] | None = None
         self._refresh_runtime()
         self._log_active_character_diagnostics()
 
@@ -101,6 +104,11 @@ class PyQtHarnessAdapter:
     @property
     def store(self) -> SQLiteStore:
         return self.engine.store
+
+    def shutdown(self) -> None:
+        from pet_harness.tools.youtube_music_tool import shutdown_default_runtime
+
+        shutdown_default_runtime()
 
     def configure_runtime_context(
         self,
@@ -128,6 +136,8 @@ class PyQtHarnessAdapter:
         if not cleaned:
             raise ValueError("text input cannot be empty")
         self._refresh_runtime()
+        if self.engine.router.match(cleaned, self.engine._active_capabilities()) is None:
+            self.engine.refresh_semantic_index()
         previous_progress = self.store.get_user_progress()
         event = self.router.dispatch_event({"text": cleaned, "source": "pyqt_ui"})
         self.store.set_setting(LAST_XP_KEY, event.xp_delta)
@@ -224,16 +234,15 @@ class PyQtHarnessAdapter:
         }
 
     def list_skills(self) -> list[dict[str, Any]]:
-        active_char = self.router.get_active_character()
+        active_char = self.engine.character_profile
         char_skill_names = set(active_char.allowed_skill_refs) if active_char else set()
         enabled_map = self._character_skill_enabled_map(char_skill_names)
         items: list[dict[str, Any]] = []
-        for skill in self._load_all_skills():
-            if active_char and skill.name not in char_skill_names:
-                continue
+        for skill in self.engine.discoverable_skills():
             path = Path(skill.file_path or "")
             items.append(
                 {
+                    "name": skill.name,
                     "skill_id": skill.name,
                     "display_name": skill.display_name or skill.name,
                     "description": skill.description,
@@ -243,7 +252,12 @@ class PyQtHarnessAdapter:
                     "current_skill_xp": self.store.get_skill_progress(skill.name).get("xp_total", 0),
                     "enabled": bool(enabled_map.get(skill.name, True)),
                     "enabled_in_character": skill.name in char_skill_names,
+                    "allowed_for_character": skill.name in char_skill_names if active_char else True,
                     "permitted": skill.name in char_skill_names if active_char else True,
+                    "priority": skill.priority,
+                    "capability": skill.capability,
+                    "has_tool_policy": bool(skill.tool_policy),
+                    "validation_status": "valid",
                     "is_builtin": not self._is_user_skill_path(path),
                     "file_path": str(path) if skill.file_path else None,
                 }
@@ -384,29 +398,20 @@ class PyQtHarnessAdapter:
         # 先熱重載 profile+personal,再重建 skills/router:persona、alias、local skill
         # 的任何修改(面板或手動編輯)都在下一次互動生效,不依賴 switch_character。
         self.engine.reload_profile()
-        self.engine.skills = self.engine.filter_skills_for_character(self._load_enabled_skills())
-        self.engine.store.sync_skills(self._load_all_skills())
+        self.engine.refresh_skill_catalog()
+        resolved = self.engine.filter_skills_for_character(self.engine.available_skills)
+        self.engine.skills = resolved.resolved_skills
+        self.engine.skip_diagnostics = resolved.skip_diagnostics
+        self.engine.store.sync_skills(self.engine.skills)
         self.engine.rebuild_router()
-        self.engine.tool_registry = self._build_registry()
-        self.engine.safety_guard = SafetyGuard(self.engine.tool_registry)
+        self.engine.refresh_tool_registry(self._build_registry())
+        signature = (len(self.engine.available_skills), len(self.engine.discoverable_skills()), len(self.engine.skills))
+        if signature != self._last_skill_discovery_log:
+            LOGGER.info("[SKILL DISCOVERY] loaded=%s allowed=%s enabled=%s", *signature)
+            self._last_skill_discovery_log = signature
 
     def _load_all_skills(self) -> list[Skill]:
-        return SkillLoader(self.skills_root).load_skills()
-
-    def _load_enabled_skills(self) -> list[Skill]:
-        all_skills = self._load_all_skills()
-        active_char = self.router.get_active_character()
-
-        if active_char and active_char.allowed_skill_refs:
-            char_skill_names = set(active_char.allowed_skill_refs)
-            enabled_map = self._character_skill_enabled_map(char_skill_names)
-            return [
-                skill for skill in all_skills
-                if skill.name in char_skill_names and enabled_map.get(skill.name, True)
-            ]
-
-        disabled = self._skill_disabled_map()
-        return [skill for skill in all_skills if not disabled.get(skill.name, False)]
+        return list(self.engine.available_skills)
 
     def _character_skill_enabled_map(self, authorized_skill_ids: set[str] | list[str]) -> dict[str, bool]:
         """讀取 active character 的私有 enablement overlay，並補齊首次預設值。"""
@@ -435,7 +440,8 @@ class PyQtHarnessAdapter:
                 or self._project_env.get("OPENAI_MODEL")
                 or "gpt-4o-mini",
                 api_key_env_var=api_key_env_var,
-                routing_fallback_enabled=True,
+                routing_fallback_enabled=config.PROVIDER_ROUTING_FALLBACK_ENABLED,
+                routing_confidence_threshold=config.PROVIDER_ROUTING_CONFIDENCE_THRESHOLD,
             )
         return ProviderConfig(
             provider_type=ProviderType.OLLAMA,
@@ -445,7 +451,8 @@ class PyQtHarnessAdapter:
             # ponytail: 本機首次推論常需冷啟動載入模型,實測 15s 預設會逾時;
             # 60s 對本地生成足夠,雲端 API 逾時不受影響。
             timeout_seconds=60.0,
-            routing_fallback_enabled=False,
+            routing_fallback_enabled=config.PROVIDER_ROUTING_FALLBACK_ENABLED,
+            routing_confidence_threshold=config.PROVIDER_ROUTING_CONFIDENCE_THRESHOLD,
         )
 
     def configure_provider(self, provider: str) -> dict[str, Any]:

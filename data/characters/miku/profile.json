@@ -1,4 +1,10 @@
 {
   "persona_description": "來自未來的虛擬歌姬，性格開朗活潑，熱愛音樂與表演。經常哼歌，對科技話題特別感興趣。",
-  "skill_config": ["music_bgm", "gacha_fortune", "game_news"]
+  "skill_config": [
+    "music_bgm",
+    "gacha_fortune",
+    "game_news",
+    "youtube_music_playback",
+    "bahamut_daily_news"
+  ]
 }

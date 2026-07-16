@@ -462,3 +462,10 @@ python -m pytest tests/ -v
 - ComfyUI 資產生成仍在 future FastAPI JSON contract 之後。
 - 舊 `OLLAMA_*` 設定目前是 Harness 對話大腦（`HARNESS_PROVIDER_TYPE=ollama`）唯一使用它們的路徑，並非相容性殘留。
 - 本地快捷動作子系統、孤兒語音管線的去留是待決事項，尚未有明確結論；若要清理，建議先確認 `scripts/` 兩個開發腳本要修復還是直接刪除。
+# 媒體工具
+
+安裝 Python 依賴後，另執行 `playwright install chromium`，即可使用 YouTube 播放與巴哈 GNN 今日新聞。若缺少 Chromium，工具會回傳可讀取的錯誤而不影響其他功能；自動播放被瀏覽器阻擋時會回報「未驗證播放」，不會誤稱已播放。
+
+## Skill routing
+
+路由固定為 deterministic → semantic → provider → none。`SEMANTIC_ROUTING_ENABLED=true` 與預設的 `SEMANTIC_ROUTING_SHADOW_MODE=true` 只收集候選資料、不會新增工具呼叫；確認評估集後才將 shadow 設為 false。可調整 `SEMANTIC_ROUTING_{MODEL,TOP_K,ACCEPT_THRESHOLD,MARGIN_THRESHOLD}`、`QDRANT_{MODE,PATH,URL}`、`PROVIDER_ROUTING_{FALLBACK_ENABLED,CONFIDENCE_THRESHOLD}` 與 `BROWSER_SESSION_RECOVERY_{ENABLED,MAX_RETRIES}`。

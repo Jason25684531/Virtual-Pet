@@ -1,0 +1,24 @@
+{
+  "rewards": [
+    {
+      "reward_id": "first_spark",
+      "reward_type": "badge",
+      "xp_threshold": 5,
+      "inventory_item_id": "badge_first_spark",
+      "unlock_reason": "Reached 5 XP",
+      "metadata": {
+        "label": "First Spark"
+      }
+    },
+    {
+      "reward_id": "music_mood",
+      "reward_type": "badge",
+      "xp_threshold": 8,
+      "inventory_item_id": "badge_music_mood",
+      "unlock_reason": "Reached 8 XP",
+      "metadata": {
+        "label": "Music Mood"
+      }
+    }
+  ]
+}

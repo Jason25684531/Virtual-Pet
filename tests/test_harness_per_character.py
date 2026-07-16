@@ -140,7 +140,7 @@ class TestSkillRouterIsolation:
         engine = _build_engine(agentic_root, tmp_path, character_id="Choppr")
 
         engine.store.set_setting("character_skill_enabled", {"joke_skill": False, "mood_skill": True})
-        engine.skills = engine.filter_skills_for_character(engine.skills)
+        engine.skills = engine.filter_skills_for_character(engine.available_skills).resolved_skills
         engine.router = engine.router.__class__(engine.skills)
         disabled_event = engine.handle_event({"text": "tell me a joke", "source": "test"})
 

@@ -146,6 +146,29 @@ def _read_int_env(name: str, default: int) -> int:
         return int(default)
 
 
+def _read_float_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)).strip() or default)
+    except ValueError:
+        return float(default)
+
+
+SEMANTIC_ROUTING_ENABLED = _read_bool_env("SEMANTIC_ROUTING_ENABLED", True)
+SEMANTIC_ROUTING_SHADOW_MODE = _read_bool_env("SEMANTIC_ROUTING_SHADOW_MODE", True)
+SEMANTIC_ROUTING_MODEL = os.getenv("SEMANTIC_ROUTING_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2").strip()
+SEMANTIC_ROUTING_COLLECTION = os.getenv("SEMANTIC_ROUTING_COLLECTION", "skills").strip() or "skills"
+SEMANTIC_ROUTING_TOP_K = _read_int_env("SEMANTIC_ROUTING_TOP_K", 3)
+SEMANTIC_ROUTING_ACCEPT_THRESHOLD = _read_float_env("SEMANTIC_ROUTING_ACCEPT_THRESHOLD", 0.60)
+SEMANTIC_ROUTING_MARGIN_THRESHOLD = _read_float_env("SEMANTIC_ROUTING_MARGIN_THRESHOLD", 0.08)
+QDRANT_MODE = os.getenv("QDRANT_MODE", "local").strip().lower() or "local"
+QDRANT_PATH = os.getenv("QDRANT_PATH", str(PROJECT_ROOT / "runtime_cache" / "qdrant")).strip()
+QDRANT_URL = os.getenv("QDRANT_URL", "").strip()
+PROVIDER_ROUTING_FALLBACK_ENABLED = _read_bool_env("PROVIDER_ROUTING_FALLBACK_ENABLED", True)
+PROVIDER_ROUTING_CONFIDENCE_THRESHOLD = _read_float_env("PROVIDER_ROUTING_CONFIDENCE_THRESHOLD", 0.7)
+BROWSER_SESSION_RECOVERY_ENABLED = _read_bool_env("BROWSER_SESSION_RECOVERY_ENABLED", True)
+BROWSER_SESSION_RECOVERY_MAX_RETRIES = _read_int_env("BROWSER_SESSION_RECOVERY_MAX_RETRIES", 1)
+
+
 AZURE_STT_API_KEY = os.getenv("AZURE_STT_API_KEY", "").strip()
 AZURE_STT_REGION = os.getenv("AZURE_STT_REGION", "").strip()
 AZURE_STT_LANGUAGE = (

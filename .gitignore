@@ -11,6 +11,11 @@ openspec/
 .cursor/
 .agent/
 .agentic/
+!.agentic/
+!.agentic/skills/
+.agentic/skills/*
+!.agentic/skills/youtube_music_playback.md
+!.agentic/skills/bahamut_daily_news.md
 .serena/
 
 # 日誌檔案 (保留目錄結構)
@@ -45,3 +50,7 @@ PNGSample/*
 ui/ref_pic/*
 
 *.db
+.tokensave/*
+data/characters/miku/*
+agentic.md
+soul.md

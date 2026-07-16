@@ -1659,6 +1659,7 @@ class TransparentWindow(QMainWindow):
 
     def shutdown_background_tasks(self):
         self._action_dispatcher.shutdown()
+        self._adapter.shutdown()
 
     def get_current_character_id(self) -> str | None:
         """UI 動作/idle/聲線一律以 router snapshot 為唯一 active character 來源。"""

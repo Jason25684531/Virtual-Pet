@@ -59,6 +59,7 @@ class CharacterRouter:
             character_id=character_id,
             agentic_root=self._agentic_root,
         )
+        profile = engine.character_profile or profile
         snapshot = ActiveCharacterSnapshot(
             character_id=profile.character_id,
             name=profile.name,
