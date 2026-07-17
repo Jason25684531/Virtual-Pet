@@ -18,7 +18,14 @@ class BehaviorManager:
         self.behavior_map = self._load_behavior_map()
 
     def resolve(self, matched_skill: Skill | None = None, action_motion_key: str | None = None) -> BehaviorEvent:
-        """解析動作優先序：技能 behavior、已驗證 action tag、同角色 fallback。"""
+        """解析動作優先序：技能 behavior、action motion、persisted fallback behavior。
+
+        behavior_state 只代表「無 skill 且無 action motion 時要播放的持久 fallback
+        behavior」，其值恆為 behavior_map 驗證過的 behavior_id。skill behavior 與
+        action motion 是一次性 transient presentation，絕不寫入 behavior_state，
+        避免一次性動畫污染下一輪 fallback。
+        """
+        is_fallback_path = matched_skill is None and not action_motion_key
         requested = (
             matched_skill.behavior
             if matched_skill
@@ -27,12 +34,12 @@ class BehaviorManager:
         reason = "skill" if matched_skill else ("action_tag" if action_motion_key else "fallback")
         source_skill = matched_skill.name if matched_skill else None
         if action_motion_key and matched_skill is None:
-            # action tag 已由 CharacterLibrary 依 active manifest 驗證；它不必存在於
-            # 全域 behavior map，因為其 motion key 本身就是角色資產 key。
+            # action motion 已由既有 action-tag resolution path(CharacterLibrary)接受並提供；
+            # 它不必存在於全域 behavior map，因為其 motion key 本身就是角色資產 key。
             behavior_id, webm_key = action_motion_key, action_motion_key
         else:
             behavior_id, webm_key = self._resolve_key(requested)
-        if matched_skill is None:
+        if is_fallback_path:
             self.store.set_behavior_state(behavior_id)
         return BehaviorEvent(
             behavior_id=behavior_id,

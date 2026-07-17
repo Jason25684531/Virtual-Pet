@@ -82,16 +82,33 @@ class SQLiteStore:
         return [self._skill_row(row) for row in rows]
 
     def add_user_xp(self, delta: int) -> dict[str, Any]:
-        with self.connect() as conn:
-            conn.execute(
-                """
-                UPDATE user_progress
-                SET xp_total = xp_total + ?, level = MAX(1, ((xp_total + ?) / 100) + 1), updated_at = ?
-                WHERE user_id = ?
-                """,
-                (delta, delta, utc_now(), DEFAULT_USER_ID),
-            )
-        return self.get_user_progress()
+        """同 connection、同 transaction 內 seed(缺 row 時)→ UPDATE → 讀回,
+        commit 成功才回傳;例外時整個 transaction rollback 並向上傳播,
+        connection 一律於 finally 關閉,不留殘留 handle。"""
+        conn = self.connect()
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO user_progress (user_id, xp_total, level, updated_at)
+                    VALUES (?, 0, 1, ?)
+                    """,
+                    (DEFAULT_USER_ID, utc_now()),
+                )
+                conn.execute(
+                    """
+                    UPDATE user_progress
+                    SET xp_total = xp_total + ?, level = MAX(1, ((xp_total + ?) / 100) + 1), updated_at = ?
+                    WHERE user_id = ?
+                    """,
+                    (delta, delta, utc_now(), DEFAULT_USER_ID),
+                )
+                row = conn.execute(
+                    "SELECT * FROM user_progress WHERE user_id = ?", (DEFAULT_USER_ID,)
+                ).fetchone()
+            return dict(row)
+        finally:
+            conn.close()
 
     def get_user_progress(self) -> dict[str, Any]:
         with self.connect() as conn:
@@ -101,19 +118,28 @@ class SQLiteStore:
         return dict(row) if row else {"user_id": DEFAULT_USER_ID, "xp_total": 0, "level": 1}
 
     def add_skill_xp(self, skill_name: str, delta: int) -> dict[str, Any]:
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO skill_progress (skill_name, xp_total, level, updated_at)
-                VALUES (?, ?, 1, ?)
-                ON CONFLICT(skill_name) DO UPDATE SET
-                    xp_total = xp_total + excluded.xp_total,
-                    level = MAX(1, ((xp_total + excluded.xp_total) / 100) + 1),
-                    updated_at = excluded.updated_at
-                """,
-                (skill_name, delta, utc_now()),
-            )
-        return self.get_skill_progress(skill_name)
+        """同 add_user_xp 的 transaction 模式;首次 INSERT 的 level 依本次 delta
+        計算,不再硬編碼為 1(delta >= 100 時舊實作會回傳錯誤的 level)。"""
+        conn = self.connect()
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO skill_progress (skill_name, xp_total, level, updated_at)
+                    VALUES (?, ?, MAX(1, (? / 100) + 1), ?)
+                    ON CONFLICT(skill_name) DO UPDATE SET
+                        xp_total = xp_total + excluded.xp_total,
+                        level = MAX(1, ((xp_total + excluded.xp_total) / 100) + 1),
+                        updated_at = excluded.updated_at
+                    """,
+                    (skill_name, delta, delta, utc_now()),
+                )
+                row = conn.execute(
+                    "SELECT * FROM skill_progress WHERE skill_name = ?", (skill_name,)
+                ).fetchone()
+            return dict(row)
+        finally:
+            conn.close()
 
     def get_skill_progress(self, skill_name: str) -> dict[str, Any]:
         with self.connect() as conn:
