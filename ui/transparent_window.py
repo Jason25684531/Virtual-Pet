@@ -320,6 +320,7 @@ class TransparentWindow(QMainWindow):
         self._stt_listening = False
         self._stt_available = bool(self._runtime_contract["live_runtime_available"])
         self._stt_state = "idle"
+        self._stt_controller = None
         self._pending_javascript_calls: list[tuple[str, tuple[object, ...]]] = []
         self._latest_agentic_event: dict[str, object] | None = None
         self._playtime_character_id: str | None = None
@@ -567,6 +568,15 @@ class TransparentWindow(QMainWindow):
                 "enabled": False,
                 "background": "rgba(132, 96, 62, 205)",
                 "border": "rgba(255, 232, 208, 140)",
+            }
+        if state == "transcribing":
+            return {
+                "label": "辨識中…",
+                "statusLabel": "辨識中",
+                "state": state,
+                "enabled": False,
+                "background": "rgba(88, 96, 160, 205)",
+                "border": "rgba(222, 220, 255, 140)",
             }
         return {
             "label": "開始聆聽",
@@ -1193,12 +1203,16 @@ class TransparentWindow(QMainWindow):
 
     def set_stt_state(self, state: str):
         normalized = str(state or "idle").strip().lower()
-        if normalized not in {"idle", "starting", "listening", "stopping", "unavailable"}:
+        if normalized not in {"idle", "starting", "listening", "stopping", "transcribing", "unavailable"}:
             normalized = "idle"
         self._stt_state = normalized
         self._stt_listening = normalized == "listening"
         self._stt_available = normalized != "unavailable"
         self._apply_stt_button_state()
+
+    def set_stt_controller(self, controller) -> None:
+        """依賴注入：main.py 組裝 SttController 後呼叫，供 shutdown_background_tasks 釋放資源。"""
+        self._stt_controller = controller
 
     def set_stt_available(self, available: bool):
         self._stt_available = bool(available)
@@ -1211,9 +1225,9 @@ class TransparentWindow(QMainWindow):
 
     def _handle_stt_button_clicked(self):
         if not self._stt_available:
-            self.set_action_status("Azure STT 尚未配置完成。", tone="warn", timeout_ms=3200)
+            self.set_action_status("語音輸入尚未就緒。", tone="warn", timeout_ms=3200)
             return
-        if self._stt_state in {"starting", "stopping"}:
+        if self._stt_state in {"starting", "stopping", "transcribing"}:
             return
         if self._stt_state == "listening":
             self.stt_stop_requested.emit()
@@ -1644,6 +1658,8 @@ class TransparentWindow(QMainWindow):
         self.set_action_status("已重置，等待下一次互動。", tone="idle", timeout_ms=2400)
 
     def shutdown_background_tasks(self):
+        if self._stt_controller is not None:
+            self._stt_controller.shutdown()
         self._action_dispatcher.shutdown()
         self._adapter.shutdown()
 

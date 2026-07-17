@@ -31,15 +31,78 @@ def _create_application(argv):
     return QApplication(argv)
 
 
+def _build_stt_controller(window):
+    """STT_ENABLED=false 時完全不建立任何 STT 物件（按鈕維持 unavailable）。"""
+    import config
+
+    if not config.STT_ENABLED:
+        print("[STT] STT_ENABLED=false，不建立任何 STT 物件。")
+        window.set_stt_available(False)
+        return None
+
+    print(
+        f"[STT] 組裝 controller：model={config.STT_MODEL} device={config.STT_DEVICE} "
+        f"compute_type={config.STT_COMPUTE_TYPE} sample_rate={config.STT_SAMPLE_RATE}"
+    )
+
+    from sensors.faster_whisper_stt import FasterWhisperSTT
+    from sensors.microphone_recorder import MicrophoneRecorder
+    from sensors.stt_controller import SttController
+
+    provider = FasterWhisperSTT(
+        config.STT_MODEL,
+        config.STT_DEVICE,
+        config.STT_COMPUTE_TYPE,
+        config.STT_MODEL_PATH,
+        language=config.STT_LANGUAGE or None,
+        beam_size=config.STT_BEAM_SIZE,
+    )
+    recorder = MicrophoneRecorder(
+        sample_rate=config.STT_SAMPLE_RATE,
+        max_recording_seconds=config.STT_MAX_RECORDING_SECONDS,
+    )
+    controller = SttController(
+        recorder,
+        provider,
+        min_recording_ms=config.STT_MIN_RECORDING_MS,
+        sample_rate=config.STT_SAMPLE_RATE,
+    )
+
+    window.set_stt_available(False)  # 模型 preload 完成前維持 unavailable
+    window.stt_start_requested.connect(controller.start_session)
+    window.stt_stop_requested.connect(controller.stop_session)
+    # controller 的 RecordingState 用字與既有 UI 白名單不完全相同（recording -> listening），
+    # submitting/error 不在 UI 白名單內、set_stt_state 既有 fallback 會自動視為 idle。
+    controller.state_changed.connect(
+        lambda state: window.set_stt_state("listening" if state == "recording" else state)
+    )
+    controller.availability_changed.connect(window.set_stt_available)
+    controller.transcript_ready.connect(window.submit_agentic_text)
+    controller.session_discarded.connect(
+        lambda reason: window.set_action_status(reason, tone="warn", timeout_ms=3200)
+    )
+    controller.error_occurred.connect(
+        lambda message: window.set_action_status(message, tone="warn", timeout_ms=3200)
+    )
+    window.set_stt_controller(controller)
+    controller.preload_model()
+    return controller
+
+
 def _run_harness_mode(app):
     from interaction_trace import InteractionLatencyTracker
+    from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
     from ui.transparent_window import TransparentWindow
 
     latency_tracker = InteractionLatencyTracker()
     window = TransparentWindow(brain_mode="harness", latency_tracker=latency_tracker)
+
+    stt_controller = _build_stt_controller(window)
+
     window.configure_runtime_context(
         runtime_contract=None,
         live_runtime_available=False,
+        voice_status_adapter=VoiceRuntimeStatusAdapter(stt_controller=stt_controller),
     )
     window.show()
     window.set_action_status("Harness mode ready.", tone="idle", timeout_ms=2400)

@@ -1,0 +1,275 @@
+"""SttController — 錄音 session 狀態機、背景 worker、與既有 UI 文字入口的一次性提交橋接。
+
+只負責 session／狀態／提交協調，不載入模型、不操作 UI 元件、不 import Harness。
+所有狀態轉換集中於本類別，實際錄音與推論在背景 daemon thread 執行，結果一律經
+pyqtSignal 送回 UI thread；由呼叫方（UI 組裝層）連接 transcript_ready 到既有
+TransparentWindow.submit_agentic_text()。
+"""
+
+from __future__ import annotations
+
+import re
+import threading
+from enum import Enum
+
+from PyQt5.QtCore import QObject, pyqtSignal
+
+from sensors.base_stt import BaseSTT, SttError
+from sensors.microphone_recorder import MicrophoneError, MicrophoneRecorder
+
+_PUNCTUATION_ONLY_RE = re.compile(r"^[\s\W_]*$", re.UNICODE)
+
+
+class RecordingState(str, Enum):
+    IDLE = "idle"
+    STARTING = "starting"
+    RECORDING = "recording"
+    STOPPING = "stopping"
+    TRANSCRIBING = "transcribing"
+    SUBMITTING = "submitting"
+    ERROR = "error"
+
+
+def _is_effectively_empty(text: str) -> bool:
+    return _PUNCTUATION_ONLY_RE.match(text) is not None
+
+
+class SttController(QObject):
+    """UI thread 上的狀態機 orchestrator；錄音／推論均在背景 daemon thread 執行。"""
+
+    state_changed = pyqtSignal(str)
+    transcript_ready = pyqtSignal(str)
+    session_discarded = pyqtSignal(str)
+    error_occurred = pyqtSignal(str)
+    availability_changed = pyqtSignal(bool)
+
+    def __init__(
+        self,
+        recorder: MicrophoneRecorder,
+        provider: BaseSTT,
+        min_recording_ms: int,
+        sample_rate: int,
+    ) -> None:
+        super().__init__()
+        self._recorder = recorder
+        self._provider = provider
+        self._min_recording_ms = int(min_recording_ms)
+        self._sample_rate = int(sample_rate)
+        self._state = RecordingState.IDLE
+        self._state_lock = threading.Lock()
+        self._session_thread: threading.Thread | None = None
+        self._stop_event: threading.Event | None = None
+        self._submitted = False
+        self._session_id = 0
+        self._last_error = ""
+        self._shutting_down = False
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    @property
+    def state(self) -> str:
+        return self._state.value
+
+    @property
+    def is_listening(self) -> bool:
+        return self._state == RecordingState.RECORDING
+
+    @property
+    def last_error(self) -> str:
+        return self._last_error
+
+    def start_session(self) -> None:
+        """僅在 IDLE 接受；非 IDLE（含 transcribing）一律 no-op。"""
+        with self._state_lock:
+            if self._shutting_down or self._state != RecordingState.IDLE:
+                return
+            self._session_id += 1
+            session_id = self._session_id
+            self._submitted = False
+            stop_event = threading.Event()
+            self._stop_event = stop_event
+            self._state = RecordingState.STARTING
+        self.state_changed.emit(RecordingState.STARTING.value)
+
+        thread = threading.Thread(
+            target=self._run_session,
+            args=(session_id, stop_event),
+            daemon=True,
+            name=f"SttSession-{session_id}",
+        )
+        with self._state_lock:
+            self._session_thread = thread
+        thread.start()
+
+    def stop_session(self) -> None:
+        """僅在 RECORDING 接受，其餘（含 transcribing）一律 no-op。"""
+        with self._state_lock:
+            if self._state != RecordingState.RECORDING:
+                return
+            stop_event = self._stop_event
+            self._state = RecordingState.STOPPING
+        self.state_changed.emit(RecordingState.STOPPING.value)
+        if stop_event is not None:
+            stop_event.set()
+
+    def preload_model(self) -> None:
+        """背景載入模型；呼叫方（main.py）只在 STT_ENABLED=true 時呼叫。"""
+        threading.Thread(target=self._preload, daemon=True, name="SttPreload").start()
+
+    def shutdown(self) -> None:
+        """停止進行中 session、關閉 stream、釋放模型；冪等、不阻塞退出流程。"""
+        with self._state_lock:
+            if self._shutting_down:
+                return
+            self._shutting_down = True
+            stop_event = self._stop_event
+            thread = self._session_thread
+        if stop_event is not None:
+            stop_event.set()
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
+        try:
+            self._recorder.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self._provider.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ------------------------------------------------------------------
+    # Background work
+    # ------------------------------------------------------------------
+
+    def _preload(self) -> None:
+        print("[STT] 開始背景載入模型...")
+        try:
+            self._provider.setup()
+        except Exception as exc:  # noqa: BLE001
+            self._last_error = str(exc)
+            print(f"[STT] 模型載入失敗，STT 停用：{exc}")
+            self.availability_changed.emit(False)
+            return
+        print("[STT] 模型載入完成，STT 可用。")
+        self.availability_changed.emit(True)
+
+    def _run_session(self, session_id: int, stop_event: threading.Event) -> None:
+        try:
+            self._execute_session(session_id, stop_event)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[SttController] session {session_id} 發生未預期例外: {exc}")
+            try:
+                self._recorder.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            self._fail_session(session_id, "辨識發生未預期錯誤。")
+
+    def _execute_session(self, session_id: int, stop_event: threading.Event) -> None:
+        try:
+            self._recorder.start()
+        except MicrophoneError as exc:
+            self._last_error = str(exc)
+            print(f"[STT] session {session_id} 麥克風開啟失敗：{exc}")
+            self._fail_session(session_id, "無法使用麥克風。")
+            return
+
+        if not self._set_state_for_session(session_id, RecordingState.RECORDING):
+            self._recorder.stop()
+            return
+        print(f"[STT] session {session_id} 開始收音...")
+
+        # ponytail: 50ms 輪詢 stop/裝置失效/上限旗標，不用多 Event 等待器；
+        # 若延遲敏感度提高再改事件驅動。
+        while not stop_event.wait(timeout=0.05):
+            if self._recorder.device_failed.is_set() or self._recorder.max_reached.is_set():
+                break
+
+        if not self._set_state_for_session(session_id, RecordingState.STOPPING):
+            self._recorder.stop()
+            return
+        self._recorder.stop()
+
+        audio = self._recorder.get_audio()
+        duration_ms = (len(audio) / self._sample_rate) * 1000.0 if self._sample_rate else 0.0
+        print(
+            f"[STT] session {session_id} 停止收音：共 {len(audio)} 筆樣本 "
+            f"(~{duration_ms:.0f}ms，device_failed={self._recorder.device_failed.is_set()})"
+        )
+
+        if len(audio) == 0 or duration_ms < self._min_recording_ms:
+            self._discard_session(session_id, "錄音太短，請再試一次。")
+            return
+
+        if not self._set_state_for_session(session_id, RecordingState.TRANSCRIBING):
+            return
+
+        try:
+            result = self._provider.transcribe(audio, self._sample_rate)
+        except SttError as exc:
+            self._last_error = str(exc)
+            self._fail_session(session_id, "辨識失敗，請再試一次。")
+            return
+
+        print(
+            f"[STT] language={result.language} p={result.language_probability:.2f} "
+            f"duration={result.audio_duration_seconds:.1f}s"
+        )
+
+        text = result.text.strip()
+        if _is_effectively_empty(text):
+            self._discard_session(session_id, "沒有偵測到有效內容，請再試一次。")
+            return
+
+        self._submit(session_id, text)
+
+    # ------------------------------------------------------------------
+    # State transition helpers（集中管理，過期 session 結果一律略過）
+    # ------------------------------------------------------------------
+
+    def _set_state_for_session(self, session_id: int, new_state: RecordingState) -> bool:
+        with self._state_lock:
+            if self._shutting_down or session_id != self._session_id:
+                return False
+            if self._state == new_state:
+                # 已處於目標狀態（例如 stop_session() 已先轉為 STOPPING），略過重複 emit。
+                return True
+            self._state = new_state
+        self.state_changed.emit(new_state.value)
+        return True
+
+    def _discard_session(self, session_id: int, reason: str) -> None:
+        print(f"[STT] session {session_id} 捨棄：{reason}")
+        with self._state_lock:
+            if self._shutting_down or session_id != self._session_id:
+                return
+        self.session_discarded.emit(reason)
+        self._return_to_idle(session_id)
+
+    def _fail_session(self, session_id: int, message: str) -> None:
+        print(f"[STT] session {session_id} 失敗：{message}（detail={self._last_error!r}）")
+        with self._state_lock:
+            if self._shutting_down or session_id != self._session_id:
+                return
+            self._state = RecordingState.ERROR
+        self.state_changed.emit(RecordingState.ERROR.value)
+        self.error_occurred.emit(message)
+        self._return_to_idle(session_id)
+
+    def _submit(self, session_id: int, text: str) -> None:
+        with self._state_lock:
+            if self._shutting_down or session_id != self._session_id or self._submitted:
+                return
+            self._submitted = True
+            self._state = RecordingState.SUBMITTING
+        self.state_changed.emit(RecordingState.SUBMITTING.value)
+        self.transcript_ready.emit(text)
+        self._return_to_idle(session_id)
+
+    def _return_to_idle(self, session_id: int) -> None:
+        with self._state_lock:
+            if session_id != self._session_id:
+                return
+            self._state = RecordingState.IDLE
+        self.state_changed.emit(RecordingState.IDLE.value)

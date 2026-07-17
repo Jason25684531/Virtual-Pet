@@ -227,9 +227,10 @@ class PyQtHarnessAdapter:
     def _build_stt_provider_status(self) -> dict[str, Any]:
         """构建 STT provider 状态."""
         voice_status = self._voice_status_adapter.get_status()
+        provider = "none" if voice_status.stt_status == "configured_missing_runtime" else "faster_whisper"
 
         return {
-            "provider": "d_key",
+            "provider": provider,
             "status": voice_status.stt_status,
         }
 
@@ -594,13 +595,14 @@ class PyQtHarnessAdapter:
 
     def _build_voice_status(self) -> dict[str, Any]:
         dto = self._voice_status_adapter.get_status()
+        stt_provider = "none" if dto.stt_status == "configured_missing_runtime" else "faster_whisper"
         return {
             "stt": {
-                "provider": "azure",
+                "provider": stt_provider,
                 "status": dto.stt_status,
                 "configured": dto.stt_status != "configured_missing_runtime",
                 "implemented": dto.stt_status != "configured_missing_runtime",
-                "required_env": ["AZURE_STT_API_KEY", "AZURE_STT_REGION"],
+                "required_env": ["STT_ENABLED", "STT_MODEL", "STT_DEVICE"],
                 "message": dto.stt_status,
             },
             "tts": {

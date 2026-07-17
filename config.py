@@ -194,6 +194,18 @@ AZURE_STT_SEGMENTATION_MAX_TIME_MS = _read_int_env(
 )
 ACTION_SYNC_TIMEOUT_MS = _read_int_env("ACTION_SYNC_TIMEOUT_MS", 6000)
 
+# --- Faster Whisper STT（toggle-recording，Week 4） ---
+STT_ENABLED = _read_bool_env("STT_ENABLED", True)
+STT_MODEL = os.getenv("STT_MODEL", "large-v3-turbo").strip() or "large-v3-turbo"
+STT_DEVICE = os.getenv("STT_DEVICE", "cuda").strip() or "cuda"
+STT_COMPUTE_TYPE = os.getenv("STT_COMPUTE_TYPE", "float16").strip() or "float16"
+STT_MODEL_PATH = os.getenv("STT_MODEL_PATH", str(PROJECT_ROOT / "runtime_cache" / "whisper")).strip()
+STT_LANGUAGE = os.getenv("STT_LANGUAGE", "").strip()  # 空字串 = auto detection
+STT_BEAM_SIZE = _read_int_env("STT_BEAM_SIZE", 1)
+STT_SAMPLE_RATE = _read_int_env("STT_SAMPLE_RATE", 16000)
+STT_MIN_RECORDING_MS = _read_int_env("STT_MIN_RECORDING_MS", 300)
+STT_MAX_RECORDING_SECONDS = _read_int_env("STT_MAX_RECORDING_SECONDS", 30)
+
 LOW_LATENCY_REPLY_POLICY = (
     "即時互動請優先用 1 句短句完成回覆，只有必要時才允許第 2 句。"
     "第一句要直接承載主要內容，不要先鋪陳或寒暄。"

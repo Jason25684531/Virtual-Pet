@@ -51,6 +51,7 @@ flowchart LR
 
 - **工具先行**：deterministic 命中且 skill 帶 `required_tool` 時（例如新聞、YouTube 音樂），先執行工具取得真實資料，再把 `ToolResult` 餵給 LLM 合成回覆——LLM 呼叫仍是一次，只是換了順序，避免回覆引用上一輪殘留的工具結果。
 - **對話記憶**：短期記憶是近 6 輪 `SQLite` 對話歷史；長期記憶是 per-character 的 `QdrantMemoryStore`（本地嵌入式向量庫），兩者都在組 prompt 前注入，任何一方未就緒或故障都 fail-open（不中斷對話）。
+- **語音輸入（STT）**：`sensors/stt_controller.py` 是 `UI sendText` 之外的第二個輸入來源——切換式錄音停止後，有效 transcript 會呼叫既有的 `TransparentWindow.submit_agentic_text()`，走與打字輸入完全相同的下游流程（`PetHarnessEngine` 看到的只是一般文字事件）；詳見下方「語音輸入（STT）」章節。
 
 ### 本地快捷動作子系統流程（與 Harness 大腦並行運作）
 
@@ -94,6 +95,12 @@ Virtual-Pet/
 ├── text_utils.py                   # sanitize_tts_text：去除 ACTION 標記供 TTS 朗讀
 ├── audio_playback.py               # 快捷動作用 provider-neutral 播放器（ffplay / pygame）
 ├── audio_worker.py                 # 快捷動作用 trace-aware PCM session 播放 worker（daemon thread）
+│
+├── sensors/                        # 語音輸入（STT）：麥克風收音 + faster-whisper 辨識
+│   ├── base_stt.py                 # BaseSTT ABC + TranscriptionResult（provider 可替換契約）
+│   ├── faster_whisper_stt.py       # FasterWhisperSTT：CUDA-only 模型生命週期與轉錄
+│   ├── microphone_recorder.py      # sounddevice InputStream 收音（mono/16kHz/float32 buffer）
+│   └── stt_controller.py           # SttController：錄音 session 狀態機、背景 worker、一次性提交
 │
 ├── api_client/
 │   ├── adaptive_tts_fallback.py    # VoAI primary + ElevenLabs fallback 統一 contract
@@ -333,6 +340,35 @@ OPENAI_MODEL=gpt-4o-mini
 VOAI_API_KEY=your_voai_api_key
 ELEVENLABS_API_KEY=your_elevenlabs_api_key
 ```
+
+**語音輸入（STT，faster-whisper，需要 NVIDIA CUDA GPU）：**
+
+點擊 STT 按鈕開始/停止錄音，停止後在背景以 [faster-whisper](https://github.com/SYSTRAN/faster-whisper) 辨識（支援中文、英文、中英文混說，自動偵測語言，不翻譯）。沒有 CUDA/cuDNN 或麥克風也能正常使用文字輸入，STT 按鈕會顯示「STT 不可用」。
+
+依賴（`requirements.txt` 已包含 `faster-whisper`、`sounddevice`、`numpy`，Windows 另包含 `nvidia-cublas-cu12`、`nvidia-cudnn-cu12`，隨標準安裝步驟一併裝好）。
+
+CUDA/cuDNN 需求：第一版僅支援 `STT_DEVICE=cuda`（無 CPU fallback），需要可用的 NVIDIA GPU 與對應 cuDNN 9 / cuBLAS 執行環境。Windows 上 `ctranslate2` 是以傳統 PATH 搜尋載入 `cublas64_12.dll` 等 runtime DLL，`FasterWhisperSTT.setup()` 已自動把 pip 安裝的 `nvidia-cublas-cu12`/`nvidia-cudnn-cu12`/`nvidia-cuda-nvrtc-cu12` wheel 的 `bin/` 目錄前置進 `PATH`，通常不需手動設定；系統仍找不到對應 DLL/`.so` 時 `setup()` 會失敗，STT 按鈕維持 unavailable，不影響文字輸入。
+
+`STT_*` 環境變數（皆有預設值，通常不需設定）：
+
+| 變數 | 預設值 | 說明 |
+|---|---|---|
+| `STT_ENABLED` | `true` | 總開關；設為 `false` 完全不建立任何 STT 物件、按鈕維持 unavailable |
+| `STT_MODEL` | `large-v3-turbo` | faster-whisper 模型名稱 |
+| `STT_DEVICE` | `cuda` | 僅支援 `cuda`，無 CPU fallback |
+| `STT_COMPUTE_TYPE` | `float16` | ctranslate2 計算精度 |
+| `STT_MODEL_PATH` | `runtime_cache/whisper` | 模型下載/快取目錄，首次啟動下載後可離線重用 |
+| `STT_LANGUAGE` | （空＝自動偵測） | 設為 `zh`/`en` 可固定語言，預設留空以支援中英混說 |
+| `STT_BEAM_SIZE` | `1` | beam search 寬度 |
+| `STT_SAMPLE_RATE` | `16000` | 錄音取樣率（Hz） |
+| `STT_MIN_RECORDING_MS` | `300` | 低於此長度視為過短，丟棄不辨識 |
+| `STT_MAX_RECORDING_SECONDS` | `30` | 單次錄音上限，超過自動停止收音 |
+
+疑難排解：
+- **`Library cublas64_12.dll is not found or cannot be loaded`**：主控台會印出 `[STT] session N 失敗：...（detail=...）`。確認 `pip show nvidia-cublas-cu12 nvidia-cudnn-cu12` 兩個套件都已安裝（`requirements.txt` 已宣告，重新 `pip install -r requirements.txt` 即可補齊）；此為 Windows 上最常見的 STT 失敗原因。
+- **CUDA/cuDNN 缺失或版本不符**：STT 按鈕顯示「STT 不可用」，文字輸入不受影響；可設 `STT_ENABLED=false` 明確停用以跳過背景 preload。
+- **找不到麥克風／權限不足**：點擊錄音會立即顯示一句錯誤提示並回到待命狀態，不影響其他功能。
+- **首次啟動較慢**：模型檔（約 1.6GB）於首次 `setup()` 下載至 `STT_MODEL_PATH`，之後離線啟動可直接從快取載入。
 
 <details>
 <summary>可選環境變數</summary>

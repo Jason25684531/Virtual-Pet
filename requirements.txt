@@ -18,3 +18,10 @@ beautifulsoup4>=4.13
 feedparser>=6.0
 qdrant-client>=1.13
 fastembed>=0.5
+numpy>=1.26
+sounddevice>=0.5
+faster-whisper>=1.2
+# Windows 上 ctranslate2 執行 CUDA 推論需要的 cuBLAS/cuDNN runtime DLL；系統已裝
+# CUDA Toolkit 者可略過，但這裡明確宣告以避免 "cublas64_12.dll is not found" 錯誤。
+nvidia-cublas-cu12; sys_platform == "win32"
+nvidia-cudnn-cu12; sys_platform == "win32"

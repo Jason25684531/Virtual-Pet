@@ -85,6 +85,46 @@ def test_get_provider_status_does_not_crash(harness_env):
     assert "tts" in status and "stt" in status
 
 
+def test_stt_provider_status_reports_none_when_not_wired(harness_env):
+    """4.3.3：controller 未注入(或 STT_ENABLED=false)時回報 provider="none"。"""
+    _tmp_path, agentic_root = harness_env
+    adapter = PyQtHarnessAdapter(
+        default_character_id="Choppr",
+        agentic_root=str(agentic_root),
+        provider_runtime=ProviderRuntime(provider=FakeProvider()),
+    )
+
+    status = adapter.get_provider_status()
+    assert status["stt"]["provider"] == "none"
+
+    voice = adapter._build_voice_status()
+    assert voice["stt"]["provider"] == "none"
+    assert voice["stt"]["required_env"] == ["STT_ENABLED", "STT_MODEL", "STT_DEVICE"]
+
+
+def test_stt_provider_status_reports_faster_whisper_when_wired(harness_env):
+    """4.3.3：controller 已接線且非 unavailable 時回報 provider="faster_whisper"。"""
+    from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
+
+    _tmp_path, agentic_root = harness_env
+    fake_controller = MagicMock()
+    fake_controller.state = "idle"
+    fake_controller.is_listening = False
+    fake_controller.last_error = ""
+    adapter = PyQtHarnessAdapter(
+        default_character_id="Choppr",
+        agentic_root=str(agentic_root),
+        provider_runtime=ProviderRuntime(provider=FakeProvider()),
+        voice_status_adapter=VoiceRuntimeStatusAdapter(stt_controller=fake_controller),
+    )
+
+    status = adapter.get_provider_status()
+    assert status["stt"]["provider"] == "faster_whisper"
+
+    voice = adapter._build_voice_status()
+    assert voice["stt"]["provider"] == "faster_whisper"
+
+
 def test_on_agentic_result_speaks_nonempty_reply():
     fake_self = MagicMock()
     fake_self._validated_event_motion_key.return_value = "music_idle"
