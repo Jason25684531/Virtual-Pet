@@ -7,29 +7,34 @@ from pet_harness.storage.sqlite_store import SQLiteStore
 
 
 class MockAssetService(AssetService):
-    def __init__(self, store: SQLiteStore) -> None:
+    def __init__(self, store: SQLiteStore, complete_immediately: bool = True) -> None:
         self.store = store
+        self.complete_immediately = complete_immediately
 
     def create_asset(self, request: AssetRequest) -> AssetResponse:
         response = AssetResponse(
             request_id=request.request_id,
-            status="completed",
+            status="completed" if self.complete_immediately else "queued",
             asset_id=f"mock-{request.request_id}",
-            file_path=f"assets/mock/{request.request_id}.webm",
-            webm_key=request.behavior_id or "idle",
-            completed_at=utc_now(),
-            metadata={"service": "mock_asset_service"},
+            job_id=f"mock-{request.request_id}",
+            file_path=f"assets/mock/{request.request_id}.webm" if self.complete_immediately else None,
+            webm_key=(request.behavior_id or "idle") if self.complete_immediately else None,
+            completed_at=utc_now() if self.complete_immediately else None,
+            metadata={"service": "mock_asset_service", "queued": True},
         )
         self.store.log_asset_manifest(request, response)
         return response
 
-    def create_reward_asset_request(self, source_event_id: str, reward_id: str, behavior_id: str) -> AssetResponse:
+    def create_reward_asset_request(self, source_event_id: str, reward_id: str, behavior_id: str, variant_type: str = "development") -> AssetResponse:
         request = AssetRequest(
             asset_type="reward_asset",
             prompt_params={"reward_id": reward_id},
             source_event_id=source_event_id,
             requested_reward=reward_id,
             behavior_id=behavior_id,
-            metadata={"source": "reward_unlock"},
+            metadata={"source": "reward_unlock", "variant_type": variant_type},
         )
         return self.create_asset(request)
+
+    def create_character_motion_request(self, source_event_id: str) -> AssetResponse:
+        return self.create_asset(AssetRequest(asset_type="motion_set", prompt_params={}, source_event_id=source_event_id))

@@ -1,6 +1,7 @@
 # 忽略檔案
 venv/
 .env
+.env.*
 __pycache__/
 openspec/
 .claude/
@@ -10,12 +11,8 @@ openspec/
 .codex/
 .cursor/
 .agent/
-.agentic/
-!.agentic/
-!.agentic/skills/
-.agentic/skills/*
-!.agentic/skills/youtube_music_playback.md
-!.agentic/skills/bahamut_daily_news.md
+.agentic/*
+.agentic/rewards/*
 .serena/
 
 # 日誌檔案 (保留目錄結構)
@@ -38,6 +35,7 @@ AIA_2026_動態生成Only.json
 assets/webm
 ui/assets/
 assets/
+assets/characters/
 docs/
 runtime_cache/
 
@@ -58,3 +56,4 @@ data/runtime/*
 data/characters/*/qdrant/
 
 device.key
+ComfyUI_Json/*

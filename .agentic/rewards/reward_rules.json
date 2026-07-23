@@ -7,7 +7,8 @@
       "inventory_item_id": "badge_first_spark",
       "unlock_reason": "Reached 5 XP",
       "metadata": {
-        "label": "First Spark"
+        "label": "First Spark",
+        "variant_type": "development"
       }
     },
     {
@@ -17,7 +18,8 @@
       "inventory_item_id": "badge_music_mood",
       "unlock_reason": "Reached 8 XP",
       "metadata": {
-        "label": "Music Mood"
+        "label": "Music Mood",
+        "variant_type": "development"
       }
     }
   ]

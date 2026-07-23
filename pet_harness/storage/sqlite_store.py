@@ -351,6 +351,65 @@ class SQLiteStore:
             for row in rows
         ]
 
+    def insert_asset_job(self, job: dict[str, Any]) -> None:
+        columns = ("job_id", "parent_job_id", "character_id", "workflow_type", "variant", "motion_key", "status", "comfy_prompt_id", "idempotency_key", "retry_count", "max_retries", "timeout_sec", "error_code", "error_message", "metadata_json", "created_at", "started_at", "completed_at")
+        payload = dict(job)
+        payload["metadata_json"] = json.dumps(payload.get("metadata", {}), ensure_ascii=False)
+        with self.connect() as conn:
+            conn.execute(f"INSERT INTO asset_jobs ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})", tuple(payload.get(key) for key in columns))
+
+    def update_asset_job_status(self, job_id: str, status: str, **changes: Any) -> None:
+        allowed = {"comfy_prompt_id", "retry_count", "error_code", "error_message", "started_at", "completed_at", "metadata_json"}
+        updates = {"status": status, **{key: value for key, value in changes.items() if key in allowed}}
+        if "metadata" in changes:
+            updates["metadata_json"] = json.dumps(changes["metadata"], ensure_ascii=False)
+        assignments = ", ".join(f"{key}=?" for key in updates)
+        with self.connect() as conn:
+            conn.execute(f"UPDATE asset_jobs SET {assignments} WHERE job_id=?", (*updates.values(), job_id))
+
+    def get_asset_job(self, job_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM asset_jobs WHERE job_id=?", (job_id,)).fetchone()
+        return self._asset_job_row(row) if row else None
+
+    def find_job_by_idempotency_key(self, key: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM asset_jobs WHERE idempotency_key=?", (key,)).fetchone()
+        return self._asset_job_row(row) if row else None
+
+    def list_pending_asset_jobs(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM asset_jobs WHERE status IN ('queued','uploading','submitted','running','timed_out') ORDER BY created_at").fetchall()
+        return [self._asset_job_row(row) for row in rows]
+
+    def list_asset_jobs_by_parent(self, parent_job_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM asset_jobs WHERE parent_job_id=? ORDER BY created_at", (parent_job_id,)).fetchall()
+        return [self._asset_job_row(row) for row in rows]
+
+    def insert_character_asset(self, asset: dict[str, Any]) -> dict[str, Any]:
+        identity = (asset["character_id"], asset["asset_type"], asset["variant"], asset.get("motion_key"), asset.get("reward_id"), asset.get("event_id"))
+        with self.connect() as conn:
+            row = conn.execute("SELECT COALESCE(MAX(version), 0) AS version FROM character_assets WHERE character_id=? AND asset_type=? AND variant=? AND motion_key IS ? AND reward_id IS ? AND event_id IS ?", identity).fetchone()
+            version = int(row["version"]) + 1
+            conn.execute("UPDATE character_assets SET active=0 WHERE character_id=? AND asset_type=? AND variant=? AND motion_key IS ? AND reward_id IS ? AND event_id IS ?", identity)
+            data = {**asset, "version": version, "active": 1}
+            columns = ("asset_id", "character_id", "asset_type", "variant", "motion_key", "reward_id", "level", "event_id", "file_path", "filename", "mime_type", "sha256", "version", "active", "source_job_id", "created_at")
+            conn.execute(f"INSERT INTO character_assets ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})", tuple(data.get(key) for key in columns))
+        return {**data, "version": version, "active": True}
+
+    def list_character_assets(self, character_id: str, active_only: bool = True) -> list[dict[str, Any]]:
+        query = "SELECT * FROM character_assets WHERE character_id=?" + (" AND active=1" if active_only else "") + " ORDER BY created_at DESC"
+        with self.connect() as conn:
+            rows = conn.execute(query, (character_id,)).fetchall()
+        return [dict(row) | {"active": bool(row["active"])} for row in rows]
+
+    @staticmethod
+    def _asset_job_row(row: sqlite3.Row) -> dict[str, Any]:
+        payload = dict(row)
+        payload["metadata"] = json.loads(payload.pop("metadata_json") or "{}")
+        return payload
+
     def recent_events(self, limit: int = 10) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(

@@ -26,6 +26,7 @@ class AssetResponse:
     request_id: str
     status: str
     asset_id: str | None = None
+    job_id: str | None = None
     file_path: str | None = None
     webm_key: str | None = None
     error_message: str | None = None

@@ -194,6 +194,16 @@ AZURE_STT_SEGMENTATION_MAX_TIME_MS = _read_int_env(
 )
 ACTION_SYNC_TIMEOUT_MS = _read_int_env("ACTION_SYNC_TIMEOUT_MS", 6000)
 
+# ComfyUI asset generation is opt-in; the mock service remains the safe default.
+COMFYUI_BASE_URL = os.getenv("COMFYUI_BASE_URL", "http://127.0.0.1:8188").strip().rstrip("/")
+COMFYUI_WS_URL = os.getenv("COMFYUI_WS_URL", "ws://127.0.0.1:8188").strip().rstrip("/")
+COMFYUI_TIMEOUT_SEC = _read_int_env("COMFYUI_TIMEOUT_SEC", 300)
+COMFYUI_MAX_RETRIES = _read_int_env("COMFYUI_MAX_RETRIES", 2)
+COMFYUI_ENABLED = _read_bool_env("COMFYUI_ENABLED", False)
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "").strip()
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()
+ASSET_GENERATION_CONTEXT_MAX_CHARS = _read_int_env("ASSET_GENERATION_CONTEXT_MAX_CHARS", 2000)
+
 # --- Faster Whisper STT（toggle-recording，Week 4） ---
 STT_ENABLED = _read_bool_env("STT_ENABLED", True)
 STT_MODEL = os.getenv("STT_MODEL", "large-v3-turbo").strip() or "large-v3-turbo"

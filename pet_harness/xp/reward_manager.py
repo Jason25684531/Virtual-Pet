@@ -31,6 +31,7 @@ class RewardManager:
                 unlock_reason=rule.unlock_reason,
                 xp_threshold=rule.xp_threshold,
                 inventory_item_id=rule.inventory_item_id,
+                metadata=rule.metadata,
             )
             if self.store.unlock_reward(event, metadata=rule.metadata):
                 unlocked.append(event)

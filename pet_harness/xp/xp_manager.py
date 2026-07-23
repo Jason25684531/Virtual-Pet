@@ -5,6 +5,7 @@ from pet_harness.storage.sqlite_store import SQLiteStore
 
 
 class XPManager:
+    #定義與儲存經驗值
     def __init__(self, store: SQLiteStore, chat_xp: int = 2) -> None:
         self.store = store
         self.chat_xp = chat_xp

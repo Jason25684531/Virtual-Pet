@@ -11,7 +11,7 @@ from character_library import CharacterLibrary
 from pet_harness.agent.prompt_builder import PromptBuilder
 from pet_harness.agent.provider_adapter import LLMProviderAdapter
 from pet_harness.agent.result_parser import ResultParser
-from pet_harness.asset.mock_asset_service import MockAssetService
+from pet_harness.asset.factory import build_asset_service
 from pet_harness.behavior.behavior_manager import BehaviorManager
 from pet_harness.character.profile import CharacterProfile
 from pet_harness.memory.base_memory_store import BaseMemoryStore, NullMemoryStore
@@ -101,7 +101,7 @@ class PetHarnessEngine:
         self.safety_guard = SafetyGuard(self.tool_registry)
         self.media_session_context = MediaSessionContext(self.store)
         self._tool_lifecycle = ToolExecutionLifecycle(self.safety_guard, self.tool_registry, self.store, self.skills, self.media_session_context)
-        self.asset_service = MockAssetService(self.store)
+        self.asset_service = build_asset_service(self.store, self._character_id, self.character_library)
         self.last_prompt: str | None = None
         self.last_provider_raw_result: str | None = None
         self.last_agent_result: AgentResult | None = None
@@ -547,6 +547,7 @@ class PetHarnessEngine:
             source_event_id=source_event_id,
             reward_id=reward_id,
             behavior_id=behavior_id,
+            variant_type=str(getattr(reward, "metadata", {}).get("variant_type", "development")),
         )
         self.last_asset_result = response.to_dict()
         return response.to_dict()

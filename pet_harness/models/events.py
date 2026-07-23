@@ -69,6 +69,7 @@ class RewardEvent:
     unlock_reason: str
     xp_threshold: int
     inventory_item_id: str
+    metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:

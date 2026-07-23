@@ -14,7 +14,8 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 ASSETS_WEBM_DIR = PROJECT_ROOT / "assets" / "webm"
-CHARACTER_LIBRARY_DIR = ASSETS_WEBM_DIR / "characters"
+CHARACTER_LIBRARY_DIR = PROJECT_ROOT / "assets" / "characters"
+LEGACY_CHARACTER_LIBRARY_DIR = ASSETS_WEBM_DIR / "characters"
 UI_ASSETS_DIR = PROJECT_ROOT / "ui" / "assets"
 UI_BACKGROUNDS_DIR = UI_ASSETS_DIR / "backgrounds"
 UI_MUSIC_DIR = UI_ASSETS_DIR / "music"
@@ -56,13 +57,13 @@ class CharacterLibrary:
 
     def list_characters(self) -> list[dict]:
         manifests = []
-        for manifest_path in CHARACTER_LIBRARY_DIR.glob("*/manifest.json"):
+        for manifest_path in [*CHARACTER_LIBRARY_DIR.glob("*/manifest.json"), *LEGACY_CHARACTER_LIBRARY_DIR.glob("*/manifest.json")]:
             try:
                 manifests.append(self._load_manifest(manifest_path))
             except (OSError, json.JSONDecodeError):
                 continue
         manifests.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
-        return manifests
+        return list({item["id"]: item for item in manifests}.values())
 
     def get_character(self, character_id: str | None) -> dict | None:
         if not character_id:
@@ -361,7 +362,9 @@ class CharacterLibrary:
         return str(PROJECT_ROOT / manifest["motions_dir"])
 
     def _manifest_path(self, character_id: str) -> Path:
-        return CHARACTER_LIBRARY_DIR / character_id / "manifest.json"
+        primary = CHARACTER_LIBRARY_DIR / character_id / "manifest.json"
+        legacy = LEGACY_CHARACTER_LIBRARY_DIR / character_id / "manifest.json"
+        return primary if primary.exists() or not legacy.exists() else legacy
 
     def _save_manifest(self, character_id: str, manifest: dict):
         manifest_path = self._manifest_path(character_id)

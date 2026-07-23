@@ -99,3 +99,46 @@ CREATE TABLE IF NOT EXISTS asset_manifest (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS asset_jobs (
+    job_id TEXT PRIMARY KEY,
+    parent_job_id TEXT,
+    character_id TEXT NOT NULL,
+    workflow_type TEXT NOT NULL,
+    variant TEXT NOT NULL,
+    motion_key TEXT,
+    status TEXT NOT NULL,
+    comfy_prompt_id TEXT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    max_retries INTEGER NOT NULL DEFAULT 2,
+    timeout_sec INTEGER,
+    error_code TEXT,
+    error_message TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_asset_jobs_status ON asset_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_asset_jobs_parent ON asset_jobs(parent_job_id);
+
+CREATE TABLE IF NOT EXISTS character_assets (
+    asset_id TEXT PRIMARY KEY,
+    character_id TEXT NOT NULL,
+    asset_type TEXT NOT NULL,
+    variant TEXT NOT NULL,
+    motion_key TEXT,
+    reward_id TEXT,
+    level INTEGER,
+    event_id TEXT,
+    file_path TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    source_job_id TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_character_assets_active ON character_assets(character_id, active);
