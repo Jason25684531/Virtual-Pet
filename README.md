@@ -1,11 +1,12 @@
 # ECHOES Virtual Pet
 
-以 `PyQt5 + QWebEngineView` 為六層 2K 舞台外殼的桌面虛擬寵物專案。每個角色擁有獨立的 `PetHarnessEngine`（Skills / XP / Reward / Memory 全部隔離），`main.py` 只有一條啟動路徑，不接受 `--brain-mode` 參數。
+以 `PyQt5 + QWebEngineView` 為六層 2K 舞台外殼的桌面虛擬寵物專案。每個角色擁有獨立的 `PetHarnessEngine`（Skills / XP / Reward / Memory 全部隔離），`main.py` 是唯一的 composition root：組裝 `ApplicationCoordinator`（ActionBus / EventBus / RuntimeLifecycle）、`PyQtHarnessAdapter` 與 `TransparentWindow`，不接受 `--brain-mode` 參數。
 
 | 項目 | 內容 |
 |------|------|
 | **對話大腦** | `PetHarnessEngine`（Ollama / OpenAI-compatible API），負責文字對話、skill 路由、工具呼叫、對話記憶、XP/獎勵、behavior→WebM 映射 |
-| **本地快捷動作** | `ActionDispatcher` 子系統，獨立於對話大腦之外，驅動「新聞播報／播放音樂／揮手回應／固定笑話／固定分享」等 UI 按鈕，走 VoAI/ElevenLabs TTS |
+| **統一動作入口** | `ActionBus`：對話、快捷按鈕、快捷鍵、系統匣、web overlay 全部收斂為 `ActionCommand`，同步回 `ActionResult`、副作用經 `AppEvent` 送回 Presentation |
+| **本地快捷動作** | `MotionCoordinator`（原 `ActionDispatcher`，保留相容 alias）：動畫、TTS queue 與播放收尾狀態機，驅動「新聞播報／播放音樂／揮手回應／固定笑話／固定分享」，走 VoAI/ElevenLabs TTS |
 | **離線安全** | 對話大腦 Yes（Ollama 免 API key）；本地快捷動作 No（需要 VoAI 或 ElevenLabs API key 才有語音） |
 
 參考文件：
@@ -20,11 +21,38 @@
 
 ## 架構概覽
 
+### 分層架構（重構後）
+
+```text
+┌ Presentation（ui/…，可用 PyQt）────────────────────────────────────┐
+│ TransparentWindow（視窗殼）  JsGateway（Python→JS 佇列橋）          │
+│ PresentationEventBinder（訂閱 AppEvent → 呼叫 UI）                  │
+│ MotionCoordinator（動畫/TTS 播放收尾狀態機，action_dispatcher.py）  │
+└──────── ActionCommand 提交 ↓ ──────── AppEvent 訂閱 ↑ ─────────────┘
+┌ Application（pet_harness/app/，禁止 import PyQt）──────────────────┐
+│ ApplicationCoordinator（唯一組裝入口） ActionBus + ActionHandlers   │
+│ RuntimeLifecycle（集中啟停/shutdown） Ports（Conversation/          │
+│ Character/BackgroundExecutor）＋ SecretMasker / ProviderConfigService│
+└──────── 呼叫 Domain ↓ ──────── Infrastructure 實作 Ports ↑ ────────┘
+┌ Domain（pet_harness/engine|skills|xp|character|models，純 Python）─┐
+│ PetHarnessEngine（Conversation Pipeline） SkillRouter XPManager …   │
+└─────────────────────────────────────────────────────────────────────┘
+┌ Infrastructure ─────────────────────────────────────────────────────┐
+│ ProviderRuntime SQLiteStore QdrantMemoryStore QtBackgroundExecutor  │
+│ VoAI/ElevenLabs TTS workers PlaywrightBrowserRuntime                │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+- 依賴方向只准往下；`tests/test_dependency_boundaries.py` 靜態掃描守門（Application/Domain 出現 `PyQt5` import 即 fail）。
+- 對話流程：UI `sendText` → `ActionCommand("conversation")` → `ActionBus` → `ConversationHandler` → `QtBackgroundExecutor`（QThread 背景執行）→ `PyQtHarnessAdapter.run_turn` → `PetHarnessEngine.handle_event`；完成後以 `EVT_CONVERSATION_TURN` 事件回到 `PresentationEventBinder` 更新 UI、觸發動畫與 TTS。失敗走 `EVT_RUNTIME_ERROR`，UI busy 狀態一律復位。
+- 快捷動作：按鈕/快捷鍵/系統匣 → `ActionCommand` → `ActionBus` → handler 發 `EVT_ACTION_REQUESTED` → binder 轉交 `MotionCoordinator` 執行動畫與 TTS 收尾（defer/duplicate/timeout 語意不變）。
+- 關閉流程：`aboutToQuit` → `ApplicationCoordinator.shutdown()` → `RuntimeLifecycle.shutdown_all()` 依註冊反序停止（STT → MotionCoordinator/Audio → adapter/Browser），單一 runtime 逾時不阻塞退出。
+
 ### Harness 對話流程
 
 ```mermaid
 flowchart LR
-    USER[使用者輸入<br>UI sendText] --> ENGINE[PetHarnessEngine]
+    USER[使用者輸入<br>UI sendText] --> BUS[ActionBus<br>ConversationHandler] --> ENGINE[PetHarnessEngine]
 
     ENGINE --> ROUTE0[SkillRouter<br>deterministic match]
     ROUTE0 -- required_tool 命中 --> TOOLFIRST[ToolExecutionLifecycle<br>工具先行執行]
@@ -57,7 +85,9 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    UI[UI 按鈕<br>新聞/音樂/揮手/笑話/分享] --> DISP[ActionDispatcher]
+    UI[UI 按鈕/快捷鍵/系統匣<br>新聞/音樂/揮手/笑話/分享] --> BUS[ActionBus<br>ActionCommand]
+    BUS -- EVT_ACTION_REQUESTED --> BINDER[PresentationEventBinder]
+    BINDER --> DISP[MotionCoordinator<br>action_dispatcher.py]
     DISP --> SVC[action_services.py<br>QThread worker：news / wave / joke / share]
     SVC --> TTS[VoAI PCM primary<br>→ ElevenLabs fallback]
     TTS --> AW[AudioStreamWorker<br>daemon thread PCM/MP3 queue]
@@ -65,7 +95,7 @@ flowchart LR
     DISP --> MOTION[character_library.py<br>WebM 動作切換]
 ```
 
-> 此子系統完全獨立於 `PetHarnessEngine`。`report_news`/`play_music`/`wave_response` 走固定腳本＋快取音檔；`cached_joke`/`cached_share` 首次觸發時會呼叫 LLM 產生文字後寫入快取，之後皆直接讀快取。
+> 此子系統完全獨立於 `PetHarnessEngine`。`report_news`/`play_music`/`wave_response` 走固定腳本＋快取音檔；`cached_joke`/`cached_share` 首次觸發時會呼叫 LLM 產生文字後寫入快取，之後皆直接讀快取。入口統一為 `ActionBus`；`MotionCoordinator` 保留動畫與 TTS 的播放收尾狀態機（`ActionDispatcher` 為遷移期相容 alias）。
 
 ---
 
@@ -86,11 +116,11 @@ flowchart LR
 
 ```text
 Virtual-Pet/
-├── main.py                         # 應用程式進入點（唯一路徑，固定啟動 Harness）
+├── main.py                         # 應用程式進入點＝composition root（組裝 coordinator/adapter/window/lifecycle）
 ├── config.py                       # 集中式設定中心（.env + persona + action 白名單）
 ├── character_library.py            # 角色清單、manifest 讀取、motion 映射（快捷動作＋Harness 共用）
 ├── interaction_trace.py            # 快捷動作互動延遲追蹤
-├── action_dispatcher.py            # 本地快捷動作派發中樞、alias 正規化、TTS queue 管理
+├── action_dispatcher.py            # MotionCoordinator：動畫/TTS queue/播放收尾狀態機（ActionDispatcher 為相容 alias）
 ├── action_services.py              # 快捷動作背景 service worker（新聞 / 揮手 / 固定意圖快取）
 ├── text_utils.py                   # sanitize_tts_text：去除 ACTION 標記供 TTS 朗讀
 ├── audio_playback.py               # 快捷動作用 provider-neutral 播放器（ffplay / pygame）
@@ -109,6 +139,17 @@ Virtual-Pet/
 │   └── comfyui_client.py           # ComfyUI 算圖 client（未來資產生成用）
 │
 ├── pet_harness/                    # ★ Harness 模式核心引擎
+│   ├── app/                        # ★ Application 層（禁止 import PyQt）
+│   │   ├── application_coordinator.py  # 唯一組裝入口：ProviderRuntime/Router/ActionBus/handlers
+│   │   ├── action_bus.py           # ActionCommand → handler 路由；unknown→rejected、例外隔離
+│   │   ├── action_handler.py       # ActionHandler ABC
+│   │   ├── commands.py / results.py / events.py  # ActionCommand / ActionResult / AppEvent dataclass
+│   │   ├── event_bus.py            # EventBus ABC + SimpleEventBus
+│   │   ├── runtime_lifecycle.py    # ManagedRuntime ABC + RuntimeLifecycle（反序 shutdown）+ CallbackRuntime
+│   │   ├── provider_config_service.py  # Provider 設定/bootstrap（local-first Ollama）
+│   │   ├── secret_masking.py       # .env 載入 + 遞迴 secret 遮罩
+│   │   ├── ports/                  # ConversationPort / CharacterPort / BackgroundExecutor（ABC）
+│   │   └── handlers/               # conversation / news / music / wave / quick_intent / motion_only / reset
 │   ├── engine/
 │   │   ├── harness_engine.py       # 中央協調器：event → (工具先行) → prompt → LLM → parse → route → XP → DB
 │   │   ├── tool_execution_lifecycle.py  # 工具執行閉環（安全授權/重試/預算/落庫）
@@ -151,6 +192,7 @@ Virtual-Pet/
 │   ├── runtime/
 │   │   ├── playwright_browser_runtime.py  # 持久化 Chromium context（cookie 跨啟動保留，降低反自動化 403）
 │   │   ├── browser_session_manager.py
+│   │   ├── qt_background_executor.py  # BackgroundExecutor 的 Qt 實作（QThread + queued 回呼到 UI 執行緒）
 │   │   └── provider_runtime.py     # 全域 LLM Provider 設定/健康狀態持有者
 │   ├── xp/
 │   │   ├── xp_manager.py           # XP 經驗值結算（per-skill + per-user）
@@ -160,7 +202,9 @@ Virtual-Pet/
 │       └── character_ui_service.py # 角色 CRUD / persona 面板服務
 │
 ├── ui/
-│   ├── transparent_window.py       # 透明桌面視窗 + Python↔JS bridge
+│   ├── transparent_window.py       # 透明桌面視窗 + QWebChannel bridge（adapter/dispatcher 由 main.py 注入）
+│   ├── js_gateway.py               # Python→JS 呼叫佇列橋（webview ready 前自動排隊）
+│   ├── presentation_event_binder.py # 訂閱 AppEvent → 轉呼叫 window/MotionCoordinator
 │   ├── background_resolver.py      # 背景圖三級 fallback 解析
 │   ├── settings_dialog.py          # 設定對話框
 │   └── web_container/
@@ -214,7 +258,7 @@ Virtual-Pet/
 - `BaseMemoryStore`（ABC）定義 `save_turn` / `recall` / `status`；呼叫端（`PetHarnessEngine`）只依賴介面，可替換。
 - `NullMemoryStore` 是零開銷預設值：headless／測試環境下 `CharacterRouter` 不會建構真正的記憶庫。
 - `QdrantMemoryStore` 是正式實作：本地嵌入式向量庫，寫入在背景執行緒完成，檢索 fail-open（未就緒或例外一律回空清單，絕不中斷對話）；FIFO 上限預設 500 筆。
-- `CharacterRouter.switch_character()` 只在真正的桌面 App 內（`QApplication.instance() is not None`）才建構 `QdrantMemoryStore`，比照既有的語意路由索引慣例，避免 headless 測試觸發不必要的模型載入。
+- `CharacterRouter` 不再自行判斷執行環境：`memory_store_factory` 與 `semantic_index_enabled` 由 composition root（`main.py` / `ApplicationCoordinator`）注入——桌面 App 注入 Qdrant factory，headless／測試預設 `NullMemoryStore`，Domain 層完全不 import PyQt。
 
 ### LLM Provider 層 (`pet_harness/agent/`)
 
@@ -273,9 +317,9 @@ UI 固定以 `2560×1440` 設計空間、`min(vw/2560, vh/1440)` 縮放渲染：
 
 ## 本地快捷動作子系統（Harness 模式下仍在運作）
 
-以下模組獨立於 `PetHarnessEngine`，由 UI 按鈕直接觸發固定動作：
+以下模組獨立於 `PetHarnessEngine`，由 UI 按鈕經 `ActionBus` 觸發固定動作：
 
-- **`action_dispatcher.py`** — Action 白名單、alias 正規化、WebM 動作切換、TTS queue 管理中樞
+- **`action_dispatcher.py`（`MotionCoordinator`）** — Action 白名單、alias 正規化、WebM 動作切換、TTS queue 與播放收尾狀態機
 - **`action_services.py`** — 新聞播報 / 揮手回應 / 固定笑話 / 固定分享的背景 QThread worker
 - **`audio_worker.py`** — trace-aware PCM/MP3 串流播放 worker（daemon thread）
 - **`audio_playback.py`** — pygame / ffplay 播放器實作
@@ -430,7 +474,7 @@ python scripts/debug_harness.py
 python -m pytest -q
 ```
 
-涵蓋角色系統（profile / registry / router / customization）、Harness 引擎（skill 路由、工具先行、對話記憶、去重）、UI bridge（runtime refresh gating、面板結構）、瀏覽器 session 復原等。真實 `QdrantMemoryStore` 生命週期驗證（`tests/test_memory_store.py`）在獨立子行程執行，避開 onnxruntime 在 Windows 上與 pytest 全套件執行順序相關的原生層級環境限制。
+涵蓋角色系統（profile / registry / router / customization）、Harness 引擎（skill 路由、工具先行、對話記憶、去重）、Application 層（ActionBus / EventBus / RuntimeLifecycle / ConversationHandler）、依賴邊界守門（`tests/test_dependency_boundaries.py`：Application/Domain 出現 PyQt import 即 fail）、UI bridge（runtime refresh gating、面板結構）、對話 payload 回歸基準（`tests/test_conversation_pipeline_regression.py`）、瀏覽器 session 復原等。真實 `QdrantMemoryStore` 生命週期驗證（`tests/test_memory_store.py`）在獨立子行程執行，避開 onnxruntime 在 Windows 上與 pytest 全套件執行順序相關的原生層級環境限制。
 
 ---
 

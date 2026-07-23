@@ -54,10 +54,12 @@ class PetHarnessEngine:
         provider_config: ProviderConfig | None = None,
         character_id: str | None = None,
         memory_store: BaseMemoryStore | None = None,
+        semantic_index_enabled: bool = False,
     ) -> None:
         self.agentic_root = Path(agentic_root)
         self.snapshot_path = Path(snapshot_path)
         self.memory_store = memory_store or NullMemoryStore()
+        self._semantic_index_enabled = semantic_index_enabled
 
         self._character_id = character_id
         self._profile: CharacterProfile | None = None
@@ -167,9 +169,8 @@ class PetHarnessEngine:
     def refresh_semantic_index(self) -> None:
         """Queue a non-blocking index refresh after the resolved skill view changes."""
         import config
-        from PyQt5.QtWidgets import QApplication
 
-        if config.SEMANTIC_ROUTING_ENABLED and QApplication.instance() is not None:
+        if config.SEMANTIC_ROUTING_ENABLED and self._semantic_index_enabled:
             # ponytail: full rebuild, incremental upsert if skill count grows.
             self.semantic_retriever.index(semantic_manifest(self.skills, character_id=self._character_id, model=config.SEMANTIC_ROUTING_MODEL))
 
@@ -240,104 +241,26 @@ class PetHarnessEngine:
         user_event = event if isinstance(event, UserEvent) else UserEvent.from_dict(event)
         state_before = self.store.state_snapshot()
         active_capabilities = self._active_capabilities()
-        deterministic_skill = self.router.match(user_event.text, active_capabilities)
+        deterministic_skill = self._route_deterministic(user_event, active_capabilities)
 
         # 工具先行:deterministic 命中且帶 required_tool 時,先執行工具再讓 LLM 合成回覆,
         # 讓回覆能引用本輪真實取得的資料,而非上一輪殘留的 tool_result(見
         # fix-core-interaction-experience)。LLM 呼叫次數維持一次。
-        tool_first_event = None
-        tool_first_result = None
-        if deterministic_skill is not None and deterministic_skill.required_tool:
-            tool_first_candidate = self._build_tool_request_candidate(user_event, deterministic_skill)
-            if tool_first_candidate is not None:
-                tool_first_event, tool_first_result, _payload, _bonus = self._execute_tool_candidate(
-                    user_event, tool_first_candidate, deterministic_skill.name
-                )
+        tool_first_event, tool_first_result = self._run_tool_first(user_event, deterministic_skill)
 
         conversation_history = list(reversed(self.store.recent_events(limit=6)))
         memory_hits = self.memory_store.recall(user_event.text, top_k=3)
         memory_status = self.memory_store.status()
 
-        prompt_result = self.prompt_builder.build(
-            event=user_event,
-            skills=self.skills,
-            state_snapshot=state_before,
-            matched_skill=deterministic_skill,
-            persona=self._profile.effective_persona if self._profile else None,
-            action_tags=self.character_library.list_action_tags(self._character_id),
-            tool_result=tool_first_result,
-            conversation_history=conversation_history,
-            memory_hits=memory_hits,
+        prompt_result = self._build_prompt(user_event, state_before, deterministic_skill, tool_first_result, conversation_history, memory_hits)
+        provider_reply, agent_result = self._invoke_provider(user_event, deterministic_skill, prompt_result.prompt)
+        matched_skill, skill_source = self._parse_and_route(user_event, agent_result, active_capabilities)
+        resolved_action, behavior_event = self._resolve_behavior(matched_skill, agent_result)
+        tool_event, tool_result_payload, tool_xp_bonus = self._run_tool_fallback(
+            user_event, matched_skill, agent_result, tool_first_event, tool_first_result
         )
-        self.last_prompt = prompt_result.prompt
-        provider_reply = self.provider.generate_reply(
-            user_event,
-            matched_skill=deterministic_skill,
-            prompt_text=prompt_result.prompt,
-        )
-        self.last_provider_raw_result = provider_reply.raw_text or provider_reply.reply
-        agent_result = self.result_parser.parse(
-            self.last_provider_raw_result or provider_reply.reply,
-            provider_type=provider_reply.provider_status.provider_type,
-            fallback_reply=provider_reply.reply,
-        )
-        self.last_agent_result = agent_result
-
-        import config
-        matched_skill, skill_source = self.router.route(
-            user_event.text,
-            suggested_skill_name=agent_result.matched_skill,
-            suggested_confidence=agent_result.confidence,
-            allow_fallback=self.provider_config.routing_fallback_enabled if self.provider_config else config.PROVIDER_ROUTING_FALLBACK_ENABLED,
-            confidence_threshold=self.provider_config.routing_confidence_threshold if self.provider_config else config.PROVIDER_ROUTING_CONFIDENCE_THRESHOLD,
-            active_capabilities=active_capabilities,
-            **self._semantic_route_options(),
-        )
-        LOGGER.info("[SKILL ROUTE] text_length=%s matched=%s source=%s", len(user_event.text), getattr(matched_skill, "name", None), skill_source)
-
-        resolved_action = None
-        if matched_skill is None and agent_result.action_tag:
-            resolved_action = self.character_library.resolve_action_tag(self._character_id, agent_result.action_tag)
-            if resolved_action is None:
-                LOGGER.warning(
-                    "Ignoring invalid action tag for character %s: %s",
-                    self._character_id,
-                    agent_result.action_tag,
-                )
-        behavior_event = self.behavior_manager.resolve(
-            matched_skill,
-            action_motion_key=resolved_action["motion_key"] if resolved_action else None,
-        )
-        tool_event = None
-        tool_result_payload = None
-        tool_xp_bonus = 0
-        self.last_tool_result = None
-        if tool_first_result is not None:
-            # 工具已在生成回覆前執行過(見上方工具先行區塊),沿用同一份結果,不重複呼叫工具。
-            tool_event = tool_first_event
-            self.last_tool_result = tool_first_result
-            tool_result_payload = tool_first_result.to_dict()
-            if tool_first_result.status in {"completed", "success"}:
-                definition = self.tool_registry.get(tool_first_result.tool_name)
-                tool_xp_bonus = definition.xp_reward if definition is not None else 0
-        else:
-            tool_candidate = self._build_tool_request_candidate(user_event, matched_skill, agent_result)
-            if tool_candidate is not None:
-                tool_event, tool_result, tool_result_payload, tool_xp_bonus = self._execute_tool_candidate(
-                    user_event, tool_candidate, matched_skill.name if matched_skill else None
-                )
-                self.last_tool_result = tool_result
-
-        xp_delta = self.xp_manager.award_for_event(matched_skill)
-        if tool_xp_bonus:
-            self.store.add_user_xp(tool_xp_bonus)
-            xp_delta += tool_xp_bonus
-        user_progress = self.store.get_user_progress()
-        reward_events = self.reward_manager.check_unlocks(user_progress["xp_total"])
-        asset_result = self._handle_reward_assets(
-            source_event_id=user_event.event_id,
-            reward_events=reward_events,
-            behavior_id=behavior_event.behavior_id,
+        xp_delta, reward_events, asset_result = self._award_and_reward(
+            user_event, matched_skill, tool_xp_bonus, behavior_event.behavior_id
         )
 
         pet_event = PetEvent(
@@ -373,11 +296,111 @@ class PetHarnessEngine:
             },
         )
 
+        self._persist_and_snapshot(user_event, pet_event)
+        return pet_event
+
+    def _route_deterministic(self, event: UserEvent, capabilities: set[str]) -> Skill | None:
+        return self.router.match(event.text, capabilities)
+
+    def _build_prompt(
+        self,
+        event: UserEvent,
+        state: dict[str, Any],
+        deterministic_skill: Skill | None,
+        tool_result: ToolResult | None,
+        history: list[dict[str, Any]],
+        memory_hits: list[Any],
+    ):
+        return self.prompt_builder.build(
+            event=event,
+            skills=self.skills,
+            state_snapshot=state,
+            matched_skill=deterministic_skill,
+            persona=self._profile.effective_persona if self._profile else None,
+            action_tags=self.character_library.list_action_tags(self._character_id),
+            tool_result=tool_result,
+            conversation_history=history,
+            memory_hits=memory_hits,
+        )
+
+    def _run_tool_first(self, event: UserEvent, skill: Skill | None) -> tuple[ToolRequestEvent | None, ToolResult | None]:
+        if skill is None or not skill.required_tool:
+            return None, None
+        candidate = self._build_tool_request_candidate(event, skill)
+        if candidate is None:
+            return None, None
+        tool_event, result, _payload, _bonus = self._execute_tool_candidate(event, candidate, skill.name)
+        return tool_event, result
+
+    def _invoke_provider(self, event: UserEvent, skill: Skill | None, prompt: str):
+        self.last_prompt = prompt
+        provider_reply = self.provider.generate_reply(event, matched_skill=skill, prompt_text=prompt)
+        self.last_provider_raw_result = provider_reply.raw_text or provider_reply.reply
+        agent_result = self.result_parser.parse(
+            self.last_provider_raw_result or provider_reply.reply,
+            provider_type=provider_reply.provider_status.provider_type,
+            fallback_reply=provider_reply.reply,
+        )
+        self.last_agent_result = agent_result
+        return provider_reply, agent_result
+
+    def _parse_and_route(self, event: UserEvent, result: AgentResult, capabilities: set[str]):
+        import config
+
+        skill, source = self.router.route(
+            event.text,
+            suggested_skill_name=result.matched_skill,
+            suggested_confidence=result.confidence,
+            allow_fallback=self.provider_config.routing_fallback_enabled if self.provider_config else config.PROVIDER_ROUTING_FALLBACK_ENABLED,
+            confidence_threshold=self.provider_config.routing_confidence_threshold if self.provider_config else config.PROVIDER_ROUTING_CONFIDENCE_THRESHOLD,
+            active_capabilities=capabilities,
+            **self._semantic_route_options(),
+        )
+        LOGGER.info("[SKILL ROUTE] text_length=%s matched=%s source=%s", len(event.text), getattr(skill, "name", None), source)
+        return skill, source
+
+    def _resolve_behavior(self, skill: Skill | None, result: AgentResult):
+        resolved_action = None
+        if skill is None and result.action_tag:
+            resolved_action = self.character_library.resolve_action_tag(self._character_id, result.action_tag)
+            if resolved_action is None:
+                LOGGER.warning("Ignoring invalid action tag for character %s: %s", self._character_id, result.action_tag)
+        behavior = self.behavior_manager.resolve(skill, action_motion_key=resolved_action["motion_key"] if resolved_action else None)
+        return resolved_action, behavior
+
+    def _run_tool_fallback(
+        self,
+        event: UserEvent,
+        skill: Skill | None,
+        result: AgentResult,
+        tool_first_event: ToolRequestEvent | None,
+        tool_first_result: ToolResult | None,
+    ) -> tuple[ToolRequestEvent | None, dict[str, Any] | None, int]:
+        self.last_tool_result = tool_first_result
+        if tool_first_result is not None:
+            bonus = self.tool_registry.get(tool_first_result.tool_name)
+            return tool_first_event, tool_first_result.to_dict(), bonus.xp_reward if bonus and tool_first_result.status in {"completed", "success"} else 0
+        candidate = self._build_tool_request_candidate(event, skill, result)
+        if candidate is None:
+            return None, None, 0
+        tool_event, tool_result, payload, bonus = self._execute_tool_candidate(event, candidate, skill.name if skill else None)
+        self.last_tool_result = tool_result
+        return tool_event, payload, bonus
+
+    def _award_and_reward(self, event: UserEvent, skill: Skill | None, tool_xp_bonus: int, behavior_id: str):
+        xp_delta = self.xp_manager.award_for_event(skill)
+        if tool_xp_bonus:
+            self.store.add_user_xp(tool_xp_bonus)
+            xp_delta += tool_xp_bonus
+        rewards = self.reward_manager.check_unlocks(self.store.get_user_progress()["xp_total"])
+        assets = self._handle_reward_assets(source_event_id=event.event_id, reward_events=rewards, behavior_id=behavior_id)
+        return xp_delta, rewards, assets
+
+    def _persist_and_snapshot(self, user_event: UserEvent, pet_event: PetEvent) -> None:
         self.store.log_event(user_event.to_dict(), pet_event.to_dict())
         pet_event.saved_to_db = True
         self._write_snapshot(pet_event)
         self.memory_store.save_turn(user_event.event_id, user_event.text, pet_event.reply)
-        return pet_event
 
     def debug_status(self) -> dict[str, Any]:
         return {

@@ -15,7 +15,6 @@ import requests
 from PyQt5.QtCore import QThread, pyqtSignal
 
 import config
-from audio_playback import PygameInMemoryAudioPlayer
 
 def _sanitize_stream_tts_text(text: str) -> str:
     return str(text or "").strip()

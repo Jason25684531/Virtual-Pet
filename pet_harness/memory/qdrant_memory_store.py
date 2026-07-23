@@ -27,7 +27,7 @@ class QdrantMemoryStore(BaseMemoryStore):
         model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         mode: str = "local",
         url: str = "",
-        max_items: int = 500,
+        max_items: int = 500, #最大保留筆數
     ) -> None:
         self._character_id = character_id
         self._collection = collection

@@ -12,15 +12,15 @@ from pet_harness.character.registry import CharacterRegistry
 from pet_harness.character.router import CharacterRouter
 from pet_harness.engine.harness_engine import PetHarnessEngine
 from pet_harness.models.events import PetEvent
-from pet_harness.models.provider import ProviderConfig, ProviderType
+from pet_harness.models.provider import ProviderConfig
 from pet_harness.models.skill import Skill
-from pet_harness.runtime.provider_runtime import ProviderRuntime, migrate_legacy_provider_config
-from pet_harness.skills.skill_loader import SkillLoader
+from pet_harness.runtime.provider_runtime import ProviderRuntime
 from pet_harness.storage.sqlite_store import SQLiteStore
 from pet_harness.tools.registry import ToolRegistry
-from pet_harness.tools.safety_guard import SafetyGuard
 from pet_harness.tools.tool_models import ToolDefinition, ToolExecutionClass, ToolRiskLevel
 from pet_harness.ui.character_ui_service import CharacterUiService
+from pet_harness.app.secret_masking import SecretMasker, load_project_env
+from pet_harness.app.provider_config_service import ProviderConfigService
 from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
 from ui.background_resolver import BackgroundResolver
 
@@ -37,6 +37,21 @@ DEFAULT_OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completion
 # 可用 OLLAMA_MODEL 環境變數覆寫,不需改這裡。
 DEFAULT_OLLAMA_MODEL = "gemma4:e2b"
 LOGGER = logging.getLogger(__name__)
+
+
+def _qdrant_memory_store_factory(character_id: str, profile) -> object:
+    """Desktop-only memory adapter; the domain receives this as an injected factory."""
+    import config
+    from pet_harness.memory.qdrant_memory_store import QdrantMemoryStore
+
+    return QdrantMemoryStore(
+        character_id=character_id,
+        collection=profile.qdrant_collection,
+        path=f"data/characters/{character_id}/qdrant",
+        model=config.SEMANTIC_ROUTING_MODEL,
+        mode=config.QDRANT_MODE,
+        url=config.QDRANT_URL,
+    )
 
 
 class PyQtHarnessAdapter:
@@ -58,6 +73,8 @@ class PyQtHarnessAdapter:
         brain_mode: str = "harness",
         runtime_contract: dict[str, Any] | None = None,
         provider_runtime: ProviderRuntime | None = None,
+        character_router: CharacterRouter | None = None,
+        character_registry: CharacterRegistry | None = None,
     ) -> None:
         self.agentic_root = Path(agentic_root)
         self.skills_root = self.agentic_root / "skills"
@@ -67,17 +84,18 @@ class PyQtHarnessAdapter:
         # composition root:一個 application session 只有一個 ProviderRuntime,
         # 角色切換共用它;先遷移舊角色 DB 內的 provider 設定再啟動 router。
         self.provider_runtime = provider_runtime or ProviderRuntime()
-        migration = migrate_legacy_provider_config(self.provider_runtime)
-        if migration.get("migrated_from"):
-            print(f"[HARNESS] provider config migrated from {migration['migrated_from']}")
-        self._character_registry = CharacterRegistry()
-        self.router = CharacterRouter(
+        self._character_registry = character_registry or CharacterRegistry()
+        from PyQt5.QtWidgets import QApplication
+        self.router = character_router or CharacterRouter(
             registry=self._character_registry,
             agentic_root=str(self.agentic_root),
             provider_runtime=self.provider_runtime,
+            memory_store_factory=_qdrant_memory_store_factory if QApplication.instance() is not None else None,
+            semantic_index_enabled=QApplication.instance() is not None,
         )
         self._bootstrap_primary_provider()
-        self.router.switch_character(default_character_id)
+        if self.router.get_active_engine() is None:
+            self.router.switch_character(default_character_id)
         self.character_service = CharacterUiService(router=self.router, registry=self._character_registry)
         self._brain_mode = str(brain_mode or "harness")
         self._background_resolver = background_resolver or BackgroundResolver(project_root=self._project_root)
@@ -100,6 +118,12 @@ class PyQtHarnessAdapter:
     @property
     def engine(self) -> PetHarnessEngine:
         return self.router.get_active_engine()
+
+    def get_active_snapshot(self):
+        return self.router.get_active_snapshot()
+
+    def get_active_character(self):
+        return self.router.get_active_character()
 
     @property
     def store(self) -> SQLiteStore:
@@ -144,6 +168,10 @@ class PyQtHarnessAdapter:
         payload = self._serialize_pet_event(event, previous_progress=previous_progress)
         payload["user_text"] = cleaned
         return payload
+
+    def run_turn(self, text: str, source: str) -> dict[str, Any]:
+        del source
+        return self.handle_text_input(text)
 
     def get_current_state(self) -> dict[str, Any]:
         # ponytail: 讀取路徑不重建 runtime;handle_text_input 已在同一輪互動的
@@ -429,49 +457,26 @@ class PyQtHarnessAdapter:
         return {skill_id: bool(value) for skill_id, value in overlay.items()}
 
     def build_provider_config(self, provider: str) -> ProviderConfig:
-        provider_type = ProviderType(str(provider))
-        if provider_type is ProviderType.API:
-            api_key_env_var = self._select_primary_api_key_env_var()
-            return ProviderConfig(
-                provider_type=provider_type,
-                base_url=self._project_env.get("ECHOES_API_BASE_URL")
-                or self._project_env.get("OPENAI_BASE_URL")
-                or DEFAULT_OPENAI_CHAT_COMPLETIONS_URL,
-                model_name=self._project_env.get("ECHOES_API_MODEL")
-                or self._project_env.get("OPENAI_MODEL")
-                or "gpt-4o-mini",
-                api_key_env_var=api_key_env_var,
-                routing_fallback_enabled=config.PROVIDER_ROUTING_FALLBACK_ENABLED,
-                routing_confidence_threshold=config.PROVIDER_ROUTING_CONFIDENCE_THRESHOLD,
-            )
-        return ProviderConfig(
-            provider_type=ProviderType.OLLAMA,
-            base_url=self._project_env.get("OLLAMA_BASE_URL") or "http://localhost:11434",
-            model_name=self._project_env.get("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL,
-            api_key_env_var=None,
-            # ponytail: 本機首次推論常需冷啟動載入模型,實測 15s 預設會逾時;
-            # 60s 對本地生成足夠,雲端 API 逾時不受影響。
-            timeout_seconds=60.0,
-            routing_fallback_enabled=config.PROVIDER_ROUTING_FALLBACK_ENABLED,
-            routing_confidence_threshold=config.PROVIDER_ROUTING_CONFIDENCE_THRESHOLD,
-        )
+        return self._provider_config_service().build(provider)
 
     def configure_provider(self, provider: str) -> dict[str, Any]:
         """受控的 settings 入口:設定全域 Provider(api/ollama),回傳 secret-safe 狀態。"""
-        status = self.provider_runtime.configure(self.build_provider_config(provider))
-        return self._mask_payload(status.to_dict())
+        return self._mask_payload(self._provider_config_service().configure(provider))
 
     def _bootstrap_primary_provider(self) -> None:
         """未設定全域 Provider 時預設啟用本地 Ollama(local-first),不再依環境是否
         有 API key 決定;要改用雲端 API 一律經 configure_provider("api") 明確切換。
         已有持久化設定時只 refresh 健康狀態,不覆寫選擇。
         測試注入的 provider_runtime 不得被自動配置覆寫。"""
-        if self.provider_runtime.is_test_injected:
-            return
-        if self.provider_runtime.get_config() is not None:
-            self.provider_runtime.refresh_status()
-            return
-        self.provider_runtime.configure(self.build_provider_config("ollama"))
+        self._provider_config_service().bootstrap()
+
+    def _provider_config_service(self) -> ProviderConfigService:
+        return ProviderConfigService(
+            self.provider_runtime,
+            self._project_env,
+            api_url=DEFAULT_OPENAI_CHAT_COMPLETIONS_URL,
+            ollama_model=DEFAULT_OLLAMA_MODEL,
+        )
 
     def _build_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
@@ -840,66 +845,7 @@ class PyQtHarnessAdapter:
         return value
 
     def _mask_payload(self, value: Any) -> Any:
-        if isinstance(value, dict):
-            masked: dict[str, Any] = {}
-            for key, item in value.items():
-                key_text = str(key)
-                key_lower = key_text.lower()
-                if key_lower.endswith("_env_var") or key_lower == "required_env":
-                    masked[key_text] = self._mask_payload(item)
-                elif any(token in key_lower for token in ("secret", "token", "api_key", "authorization")):
-                    masked[key_text] = "***" if item else item
-                else:
-                    masked[key_text] = self._mask_payload(item)
-            return masked
-        if isinstance(value, list):
-            return [self._mask_payload(item) for item in value]
-        if isinstance(value, str):
-            return self._mask_text(value)
-        return value
-
-    def _mask_text(self, text: str) -> str:
-        masked = text
-        for key, value in self._project_env.items():
-            if not value or len(value) < 8:
-                continue
-            if any(token in key.lower() for token in ("key", "token", "secret")):
-                masked = masked.replace(value, "***")
-        return masked
+        return SecretMasker(self._project_env).payload(value)
 
     def _load_project_env(self) -> dict[str, str]:
-        env_path = self._project_root / ".env"
-        loaded: dict[str, str] = {}
-        if not env_path.exists():
-            return loaded
-
-        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            normalized_key = key.strip()
-            normalized_value = value.strip()
-            if (
-                len(normalized_value) >= 2
-                and normalized_value[0] == normalized_value[-1]
-                and normalized_value[0] in {"'", '"'}
-            ):
-                normalized_value = normalized_value[1:-1]
-            normalized_value = re.sub(
-                r"\$\{([^}]+)\}",
-                lambda match: loaded.get(match.group(1), os.environ.get(match.group(1), "")),
-                normalized_value,
-            )
-            loaded[normalized_key] = normalized_value
-            os.environ.setdefault(normalized_key, normalized_value)
-        return loaded
-
-    def _select_existing_api_key_env_var(self) -> str | None:
-        for key in ("ECHOES_API_KEY", "OPENAI_API_KEY", "CHATGPT_API_KEY"):
-            if self._project_env.get(key) or os.environ.get(key):
-                return key
-        return None
-
-    def _select_primary_api_key_env_var(self) -> str | None:
-        return self._select_existing_api_key_env_var() or "OPENAI_API_KEY"
+        return load_project_env(self._project_root / ".env")

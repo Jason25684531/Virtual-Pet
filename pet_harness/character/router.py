@@ -4,9 +4,10 @@ from pet_harness.character.exceptions import NoActiveCharacterError
 from pet_harness.character.profile import CharacterProfile
 from pet_harness.character.registry import CharacterRegistry
 from pet_harness.engine.harness_engine import PetHarnessEngine
-from pet_harness.memory.qdrant_memory_store import QdrantMemoryStore
+from pet_harness.memory.base_memory_store import BaseMemoryStore, NullMemoryStore
 from pet_harness.models.events import PetEvent, UserEvent
 from pet_harness.runtime.provider_runtime import ProviderRuntime
+from typing import Callable
 
 
 @dataclass(frozen=True)
@@ -37,11 +38,15 @@ class CharacterRouter:
         registry: CharacterRegistry | None = None,
         agentic_root: str = ".agentic",
         provider_runtime: ProviderRuntime | None = None,
+        memory_store_factory: Callable[[str, CharacterProfile], BaseMemoryStore] | None = None,
+        semantic_index_enabled: bool = False,
     ):
         self._registry = registry or CharacterRegistry()
         self._agentic_root = agentic_root
         # 未注入時建立 fail-closed 的預設 runtime(未設定 → unavailable,不會退回 mock)。
         self._provider_runtime = provider_runtime or ProviderRuntime()
+        self._memory_store_factory = memory_store_factory or (lambda _cid, _profile: NullMemoryStore())
+        self._semantic_index_enabled = semantic_index_enabled
         self._active_profile: CharacterProfile | None = None
         self._active_engine: PetHarnessEngine | None = None
         self._active_snapshot: ActiveCharacterSnapshot | None = None
@@ -54,27 +59,7 @@ class CharacterRouter:
         """切換 active 角色;character_id 不存在時拋出例外且不影響現有 active。"""
         profile = self._registry.load_character(character_id)
 
-        # 只在真正的桌面 App 內建立 QdrantMemoryStore(比照 refresh_semantic_index
-        # 的既有慣例:QApplication.instance() is not None 代表在真實執行環境,
-        # 而非 headless 測試);否則用零開銷的 NullMemoryStore,避免每個建構
-        # PyQtHarnessAdapter/CharacterRouter 的測試都各自觸發一次 onnxruntime
-        # 背景載入,拖慢整個測試套件。
-        memory_store = None
-        from PyQt5.QtWidgets import QApplication
-
-        if QApplication.instance() is not None:
-            import config
-
-            # per-character 獨立路徑:嵌入模式一個路徑只允許一個 client,skill 路由庫
-            # 已佔用 runtime_cache/qdrant,記憶庫需實體隔離避免檔案鎖衝突。
-            memory_store = QdrantMemoryStore(
-                character_id=character_id,
-                collection=profile.qdrant_collection,
-                path=f"data/characters/{character_id}/qdrant",
-                model=config.SEMANTIC_ROUTING_MODEL,
-                mode=config.QDRANT_MODE,
-                url=config.QDRANT_URL,
-            )
+        memory_store = self._memory_store_factory(character_id, profile)
         # 注入 runtime 本身(滿足 LLMProviderAdapter 協定):configure() 之後
         # 不需要重建 engine,下一個請求自動使用新 adapter。
         engine = PetHarnessEngine(
@@ -82,6 +67,7 @@ class CharacterRouter:
             character_id=character_id,
             agentic_root=self._agentic_root,
             memory_store=memory_store,
+            semantic_index_enabled=self._semantic_index_enabled,
         )
         profile = engine.character_profile or profile
         snapshot = ActiveCharacterSnapshot(

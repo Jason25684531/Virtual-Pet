@@ -90,14 +90,45 @@ def _build_stt_controller(window):
 
 
 def _run_harness_mode(app):
+    from action_dispatcher import ActionDispatcher
     from interaction_trace import InteractionLatencyTracker
+    from pet_harness.app.application_coordinator import ApplicationCoordinator
+    from pet_harness.app.runtime_lifecycle import CallbackRuntime
+    from pet_harness.runtime.qt_background_executor import QtBackgroundExecutor
+    from pet_harness.ui.pyqt_harness_adapter import PyQtHarnessAdapter, _qdrant_memory_store_factory
+    from ui.presentation_event_binder import PresentationEventBinder
     from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
     from ui.transparent_window import TransparentWindow
 
     latency_tracker = InteractionLatencyTracker()
-    window = TransparentWindow(brain_mode="harness", latency_tracker=latency_tracker)
+    coordinator = ApplicationCoordinator(
+        default_character_id="Choppr",
+        memory_store_factory=_qdrant_memory_store_factory,
+        semantic_index_enabled=True,
+    )
+    adapter = PyQtHarnessAdapter(
+        provider_runtime=coordinator.provider_runtime,
+        character_router=coordinator.character_router,
+        character_registry=coordinator.character_registry,
+    )
+    window = TransparentWindow(
+        brain_mode="harness",
+        latency_tracker=latency_tracker,
+        adapter=adapter,
+        dispatcher_factory=lambda host, library, tracker: ActionDispatcher(
+            host, library, latency_tracker=tracker, parent=host
+        ),
+        lifecycle_shutdown=coordinator.shutdown,
+        action_bus=coordinator.action_bus,
+    )
+    PresentationEventBinder(window, coordinator.event_bus)
+    coordinator.configure_conversation(adapter, QtBackgroundExecutor(window))
 
     stt_controller = _build_stt_controller(window)
+    coordinator.lifecycle.register(CallbackRuntime("adapter", lambda _wait_ms: adapter.shutdown()))
+    coordinator.lifecycle.register(CallbackRuntime("dispatcher", window._action_dispatcher.shutdown))
+    if stt_controller is not None:
+        coordinator.lifecycle.register(CallbackRuntime("stt", lambda _wait_ms: stt_controller.shutdown()))
 
     window.configure_runtime_context(
         runtime_contract=None,
@@ -106,7 +137,7 @@ def _run_harness_mode(app):
     )
     window.show()
     window.set_action_status("Harness mode ready.", tone="idle", timeout_ms=2400)
-    app.aboutToQuit.connect(window.shutdown_background_tasks)
+    app.aboutToQuit.connect(coordinator.shutdown)
     return window
 
 

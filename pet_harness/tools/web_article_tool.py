@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from pet_harness.runtime.base_browser_runtime import BaseBrowserRuntime, BrowserCommand
+from pet_harness.runtime.base_browser_runtime import BaseBrowserRuntime
 from pet_harness.tools.article_fetchers import Article, BaseArticleFetcher, BrowserArticleFetcher, HttpArticleFetcher, RssArticleFetcher
 from pet_harness.runtime.playwright_browser_runtime import PlaywrightBrowserRuntime
 from pet_harness.tools.tool_models import ToolRequest, ToolResult

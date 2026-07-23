@@ -26,9 +26,8 @@ from action_services import (
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
 from text_utils import sanitize_tts_text
 from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker  # noqa: F401 — 保留供降級使用
-from api_client.voai_client import VoAIStreamingTTSWorker
 from audio_worker import AudioStreamWorker
-from character_library import ASSETS_WEBM_DIR, MOTION_MAP
+from character_library import ASSETS_WEBM_DIR
 import config
 from interaction_trace import InteractionLatencyTracker
 
@@ -81,8 +80,8 @@ class DeferredDispatch:
     allow_tts: bool
 
 
-class ActionDispatcher(QObject):
-    """集中管理 action token 與對應行為。"""
+class MotionCoordinator(QObject):
+    """Presentation 的動畫、TTS 與播放收尾狀態機。"""
 
     def __init__(
         self,
@@ -1061,13 +1060,6 @@ class ActionDispatcher(QObject):
         """AudioStreamWorker 播放佇列清空時觸發。用於 loop action 的 TTS 完成偵測。"""
         self._finish_loop_action_if_tts_idle()
 
-    def complete_tts_trace(self, trace_id: str | None):
-        normalized_trace_id = str(trace_id or "").strip()
-        if not normalized_trace_id:
-            return
-        self._completed_tts_traces.add(normalized_trace_id)
-        self._maybe_close_trace_audio_session(normalized_trace_id)
-
     def _maybe_close_trace_audio_session(self, trace_id: str | None):
         normalized_trace_id = str(trace_id or "").strip()
         if not normalized_trace_id or normalized_trace_id not in self._completed_tts_traces:
@@ -1600,3 +1592,7 @@ class ActionDispatcher(QObject):
         self._finish_loop_action()
         self._window.set_action_status(message, tone="error", timeout_ms=6000)
         self._window.restore_idle_video()
+
+
+# 遷移期 public compatibility alias; callers may move to ActionBus incrementally.
+ActionDispatcher = MotionCoordinator

@@ -23,12 +23,14 @@ from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineSettings, QWebEng
 
 from character_library import ASSETS_WEBM_DIR, CharacterLibrary, MOTION_MAP
 from interaction_trace import InteractionLatencyTracker
-from action_services import FIXED_NEWS_SCRIPT
 
 from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
 from pet_harness.ui.pyqt_harness_adapter import PyQtHarnessAdapter
+from pet_harness.character.router import ActiveCharacterSnapshot
+from pet_harness.character.profile import CharacterProfile
 from ui.background_resolver import BackgroundResolver
 from ui.character_ui_bridge import CharacterUiBridge
+from ui.js_gateway import JsGateway
 
 
 BRIDGE_CONTRACT = {
@@ -227,7 +229,6 @@ class TransparentWindow(QMainWindow):
     developer_query_submitted = pyqtSignal(str)
     stt_start_requested = pyqtSignal()
     stt_stop_requested = pyqtSignal()
-    cached_intent_requested = pyqtSignal(str, str)
     reset_requested = pyqtSignal()
     RAW_JAVASCRIPT_MARKER = "__raw_javascript__"
 
@@ -292,6 +293,10 @@ class TransparentWindow(QMainWindow):
         self,
         brain_mode: str = "harness",
         latency_tracker: InteractionLatencyTracker | None = None,
+        adapter: PyQtHarnessAdapter | None = None,
+        dispatcher_factory=None,
+        lifecycle_shutdown=None,
+        action_bus=None,
     ):
         super().__init__()
         self._brain_mode = brain_mode
@@ -300,14 +305,16 @@ class TransparentWindow(QMainWindow):
         self._runtime_contract = {"brain_mode": "harness", "harness_runtime_available": True, "live_runtime_available": False, "openclaw_enabled": False}
         self._background_resolver = BackgroundResolver()
         self._voice_status_adapter = VoiceRuntimeStatusAdapter()
-        self._adapter = PyQtHarnessAdapter(
-            background_resolver=self._background_resolver,
-            voice_status_adapter=self._voice_status_adapter,
-            brain_mode=self._brain_mode,
-            runtime_contract=self._runtime_contract,
-        )
+        if adapter is None:
+            raise ValueError("TransparentWindow requires an injected PyQtHarnessAdapter")
+        if dispatcher_factory is None:
+            raise ValueError("TransparentWindow requires an injected dispatcher factory")
+        self._adapter = adapter
+        self._lifecycle_shutdown = lifecycle_shutdown
+        self._action_bus = action_bus
         self._settings_dialog = None
         self._interaction_worker: HarnessInteractionWorker | None = None
+        self._conversation_pending = False
         self._character_x_offset = self.DEFAULT_CHARACTER_X_OFFSET
         self._character_y_offset = self.DEFAULT_CHARACTER_Y_OFFSET
         self._character_scale = self.DEFAULT_CHARACTER_SCALE
@@ -315,13 +322,11 @@ class TransparentWindow(QMainWindow):
         self._background_status = "fallback_placeholder"
         self._background_url: str | None = None
         self._live_runtime_available = self._runtime_contract["live_runtime_available"]
-        self._webview_ready = False
         self._drag_pos = None
         self._stt_listening = False
         self._stt_available = bool(self._runtime_contract["live_runtime_available"])
         self._stt_state = "idle"
         self._stt_controller = None
-        self._pending_javascript_calls: list[tuple[str, tuple[object, ...]]] = []
         self._latest_agentic_event: dict[str, object] | None = None
         self._playtime_character_id: str | None = None
         self._playtime_started_at: float | None = None
@@ -331,15 +336,10 @@ class TransparentWindow(QMainWindow):
         self._playtime_timer.start()
         self._init_window()
         self._init_webview()
+        self._js_gateway = JsGateway(lambda: self.web_view.page(), self.RAW_JAVASCRIPT_MARKER)
         self._init_drag_surface()
         self._init_developer_input()
-        from action_dispatcher import ActionDispatcher
-        self._action_dispatcher = ActionDispatcher(
-            self,
-            self._library,
-            latency_tracker=self._latency_tracker,
-            parent=self,
-        )
+        self._action_dispatcher = dispatcher_factory(self, self._library, self._latency_tracker)
         # 將 panel video 結束回調掛上 web page（JS → Python 通知）
         web_page = self.web_view.page()
         if isinstance(web_page, EchoesWebPage):
@@ -624,57 +624,6 @@ class TransparentWindow(QMainWindow):
             self._tray_stt_toggle_action.setText(label)
             self._tray_stt_toggle_action.setEnabled(enabled)
         self._sync_runtime_controls_ui()
-        return
-
-        state = "unavailable" if not self._stt_available else self._stt_state
-
-        if state == "unavailable":
-            label = "STT 不可用"
-            background = "rgba(92, 92, 92, 180)"
-            border = "rgba(190, 190, 190, 110)"
-            enabled = False
-        elif state == "starting":
-            label = "啟動中..."
-            background = "rgba(88, 120, 160, 205)"
-            border = "rgba(218, 234, 255, 140)"
-            enabled = False
-        elif state == "listening":
-            label = "結束收音"
-            background = "rgba(176, 52, 52, 215)"
-            border = "rgba(255, 214, 214, 160)"
-            enabled = True
-        elif state == "stopping":
-            label = "停止中..."
-            background = "rgba(132, 96, 62, 205)"
-            border = "rgba(255, 232, 208, 140)"
-            enabled = False
-        else:
-            label = "開始收音"
-            background = "rgba(32, 126, 92, 215)"
-            border = "rgba(210, 255, 239, 150)"
-            enabled = True
-
-        self._stt_button.setText(label)
-        self._stt_button.setEnabled(enabled)
-        self._stt_button.setStyleSheet(
-            f"""
-            QPushButton#stt-toggle-button {{
-                background: {background};
-                color: #ffffff;
-                border: 1px solid {border};
-                border-radius: 14px;
-                font-size: 15px;
-                font-weight: 600;
-                padding: 0 14px;
-            }}
-            QPushButton#stt-toggle-button:disabled {{
-                color: rgba(255, 255, 255, 0.75);
-            }}
-            """
-        )
-        if hasattr(self, "_tray_stt_toggle_action"):
-            self._tray_stt_toggle_action.setText(label)
-            self._tray_stt_toggle_action.setEnabled(enabled)
 
     def _update_stt_button_geometry(self):
         if not hasattr(self, "_stt_button"):
@@ -753,8 +702,7 @@ class TransparentWindow(QMainWindow):
         if not ok:
             print("[ECHOES] 警告: 房間頁面載入失敗。")
             return
-        self._webview_ready = True
-        self._flush_pending_javascript_calls()
+        self._js_gateway.mark_ready()
         self._run_javascript("setRuntimeMode", self._brain_mode)
         self._raise_overlay_widgets()
         QTimer.singleShot(120, self._restore_current_character)
@@ -993,7 +941,7 @@ class TransparentWindow(QMainWindow):
     def _restore_current_character(self):
         """啟動時只信任 router 的 active snapshot;無 active 時顯示安全 no-active 狀態,
         不做 miku-first fallback、不讀 QSettings。"""
-        snapshot = self._adapter.router.get_active_snapshot()
+        snapshot = TransparentWindow._active_snapshot(self)
         if snapshot is not None and self.apply_character(snapshot.character_id):
             return
 
@@ -1135,6 +1083,20 @@ class TransparentWindow(QMainWindow):
         allow_tts: bool = True,
         wait_for_tts_start: bool = False,
     ) -> bool:
+        raw_action, message = self._action_dispatcher._parse_directive(directive)
+        if self._action_bus is not None and raw_action in self._action_dispatcher._bindings:
+            from pet_harness.app.commands import ActionCommand
+            result = self._action_bus.execute(ActionCommand(raw_action, message, trace_id, "ui", allow_tts, wait_for_tts_start))
+            return result.status == "ok"
+        return self._dispatch_action_legacy(directive, trace_id, allow_tts, wait_for_tts_start)
+
+    def _dispatch_action_legacy(
+        self,
+        directive: str,
+        trace_id: str | None = None,
+        allow_tts: bool = True,
+        wait_for_tts_start: bool = False,
+    ) -> bool:
         return self._action_dispatcher.dispatch(
             directive,
             trace_id=trace_id,
@@ -1143,6 +1105,13 @@ class TransparentWindow(QMainWindow):
         )
 
     def trigger_cached_intent(self, intent_name: str, trigger_source: str) -> bool:
+        if self._action_bus is not None:
+            from pet_harness.app.commands import ActionCommand
+            result = self._action_bus.execute(ActionCommand(f"cached_{intent_name}", source=trigger_source))
+            return result.status == "ok"
+        return self._trigger_cached_intent_legacy(intent_name, trigger_source)
+
+    def _trigger_cached_intent_legacy(self, intent_name: str, trigger_source: str) -> bool:
         return self._action_dispatcher.trigger_cached_intent(intent_name, trigger_source)
 
     def trigger_overlay_action(
@@ -1170,9 +1139,6 @@ class TransparentWindow(QMainWindow):
 
     def speak_text(self, message: str, trace_id: str | None = None, has_action: bool = False):
         self._action_dispatcher.speak_text(message, trace_id=trace_id, has_action=has_action)
-
-    def complete_tts_trace(self, trace_id: str | None):
-        self._action_dispatcher.complete_tts_trace(trace_id)
 
     def begin_conversation_turn(self, trace_id: str, source_label: str, user_text: str):
         self._run_javascript("beginConversationTurn", trace_id, source_label, user_text)
@@ -1313,7 +1279,7 @@ class TransparentWindow(QMainWindow):
         self._flush_playtime(force=False)
 
     def _sync_playtime_session_from_active_character(self) -> None:
-        profile = self._adapter.router.get_active_character()
+        profile = TransparentWindow._active_character(self)
         if profile is None:
             self._stop_playtime_session()
             return
@@ -1355,7 +1321,6 @@ class TransparentWindow(QMainWindow):
 
     def _emit_cached_intent_request(self, intent_name: str, trigger_source: str):
         normalized = str(intent_name or "").strip().lower()
-        self.cached_intent_requested.emit(normalized, trigger_source)
         self.trigger_cached_intent(normalized, trigger_source)
 
     def _handle_cached_intent_shortcut(self, event) -> bool:
@@ -1436,6 +1401,21 @@ class TransparentWindow(QMainWindow):
             self.set_action_status("Interaction already running.", tone="warn", timeout_ms=2200)
             return
 
+        if getattr(self, "_action_bus", None) is not None:
+            if getattr(self, "_conversation_pending", False):
+                self.set_action_status("Interaction already running.", tone="warn", timeout_ms=2200)
+                return
+            from pet_harness.app.commands import ActionCommand
+            self._conversation_pending = True
+            self._set_agentic_busy(True)
+            self.set_action_status("Processing interaction...", tone="working", timeout_ms=0)
+            result = self._action_bus.execute(ActionCommand("conversation", cleaned, source="ui"))
+            if result.status != "ok":
+                self._conversation_pending = False
+                self._set_agentic_busy(False)
+                self.set_action_status(result.reason or "Interaction rejected.", tone="warn", timeout_ms=2200)
+            return
+
         self._set_agentic_busy(True)
         self.set_action_status("Processing interaction...", tone="working", timeout_ms=0)
         self._interaction_worker = HarnessInteractionWorker(self._adapter, cleaned, self)
@@ -1447,6 +1427,16 @@ class TransparentWindow(QMainWindow):
     def _on_agentic_result(self, payload: dict) -> None:
         self.consume_interaction_result(payload, message="Interaction complete.")
         self._set_agentic_busy(False)
+
+    def _on_action_bus_conversation(self, payload: dict) -> None:
+        self.consume_interaction_result(payload, message="Interaction complete.")
+        self._conversation_pending = False
+        self._set_agentic_busy(False)
+
+    def _on_action_bus_error(self, message: str) -> None:
+        """對話經 ActionBus 失敗時復位 busy 狀態，否則 UI 會永遠停在 Processing。"""
+        self._conversation_pending = False
+        self._on_agentic_error(message)
 
     def consume_interaction_result(self, payload: dict, message: str = "Interaction complete.") -> None:
         """所有 Harness 結果（文字互動與立即執行）的唯一 Host 消費流程。"""
@@ -1605,7 +1595,7 @@ class TransparentWindow(QMainWindow):
             "background_url": self._background_url,
             "stt_state": self._stt_state,
             "stt_available": self._stt_available,
-            "webview_ready": self._webview_ready,
+            "webview_ready": self._js_gateway.ready,
             "latest_agentic_event": self._latest_agentic_event,
         }
 
@@ -1646,6 +1636,13 @@ class TransparentWindow(QMainWindow):
         self._run_javascript("stopRoomAudio")
 
     def reset_runtime_state(self):
+        if self._action_bus is not None:
+            from pet_harness.app.commands import ActionCommand
+            if self._action_bus.execute(ActionCommand("reset", source="ui")).status == "ok":
+                return
+        self._reset_runtime_state_legacy()
+
+    def _reset_runtime_state_legacy(self):
         self._action_dispatcher.reset_runtime_state()
         self.stop_music()
         self.stop_motion_loop()
@@ -1658,6 +1655,9 @@ class TransparentWindow(QMainWindow):
         self.set_action_status("已重置，等待下一次互動。", tone="idle", timeout_ms=2400)
 
     def shutdown_background_tasks(self):
+        if callable(getattr(self, "_lifecycle_shutdown", None)):
+            self._lifecycle_shutdown()
+            return
         if self._stt_controller is not None:
             self._stt_controller.shutdown()
         self._action_dispatcher.shutdown()
@@ -1665,8 +1665,21 @@ class TransparentWindow(QMainWindow):
 
     def get_current_character_id(self) -> str | None:
         """UI 動作/idle/聲線一律以 router snapshot 為唯一 active character 來源。"""
-        snapshot = self._adapter.router.get_active_snapshot()
+        snapshot = TransparentWindow._active_snapshot(self)
         return snapshot.character_id if snapshot else None
+
+    def _active_snapshot(self):
+        snapshot = self._adapter.get_active_snapshot()
+        if snapshot is None or isinstance(snapshot, ActiveCharacterSnapshot):
+            return snapshot
+        # Compatibility for legacy test doubles that expose only the nested router.
+        return getattr(self._adapter, "router").get_active_snapshot()
+
+    def _active_character(self):
+        character = self._adapter.get_active_character()
+        if character is None or isinstance(character, CharacterProfile):
+            return character
+        return getattr(self._adapter, "router").get_active_character()
 
     def apply_character_position(self):
         """套用目前由 Python 管理的角色位移設定。"""
@@ -1842,46 +1855,17 @@ class TransparentWindow(QMainWindow):
         return True
 
     def _run_raw_javascript(self, script: str):
-        if not self._webview_ready:
-            self._pending_javascript_calls.append((self.RAW_JAVASCRIPT_MARKER, (script,)))
-            return
-
-        self.web_view.page().runJavaScript(script)
+        self._js_gateway.raw(script)
 
     def _run_javascript(self, function_name: str, *args):
-        if not self._webview_ready:
-            self._pending_javascript_calls.append((function_name, args))
-            return
-
-        if function_name == self.RAW_JAVASCRIPT_MARKER:
-            script = str(args[0]) if args else ""
-            self.web_view.page().runJavaScript(script)
-            return
-
-        js_call = self._build_javascript_bridge_call(function_name, *args)
-        self.web_view.page().runJavaScript(js_call)
+        self._js_gateway.call(function_name, *args)
 
     def _flush_pending_javascript_calls(self):
-        if not self._webview_ready or not self._pending_javascript_calls:
-            return
-
-        pending_calls = self._pending_javascript_calls
-        self._pending_javascript_calls = []
-        for function_name, args in pending_calls:
-            self._run_javascript(function_name, *args)
+        self._js_gateway.mark_ready()
 
     @staticmethod
     def _build_javascript_bridge_call(function_name: str, *args) -> str:
-        js_function_name = json.dumps(function_name)
-        js_args = ", ".join(json.dumps(arg) for arg in args)
-        return (
-            "(function(){"
-            f"var fn = window[{js_function_name}] || (window.echoes && window.echoes[{js_function_name}]);"
-            f"if (typeof fn !== 'function') {{ console.warn('[ECHOES] JS bridge missing function: ' + {js_function_name}); return false; }}"
-            f"fn({js_args});"
-            "return true;"
-            "})();"
-        )
+        return JsGateway.build_call(function_name, *args)
 
     @staticmethod
     def _build_media_source_url(absolute_path: str) -> str:
