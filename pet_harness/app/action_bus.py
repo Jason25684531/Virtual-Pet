@@ -20,5 +20,8 @@ class ActionBus:
         try:
             return handler.handle(command)
         except Exception as exc:  # one action cannot break the UI event loop
-            self._events.publish(AppEvent("EVT_RUNTIME_ERROR", command.trace_id, {"message": str(exc)}))
+            payload = {"message": str(exc)}
+            if command.character_id:
+                payload["character_id"] = command.character_id
+            self._events.publish(AppEvent("EVT_RUNTIME_ERROR", command.trace_id, payload))
             return ActionResult("failed", str(exc))

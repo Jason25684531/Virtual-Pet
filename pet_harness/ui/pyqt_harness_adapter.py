@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import config
 from pet_harness.character.registry import CharacterRegistry
@@ -21,6 +21,7 @@ from pet_harness.tools.tool_models import ToolDefinition, ToolExecutionClass, To
 from pet_harness.ui.character_ui_service import CharacterUiService
 from pet_harness.app.secret_masking import SecretMasker, load_project_env
 from pet_harness.app.provider_config_service import ProviderConfigService
+from pet_harness.app.ports.conversation_port import PreparedTurn
 from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
 from ui.background_resolver import BackgroundResolver
 
@@ -161,28 +162,25 @@ class PyQtHarnessAdapter:
             raise ValueError("no active character")
         return self.prepare_turn(text, "pyqt_ui", profile.character_id)()
 
-    def prepare_turn(self, text: str, source: str, character_id: str) -> Callable[[], dict[str, Any]]:
+    def prepare_turn(self, text: str, source: str, character_id: str) -> PreparedTurn:
         cleaned = str(text or "").strip()
         if not cleaned:
             raise ValueError("text input cannot be empty")
         engine = self.router.acquire_engine(character_id)
 
         def run() -> dict[str, Any]:
-            try:
-                self._refresh_runtime(engine)
-                if engine.router.match(cleaned, engine._active_capabilities()) is None:
-                    engine.refresh_semantic_index()
-                previous_progress = engine.store.get_user_progress()
-                event = engine.handle_event({"text": cleaned, "source": source})
-                engine.store.set_setting(LAST_XP_KEY, event.xp_delta)
-                payload = self._serialize_pet_event(event, previous_progress=previous_progress, store=engine.store)
-                payload["user_text"] = cleaned
-                payload["character_id"] = character_id
-                return payload
-            finally:
-                self.router.release_engine(engine)
+            self._refresh_runtime(engine)
+            if engine.router.match(cleaned, engine._active_capabilities()) is None:
+                engine.refresh_semantic_index()
+            previous_progress = engine.store.get_user_progress()
+            event = engine.handle_event({"text": cleaned, "source": source})
+            engine.store.set_setting(LAST_XP_KEY, event.xp_delta)
+            payload = self._serialize_pet_event(event, previous_progress=previous_progress, store=engine.store)
+            payload["user_text"] = cleaned
+            payload["character_id"] = character_id
+            return payload
 
-        return run
+        return PreparedTurn(run, lambda: self.router.release_engine(engine))
 
     def get_current_state(self) -> dict[str, Any]:
         # ponytail: 讀取路徑不重建 runtime;handle_text_input 已在同一輪互動的

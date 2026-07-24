@@ -4,6 +4,7 @@ from pet_harness.app.action_handler import ActionHandler
 from pet_harness.app.commands import ActionCommand
 from pet_harness.app.events import AppEvent
 from pet_harness.app.event_bus import SimpleEventBus
+from pet_harness.app.ports.conversation_port import PreparedTurn
 from pet_harness.app.results import ActionResult
 from tests.fakes.fake_background_executor import FakeBackgroundExecutor
 from tests.conftest import FakeProvider
@@ -92,7 +93,7 @@ def test_conversation_handler_publishes_completed_turn(harness_env):
     coordinator.event_bus.subscribe("EVT_CONVERSATION_TURN", turns.append)
     class Conversation:
         def prepare_turn(self, text, source, character_id):
-            return lambda: {"reply": text, "xp_display": {}, "character_id": character_id}
+            return PreparedTurn(lambda: {"reply": text, "xp_display": {}, "character_id": character_id}, lambda: None)
 
     coordinator.configure_conversation(Conversation(), FakeBackgroundExecutor())
 

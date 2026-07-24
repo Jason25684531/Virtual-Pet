@@ -56,6 +56,8 @@ def test_conversation_has_no_worker_or_adapter_fallback():
 def test_composition_root_does_not_reach_into_window_private_state():
     source = (Path(__file__).parents[1] / "main.py").read_text(encoding="utf-8")
     assert "window._" not in source
+    assert "executor = QtBackgroundExecutor(window)" in source
+    assert "coordinator.lifecycle.register(executor)" in source
 
 
 def test_window_only_requests_lifecycle_shutdown_and_does_not_manage_motion_shutdown():

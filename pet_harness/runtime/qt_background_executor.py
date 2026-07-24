@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+import time
+from threading import RLock
 from typing import Any, Callable
 
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
 from pet_harness.app.ports.background_executor import BackgroundExecutor
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class _JobThread(QThread):
@@ -34,15 +40,44 @@ class QtBackgroundExecutor(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._jobs: dict[_JobThread, Callable[[bool, str, Any], None]] = {}
+        self._lock = RLock()
+        self._accepting = True
+
+    @property
+    def name(self) -> str:
+        return "conversation_executor"
+
+    def start(self) -> None:
+        return None
 
     def submit(self, job: Callable[[], Any], on_done: Callable[[bool, str, Any], None]) -> None:
-        worker = _JobThread(job)
-        self._jobs[worker] = on_done
-        worker.completed.connect(self._complete)
-        worker.start()
+        with self._lock:
+            if not self._accepting:
+                raise RuntimeError("conversation executor is shutting down")
+            worker = _JobThread(job)
+            self._jobs[worker] = on_done
+            worker.completed.connect(self._complete)
+            worker.start()
+
+    def shutdown(self, wait_ms: int = 5000) -> None:
+        self.stop(wait_ms)
+
+    def stop(self, wait_ms: int = 5000) -> None:
+        """Reject new jobs and wait only until one shared shutdown deadline."""
+        with self._lock:
+            self._accepting = False
+            workers = tuple(self._jobs)
+        deadline = time.monotonic() + max(0, wait_ms) / 1000
+        for worker in workers:
+            if not worker.isRunning():
+                continue
+            remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+            if not worker.wait(remaining_ms):
+                LOGGER.warning("conversation worker still running after shutdown timeout")
 
     def _complete(self, worker: _JobThread, ok: bool, message: str, payload: Any) -> None:
-        callback = self._jobs.pop(worker, None)
+        with self._lock:
+            callback = self._jobs.pop(worker, None)
         if callback is not None:
             callback(ok, message, payload)
         worker.deleteLater()

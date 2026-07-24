@@ -32,7 +32,7 @@
 ┌ Application（pet_harness/app/，禁止 import PyQt）──────────────────┐
 │ ApplicationCoordinator（唯一組裝入口） ActionBus + ActionHandlers   │
 │ RuntimeLifecycle（集中啟停/shutdown） Ports（Conversation/          │
-│ Character/BackgroundExecutor）＋ SecretMasker / ProviderConfigService│
+│ Motion/BackgroundExecutor）＋ SecretMasker / ProviderConfigService  │
 └──────── 呼叫 Domain ↓ ──────── Infrastructure 實作 Ports ↑ ────────┘
 ┌ Domain（pet_harness/engine|skills|xp|character|models，純 Python）─┐
 │ PetHarnessEngine（Conversation Pipeline） SkillRouter XPManager …   │
@@ -148,8 +148,8 @@ Virtual-Pet/
 │   │   ├── runtime_lifecycle.py    # ManagedRuntime ABC + RuntimeLifecycle（反序 shutdown）+ CallbackRuntime
 │   │   ├── provider_config_service.py  # Provider 設定/bootstrap（local-first Ollama）
 │   │   ├── secret_masking.py       # .env 載入 + 遞迴 secret 遮罩
-│   │   ├── ports/                  # ConversationPort / CharacterPort / BackgroundExecutor（ABC）
-│   │   └── handlers/               # conversation / news / music / wave / quick_intent / motion_only / reset
+│   │   ├── ports/                  # ConversationPort / MotionPort / BackgroundExecutor（ABC）
+│   │   └── handlers/               # conversation / news / music / wave / quick_intent / speak / motion_only / reset
 │   ├── engine/
 │   │   ├── harness_engine.py       # 中央協調器：event → (工具先行) → prompt → LLM → parse → route → XP → DB
 │   │   ├── tool_execution_lifecycle.py  # 工具執行閉環（安全授權/重試/預算/落庫）

@@ -29,10 +29,18 @@ class ConversationHandler(ActionHandler):
         if not command.character_id:
             return ActionResult("rejected", "missing_character_id")
         self._busy = True
-        self._executor.submit(
-            self._conversation.prepare_turn(command.text, command.source, command.character_id),
-            lambda ok, message, payload: self._completed(command, ok, message, payload),
-        )
+        prepared = None
+        try:
+            prepared = self._conversation.prepare_turn(command.text, command.source, command.character_id)
+            self._executor.submit(
+                prepared,
+                lambda ok, message, payload: self._completed(command, ok, message, payload),
+            )
+        except Exception:
+            self._busy = False
+            if prepared is not None:
+                prepared.release()
+            raise
         return ActionResult("ok", payload={"accepted": True})
 
     def _completed(self, command: ActionCommand, ok: bool, message: str, payload: Any) -> None:

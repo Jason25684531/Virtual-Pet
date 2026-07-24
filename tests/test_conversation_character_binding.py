@@ -20,7 +20,22 @@ class _TrackingStore(NullMemoryStore):
 
 
 class _QueuedExecutor:
+    name = "executor"
+
+    def __init__(self, events=None):
+        self.events = events if events is not None else []
+        self.accepting = True
+
+    def start(self):
+        return None
+
+    def stop(self, wait_ms=5000):
+        self.accepting = False
+        self.events.append("executor")
+
     def submit(self, job, on_done):
+        if not self.accepting:
+            raise RuntimeError("executor stopped")
         self.job, self.on_done = job, on_done
 
     def complete(self):
@@ -62,8 +77,10 @@ def test_conversation_stays_bound_to_submitted_character_and_releases_retired_en
         "conversation", "tell me a joke", character_id="Choppr"
     )).status == "ok"
     coordinator.character_router.switch_character("miku")
+    engine_b = coordinator.character_router.get_active_engine()
 
     assert shutdown_calls == []
+    assert engine_b._character_id == "miku"
     monkeypatch.setattr(
         coordinator.character_router,
         "get_active_engine",
@@ -110,9 +127,13 @@ def test_application_shutdown_defers_leased_engine_until_turn_finishes(harness_e
         character_router=coordinator.character_router,
         character_registry=coordinator.character_registry,
     )
-    executor = _QueuedExecutor()
+    shutdown_order = []
+    executor = _QueuedExecutor(shutdown_order)
     coordinator.configure_conversation(adapter, executor)
-    coordinator.lifecycle.register(CallbackRuntime("router", lambda _wait: coordinator.character_router.shutdown()))
+    coordinator.lifecycle.register(CallbackRuntime(
+        "router", lambda _wait: (shutdown_order.append("router"), coordinator.character_router.shutdown())[1]
+    ))
+    coordinator.lifecycle.register(executor)
     engine = coordinator.character_router.get_active_engine()
     closed = []
     original_shutdown = engine.shutdown
@@ -121,6 +142,7 @@ def test_application_shutdown_defers_leased_engine_until_turn_finishes(harness_e
     coordinator.action_bus.execute(ActionCommand("conversation", "tell me a joke", character_id="Choppr"))
     coordinator.shutdown()
 
+    assert shutdown_order == ["executor", "router"]
     assert closed == []
     executor.complete()
     assert closed == [True]

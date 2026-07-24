@@ -126,14 +126,16 @@ def _run_harness_mode(app):
     window.configure_motion(motion)
     coordinator.configure_motion(MotionPortAdapter(motion, window))
     PresentationEventBinder(window, coordinator.event_bus)
-    coordinator.configure_conversation(adapter, QtBackgroundExecutor(window))
+    executor = QtBackgroundExecutor(window)
+    coordinator.configure_conversation(adapter, executor)
 
     stt_controller = _build_stt_controller(window)
     coordinator.lifecycle.register(CallbackRuntime("adapter", lambda _wait_ms: adapter.shutdown()))
-    coordinator.lifecycle.register(CallbackRuntime("router", lambda _wait_ms: coordinator.character_router.shutdown()))
     coordinator.lifecycle.register(CallbackRuntime("motion", motion.shutdown))
     if stt_controller is not None:
         coordinator.lifecycle.register(CallbackRuntime("stt", lambda _wait_ms: stt_controller.shutdown()))
+    coordinator.lifecycle.register(CallbackRuntime("router", lambda _wait_ms: coordinator.character_router.shutdown()))
+    coordinator.lifecycle.register(executor)
 
     window.configure_runtime_context(
         runtime_contract=None,
