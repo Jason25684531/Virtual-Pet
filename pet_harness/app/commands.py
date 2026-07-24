@@ -12,6 +12,7 @@ class ActionCommand:
     allow_tts: bool = True
     wait_for_tts_start: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    character_id: str | None = None
 
 
 _ACTION_DIRECTIVE = re.compile(

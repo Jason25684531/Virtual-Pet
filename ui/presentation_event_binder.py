@@ -14,4 +14,7 @@ class PresentationEventBinder:
         self._window._on_action_bus_conversation(dict(event.payload))
 
     def _on_error(self, event: AppEvent) -> None:
-        self._window._on_action_bus_error(str(event.payload.get("message") or "Interaction failed."))
+        self._window._on_action_bus_error(
+            str(event.payload.get("message") or "Interaction failed."),
+            event.payload.get("character_id"),
+        )

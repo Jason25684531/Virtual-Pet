@@ -26,9 +26,11 @@ class ConversationHandler(ActionHandler):
             return ActionResult("rejected", "busy")
         if not command.text.strip():
             return ActionResult("rejected", "empty_text")
+        if not command.character_id:
+            return ActionResult("rejected", "missing_character_id")
         self._busy = True
         self._executor.submit(
-            lambda: self._conversation.run_turn(command.text, command.source),
+            self._conversation.prepare_turn(command.text, command.source, command.character_id),
             lambda ok, message, payload: self._completed(command, ok, message, payload),
         )
         return ActionResult("ok", payload={"accepted": True})
@@ -36,8 +38,12 @@ class ConversationHandler(ActionHandler):
     def _completed(self, command: ActionCommand, ok: bool, message: str, payload: Any) -> None:
         self._busy = False
         if not ok:
-            self._events.publish(AppEvent("EVT_RUNTIME_ERROR", command.trace_id, {"message": message}))
+            self._events.publish(AppEvent("EVT_RUNTIME_ERROR", command.trace_id, {
+                "message": message, "character_id": command.character_id,
+            }))
             return
         # 動畫/TTS/XP 由 EVT_CONVERSATION_TURN 的消費者（consume_interaction_result）
         # 統一觸發；不另發 motion/tts/xp 事件，避免未來有人訂閱後雙重播放。
-        self._events.publish(AppEvent("EVT_CONVERSATION_TURN", command.trace_id, dict(payload or {})))
+        result = dict(payload or {})
+        result["character_id"] = command.character_id
+        self._events.publish(AppEvent("EVT_CONVERSATION_TURN", command.trace_id, result))

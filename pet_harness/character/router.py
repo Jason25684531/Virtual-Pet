@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from threading import RLock
 
 from pet_harness.character.exceptions import NoActiveCharacterError
 from pet_harness.character.profile import CharacterProfile
@@ -50,6 +51,10 @@ class CharacterRouter:
         self._active_profile: CharacterProfile | None = None
         self._active_engine: PetHarnessEngine | None = None
         self._active_snapshot: ActiveCharacterSnapshot | None = None
+        self._lock = RLock()
+        self._inflight: dict[PetHarnessEngine, int] = {}
+        self._retired_engines: set[PetHarnessEngine] = set()
+        self._shutdown_requested = False
 
     @property
     def provider_runtime(self) -> ProviderRuntime:
@@ -57,7 +62,6 @@ class CharacterRouter:
 
     def switch_character(self, character_id: str) -> CharacterProfile:
         """切換 active 角色;character_id 不存在時拋出例外且不影響現有 active。"""
-        previous_engine = self._active_engine
         profile = self._registry.load_character(character_id)
 
         memory_store = self._memory_store_factory(character_id, profile)
@@ -83,19 +87,59 @@ class CharacterRouter:
             skill_refs=tuple(skill.name for skill in engine.skills),
         )
         # profile/engine/snapshot 全部就緒後才一次替換,避免消費者看到分裂狀態。
-        if previous_engine is not None:
-            previous_engine.shutdown()
-        self._active_profile = profile
-        self._active_engine = engine
-        self._active_snapshot = snapshot
+        with self._lock:
+            previous_engine = self._active_engine
+            self._active_profile = profile
+            self._active_engine = engine
+            self._active_snapshot = snapshot
+            if previous_engine is not None:
+                self._retire_engine(previous_engine)
         return profile
 
     def shutdown(self) -> None:
-        if self._active_engine is not None:
-            self._active_engine.shutdown()
-        self._active_engine = None
-        self._active_profile = None
-        self._active_snapshot = None
+        with self._lock:
+            if self._shutdown_requested:
+                return
+            self._shutdown_requested = True
+            if self._active_engine is not None:
+                self._retire_engine(self._active_engine)
+            self._active_engine = None
+            self._active_profile = None
+            self._active_snapshot = None
+
+    def acquire_engine(self, character_id: str) -> PetHarnessEngine:
+        """Reserve the current engine before a background conversation is queued."""
+        with self._lock:
+            if self._shutdown_requested or self._active_engine is None or self._active_profile is None:
+                raise NoActiveCharacterError("no active character to dispatch event to")
+            if self._active_profile.character_id != character_id:
+                raise NoActiveCharacterError(f"character is no longer active: {character_id}")
+            self._inflight[self._active_engine] = self._inflight.get(self._active_engine, 0) + 1
+            return self._active_engine
+
+    def release_engine(self, engine: PetHarnessEngine) -> None:
+        with self._lock:
+            count = self._inflight.get(engine, 0)
+            if count <= 1:
+                self._inflight.pop(engine, None)
+                if engine in self._retired_engines:
+                    self._retired_engines.remove(engine)
+                    engine.shutdown()
+            else:
+                self._inflight[engine] = count - 1
+
+    def dispatch_event_for_character(self, character_id: str, event: UserEvent | dict) -> PetEvent:
+        engine = self.acquire_engine(character_id)
+        try:
+            return engine.handle_event(event)
+        finally:
+            self.release_engine(engine)
+
+    def _retire_engine(self, engine: PetHarnessEngine) -> None:
+        self._retired_engines.add(engine)
+        if not self._inflight.get(engine):
+            self._retired_engines.remove(engine)
+            engine.shutdown()
 
     def get_active_character(self) -> CharacterProfile | None:
         return self._active_profile
@@ -117,6 +161,7 @@ class CharacterRouter:
         return self._active_snapshot.voice_id_env_key
 
     def dispatch_event(self, event: UserEvent | dict) -> PetEvent:
-        if self._active_engine is None:
+        profile = self.get_active_character()
+        if profile is None:
             raise NoActiveCharacterError("no active character to dispatch event to")
-        return self._active_engine.handle_event(event)
+        return self.dispatch_event_for_character(profile.character_id, event)

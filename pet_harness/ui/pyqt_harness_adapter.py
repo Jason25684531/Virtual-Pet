@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import config
 from pet_harness.character.registry import CharacterRegistry
@@ -156,22 +156,33 @@ class PyQtHarnessAdapter:
     def handle_text_input(self, text: str) -> dict[str, Any]:
         """文字提交只接受 text;Provider 選擇是 application 層設定,
         不可由訊息參數覆寫(要換 Provider 走 configure_provider)。"""
+        profile = self.get_active_character()
+        if profile is None:
+            raise ValueError("no active character")
+        return self.prepare_turn(text, "pyqt_ui", profile.character_id)()
+
+    def prepare_turn(self, text: str, source: str, character_id: str) -> Callable[[], dict[str, Any]]:
         cleaned = str(text or "").strip()
         if not cleaned:
             raise ValueError("text input cannot be empty")
-        self._refresh_runtime()
-        if self.engine.router.match(cleaned, self.engine._active_capabilities()) is None:
-            self.engine.refresh_semantic_index()
-        previous_progress = self.store.get_user_progress()
-        event = self.router.dispatch_event({"text": cleaned, "source": "pyqt_ui"})
-        self.store.set_setting(LAST_XP_KEY, event.xp_delta)
-        payload = self._serialize_pet_event(event, previous_progress=previous_progress)
-        payload["user_text"] = cleaned
-        return payload
+        engine = self.router.acquire_engine(character_id)
 
-    def run_turn(self, text: str, source: str) -> dict[str, Any]:
-        del source
-        return self.handle_text_input(text)
+        def run() -> dict[str, Any]:
+            try:
+                self._refresh_runtime(engine)
+                if engine.router.match(cleaned, engine._active_capabilities()) is None:
+                    engine.refresh_semantic_index()
+                previous_progress = engine.store.get_user_progress()
+                event = engine.handle_event({"text": cleaned, "source": source})
+                engine.store.set_setting(LAST_XP_KEY, event.xp_delta)
+                payload = self._serialize_pet_event(event, previous_progress=previous_progress, store=engine.store)
+                payload["user_text"] = cleaned
+                payload["character_id"] = character_id
+                return payload
+            finally:
+                self.router.release_engine(engine)
+
+        return run
 
     def get_current_state(self) -> dict[str, Any]:
         # ponytail: 讀取路徑不重建 runtime;handle_text_input 已在同一輪互動的
@@ -423,18 +434,19 @@ class PyQtHarnessAdapter:
             return {"tool_name": tool_name, "deleted": False, "disabled": True}
         raise ValueError(f"unknown tool_name: {tool_name}")
 
-    def _refresh_runtime(self) -> None:
+    def _refresh_runtime(self, engine: PetHarnessEngine | None = None) -> None:
         # 先熱重載 profile+personal,再重建 skills/router:persona、alias、local skill
         # 的任何修改(面板或手動編輯)都在下一次互動生效,不依賴 switch_character。
-        self.engine.reload_profile()
-        self.engine.refresh_skill_catalog()
-        resolved = self.engine.filter_skills_for_character(self.engine.available_skills)
-        self.engine.skills = resolved.resolved_skills
-        self.engine.skip_diagnostics = resolved.skip_diagnostics
-        self.engine.store.sync_skills(self.engine.skills)
-        self.engine.rebuild_router()
-        self.engine.refresh_tool_registry(self._build_registry())
-        signature = (len(self.engine.available_skills), len(self.engine.discoverable_skills()), len(self.engine.skills))
+        engine = engine or self.engine
+        engine.reload_profile()
+        engine.refresh_skill_catalog()
+        resolved = engine.filter_skills_for_character(engine.available_skills)
+        engine.skills = resolved.resolved_skills
+        engine.skip_diagnostics = resolved.skip_diagnostics
+        engine.store.sync_skills(engine.skills)
+        engine.rebuild_router()
+        engine.refresh_tool_registry(self._build_registry(engine.store))
+        signature = (len(engine.available_skills), len(engine.discoverable_skills()), len(engine.skills))
         if signature != self._last_skill_discovery_log:
             LOGGER.info("[SKILL DISCOVERY] loaded=%s allowed=%s enabled=%s", *signature)
             self._last_skill_discovery_log = signature
@@ -478,14 +490,14 @@ class PyQtHarnessAdapter:
             ollama_model=DEFAULT_OLLAMA_MODEL,
         )
 
-    def _build_registry(self) -> ToolRegistry:
+    def _build_registry(self, store: SQLiteStore | None = None) -> ToolRegistry:
         registry = ToolRegistry()
-        enabled_overrides = self._tool_enabled_overrides()
+        enabled_overrides = self._tool_enabled_overrides(store)
         for definition in registry.list_definitions():
             if definition.name in enabled_overrides:
                 definition.enabled = bool(enabled_overrides[definition.name])
 
-        for tool_name, payload in self._tool_configs().items():
+        for tool_name, payload in self._tool_configs(store).items():
             definition = ToolDefinition(
                 name=tool_name,
                 description=payload["description"],
@@ -502,6 +514,7 @@ class PyQtHarnessAdapter:
         self,
         event: PetEvent,
         previous_progress: dict[str, Any] | None = None,
+        store: SQLiteStore | None = None,
     ) -> dict[str, Any]:
         payload = event.to_dict()
         tool_result = dict(payload.get("metadata", {}).get("tool_result") or {})
@@ -534,7 +547,7 @@ class PyQtHarnessAdapter:
             "warnings": warnings,
             "raw_event": self._mask_payload(payload),
             "xp_display": self._build_xp_state(
-                self.store.get_user_progress(),
+                (store or self.store).get_user_progress(),
                 payload["xp_delta"],
                 previous_progress=previous_progress,
             ),
@@ -768,11 +781,11 @@ class PyQtHarnessAdapter:
     def _skill_disabled_map(self) -> dict[str, bool]:
         return dict(self.store.get_setting(SKILL_STATE_KEY, {}) or {})
 
-    def _tool_enabled_overrides(self) -> dict[str, bool]:
-        return dict(self.store.get_tool_setting(TOOL_ENABLED_KEY, {}) or {})
+    def _tool_enabled_overrides(self, store: SQLiteStore | None = None) -> dict[str, bool]:
+        return dict((store or self.store).get_tool_setting(TOOL_ENABLED_KEY, {}) or {})
 
-    def _tool_configs(self) -> dict[str, dict[str, Any]]:
-        return dict(self.store.get_tool_setting(TOOL_CONFIGS_KEY, {}) or {})
+    def _tool_configs(self, store: SQLiteStore | None = None) -> dict[str, dict[str, Any]]:
+        return dict((store or self.store).get_tool_setting(TOOL_CONFIGS_KEY, {}) or {})
 
     def _normalize_skill_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         skill_id = str(payload.get("skill_id") or "").strip()

@@ -6,7 +6,7 @@ from ui.presentation_event_binder import PresentationEventBinder
 class _Window:
     def __init__(self): self.calls = []
     def _on_action_bus_conversation(self, payload): self.calls.append(("conversation", payload))
-    def _on_action_bus_error(self, message): self.calls.append(("error", message))
+    def _on_action_bus_error(self, message, character_id=None): self.calls.append(("error", message))
 
 
 def test_binder_only_observes_presentation_events():

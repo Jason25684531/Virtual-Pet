@@ -138,7 +138,7 @@ def test_adapter_returns_and_persists_normalized_discovery(tmp_path, monkeypatch
     registry = ToolRegistry()
     definition = registry.get("youtube_music_tool")
     registry.register_definition(definition, lambda request: ToolResult("youtube_music_tool", "success", payload={"current_track": {"title": "晴天"}}, request_id=request.request_id))
-    adapter._build_registry = lambda: registry
+    adapter._build_registry = lambda *_args: registry
     payload = adapter.handle_text_input("播放周杰倫的晴天")
     assert payload["matched_skill"] == "youtube_music_playback"
     assert payload["tool"]["name"] == "youtube_music_tool"

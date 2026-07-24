@@ -91,12 +91,15 @@ def test_conversation_handler_publishes_completed_turn(harness_env):
     turns = []
     coordinator.event_bus.subscribe("EVT_CONVERSATION_TURN", turns.append)
     class Conversation:
-        def run_turn(self, text, source):
-            return {"reply": text, "xp_display": {}}
+        def prepare_turn(self, text, source, character_id):
+            return lambda: {"reply": text, "xp_display": {}, "character_id": character_id}
 
     coordinator.configure_conversation(Conversation(), FakeBackgroundExecutor())
 
-    result = coordinator.action_bus.execute(ActionCommand("conversation", "tell me a joke", trace_id="turn-1"))
+    result = coordinator.action_bus.execute(ActionCommand(
+        "conversation", "tell me a joke", trace_id="turn-1", character_id="Choppr"
+    ))
 
     assert result.status == "ok"
     assert turns[0].trace_id == "turn-1"
+    assert turns[0].payload["character_id"] == "Choppr"

@@ -9,15 +9,17 @@ def test_transcript_submission_uses_action_bus_without_adapter_fallback():
     commands = []
     window = SimpleNamespace(
         _conversation_pending=False,
+        _conversation_character_id=None,
         _action_bus=SimpleNamespace(execute=lambda command: commands.append(command) or SimpleNamespace(status="ok")),
         _set_agentic_busy=lambda _busy: None,
         set_action_status=lambda *_args, **_kwargs: None,
+        get_current_character_id=lambda: "Choppr",
     )
 
     TransparentWindow.submit_agentic_text(window, "transcript")
 
-    assert [(command.action, command.text, command.source) for command in commands] == [
-        ("conversation", "transcript", "ui")
+    assert [(command.action, command.text, command.source, command.character_id) for command in commands] == [
+        ("conversation", "transcript", "ui", "Choppr")
     ]
 
 
@@ -25,6 +27,7 @@ def test_second_transcript_is_rejected_while_conversation_is_pending():
     statuses = []
     window = SimpleNamespace(
         _conversation_pending=True,
+        _conversation_character_id="Choppr",
         _action_bus=SimpleNamespace(execute=lambda _command: None),
         _set_agentic_busy=lambda _busy: None,
         set_action_status=lambda message, **_kwargs: statuses.append(message),

@@ -278,6 +278,7 @@ class TransparentWindow(QMainWindow):
         self._motion_coordinator = None
         self._settings_dialog = None
         self._conversation_pending = False
+        self._conversation_character_id: str | None = None
         self._character_x_offset = self.DEFAULT_CHARACTER_X_OFFSET
         self._character_y_offset = self.DEFAULT_CHARACTER_Y_OFFSET
         self._character_scale = self.DEFAULT_CHARACTER_SCALE
@@ -1167,24 +1168,45 @@ class TransparentWindow(QMainWindow):
             self.set_action_status("Interaction already running.", tone="warn", timeout_ms=2200)
             return
         from pet_harness.app.commands import ActionCommand
+        character_id = self.get_current_character_id()
+        if not character_id:
+            self.set_action_status("No active character.", tone="warn", timeout_ms=2200)
+            return
         self._conversation_pending = True
+        self._conversation_character_id = character_id
         self._set_agentic_busy(True)
         self.set_action_status("Processing interaction...", tone="working", timeout_ms=0)
-        result = self._action_bus.execute(ActionCommand("conversation", cleaned, source="ui"))
+        result = self._action_bus.execute(ActionCommand("conversation", cleaned, source="ui", character_id=character_id))
         if result.status != "ok":
             self._conversation_pending = False
+            self._conversation_character_id = None
             self._set_agentic_busy(False)
             self.set_action_status(result.reason or "Interaction rejected.", tone="warn", timeout_ms=2200)
 
     def _on_action_bus_conversation(self, payload: dict) -> None:
+        if not self._is_current_conversation_character(payload.get("character_id")):
+            self._finish_conversation_for(payload.get("character_id"))
+            return
         self.consume_interaction_result(payload, message="Interaction complete.")
-        self._conversation_pending = False
-        self._set_agentic_busy(False)
+        self._finish_conversation_for(payload.get("character_id"))
 
-    def _on_action_bus_error(self, message: str) -> None:
+    def _on_action_bus_error(self, message: str, character_id: str | None = None) -> None:
         """對話經 ActionBus 失敗時復位 busy 狀態，否則 UI 會永遠停在 Processing。"""
-        self._conversation_pending = False
+        if not self._is_current_conversation_character(character_id):
+            self._finish_conversation_for(character_id)
+            return
+        self._finish_conversation_for(character_id)
         self._on_agentic_error(message)
+
+    def _is_current_conversation_character(self, character_id: str | None) -> bool:
+        return bool(character_id) and character_id == self.get_current_character_id()
+
+    def _finish_conversation_for(self, character_id: str | None) -> None:
+        if character_id and character_id != self._conversation_character_id:
+            return
+        self._conversation_pending = False
+        self._conversation_character_id = None
+        self._set_agentic_busy(False)
 
     def consume_interaction_result(self, payload: dict, message: str = "Interaction complete.") -> None:
         """所有 Harness 結果（文字互動與立即執行）的唯一 Host 消費流程。"""
