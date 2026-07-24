@@ -61,6 +61,7 @@ class ApplicationCoordinator:
         return self._lifecycle
 
     def shutdown(self) -> None:
+        # ProviderRuntime owns configuration and clients supplied by callers; it has no closeable resource.
         self._lifecycle.shutdown_all()
 
     def configure_motion(self, motion: MotionPort) -> None:

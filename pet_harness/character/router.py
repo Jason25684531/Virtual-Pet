@@ -57,6 +57,7 @@ class CharacterRouter:
 
     def switch_character(self, character_id: str) -> CharacterProfile:
         """切換 active 角色;character_id 不存在時拋出例外且不影響現有 active。"""
+        previous_engine = self._active_engine
         profile = self._registry.load_character(character_id)
 
         memory_store = self._memory_store_factory(character_id, profile)
@@ -82,10 +83,19 @@ class CharacterRouter:
             skill_refs=tuple(skill.name for skill in engine.skills),
         )
         # profile/engine/snapshot 全部就緒後才一次替換,避免消費者看到分裂狀態。
+        if previous_engine is not None:
+            previous_engine.shutdown()
         self._active_profile = profile
         self._active_engine = engine
         self._active_snapshot = snapshot
         return profile
+
+    def shutdown(self) -> None:
+        if self._active_engine is not None:
+            self._active_engine.shutdown()
+        self._active_engine = None
+        self._active_profile = None
+        self._active_snapshot = None
 
     def get_active_character(self) -> CharacterProfile | None:
         return self._active_profile

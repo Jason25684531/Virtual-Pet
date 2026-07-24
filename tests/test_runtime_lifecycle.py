@@ -1,4 +1,6 @@
 from pet_harness.app.runtime_lifecycle import CallbackRuntime, ManagedRuntime, RuntimeLifecycle
+from pet_harness.character.router import CharacterRouter
+from unittest.mock import MagicMock
 
 
 class _Runtime(ManagedRuntime):
@@ -52,3 +54,17 @@ def test_callback_runtime_adapts_legacy_stop_signature():
 
     assert runtime.name == "legacy"
     assert waits == [123]
+
+
+def test_lifecycle_closes_active_router_engine_once():
+    router = CharacterRouter()
+    engine = MagicMock()
+    router._active_engine = engine
+    lifecycle = RuntimeLifecycle()
+    lifecycle.register(CallbackRuntime("router", lambda _wait: router.shutdown()))
+
+    lifecycle.shutdown_all()
+    lifecycle.shutdown_all()
+
+    engine.shutdown.assert_called_once()
+    assert router.get_active_engine() is None

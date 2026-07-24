@@ -62,3 +62,9 @@ def test_window_only_requests_lifecycle_shutdown_and_does_not_manage_motion_shut
     source = (Path(__file__).parents[1] / "ui" / "transparent_window.py").read_text(encoding="utf-8")
     assert "shutdown_background_tasks" not in source
     assert "_motion_coordinator.shutdown(" not in source
+
+
+def test_router_and_application_layers_do_not_import_pyqt():
+    root = Path(__file__).parents[1] / "pet_harness"
+    for relative in ("character/router.py", "app/application_coordinator.py"):
+        assert "PyQt" not in (root / relative).read_text(encoding="utf-8")

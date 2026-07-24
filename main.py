@@ -130,6 +130,7 @@ def _run_harness_mode(app):
 
     stt_controller = _build_stt_controller(window)
     coordinator.lifecycle.register(CallbackRuntime("adapter", lambda _wait_ms: adapter.shutdown()))
+    coordinator.lifecycle.register(CallbackRuntime("router", lambda _wait_ms: coordinator.character_router.shutdown()))
     coordinator.lifecycle.register(CallbackRuntime("motion", motion.shutdown))
     if stt_controller is not None:
         coordinator.lifecycle.register(CallbackRuntime("stt", lambda _wait_ms: stt_controller.shutdown()))

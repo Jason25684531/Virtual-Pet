@@ -5,9 +5,12 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
+import threading
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from pet_harness.memory.base_memory_store import BaseMemoryStore, MemoryHit, MemoryStoreStatus, NullMemoryStore
+from pet_harness.memory.qdrant_memory_store import QdrantMemoryStore
 
 
 class FakeMemoryStore(BaseMemoryStore):
@@ -34,6 +37,19 @@ def test_null_memory_store_is_fail_open_default():
     assert store.recall("anything") == []
     assert store.status().state == "disabled"
     store.save_turn("evt-1", "hello", "hi")  # 不得拋例外
+
+
+def test_qdrant_shutdown_closes_client_once_without_initializing_qdrant():
+    store = object.__new__(QdrantMemoryStore)
+    store._lock = threading.Lock()
+    store._closed = False
+    client = MagicMock()
+    store._client = client
+
+    store.shutdown()
+    store.shutdown()
+
+    client.close.assert_called_once()
 
 
 def test_qdrant_memory_store_lifecycle_in_isolated_process(tmp_path):

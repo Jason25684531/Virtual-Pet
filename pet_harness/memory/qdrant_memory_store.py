@@ -38,6 +38,7 @@ class QdrantMemoryStore(BaseMemoryStore):
         self._max_items = max_items
         self._lock = threading.Lock()
         self._client: Any = None
+        self._closed = False
         self._count = 0
         self._next_id = 0
         self._qdrant_client_class: Any = None
@@ -81,6 +82,16 @@ class QdrantMemoryStore(BaseMemoryStore):
         """清空這個角色的長期記憶;人設變更時呼叫,避免舊身份的問答殘留。
         Fire-and-forget 背景執行,recall/save_turn 皆已 fail-open,不需等待完成。"""
         threading.Thread(target=self._clear_worker, daemon=True, name="memory-clear").start()
+
+    def shutdown(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            client, self._client = self._client, None
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
 
     def _clear_worker(self) -> None:
         with self._lock:
@@ -140,6 +151,11 @@ class QdrantMemoryStore(BaseMemoryStore):
                 self._status = MemoryStoreStatus("degraded", type(exc).__name__)
             return
         with self._lock:
+            if self._closed:
+                close = getattr(client, "close", None)
+                if callable(close):
+                    close()
+                return
             self._client = client
             self._next_id = next_id
             self._count = count

@@ -6,7 +6,7 @@
 |------|------|
 | **對話大腦** | `PetHarnessEngine`（Ollama / OpenAI-compatible API），負責文字對話、skill 路由、工具呼叫、對話記憶、XP/獎勵、behavior→WebM 映射 |
 | **統一動作入口** | `ActionBus`：對話、快捷按鈕、快捷鍵、系統匣、web overlay 全部收斂為 `ActionCommand`，同步回 `ActionResult`、副作用經 `AppEvent` 送回 Presentation |
-| **本地快捷動作** | `MotionCoordinator`（原 `ActionDispatcher`，保留相容 alias）：動畫、TTS queue 與播放收尾狀態機，驅動「新聞播報／播放音樂／揮手回應／固定笑話／固定分享」，走 VoAI/ElevenLabs TTS |
+| **本地快捷動作** | `ActionBus → Handler → MotionPort → MotionCoordinator`：動畫、TTS queue 與播放收尾狀態機，驅動「新聞播報／播放音樂／揮手回應／固定笑話／固定分享」。 |
 | **離線安全** | 對話大腦 Yes（Ollama 免 API key）；本地快捷動作 No（需要 VoAI 或 ElevenLabs API key 才有語音） |
 
 參考文件：
@@ -45,7 +45,7 @@
 
 - 依賴方向只准往下；`tests/test_dependency_boundaries.py` 靜態掃描守門（Application/Domain 出現 `PyQt5` import 即 fail）。
 - 對話流程：UI `sendText` → `ActionCommand("conversation")` → `ActionBus` → `ConversationHandler` → `QtBackgroundExecutor`（QThread 背景執行）→ `PyQtHarnessAdapter.run_turn` → `PetHarnessEngine.handle_event`；完成後以 `EVT_CONVERSATION_TURN` 事件回到 `PresentationEventBinder` 更新 UI、觸發動畫與 TTS。失敗走 `EVT_RUNTIME_ERROR`，UI busy 狀態一律復位。
-- 快捷動作：按鈕/快捷鍵/系統匣 → `ActionCommand` → `ActionBus` → handler 發 `EVT_ACTION_REQUESTED` → binder 轉交 `MotionCoordinator` 執行動畫與 TTS 收尾（defer/duplicate/timeout 語意不變）。
+- 快捷動作：按鈕/快捷鍵/系統匣 → `ActionCommand` → `ActionBus` → handler → `MotionPort` → `MotionCoordinator`（defer/duplicate/timeout 語意不變）。
 - 關閉流程：`aboutToQuit` → `ApplicationCoordinator.shutdown()` → `RuntimeLifecycle.shutdown_all()` 依註冊反序停止（STT → MotionCoordinator/Audio → adapter/Browser），單一 runtime 逾時不阻塞退出。
 
 ### Harness 對話流程
@@ -86,8 +86,8 @@ flowchart LR
 ```mermaid
 flowchart LR
     UI[UI 按鈕/快捷鍵/系統匣<br>新聞/音樂/揮手/笑話/分享] --> BUS[ActionBus<br>ActionCommand]
-    BUS -- EVT_ACTION_REQUESTED --> BINDER[PresentationEventBinder]
-    BINDER --> DISP[MotionCoordinator<br>action_dispatcher.py]
+    BUS --> PORT[MotionPort]
+    PORT --> DISP[MotionCoordinator<br>action_dispatcher.py]
     DISP --> SVC[action_services.py<br>QThread worker：news / wave / joke / share]
     SVC --> TTS[VoAI PCM primary<br>→ ElevenLabs fallback]
     TTS --> AW[AudioStreamWorker<br>daemon thread PCM/MP3 queue]
@@ -95,7 +95,7 @@ flowchart LR
     DISP --> MOTION[character_library.py<br>WebM 動作切換]
 ```
 
-> 此子系統完全獨立於 `PetHarnessEngine`。`report_news`/`play_music`/`wave_response` 走固定腳本＋快取音檔；`cached_joke`/`cached_share` 首次觸發時會呼叫 LLM 產生文字後寫入快取，之後皆直接讀快取。入口統一為 `ActionBus`；`MotionCoordinator` 保留動畫與 TTS 的播放收尾狀態機（`ActionDispatcher` 為遷移期相容 alias）。
+> 此子系統完全獨立於 `PetHarnessEngine`。`report_news`/`play_music`/`wave_response` 走固定腳本＋快取音檔；`cached_joke`/`cached_share` 首次觸發時會呼叫 LLM 產生文字後寫入快取，之後皆直接讀快取。入口統一為 `ActionBus → Handler → MotionPort`；`MotionCoordinator` 保留動畫與 TTS 的播放收尾狀態機。
 
 ---
 
@@ -120,7 +120,7 @@ Virtual-Pet/
 ├── config.py                       # 集中式設定中心（.env + persona + action 白名單）
 ├── character_library.py            # 角色清單、manifest 讀取、motion 映射（快捷動作＋Harness 共用）
 ├── interaction_trace.py            # 快捷動作互動延遲追蹤
-├── action_dispatcher.py            # MotionCoordinator：動畫/TTS queue/播放收尾狀態機（ActionDispatcher 為相容 alias）
+├── action_dispatcher.py            # MotionCoordinator：動畫/TTS queue/播放收尾狀態機
 ├── action_services.py              # 快捷動作背景 service worker（新聞 / 揮手 / 固定意圖快取）
 ├── text_utils.py                   # sanitize_tts_text：去除 ACTION 標記供 TTS 朗讀
 ├── audio_playback.py               # 快捷動作用 provider-neutral 播放器（ffplay / pygame）
@@ -204,7 +204,7 @@ Virtual-Pet/
 ├── ui/
 │   ├── transparent_window.py       # 透明桌面視窗 + QWebChannel bridge（adapter/dispatcher 由 main.py 注入）
 │   ├── js_gateway.py               # Python→JS 呼叫佇列橋（webview ready 前自動排隊）
-│   ├── presentation_event_binder.py # 訂閱 AppEvent → 轉呼叫 window/MotionCoordinator
+│   ├── presentation_event_binder.py # 訂閱 conversation/runtime AppEvent → 更新 window UI
 │   ├── background_resolver.py      # 背景圖三級 fallback 解析
 │   ├── settings_dialog.py          # 設定對話框
 │   └── web_container/

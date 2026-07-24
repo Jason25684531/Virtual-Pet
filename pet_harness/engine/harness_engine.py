@@ -109,6 +109,15 @@ class PetHarnessEngine:
         self.last_agent_result: AgentResult | None = None
         self.last_tool_result: ToolResult | None = None
         self.last_asset_result: dict[str, Any] | None = None
+        self._shutdown = False
+
+    def shutdown(self) -> None:
+        if self._shutdown:
+            return
+        self._shutdown = True
+        close = getattr(self.memory_store, "shutdown", None)
+        if callable(close):
+            close()
 
     @property
     def character_profile(self) -> CharacterProfile | None:
