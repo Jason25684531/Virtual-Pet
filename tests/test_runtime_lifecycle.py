@@ -18,18 +18,16 @@ class _Runtime(ManagedRuntime):
             raise TimeoutError(self.name)
 
 
-def test_lifecycle_starts_in_registration_order_and_stops_in_reverse():
+def test_lifecycle_stops_in_reverse_registration_order():
     events = []
     lifecycle = RuntimeLifecycle()
     lifecycle.register(_Runtime("stt", events))
     lifecycle.register(_Runtime("audio", events))
     lifecycle.register(_Runtime("provider", events))
 
-    lifecycle.start_all()
     lifecycle.shutdown_all(100)
 
     assert events == [
-        "start:stt", "start:audio", "start:provider",
         "stop:provider:100", "stop:audio:100", "stop:stt:100",
     ]
 

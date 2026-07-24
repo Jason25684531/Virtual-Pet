@@ -1592,7 +1592,3 @@ class MotionCoordinator(QObject):
         self._finish_loop_action()
         self._window.set_action_status(message, tone="error", timeout_ms=6000)
         self._window.restore_idle_video()
-
-
-# 遷移期 public compatibility alias; callers may move to ActionBus incrementally.
-ActionDispatcher = MotionCoordinator

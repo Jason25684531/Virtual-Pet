@@ -39,7 +39,7 @@ class InteractionTraceState:
 
 
 class InteractionLatencyTracker:
-    """記錄本地快捷動作（ActionDispatcher）從觸發到 TTS 播放完成的耗時切面。"""
+    """記錄本地快捷動作從觸發到 TTS 播放完成的耗時切面。"""
 
     def __init__(self):
         self._lock = Lock()
@@ -74,7 +74,7 @@ class InteractionLatencyTracker:
         self._record(trace_id, "voai_prewarm_failed", normalized, first_only=True)
 
     def mark_action_dispatched(self, trace_id: str | None, action_name: str):
-        self._record(trace_id, "first_action_dispatched", f"ActionDispatcher 命中 `{action_name}`", first_only=True)
+        self._record(trace_id, "first_action_dispatched", f"motion 命中 `{action_name}`", first_only=True)
 
     def mark_tts_enqueued(self, trace_id: str | None, reply_id: str, text: str):
         if not trace_id:

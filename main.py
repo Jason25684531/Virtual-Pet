@@ -90,13 +90,14 @@ def _build_stt_controller(window):
 
 
 def _run_harness_mode(app):
-    from action_dispatcher import ActionDispatcher
+    from action_dispatcher import MotionCoordinator
     from interaction_trace import InteractionLatencyTracker
     from pet_harness.app.application_coordinator import ApplicationCoordinator
     from pet_harness.app.runtime_lifecycle import CallbackRuntime
     from pet_harness.runtime.qt_background_executor import QtBackgroundExecutor
     from pet_harness.ui.pyqt_harness_adapter import PyQtHarnessAdapter, _qdrant_memory_store_factory
     from ui.presentation_event_binder import PresentationEventBinder
+    from ui.motion_port_adapter import MotionPortAdapter
     from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
     from ui.transparent_window import TransparentWindow
 
@@ -115,12 +116,13 @@ def _run_harness_mode(app):
         brain_mode="harness",
         latency_tracker=latency_tracker,
         adapter=adapter,
-        dispatcher_factory=lambda host, library, tracker: ActionDispatcher(
+        dispatcher_factory=lambda host, library, tracker: MotionCoordinator(
             host, library, latency_tracker=tracker, parent=host
         ),
         lifecycle_shutdown=coordinator.shutdown,
         action_bus=coordinator.action_bus,
     )
+    coordinator.configure_motion(MotionPortAdapter(window._action_dispatcher, window))
     PresentationEventBinder(window, coordinator.event_bus)
     coordinator.configure_conversation(adapter, QtBackgroundExecutor(window))
 

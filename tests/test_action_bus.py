@@ -67,14 +67,18 @@ def test_coordinator_builds_headless_domain_composition(harness_env):
 def test_coordinator_action_handlers_publish_requests_without_ui_calls(harness_env):
     _tmp_path, agentic_root = harness_env
     coordinator = ApplicationCoordinator(provider_runtime=ProviderRuntime(provider=FakeProvider()), agentic_root=agentic_root)
-    events = []
-    coordinator.event_bus.subscribe("EVT_ACTION_REQUESTED", events.append)
+    calls = []
+    class Motion:
+        def dispatch_directive(self, directive, **kwargs): calls.append((directive, kwargs)); return True
+        def trigger_cached_intent(self, *_args): return True
+        def speak(self, *_args, **_kwargs): pass
+        def reset(self): pass
+    coordinator.configure_motion(Motion())
 
     result = coordinator.action_bus.execute(ActionCommand("report_news", trace_id="news-1", source="shortcut"))
 
     assert result.status == "ok"
-    assert events[0].trace_id == "news-1"
-    assert events[0].payload["action"] == "report_news"
+    assert calls == [("[ACTION:report_news]", {"trace_id": "news-1", "allow_tts": True, "wait_for_tts_start": False})]
 
 
 def test_conversation_handler_publishes_completed_turn(harness_env):

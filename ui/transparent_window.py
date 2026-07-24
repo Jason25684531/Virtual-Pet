@@ -17,7 +17,7 @@ from PyQt5.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer, QUrl, pyq
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QLineEdit, QMainWindow, QMenu, QPushButton, QSystemTrayIcon, QWidget,
+    QAction, QApplication, QLineEdit, QMainWindow, QMenu, QSystemTrayIcon, QWidget,
 )
 from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineSettings, QWebEngineView
 
@@ -229,7 +229,6 @@ class TransparentWindow(QMainWindow):
     developer_query_submitted = pyqtSignal(str)
     stt_start_requested = pyqtSignal()
     stt_stop_requested = pyqtSignal()
-    reset_requested = pyqtSignal()
     RAW_JAVASCRIPT_MARKER = "__raw_javascript__"
 
     # 視窗尺寸（可根據需求調整，或改為全螢幕）：
@@ -239,17 +238,6 @@ class TransparentWindow(QMainWindow):
     DEV_INPUT_WIDTH = 560
     DEV_INPUT_HEIGHT = 44
     DEV_INPUT_MARGIN_BOTTOM = 28
-    STT_BUTTON_WIDTH = 132
-    STT_BUTTON_HEIGHT = 40
-    STT_BUTTON_MARGIN_LEFT = 24
-    STT_BUTTON_MARGIN_BOTTOM = 30
-    RESET_BUTTON_WIDTH = 96
-    RESET_BUTTON_HEIGHT = 40
-    RESET_BUTTON_GAP = 12
-    FIXED_INTENT_BUTTON_WIDTH = 88
-    FIXED_INTENT_BUTTON_HEIGHT = 34
-    FIXED_INTENT_BUTTON_GAP = 10
-    FIXED_INTENT_BUTTON_ROW_GAP = 12
     # 角色預設位移（相對於視窗中心的像素偏移量）
     DEFAULT_CHARACTER_X_OFFSET = 0
     DEFAULT_CHARACTER_Y_OFFSET = 0
@@ -446,91 +434,6 @@ class TransparentWindow(QMainWindow):
         self.installEventFilter(self)
         self._update_developer_input_geometry()
 
-    def _init_stt_button(self):
-        self._stt_button = QPushButton(self)
-        self._stt_button.setObjectName("stt-toggle-button")
-        self._stt_button.setFixedSize(self.STT_BUTTON_WIDTH, self.STT_BUTTON_HEIGHT)
-        self._stt_button.clicked.connect(self._handle_stt_button_clicked)
-        self._stt_button.installEventFilter(self)
-        self._apply_stt_button_state()
-        self._update_stt_button_geometry()
-
-    def _init_reset_button(self):
-        self._reset_button = QPushButton(self)
-        self._reset_button.setObjectName("runtime-reset-button")
-        self._reset_button.setText("重置")
-        self._reset_button.setFixedSize(self.RESET_BUTTON_WIDTH, self.RESET_BUTTON_HEIGHT)
-        self._reset_button.clicked.connect(self.reset_requested.emit)
-        self._reset_button.installEventFilter(self)
-        self._reset_button.setStyleSheet(
-            """
-            QPushButton#runtime-reset-button {
-                background: rgba(42, 64, 86, 215);
-                color: #ffffff;
-                border: 1px solid rgba(210, 232, 255, 140);
-                border-radius: 14px;
-                font-size: 15px;
-                font-weight: 600;
-                padding: 0 14px;
-            }
-            QPushButton#runtime-reset-button:hover {
-                background: rgba(54, 82, 110, 235);
-            }
-            """
-        )
-        self._update_reset_button_geometry()
-
-    def _init_fixed_intent_buttons(self):
-        self._joke_button = QPushButton(self)
-        self._joke_button.setObjectName("fixed-intent-joke-button")
-        self._joke_button.setText("Joke")
-        self._joke_button.setFixedSize(self.FIXED_INTENT_BUTTON_WIDTH, self.FIXED_INTENT_BUTTON_HEIGHT)
-        self._joke_button.clicked.connect(lambda: self._emit_cached_intent_request("joke", "Joke 按鈕觸發"))
-        self._joke_button.installEventFilter(self)
-        self._joke_button.setStyleSheet(self._fixed_intent_button_stylesheet("#8e5f38", "#f7d4b0"))
-
-        self._share_button = QPushButton(self)
-        self._share_button.setObjectName("fixed-intent-share-button")
-        self._share_button.setText("share")
-        self._share_button.setFixedSize(self.FIXED_INTENT_BUTTON_WIDTH, self.FIXED_INTENT_BUTTON_HEIGHT)
-        self._share_button.clicked.connect(lambda: self._emit_cached_intent_request("share", "share 按鈕觸發"))
-        self._share_button.installEventFilter(self)
-        self._share_button.setStyleSheet(self._fixed_intent_button_stylesheet("#305c6d", "#cdeefa"))
-
-        self._music_button = QPushButton(self)
-        self._music_button.setObjectName("overlay-play-music-button")
-        self._music_button.setText("Music")
-        self._music_button.setFixedSize(self.FIXED_INTENT_BUTTON_WIDTH, self.FIXED_INTENT_BUTTON_HEIGHT)
-        self._music_button.clicked.connect(lambda: self.trigger_enabled_skill_for_behavior("play_music"))
-        self._music_button.installEventFilter(self)
-        self._music_button.setStyleSheet(self._fixed_intent_button_stylesheet("#456f3b", "#d7f5bf"))
-
-        self._news_button = QPushButton(self)
-        self._news_button.setObjectName("overlay-report-news-button")
-        self._news_button.setText("News")
-        self._news_button.setFixedSize(self.FIXED_INTENT_BUTTON_WIDTH, self.FIXED_INTENT_BUTTON_HEIGHT)
-        self._news_button.clicked.connect(lambda: self.trigger_enabled_skill_for_behavior("report_news"))
-        self._news_button.installEventFilter(self)
-        self._news_button.setStyleSheet(self._fixed_intent_button_stylesheet("#6f4f8b", "#e2cdf7"))
-        self._update_fixed_intent_buttons_geometry()
-
-    @staticmethod
-    def _fixed_intent_button_stylesheet(background: str, border: str) -> str:
-        return (
-            "QPushButton {"
-            f"background: {background};"
-            "color: #fffdf7;"
-            f"border: 1px solid {border};"
-            "border-radius: 16px;"
-            "font-size: 14px;"
-            "font-weight: 700;"
-            "padding: 0 14px;"
-            "}"
-            "QPushButton:hover {"
-            "background: rgba(52, 78, 98, 0.96);"
-            "}"
-        )
-
     def _get_stt_control_descriptor(self) -> dict[str, object]:
         state = "unavailable" if not self._stt_available else self._stt_state
         if state == "unavailable":
@@ -601,68 +504,10 @@ class TransparentWindow(QMainWindow):
         label = str(descriptor["label"])
         enabled = bool(descriptor["enabled"])
 
-        if hasattr(self, "_stt_button"):
-            self._stt_button.setText(label)
-            self._stt_button.setEnabled(enabled)
-            self._stt_button.setStyleSheet(
-                f"""
-                QPushButton#stt-toggle-button {{
-                    background: {descriptor["background"]};
-                    color: #ffffff;
-                    border: 1px solid {descriptor["border"]};
-                    border-radius: 14px;
-                    font-size: 15px;
-                    font-weight: 600;
-                    padding: 0 14px;
-                }}
-                QPushButton#stt-toggle-button:disabled {{
-                    color: rgba(255, 255, 255, 0.75);
-                }}
-                """
-            )
         if hasattr(self, "_tray_stt_toggle_action"):
             self._tray_stt_toggle_action.setText(label)
             self._tray_stt_toggle_action.setEnabled(enabled)
         self._sync_runtime_controls_ui()
-
-    def _update_stt_button_geometry(self):
-        if not hasattr(self, "_stt_button"):
-            return
-        y = max(
-            self.DRAG_SURFACE_HEIGHT + 24,
-            self.height() - self.STT_BUTTON_HEIGHT - self.STT_BUTTON_MARGIN_BOTTOM,
-        )
-        self._stt_button.move(self.STT_BUTTON_MARGIN_LEFT, y)
-
-    def _update_reset_button_geometry(self):
-        if not hasattr(self, "_reset_button"):
-            return
-        y = max(
-            self.DRAG_SURFACE_HEIGHT + 24,
-            self.height() - self.RESET_BUTTON_HEIGHT - self.STT_BUTTON_MARGIN_BOTTOM,
-        )
-        x = self.STT_BUTTON_MARGIN_LEFT + self.STT_BUTTON_WIDTH + self.RESET_BUTTON_GAP
-        self._reset_button.move(x, y)
-
-    def _update_fixed_intent_buttons_geometry(self):
-        required_buttons = ("_joke_button", "_share_button", "_music_button", "_news_button")
-        if any(not hasattr(self, button_name) for button_name in required_buttons):
-            return
-        y = max(
-            self.DRAG_SURFACE_HEIGHT + 24,
-            self.height() - self.FIXED_INTENT_BUTTON_HEIGHT - self.STT_BUTTON_MARGIN_BOTTOM - 3,
-        )
-        x = (
-            self.STT_BUTTON_MARGIN_LEFT
-            + self.STT_BUTTON_WIDTH
-            + self.RESET_BUTTON_GAP
-            + self.RESET_BUTTON_WIDTH
-            + self.FIXED_INTENT_BUTTON_ROW_GAP
-        )
-        self._joke_button.move(x, y)
-        self._share_button.move(x + self.FIXED_INTENT_BUTTON_WIDTH + self.FIXED_INTENT_BUTTON_GAP, y)
-        self._music_button.move(x + (self.FIXED_INTENT_BUTTON_WIDTH + self.FIXED_INTENT_BUTTON_GAP) * 2, y)
-        self._news_button.move(x + (self.FIXED_INTENT_BUTTON_WIDTH + self.FIXED_INTENT_BUTTON_GAP) * 3, y)
 
     def _update_drag_surface_geometry(self):
         if hasattr(self, "_drag_surface"):
@@ -680,31 +525,12 @@ class TransparentWindow(QMainWindow):
         )
         self._developer_input.setGeometry(x, y, available_width, self.DEV_INPUT_HEIGHT)
 
-    def _raise_overlay_widgets(self):
-        if hasattr(self, "_drag_surface"):
-            self._drag_surface.raise_()
-        if hasattr(self, "_stt_button"):
-            self._stt_button.raise_()
-        if hasattr(self, "_reset_button"):
-            self._reset_button.raise_()
-        if hasattr(self, "_joke_button"):
-            self._joke_button.raise_()
-        if hasattr(self, "_share_button"):
-            self._share_button.raise_()
-        if hasattr(self, "_music_button"):
-            self._music_button.raise_()
-        if hasattr(self, "_news_button"):
-            self._news_button.raise_()
-        if hasattr(self, "_developer_input") and self._developer_input.isVisible():
-            self._developer_input.raise_()
-
     def _on_webview_loaded(self, ok: bool):
         if not ok:
             print("[ECHOES] 警告: 房間頁面載入失敗。")
             return
         self._js_gateway.mark_ready()
         self._run_javascript("setRuntimeMode", self._brain_mode)
-        self._raise_overlay_widgets()
         QTimer.singleShot(120, self._restore_current_character)
         QTimer.singleShot(160, self.refresh_agentic_ui)
 
@@ -879,10 +705,6 @@ class TransparentWindow(QMainWindow):
         super().resizeEvent(event)
         self._update_drag_surface_geometry()
         self._update_developer_input_geometry()
-        self._update_stt_button_geometry()
-        self._update_reset_button_geometry()
-        self._update_fixed_intent_buttons_geometry()
-        self._raise_overlay_widgets()
 
     def keyPressEvent(self, event):
         if self._handle_cached_intent_shortcut(event):
@@ -1083,62 +905,27 @@ class TransparentWindow(QMainWindow):
         allow_tts: bool = True,
         wait_for_tts_start: bool = False,
     ) -> bool:
-        raw_action, message = self._action_dispatcher._parse_directive(directive)
-        if self._action_bus is not None and raw_action in self._action_dispatcher._bindings:
-            from pet_harness.app.commands import ActionCommand
-            result = self._action_bus.execute(ActionCommand(raw_action, message, trace_id, "ui", allow_tts, wait_for_tts_start))
-            return result.status == "ok"
-        return self._dispatch_action_legacy(directive, trace_id, allow_tts, wait_for_tts_start)
-
-    def _dispatch_action_legacy(
-        self,
-        directive: str,
-        trace_id: str | None = None,
-        allow_tts: bool = True,
-        wait_for_tts_start: bool = False,
-    ) -> bool:
-        return self._action_dispatcher.dispatch(
-            directive,
-            trace_id=trace_id,
-            allow_tts=allow_tts,
+        from pet_harness.app.commands import action_command_from_directive
+        if self._action_bus is None:
+            raise RuntimeError("TransparentWindow requires an action bus")
+        result = self._action_bus.execute(action_command_from_directive(
+            directive, trace_id=trace_id, source="ui", allow_tts=allow_tts,
             wait_for_tts_start=wait_for_tts_start,
-        )
+        ))
+        return result.status == "ok"
 
     def trigger_cached_intent(self, intent_name: str, trigger_source: str) -> bool:
-        if self._action_bus is not None:
-            from pet_harness.app.commands import ActionCommand
-            result = self._action_bus.execute(ActionCommand(f"cached_{intent_name}", source=trigger_source))
-            return result.status == "ok"
-        return self._trigger_cached_intent_legacy(intent_name, trigger_source)
-
-    def _trigger_cached_intent_legacy(self, intent_name: str, trigger_source: str) -> bool:
-        return self._action_dispatcher.trigger_cached_intent(intent_name, trigger_source)
-
-    def trigger_overlay_action(
-        self,
-        action_name: str,
-        *,
-        synthetic_user_text: str | None = None,
-        synthetic_assistant_text: str | None = None,
-    ) -> bool:
-        normalized_action = str(action_name or "").strip().lower()
-        if not normalized_action:
-            return False
-        dispatched = self.dispatch_action(f"[ACTION:{normalized_action}]")
-        if (
-            dispatched
-            and synthetic_user_text is not None
-            and synthetic_assistant_text is not None
-        ):
-            self.show_synthetic_conversation_turn(
-                "Dev Query",
-                str(synthetic_user_text),
-                str(synthetic_assistant_text),
-            )
-        return dispatched
+        from pet_harness.app.commands import ActionCommand
+        if self._action_bus is None:
+            raise RuntimeError("TransparentWindow requires an action bus")
+        result = self._action_bus.execute(ActionCommand(f"cached_{intent_name}", source=trigger_source))
+        return result.status == "ok"
 
     def speak_text(self, message: str, trace_id: str | None = None, has_action: bool = False):
-        self._action_dispatcher.speak_text(message, trace_id=trace_id, has_action=has_action)
+        from pet_harness.app.commands import ActionCommand
+        if self._action_bus is None:
+            raise RuntimeError("TransparentWindow requires an action bus")
+        self._action_bus.execute(ActionCommand("speak", message, trace_id, "ui", metadata={"has_action": has_action}))
 
     def begin_conversation_turn(self, trace_id: str, source_label: str, user_text: str):
         self._run_javascript("beginConversationTurn", trace_id, source_label, user_text)
@@ -1636,18 +1423,10 @@ class TransparentWindow(QMainWindow):
         self._run_javascript("stopRoomAudio")
 
     def reset_runtime_state(self):
-        if self._action_bus is not None:
-            from pet_harness.app.commands import ActionCommand
-            if self._action_bus.execute(ActionCommand("reset", source="ui")).status == "ok":
-                return
-        self._reset_runtime_state_legacy()
-
-    def _reset_runtime_state_legacy(self):
-        self._action_dispatcher.reset_runtime_state()
-        self.stop_music()
-        self.stop_motion_loop()
-        self.clear_panel_video()
-        self.clear_conversation_turns()
+        from pet_harness.app.commands import ActionCommand
+        if self._action_bus is None:
+            raise RuntimeError("TransparentWindow requires an action bus")
+        self._action_bus.execute(ActionCommand("reset", source="ui"))
         self.set_conversation_queue_depth(0)
         self._hide_developer_input()
         self._run_javascript("resetRoomState")

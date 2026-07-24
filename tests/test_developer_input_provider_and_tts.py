@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from unittest.mock import MagicMock
 
-from action_dispatcher import ActionDispatcher
+from action_dispatcher import MotionCoordinator
 from pet_harness.ui.pyqt_harness_adapter import PyQtHarnessAdapter
 from ui.transparent_window import TransparentWindow
 
@@ -200,7 +200,7 @@ def test_motion_loop_does_not_restore_idle_until_host_stops_it():
 
 
 def test_action_waits_for_audio_driver_when_tts_sync_is_requested():
-    dispatcher = ActionDispatcher(MagicMock(), MagicMock(), tts_enabled=False)
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
     try:
         binding = dispatcher._bindings["laugh"]
         dispatcher._start_pending_action("trace-1", binding, wait_for_tts_start=True)
@@ -219,7 +219,7 @@ def test_action_waits_for_audio_driver_when_tts_sync_is_requested():
 
 
 def test_harness_motion_key_outside_whitelist_uses_tts_synced_binding():
-    dispatcher = ActionDispatcher(MagicMock(), MagicMock(), tts_enabled=False)
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
     try:
         dispatcher._find_motion_path = MagicMock(return_value="assets/music_idle.webm")
 
@@ -242,7 +242,7 @@ def test_harness_motion_key_outside_whitelist_uses_tts_synced_binding():
 
 def test_unknown_action_without_motion_file_still_fails_closed():
     window = MagicMock()
-    dispatcher = ActionDispatcher(window, MagicMock(), tts_enabled=False)
+    dispatcher = MotionCoordinator(window, MagicMock(), tts_enabled=False)
     try:
         dispatcher._find_motion_path = MagicMock(return_value=None)
 
@@ -255,7 +255,7 @@ def test_unknown_action_without_motion_file_still_fails_closed():
 
 
 def test_final_tts_segment_closes_trace_so_motion_can_return_to_idle():
-    dispatcher = ActionDispatcher(MagicMock(), MagicMock(), tts_enabled=False)
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
     try:
         dispatcher._audio_worker.close_trace_session = MagicMock()
         dispatcher._trace_pending_tts_counts["trace-1"] = 1

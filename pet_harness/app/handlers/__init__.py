@@ -4,6 +4,7 @@ from .motion_only_handler import MotionOnlyHandler
 from .news_handler import NewsHandler
 from .quick_intent_handler import QuickIntentHandler
 from .reset_handler import ResetHandler
+from .speak_handler import SpeakHandler
 from .wave_handler import WaveHandler
 
-__all__ = ("ConversationHandler", "NewsHandler", "MusicHandler", "WaveHandler", "QuickIntentHandler", "MotionOnlyHandler", "ResetHandler")
+__all__ = ("ConversationHandler", "NewsHandler", "MusicHandler", "WaveHandler", "QuickIntentHandler", "MotionOnlyHandler", "ResetHandler", "SpeakHandler")

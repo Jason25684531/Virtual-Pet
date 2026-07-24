@@ -25,13 +25,6 @@ class RuntimeLifecycle:
     def register(self, runtime: ManagedRuntime) -> None:
         self._runtimes.append(runtime)
 
-    def start_all(self) -> None:
-        for runtime in self._runtimes:
-            try:
-                runtime.start()
-            except Exception:  # non-critical runtimes fail open
-                LOGGER.warning("runtime start failed: %s", runtime.name, exc_info=True)
-
     def shutdown_all(self, wait_ms: int = 5000) -> None:
         for runtime in reversed(self._runtimes):
             try:

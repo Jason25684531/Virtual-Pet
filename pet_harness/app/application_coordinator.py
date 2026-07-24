@@ -10,8 +10,9 @@ from pet_harness.runtime.provider_runtime import ProviderRuntime, migrate_legacy
 from .action_bus import ActionBus
 from .event_bus import EventBus, SimpleEventBus
 from .runtime_lifecycle import RuntimeLifecycle
-from .handlers import MusicHandler, MotionOnlyHandler, NewsHandler, QuickIntentHandler, ResetHandler, WaveHandler
+from .handlers import MusicHandler, MotionOnlyHandler, NewsHandler, QuickIntentHandler, ResetHandler, SpeakHandler, WaveHandler
 from .handlers.conversation_handler import ConversationHandler
+from .ports.motion_port import MotionPort
 
 
 class ApplicationCoordinator:
@@ -33,8 +34,7 @@ class ApplicationCoordinator:
         self._events = event_bus or SimpleEventBus()
         self._lifecycle = lifecycle or RuntimeLifecycle()
         self._bus = ActionBus(self._events)
-        for handler in (NewsHandler(self._events), MusicHandler(self._events), WaveHandler(self._events), QuickIntentHandler(self._events), MotionOnlyHandler(self._events), ResetHandler(self._events)):
-            self._bus.register(handler)
+        self._motion_configured = False
         self.provider_runtime = provider_runtime or ProviderRuntime()
         self.character_registry = character_registry or CharacterRegistry()
         migrate_legacy_provider_config(self.provider_runtime)
@@ -62,6 +62,13 @@ class ApplicationCoordinator:
 
     def shutdown(self) -> None:
         self._lifecycle.shutdown_all()
+
+    def configure_motion(self, motion: MotionPort) -> None:
+        if self._motion_configured:
+            raise RuntimeError("motion already configured")
+        for handler in (NewsHandler(motion), MusicHandler(motion), WaveHandler(motion), QuickIntentHandler(motion), SpeakHandler(motion), MotionOnlyHandler(motion), ResetHandler(motion)):
+            self._bus.register(handler)
+        self._motion_configured = True
 
     def configure_conversation(self, conversation, executor) -> None:
         self._bus.register(ConversationHandler(conversation, executor, self._events))
