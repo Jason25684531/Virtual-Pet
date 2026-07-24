@@ -21,11 +21,15 @@ class ManagedRuntime(ABC):
 class RuntimeLifecycle:
     def __init__(self) -> None:
         self._runtimes: list[ManagedRuntime] = []
+        self._shutdown = False
 
     def register(self, runtime: ManagedRuntime) -> None:
         self._runtimes.append(runtime)
 
     def shutdown_all(self, wait_ms: int = 5000) -> None:
+        if self._shutdown:
+            return
+        self._shutdown = True
         for runtime in reversed(self._runtimes):
             try:
                 runtime.stop(wait_ms)

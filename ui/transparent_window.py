@@ -13,7 +13,7 @@ import sys
 import time
 from uuid import uuid4
 
-from PyQt5.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer, QUrl, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QEvent, QObject, QPoint, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWidgets import (
@@ -128,33 +128,6 @@ class DeveloperInputLineEdit(QLineEdit):
         super().focusOutEvent(event)
         if callable(self._focus_lost_callback):
             QTimer.singleShot(0, self._focus_lost_callback)
-
-
-class HarnessInteractionWorker(QThread):
-    finished_payload = pyqtSignal(dict)
-    failed_message = pyqtSignal(str)
-
-    def __init__(self, adapter: PyQtHarnessAdapter, text: str, parent=None) -> None:
-        super().__init__(parent)
-        self._adapter = adapter
-        self._text = text
-
-    def run(self) -> None:
-        # ponytail: print,不是 logging——這個 App 從未呼叫 logging.basicConfig(),
-        # LOGGER.info/warning 預設不會輸出到主控台。
-        print(f"[HARNESS] received text: {self._text!r}")
-        try:
-            payload = self._adapter.handle_text_input(self._text)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[HARNESS] handle_text_input failed: {exc}")
-            self.failed_message.emit(str(exc))
-            return
-        reply_preview = str(payload.get("reply") or "")[:120]
-        print(
-            f"[HARNESS] reply={reply_preview!r} matched_skill={payload.get('matched_skill')} "
-            f"tool_status={(payload.get('tool') or {}).get('status')}"
-        )
-        self.finished_payload.emit(payload)
 
 
 class HarnessUiBridge(QObject):
@@ -281,27 +254,29 @@ class TransparentWindow(QMainWindow):
         self,
         brain_mode: str = "harness",
         latency_tracker: InteractionLatencyTracker | None = None,
+        library: CharacterLibrary | None = None,
         adapter: PyQtHarnessAdapter | None = None,
-        dispatcher_factory=None,
         lifecycle_shutdown=None,
         action_bus=None,
     ):
         super().__init__()
         self._brain_mode = brain_mode
-        self._library = CharacterLibrary()
+        self._library = library or CharacterLibrary()
         self._latency_tracker = latency_tracker
         self._runtime_contract = {"brain_mode": "harness", "harness_runtime_available": True, "live_runtime_available": False, "openclaw_enabled": False}
         self._background_resolver = BackgroundResolver()
         self._voice_status_adapter = VoiceRuntimeStatusAdapter()
         if adapter is None:
             raise ValueError("TransparentWindow requires an injected PyQtHarnessAdapter")
-        if dispatcher_factory is None:
-            raise ValueError("TransparentWindow requires an injected dispatcher factory")
+        if action_bus is None:
+            raise ValueError("TransparentWindow requires an injected action bus")
+        if lifecycle_shutdown is None:
+            raise ValueError("TransparentWindow requires an injected lifecycle shutdown")
         self._adapter = adapter
         self._lifecycle_shutdown = lifecycle_shutdown
         self._action_bus = action_bus
+        self._motion_coordinator = None
         self._settings_dialog = None
-        self._interaction_worker: HarnessInteractionWorker | None = None
         self._conversation_pending = False
         self._character_x_offset = self.DEFAULT_CHARACTER_X_OFFSET
         self._character_y_offset = self.DEFAULT_CHARACTER_Y_OFFSET
@@ -327,15 +302,17 @@ class TransparentWindow(QMainWindow):
         self._js_gateway = JsGateway(lambda: self.web_view.page(), self.RAW_JAVASCRIPT_MARKER)
         self._init_drag_surface()
         self._init_developer_input()
-        self._action_dispatcher = dispatcher_factory(self, self._library, self._latency_tracker)
-        # 將 panel video 結束回調掛上 web page（JS → Python 通知）
-        web_page = self.web_view.page()
-        if isinstance(web_page, EchoesWebPage):
-            web_page.panel_ended_callback = self._action_dispatcher._on_panel_video_ended
-            web_page.main_video_ended_callback = self._action_dispatcher._on_main_video_ended
-            web_page.room_audio_ended_callback = self._action_dispatcher._on_room_audio_ended
         self._move_to_bottom_right()
         self._init_tray()
+
+    def configure_motion(self, coordinator) -> None:
+        """Receive the composition-root-owned coordinator and its JS callbacks."""
+        self._motion_coordinator = coordinator
+        web_page = self.web_view.page()
+        if isinstance(web_page, EchoesWebPage):
+            web_page.panel_ended_callback = coordinator._on_panel_video_ended
+            web_page.main_video_ended_callback = coordinator._on_main_video_ended
+            web_page.room_audio_ended_callback = coordinator._on_room_audio_ended
 
     # ── 視窗初始化 ──────────────────────────────────────────
 
@@ -894,8 +871,9 @@ class TransparentWindow(QMainWindow):
     def is_busy(self) -> bool:
         return (
             self._stt_listening
-            or self._action_dispatcher.is_tts_busy
-            or self._action_dispatcher.has_active_motion
+            or (self._motion_coordinator is not None and (
+                self._motion_coordinator.is_tts_busy or self._motion_coordinator.has_active_motion
+            ))
         )
 
     def dispatch_action(
@@ -964,7 +942,7 @@ class TransparentWindow(QMainWindow):
         self._apply_stt_button_state()
 
     def set_stt_controller(self, controller) -> None:
-        """依賴注入：main.py 組裝 SttController 後呼叫，供 shutdown_background_tasks 釋放資源。"""
+        """Receive the composition-root-created STT controller for UI state updates."""
         self._stt_controller = controller
 
     def set_stt_available(self, available: bool):
@@ -1104,6 +1082,7 @@ class TransparentWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._stop_playtime_session()
+        self._lifecycle_shutdown()
         super().closeEvent(event)
 
     def _emit_cached_intent_request(self, intent_name: str, trigger_source: str):
@@ -1184,36 +1163,18 @@ class TransparentWindow(QMainWindow):
         if not cleaned:
             self.set_action_status("Please enter text first.", tone="warn", timeout_ms=2200)
             return
-        if self._interaction_worker is not None:
+        if self._conversation_pending:
             self.set_action_status("Interaction already running.", tone="warn", timeout_ms=2200)
             return
-
-        if getattr(self, "_action_bus", None) is not None:
-            if getattr(self, "_conversation_pending", False):
-                self.set_action_status("Interaction already running.", tone="warn", timeout_ms=2200)
-                return
-            from pet_harness.app.commands import ActionCommand
-            self._conversation_pending = True
-            self._set_agentic_busy(True)
-            self.set_action_status("Processing interaction...", tone="working", timeout_ms=0)
-            result = self._action_bus.execute(ActionCommand("conversation", cleaned, source="ui"))
-            if result.status != "ok":
-                self._conversation_pending = False
-                self._set_agentic_busy(False)
-                self.set_action_status(result.reason or "Interaction rejected.", tone="warn", timeout_ms=2200)
-            return
-
+        from pet_harness.app.commands import ActionCommand
+        self._conversation_pending = True
         self._set_agentic_busy(True)
         self.set_action_status("Processing interaction...", tone="working", timeout_ms=0)
-        self._interaction_worker = HarnessInteractionWorker(self._adapter, cleaned, self)
-        self._interaction_worker.finished_payload.connect(self._on_agentic_result)
-        self._interaction_worker.failed_message.connect(self._on_agentic_error)
-        self._interaction_worker.finished.connect(self._clear_interaction_worker)
-        self._interaction_worker.start()
-
-    def _on_agentic_result(self, payload: dict) -> None:
-        self.consume_interaction_result(payload, message="Interaction complete.")
-        self._set_agentic_busy(False)
+        result = self._action_bus.execute(ActionCommand("conversation", cleaned, source="ui"))
+        if result.status != "ok":
+            self._conversation_pending = False
+            self._set_agentic_busy(False)
+            self.set_action_status(result.reason or "Interaction rejected.", tone="warn", timeout_ms=2200)
 
     def _on_action_bus_conversation(self, payload: dict) -> None:
         self.consume_interaction_result(payload, message="Interaction complete.")
@@ -1272,11 +1233,6 @@ class TransparentWindow(QMainWindow):
     def _on_agentic_error(self, message: str) -> None:
         self._set_agentic_busy(False)
         self.refresh_agentic_ui(message=message, tone="error", timeoutMs=4800)
-
-    def _clear_interaction_worker(self) -> None:
-        if self._interaction_worker is not None:
-            self._interaction_worker.deleteLater()
-        self._interaction_worker = None
 
     def toggle_skill(self, skill_id: str, enabled: bool) -> None:
         try:
@@ -1424,23 +1380,18 @@ class TransparentWindow(QMainWindow):
 
     def reset_runtime_state(self):
         from pet_harness.app.commands import ActionCommand
-        if self._action_bus is None:
-            raise RuntimeError("TransparentWindow requires an action bus")
         self._action_bus.execute(ActionCommand("reset", source="ui"))
+
+    def reset_presentation(self):
         self.set_conversation_queue_depth(0)
         self._hide_developer_input()
+        self.stop_music()
+        self.stop_motion_loop()
+        self.clear_panel_video()
+        self.clear_conversation_turns()
         self._run_javascript("resetRoomState")
         self.restore_idle_video()
         self.set_action_status("已重置，等待下一次互動。", tone="idle", timeout_ms=2400)
-
-    def shutdown_background_tasks(self):
-        if callable(getattr(self, "_lifecycle_shutdown", None)):
-            self._lifecycle_shutdown()
-            return
-        if self._stt_controller is not None:
-            self._stt_controller.shutdown()
-        self._action_dispatcher.shutdown()
-        self._adapter.shutdown()
 
     def get_current_character_id(self) -> str | None:
         """UI 動作/idle/聲線一律以 router snapshot 為唯一 active character 來源。"""

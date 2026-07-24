@@ -90,6 +90,7 @@ def _build_stt_controller(window):
 
 
 def _run_harness_mode(app):
+    from character_library import CharacterLibrary
     from action_dispatcher import MotionCoordinator
     from interaction_trace import InteractionLatencyTracker
     from pet_harness.app.application_coordinator import ApplicationCoordinator
@@ -112,23 +113,24 @@ def _run_harness_mode(app):
         character_router=coordinator.character_router,
         character_registry=coordinator.character_registry,
     )
+    library = CharacterLibrary()
     window = TransparentWindow(
         brain_mode="harness",
         latency_tracker=latency_tracker,
+        library=library,
         adapter=adapter,
-        dispatcher_factory=lambda host, library, tracker: MotionCoordinator(
-            host, library, latency_tracker=tracker, parent=host
-        ),
         lifecycle_shutdown=coordinator.shutdown,
         action_bus=coordinator.action_bus,
     )
-    coordinator.configure_motion(MotionPortAdapter(window._action_dispatcher, window))
+    motion = MotionCoordinator(window, library, latency_tracker=latency_tracker, parent=window)
+    window.configure_motion(motion)
+    coordinator.configure_motion(MotionPortAdapter(motion, window))
     PresentationEventBinder(window, coordinator.event_bus)
     coordinator.configure_conversation(adapter, QtBackgroundExecutor(window))
 
     stt_controller = _build_stt_controller(window)
     coordinator.lifecycle.register(CallbackRuntime("adapter", lambda _wait_ms: adapter.shutdown()))
-    coordinator.lifecycle.register(CallbackRuntime("dispatcher", window._action_dispatcher.shutdown))
+    coordinator.lifecycle.register(CallbackRuntime("motion", motion.shutdown))
     if stt_controller is not None:
         coordinator.lifecycle.register(CallbackRuntime("stt", lambda _wait_ms: stt_controller.shutdown()))
 

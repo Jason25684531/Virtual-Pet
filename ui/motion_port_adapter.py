@@ -21,7 +21,4 @@ class MotionPortAdapter(MotionPort):
 
     def reset(self):
         self._coordinator.reset_runtime_state()
-        self._window.stop_music()
-        self._window.stop_motion_loop()
-        self._window.clear_panel_video()
-        self._window.clear_conversation_turns()
+        self._window.reset_presentation()

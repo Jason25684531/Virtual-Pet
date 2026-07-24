@@ -23,7 +23,6 @@ def test_quick_intent_bridge_and_overlay_aliases_reach_their_command_entries():
 def test_submit_agentic_text_sends_a_conversation_command_to_action_bus():
     commands = []
     window = SimpleNamespace(
-        _interaction_worker=None,
         _action_bus=SimpleNamespace(execute=lambda command: commands.append(command) or SimpleNamespace(status="ok")),
         _conversation_pending=False,
         _set_agentic_busy=lambda active: None,

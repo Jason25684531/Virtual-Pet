@@ -17,4 +17,4 @@ def test_motion_port_adapter_delegates_to_existing_coordinator():
     coordinator.trigger_cached_intent.assert_called_once_with("joke", "test")
     coordinator.speak_text.assert_called_once_with("hello", trace_id=None, has_action=True)
     coordinator.reset_runtime_state.assert_called_once()
-    window.clear_conversation_turns.assert_called_once()
+    window.reset_presentation.assert_called_once()

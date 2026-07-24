@@ -44,3 +44,21 @@ def test_legacy_execution_names_do_not_return():
             if "ActionDispatcher" in source:
                 violations.append(str(path))
     assert not violations, "Legacy execution names returned: " + ", ".join(violations)
+
+
+def test_conversation_has_no_worker_or_adapter_fallback():
+    source = (Path(__file__).parents[1] / "ui" / "transparent_window.py").read_text(encoding="utf-8")
+    assert "HarnessInteractionWorker" not in source
+    assert "_adapter.handle_text_input" not in source
+    assert "_interaction_worker" not in source
+
+
+def test_composition_root_does_not_reach_into_window_private_state():
+    source = (Path(__file__).parents[1] / "main.py").read_text(encoding="utf-8")
+    assert "window._" not in source
+
+
+def test_window_only_requests_lifecycle_shutdown_and_does_not_manage_motion_shutdown():
+    source = (Path(__file__).parents[1] / "ui" / "transparent_window.py").read_text(encoding="utf-8")
+    assert "shutdown_background_tasks" not in source
+    assert "_motion_coordinator.shutdown(" not in source

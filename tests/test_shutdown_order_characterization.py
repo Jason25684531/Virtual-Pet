@@ -1,6 +1,6 @@
 """P0 baseline: shutdown remains STT -> dispatcher -> adapter until lifecycle owns it."""
 
-from ui.transparent_window import TransparentWindow
+from pet_harness.app.runtime_lifecycle import CallbackRuntime, RuntimeLifecycle
 
 
 class _Recorder:
@@ -12,14 +12,14 @@ class _Recorder:
         self._events.append(self._name)
 
 
-def test_window_shutdown_keeps_legacy_order():
+def test_lifecycle_shutdown_is_idempotent_and_keeps_reverse_order():
     events = []
+    lifecycle = RuntimeLifecycle()
+    lifecycle.register(CallbackRuntime("adapter", lambda _wait: events.append("adapter")))
+    lifecycle.register(CallbackRuntime("motion", lambda _wait: events.append("motion")))
+    lifecycle.register(CallbackRuntime("stt", lambda _wait: events.append("stt")))
 
-    class Window:
-        _stt_controller = _Recorder(events, "stt")
-        _action_dispatcher = _Recorder(events, "dispatcher")
-        _adapter = _Recorder(events, "adapter")
+    lifecycle.shutdown_all()
+    lifecycle.shutdown_all()
 
-    TransparentWindow.shutdown_background_tasks(Window())
-
-    assert events == ["stt", "dispatcher", "adapter"]
+    assert events == ["stt", "motion", "adapter"]
