@@ -63,7 +63,7 @@ class FasterWhisperSTT(BaseSTT):
                 return
             try:
                 _register_windows_cuda_dll_directories()
-                from faster_whisper import WhisperModel
+                from faster_whisper import WhisperModel #匯入模型
 
                 self._model = WhisperModel(
                     self._model_name,

@@ -21,7 +21,7 @@ class OllamaProvider:
         matched_skill: Skill | None = None,
         prompt_text: str | None = None,
     ) -> ProviderReply:
-        base_url = self.config.base_url or "http://localhost:11434"
+        base_url = self.config.base_url or "http://localhost:11434" # IP Calling
         prompt = prompt_text or event.text
         try:
             response = self.request_fn(

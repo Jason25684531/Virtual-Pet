@@ -13,6 +13,7 @@ from pet_harness.tools.tool_models import ToolResult
 
 DEFAULT_USER_ID = "default"
 
+#DB儲存邏輯
 
 class SQLiteStore:
     def __init__(self, db_path: str | Path = Path("data") / "pet_state.db") -> None:

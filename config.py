@@ -206,7 +206,7 @@ ASSET_GENERATION_CONTEXT_MAX_CHARS = _read_int_env("ASSET_GENERATION_CONTEXT_MAX
 
 # --- Faster Whisper STT（toggle-recording，Week 4） ---
 STT_ENABLED = _read_bool_env("STT_ENABLED", True)
-STT_MODEL = os.getenv("STT_MODEL", "large-v3-turbo").strip() or "large-v3-turbo"
+STT_MODEL = os.getenv("STT_MODEL", "large-v3-turbo").strip() or "large-v3-turbo" #Whisper Model
 STT_DEVICE = os.getenv("STT_DEVICE", "cuda").strip() or "cuda"
 STT_COMPUTE_TYPE = os.getenv("STT_COMPUTE_TYPE", "float16").strip() or "float16"
 STT_MODEL_PATH = os.getenv("STT_MODEL_PATH", str(PROJECT_ROOT / "runtime_cache" / "whisper")).strip()
