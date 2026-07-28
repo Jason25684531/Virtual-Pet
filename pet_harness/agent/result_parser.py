@@ -15,6 +15,38 @@ _RAW_PREVIEW_LIMIT = 200
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
+def parse_fenced_json(raw_text: str) -> object | None:
+    """Parse the first complete JSON object or array, with an optional fence."""
+    starts = [index for index in (raw_text.find("{"), raw_text.find("[")) if index != -1]
+    if not starts:
+        return None
+    start = min(starts)
+    closing = {"{": "}", "[": "]"}
+    stack: list[str] = []
+    in_string = escape = False
+    for index in range(start, len(raw_text)):
+        char = raw_text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in closing:
+            stack.append(closing[char])
+        elif stack and char == stack[-1]:
+            stack.pop()
+            if not stack:
+                try:
+                    return json.loads(raw_text[start : index + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
 class ResultParser:
     def __init__(self, default_reply: str = "I heard you, but I had trouble understanding that response.") -> None:
         self.default_reply = default_reply
@@ -67,34 +99,8 @@ class ResultParser:
         """找出第一個「括號平衡」的 {...} 區塊再交給 json.loads;比非貪婪 regex
         更耐長內容/巢狀結構,也不要求一定要有收尾的 ``` fence(小型本地模型偶爾
         會忘記把 fence 補完整)。"""
-        start = raw_text.find("{")
-        if start == -1:
-            return None
-        depth = 0
-        in_string = False
-        escape = False
-        for index in range(start, len(raw_text)):
-            char = raw_text[index]
-            if in_string:
-                if escape:
-                    escape = False
-                elif char == "\\":
-                    escape = True
-                elif char == '"':
-                    in_string = False
-                continue
-            if char == '"':
-                in_string = True
-            elif char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        return json.loads(raw_text[start : index + 1])
-                    except json.JSONDecodeError:
-                        return None
-        return None
+        payload = parse_fenced_json(raw_text)
+        return payload if isinstance(payload, dict) else None
 
     @staticmethod
     def _extract_reply_field(raw_text: str) -> str | None:

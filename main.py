@@ -7,6 +7,7 @@ from __future__ import annotations
 import signal
 import sys
 import threading
+import logging
 
 
 def _configure_sigint_timer(app):
@@ -180,6 +181,7 @@ def _preload_onnx_runtime():
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     print("[ECHOES] brain mode: harness")
     _preload_onnx_runtime()
 

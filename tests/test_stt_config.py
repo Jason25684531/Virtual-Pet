@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 
 import config
+import dotenv
 
 
 def _reload_config():
@@ -35,6 +36,7 @@ def test_stt_defaults_when_unset(monkeypatch):
 
 
 def test_stt_vad_defaults_to_disabled_with_documented_thresholds(monkeypatch):
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *_args, **_kwargs: False)
     for name in ("STT_VAD_ENABLED", "STT_VAD_SILENCE_MS", "STT_VAD_THRESHOLD"):
         monkeypatch.delenv(name, raising=False)
     reloaded = _reload_config()

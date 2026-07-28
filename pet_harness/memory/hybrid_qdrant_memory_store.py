@@ -12,7 +12,7 @@ from pet_harness.memory.sparse_encoder import JiebaBm25SparseEncoder
 class HybridQdrantMemoryStore(BaseMemoryStore, BaseHybridIndex):
     """Per-character hybrid search index; SQLite remains the source of truth."""
 
-    MAX_ITEMS = 750
+    MAX_ITEMS = 500
 
     def __init__(
         self,
@@ -41,7 +41,7 @@ class HybridQdrantMemoryStore(BaseMemoryStore, BaseHybridIndex):
         if self._client is None:
             self._client = QdrantClient(path=str(path))
         if self._dense_encoder is None:
-            from fastembed import TextEmbedㄐng
+            from fastembed import TextEmbedding
 
             self._dense_encoder = TextEmbedding("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
         names = {item.name for item in self._client.get_collections().collections}

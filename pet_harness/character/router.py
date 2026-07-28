@@ -63,37 +63,33 @@ class CharacterRouter:
     def switch_character(self, character_id: str) -> CharacterProfile:
         """切換 active 角色;character_id 不存在時拋出例外且不影響現有 active。"""
         profile = self._registry.load_character(character_id)
-
-        memory_store = self._memory_store_factory(character_id, profile)
-        # 注入 runtime 本身(滿足 LLMProviderAdapter 協定):configure() 之後
-        # 不需要重建 engine,下一個請求自動使用新 adapter。
-        engine = PetHarnessEngine(
-            provider=self._provider_runtime,
-            character_id=character_id,
-            agentic_root=self._agentic_root,
-            memory_store=memory_store,
-            semantic_index_enabled=self._semantic_index_enabled,
-        )
-        profile = engine.character_profile or profile
-        snapshot = ActiveCharacterSnapshot(
-            character_id=profile.character_id,
-            name=profile.name,
-            profile=profile,
-            motions=dict(profile.motions),
-            idle_pool=tuple(profile.idle_pool),
-            background_image=profile.background_image,
-            layout=dict(profile.layout),
-            voice_id_env_key=profile.voice_id_env_key,
-            skill_refs=tuple(skill.name for skill in engine.skills),
-        )
-        # profile/engine/snapshot 全部就緒後才一次替換,避免消費者看到分裂狀態。
         with self._lock:
             previous_engine = self._active_engine
+            if previous_engine is not None:
+                self._retire_engine(previous_engine)
+            memory_store = self._memory_store_factory(character_id, profile)
+            engine = PetHarnessEngine(
+                provider=self._provider_runtime,
+                character_id=character_id,
+                agentic_root=self._agentic_root,
+                memory_store=memory_store,
+                semantic_index_enabled=self._semantic_index_enabled,
+            )
+            profile = engine.character_profile or profile
+            snapshot = ActiveCharacterSnapshot(
+                character_id=profile.character_id,
+                name=profile.name,
+                profile=profile,
+                motions=dict(profile.motions),
+                idle_pool=tuple(profile.idle_pool),
+                background_image=profile.background_image,
+                layout=dict(profile.layout),
+                voice_id_env_key=profile.voice_id_env_key,
+                skill_refs=tuple(skill.name for skill in engine.skills),
+            )
             self._active_profile = profile
             self._active_engine = engine
             self._active_snapshot = snapshot
-            if previous_engine is not None:
-                self._retire_engine(previous_engine)
         return profile
 
     def shutdown(self) -> None:

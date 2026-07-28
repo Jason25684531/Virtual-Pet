@@ -9,5 +9,5 @@ def test_whole_turn_extractor_is_fail_open_fallback():
 
 def test_llm_extractor_uses_structured_user_grounded_candidates_and_falls_back():
     extractor = LlmMemoryExtractor(lambda _user, _reply: '[{"memory_key":"food","memory_type":"semantic","text":"喜歡蘋果"}]')
-    assert extractor.extract("e1", "我喜歡蘋果", "知道了")[0].memory_key == "food"
+    assert extractor.extract("e1", "我喜歡蘋果", "知道了")[0].memory_key == "使用者.喜好"
     assert LlmMemoryExtractor(lambda *_: "invalid").extract("e1", "我喜歡蘋果", "知道了")[0].memory_type == "episodic"

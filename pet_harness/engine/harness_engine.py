@@ -469,6 +469,7 @@ class PetHarnessEngine:
         prompt = (
             "Extract only user-stated facts, or explicit assistant promises, as a JSON array. "
             "Each item must contain memory_key, memory_type (semantic or episodic), and text. "
+            "memory_key must be exactly 使用者.<屬性> or 角色.<屬性>. "
             "Never include character profile claims or assistant guesses.\n"
             f"User: {user_text}\nAssistant: {reply}"
         )
@@ -483,7 +484,13 @@ class PetHarnessEngine:
             f"Current user: {request.current_turn_text}"
         )
         response = self.provider.generate_reply(UserEvent(text=request.current_turn_text, source="query_rewriter"), prompt_text=prompt)
-        return response.raw_text or response.reply
+        text = (response.raw_text or response.reply).strip()
+        if text.startswith("```"):
+            lines = text.splitlines()[1:]
+            if lines and lines[-1].strip() == "```":
+                lines.pop()
+            return "\n".join(lines).strip()
+        return text
 
     def debug_status(self) -> dict[str, Any]:
         return {
