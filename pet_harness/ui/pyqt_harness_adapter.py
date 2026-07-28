@@ -42,16 +42,11 @@ LOGGER = logging.getLogger(__name__)
 
 def _qdrant_memory_store_factory(character_id: str, profile) -> object:
     """Desktop-only memory adapter; the domain receives this as an injected factory."""
-    import config
-    from pet_harness.memory.qdrant_memory_store import QdrantMemoryStore
+    from pet_harness.memory.hybrid_qdrant_memory_store import HybridQdrantMemoryStore
 
-    return QdrantMemoryStore(
+    return HybridQdrantMemoryStore(
         character_id=character_id,
-        collection=profile.qdrant_collection,
         path=f"data/characters/{character_id}/qdrant",
-        model=config.SEMANTIC_ROUTING_MODEL,
-        mode=config.QDRANT_MODE,
-        url=config.QDRANT_URL,
     )
 
 

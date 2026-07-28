@@ -21,12 +21,15 @@ def _fake_window():
 
 def test_stt_disabled_creates_zero_stt_objects(monkeypatch):
     monkeypatch.setattr(config, "STT_ENABLED", False)
+    monkeypatch.setattr(config, "STT_VAD_ENABLED", False)
     fw_ctor = MagicMock()
     mic_ctor = MagicMock()
     controller_ctor = MagicMock()
+    vad_ctor = MagicMock()
     monkeypatch.setattr("sensors.faster_whisper_stt.FasterWhisperSTT", fw_ctor)
     monkeypatch.setattr("sensors.microphone_recorder.MicrophoneRecorder", mic_ctor)
     monkeypatch.setattr("sensors.stt_controller.SttController", controller_ctor)
+    monkeypatch.setattr("sensors.silero_vad.SileroVad", vad_ctor)
     window = _fake_window()
 
     result = main._build_stt_controller(window)
@@ -35,12 +38,14 @@ def test_stt_disabled_creates_zero_stt_objects(monkeypatch):
     fw_ctor.assert_not_called()
     mic_ctor.assert_not_called()
     controller_ctor.assert_not_called()
+    vad_ctor.assert_not_called()
     window.set_stt_available.assert_called_once_with(False)
     window.set_stt_controller.assert_not_called()
 
 
 def test_stt_enabled_wires_controller_signals_to_existing_ui_entries(monkeypatch):
     monkeypatch.setattr(config, "STT_ENABLED", True)
+    monkeypatch.setattr(config, "STT_VAD_ENABLED", False)
     fake_provider = MagicMock(name="provider")
     fake_recorder = MagicMock(name="recorder")
     fake_controller = MagicMock(name="controller")
@@ -71,10 +76,69 @@ def test_stt_enabled_wires_controller_signals_to_existing_ui_entries(monkeypatch
     window.set_stt_available.assert_called_once_with(False)
 
 
+def test_vad_enabled_creates_and_injects_vad(monkeypatch):
+    monkeypatch.setattr(config, "STT_ENABLED", True)
+    monkeypatch.setattr(config, "STT_VAD_ENABLED", True)
+    monkeypatch.setattr(config, "STT_VAD_SILENCE_MS", 800)
+    monkeypatch.setattr(config, "STT_VAD_THRESHOLD", 0.5)
+    fake_vad = MagicMock(name="vad")
+    vad_ctor = MagicMock(return_value=fake_vad)
+    controller_ctor = MagicMock(return_value=MagicMock(name="controller"))
+    monkeypatch.setattr("sensors.silero_vad.SileroVad", vad_ctor)
+    monkeypatch.setattr(
+        "sensors.faster_whisper_stt.FasterWhisperSTT", MagicMock(return_value=MagicMock())
+    )
+    monkeypatch.setattr(
+        "sensors.microphone_recorder.MicrophoneRecorder", MagicMock(return_value=MagicMock())
+    )
+    monkeypatch.setattr("sensors.stt_controller.SttController", controller_ctor)
+
+    main._build_stt_controller(_fake_window())
+
+    vad_ctor.assert_called_once_with(silence_ms=800, threshold=0.5)
+    assert controller_ctor.call_args.kwargs["vad"] is fake_vad
+
+
+def test_vad_preload_runs_in_a_separate_background_thread(monkeypatch):
+    monkeypatch.setattr(config, "STT_ENABLED", True)
+    monkeypatch.setattr(config, "STT_VAD_ENABLED", True)
+    fake_vad = MagicMock(name="vad")
+    monkeypatch.setattr("sensors.silero_vad.SileroVad", MagicMock(return_value=fake_vad))
+    monkeypatch.setattr(
+        "sensors.faster_whisper_stt.FasterWhisperSTT", MagicMock(return_value=MagicMock())
+    )
+    monkeypatch.setattr(
+        "sensors.microphone_recorder.MicrophoneRecorder", MagicMock(return_value=MagicMock())
+    )
+    fake_controller = MagicMock(name="controller")
+    monkeypatch.setattr("sensors.stt_controller.SttController", MagicMock(return_value=fake_controller))
+    threads: list[MagicMock] = []
+
+    def _thread(*, target, daemon, name):
+        thread = MagicMock()
+        thread.target = target
+        thread.daemon = daemon
+        thread.name = name
+        threads.append(thread)
+        return thread
+
+    monkeypatch.setattr(main.threading, "Thread", _thread)
+
+    main._build_stt_controller(_fake_window())
+
+    assert len(threads) == 1
+    assert threads[0].target == fake_vad.setup
+    assert threads[0].daemon is True
+    assert threads[0].name == "VadPreload"
+    threads[0].start.assert_called_once()
+    fake_controller.preload_model.assert_called_once()
+
+
 def test_state_changed_mapping_translates_recording_to_listening(monkeypatch):
     """controller 的 RecordingState 用字（recording）與既有 UI 白名單（listening）不同，
     submitting/error 不在白名單內、set_stt_state 既有 fallback 會自動視為 idle。"""
     monkeypatch.setattr(config, "STT_ENABLED", True)
+    monkeypatch.setattr(config, "STT_VAD_ENABLED", False)
     fake_controller = MagicMock(name="controller")
     monkeypatch.setattr(
         "sensors.faster_whisper_stt.FasterWhisperSTT", MagicMock(return_value=MagicMock())

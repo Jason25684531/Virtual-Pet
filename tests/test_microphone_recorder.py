@@ -135,3 +135,20 @@ def test_shutdown_closes_stream(monkeypatch):
 
     assert recorder.is_active is False
     assert streams[0].closed is True
+
+
+def test_incremental_reads_return_each_chunk_once_without_affecting_full_audio(monkeypatch):
+    streams: list[_FakeInputStream] = []
+    _patch_stream(monkeypatch, streams)
+    recorder = MicrophoneRecorder(sample_rate=16000, max_recording_seconds=30)
+    recorder.start()
+
+    streams[0].callback(np.ones((160, 1), dtype=np.float32), 160, None, None)
+    first, cursor = recorder.read_new_chunks(0)
+    streams[0].callback(np.full((160, 1), 2, dtype=np.float32), 160, None, None)
+    second, cursor = recorder.read_new_chunks(cursor)
+
+    assert cursor == 2
+    np.testing.assert_array_equal(first, np.ones(160, dtype=np.float32))
+    np.testing.assert_array_equal(second, np.full(160, 2, dtype=np.float32))
+    np.testing.assert_array_equal(recorder.get_audio(), np.concatenate((first, second)))

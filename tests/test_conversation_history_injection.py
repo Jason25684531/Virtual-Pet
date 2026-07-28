@@ -44,7 +44,7 @@ def test_memory_recall_hits_are_injected_into_prompt(harness_env):
 
     engine.handle_event({"text": "你說看看我喜歡甚麼水果?", "source": "test"})
 
-    assert "## Relevant Memories" in engine.last_prompt
+    assert "## Retrieval Evidence" in engine.last_prompt
     assert "我喜歡的水果是蘋果" in engine.last_prompt
 
 

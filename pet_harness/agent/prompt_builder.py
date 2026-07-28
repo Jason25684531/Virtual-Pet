@@ -30,6 +30,7 @@ class PromptBuilder:
         tool_result: ToolResult | None = None,
         conversation_history: list[dict] | None = None,
         memory_hits: list[MemoryHit] | None = None,
+        retrieval_result=None,
     ) -> PromptBuildResult:
         warnings: list[str] = []
         soul_text = self._read_optional(self.agentic_root / "soul.md", "Soul context unavailable.", warnings)
@@ -74,8 +75,8 @@ class PromptBuilder:
                 "## Conversation History",
                 self._conversation_history_text(conversation_history),
                 "",
-                "## Relevant Memories",
-                self._memory_hits_text(memory_hits),
+                "## Retrieval Evidence",
+                self._memory_hits_text(retrieval_result.evidence if retrieval_result else memory_hits),
                 "",
                 "## User Text",
                 event.text,

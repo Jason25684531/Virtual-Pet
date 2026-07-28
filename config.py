@@ -154,6 +154,7 @@ def _read_float_env(name: str, default: float) -> float:
 
 
 SEMANTIC_ROUTING_ENABLED = _read_bool_env("SEMANTIC_ROUTING_ENABLED", True)
+MEMORY_LLM_REWRITE_ENABLED = _read_bool_env("MEMORY_LLM_REWRITE_ENABLED", False)
 SEMANTIC_ROUTING_SHADOW_MODE = _read_bool_env("SEMANTIC_ROUTING_SHADOW_MODE", True)
 SEMANTIC_ROUTING_MODEL = os.getenv("SEMANTIC_ROUTING_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2").strip()
 SEMANTIC_ROUTING_COLLECTION = os.getenv("SEMANTIC_ROUTING_COLLECTION", "skills").strip() or "skills"
@@ -215,6 +216,9 @@ STT_BEAM_SIZE = _read_int_env("STT_BEAM_SIZE", 1)
 STT_SAMPLE_RATE = _read_int_env("STT_SAMPLE_RATE", 16000)
 STT_MIN_RECORDING_MS = _read_int_env("STT_MIN_RECORDING_MS", 300)
 STT_MAX_RECORDING_SECONDS = _read_int_env("STT_MAX_RECORDING_SECONDS", 30)
+STT_VAD_ENABLED = _read_bool_env("STT_VAD_ENABLED", False)
+STT_VAD_SILENCE_MS = _read_int_env("STT_VAD_SILENCE_MS", 800)
+STT_VAD_THRESHOLD = _read_float_env("STT_VAD_THRESHOLD", 0.5)
 
 LOW_LATENCY_REPLY_POLICY = (
     "即時互動請優先用 1 句短句完成回覆，只有必要時才允許第 2 句。"

@@ -49,12 +49,14 @@ class SttController(QObject):
         provider: BaseSTT,
         min_recording_ms: int,
         sample_rate: int,
+        vad: object | None = None,
     ) -> None:
         super().__init__()
         self._recorder = recorder
         self._provider = provider
         self._min_recording_ms = int(min_recording_ms)
         self._sample_rate = int(sample_rate)
+        self._vad = vad
         self._state = RecordingState.IDLE
         self._state_lock = threading.Lock()
         self._session_thread: threading.Thread | None = None
@@ -138,6 +140,11 @@ class SttController(QObject):
             self._provider.shutdown()
         except Exception:  # noqa: BLE001
             pass
+        if self._vad is not None:
+            try:
+                self._vad.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
 
     # ------------------------------------------------------------------
     # Background work
@@ -180,11 +187,38 @@ class SttController(QObject):
             return
         print(f"[STT] session {session_id} 開始收音...")
 
+        vad_cursor = 0
+        session_vad = self._vad
+        if session_vad is None:
+            print(f"[STT] session {session_id} VAD disabled")
+        else:
+            try:
+                print(f"[STT] session {session_id} VAD ready={session_vad.is_ready()}")
+                session_vad.reset()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[STT] session {session_id} VAD reset failed; continuing manually: {exc}")
+                session_vad = None
+
         # ponytail: 50ms 輪詢 stop/裝置失效/上限旗標，不用多 Event 等待器；
         # 若延遲敏感度提高再改事件驅動。
+        # VAD 只在此 worker 推論，絕不可放進 PortAudio callback 以免阻塞收音。
+        stop_reason = "manual"
         while not stop_event.wait(timeout=0.05):
-            if self._recorder.device_failed.is_set() or self._recorder.max_reached.is_set():
+            if self._recorder.device_failed.is_set():
+                stop_reason = "device"
                 break
+            if self._recorder.max_reached.is_set():
+                stop_reason = "max"
+                break
+            if session_vad is not None and session_vad.is_ready():
+                try:
+                    chunks, vad_cursor = self._recorder.read_new_chunks(vad_cursor)
+                    if len(chunks) and session_vad.feed_audio(chunks):
+                        stop_reason = "vad"
+                        break
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[STT] session {session_id} VAD failed; continuing manually: {exc}")
+                    session_vad = None
 
         if not self._set_state_for_session(session_id, RecordingState.STOPPING):
             self._recorder.stop()
@@ -194,7 +228,7 @@ class SttController(QObject):
         audio = self._recorder.get_audio()
         duration_ms = (len(audio) / self._sample_rate) * 1000.0 if self._sample_rate else 0.0
         print(
-            f"[STT] session {session_id} 停止收音：共 {len(audio)} 筆樣本 "
+            f"[STT] session {session_id} 停止收音（reason={stop_reason}）：共 {len(audio)} 筆樣本 "
             f"(~{duration_ms:.0f}ms，device_failed={self._recorder.device_failed.is_set()})"
         )
 

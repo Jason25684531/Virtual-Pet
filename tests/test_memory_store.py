@@ -39,6 +39,24 @@ def test_null_memory_store_is_fail_open_default():
     store.save_turn("evt-1", "hello", "hi")  # 不得拋例外
 
 
+def test_qdrant_recall_always_returns_a_list_when_ready():
+    """recall() 在 ready 狀態下 MUST 回傳 list,不得回傳 None。
+
+    # ponytail: 真正的守門員是下面那支 subprocess lifecycle 測試,但它要 12 秒且
+    # 需載入 onnxruntime,曾因「太慢」被 deselect,導致 recall() 被攔腰切斷後
+    # 無人發現(recall 回 None → harness_engine.py 的 len(memory_hits) 直接 TypeError,
+    # 每一輪對話都崩)。這支只用 MagicMock,毫秒級,任何情況都不該被排除。
+    """
+    store = object.__new__(QdrantMemoryStore)
+    store._lock = threading.Lock()
+    store._collection = "c"
+    store._status = MemoryStoreStatus("ready")
+    store._client = MagicMock()
+    store._client.query.return_value = []
+
+    assert store.recall("蘋果") == []
+
+
 def test_qdrant_shutdown_closes_client_once_without_initializing_qdrant():
     store = object.__new__(QdrantMemoryStore)
     store._lock = threading.Lock()

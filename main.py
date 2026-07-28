@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import signal
 import sys
+import threading
 
 
 def _configure_sigint_timer(app):
@@ -49,6 +50,19 @@ def _build_stt_controller(window):
     from sensors.microphone_recorder import MicrophoneRecorder
     from sensors.stt_controller import SttController
 
+    vad = None
+    if config.STT_VAD_ENABLED:
+        from sensors.silero_vad import SileroVad
+
+        vad = SileroVad(
+            silence_ms=config.STT_VAD_SILENCE_MS,
+            threshold=config.STT_VAD_THRESHOLD,
+        )
+        print(
+            f"[STT] VAD enabled: silence_ms={config.STT_VAD_SILENCE_MS} "
+            f"threshold={config.STT_VAD_THRESHOLD}"
+        )
+
     provider = FasterWhisperSTT(
         config.STT_MODEL,
         config.STT_DEVICE,
@@ -66,6 +80,7 @@ def _build_stt_controller(window):
         provider,
         min_recording_ms=config.STT_MIN_RECORDING_MS,
         sample_rate=config.STT_SAMPLE_RATE,
+        vad=vad,
     )
 
     window.set_stt_available(False)  # 模型 preload 完成前維持 unavailable
@@ -85,6 +100,9 @@ def _build_stt_controller(window):
         lambda message: window.set_action_status(message, tone="warn", timeout_ms=3200)
     )
     window.set_stt_controller(controller)
+    if vad is not None:
+        # VAD 為選配的 fail-open 元件，setup 不可延遲 UI 或 STT preload。
+        threading.Thread(target=vad.setup, daemon=True, name="VadPreload").start()
     controller.preload_model()
     return controller
 

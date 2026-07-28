@@ -100,6 +100,24 @@ CREATE TABLE IF NOT EXISTS asset_manifest (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS memory_items (
+    memory_id TEXT PRIMARY KEY,
+    character_id TEXT NOT NULL,
+    user_id TEXT NOT NULL DEFAULT 'default',
+    memory_key TEXT NOT NULL,
+    memory_type TEXT NOT NULL,
+    text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    superseded_by TEXT,
+    source_event_id TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    indexed_at TEXT,
+    schema_version INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_memory_items_key ON memory_items(memory_key, status);
+CREATE INDEX IF NOT EXISTS idx_memory_items_pending ON memory_items(indexed_at);
+
 CREATE TABLE IF NOT EXISTS asset_jobs (
     job_id TEXT PRIMARY KEY,
     parent_job_id TEXT,

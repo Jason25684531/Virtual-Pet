@@ -1,0 +1,15 @@
+[
+ {"scenario_id":"pronoun","previous_user":"我喜歡蘋果","previous_assistant":"記住了","current_turn":"那個呢","expected_facts":["喜歡蘋果"],"forbidden_facts":[]},
+ {"scenario_id":"short","previous_user":"我養貓","previous_assistant":"牠叫什麼？","current_turn":"小白","expected_facts":["養貓"],"forbidden_facts":[]},
+ {"scenario_id":"question","previous_user":"我玩太刀","previous_assistant":"目前用哪把？","current_turn":"黑龍","expected_facts":["玩太刀"],"forbidden_facts":[]},
+ {"scenario_id":"assistant_isolation","previous_user":"我喜歡蘋果","previous_assistant":"你喜歡香蕉","current_turn":"我喜歡什麼","expected_facts":["喜歡蘋果"],"forbidden_facts":["喜歡香蕉"]},
+ {"scenario_id":"dense","previous_user":null,"previous_assistant":null,"current_turn":"水果偏好","expected_facts":["喜歡蘋果"],"forbidden_facts":[]},
+ {"scenario_id":"sparse","previous_user":null,"previous_assistant":null,"current_turn":"Bahamut","expected_facts":["Bahamut"],"forbidden_facts":[]},
+ {"scenario_id":"rrf","previous_user":null,"previous_assistant":null,"current_turn":"蘋果 Bahamut","expected_facts":["喜歡蘋果","Bahamut"],"forbidden_facts":[]},
+ {"scenario_id":"isolation","previous_user":null,"previous_assistant":null,"current_turn":"我的偏好","expected_facts":["喜歡蘋果"],"forbidden_facts":["Choppr 偏好"]},
+ {"scenario_id":"expired","previous_user":null,"previous_assistant":null,"current_turn":"昨天活動","expected_facts":[],"forbidden_facts":["昨天活動"]},
+ {"scenario_id":"superseded","previous_user":null,"previous_assistant":null,"current_turn":"我的工作","expected_facts":["新工作"],"forbidden_facts":["舊工作"]},
+ {"scenario_id":"sparse_failure","previous_user":null,"previous_assistant":null,"current_turn":"蘋果","expected_facts":["喜歡蘋果"],"forbidden_facts":[]},
+ {"scenario_id":"empty","previous_user":null,"previous_assistant":null,"current_turn":"不存在資訊","expected_facts":[],"forbidden_facts":[]},
+ {"scenario_id":"promise","previous_user":"明天提醒我喝水","previous_assistant":"我會提醒你","current_turn":"還記得嗎","expected_facts":["提醒喝水"],"forbidden_facts":[]}
+]

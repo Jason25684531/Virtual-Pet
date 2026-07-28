@@ -101,6 +101,15 @@ class MicrophoneRecorder:
                 return np.zeros(0, dtype=np.float32)
             return np.concatenate(self._chunks)
 
+    def read_new_chunks(self, cursor: int) -> tuple[np.ndarray, int]:
+        """Return chunks added since ``cursor`` and the cursor for the next read."""
+        with self._lock:
+            start = min(max(int(cursor), 0), len(self._chunks))
+            new_chunks = self._chunks[start:]
+            if not new_chunks:
+                return np.zeros(0, dtype=np.float32), len(self._chunks)
+            return np.concatenate(new_chunks), len(self._chunks)
+
     def shutdown(self) -> None:
         self.stop()
 

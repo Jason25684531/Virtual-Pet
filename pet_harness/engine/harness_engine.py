@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -54,11 +55,13 @@ class PetHarnessEngine:
         provider_config: ProviderConfig | None = None,
         character_id: str | None = None,
         memory_store: BaseMemoryStore | None = None,
+        memory_retriever=None,
         semantic_index_enabled: bool = False,
     ) -> None:
         self.agentic_root = Path(agentic_root)
         self.snapshot_path = Path(snapshot_path)
         self.memory_store = memory_store or NullMemoryStore()
+        self.memory_retriever = memory_retriever
         self._semantic_index_enabled = semantic_index_enabled
 
         self._character_id = character_id
@@ -70,11 +73,29 @@ class PetHarnessEngine:
 
         self.store = SQLiteStore(effective_db_path)
         self.store.initialize()
+        if self.memory_retriever is None and hasattr(self.memory_store, "index") and hasattr(self.memory_store, "search"):
+            from pet_harness.memory.contextual_memory_retriever import ContextualMemoryRetriever
+            from pet_harness.memory.query_rewriter import LlmQueryRewriter
+            import config
+            rewriter = LlmQueryRewriter(self._rewrite_query, enabled=config.MEMORY_LLM_REWRITE_ENABLED)
+            self.memory_retriever = ContextualMemoryRetriever(
+                self.memory_store, self.memory_store.embed_dense, self.memory_store.sparse_encoder, rewriter
+            )
+        if self.memory_retriever is not None and self._character_id is not None:
+            from pet_harness.memory.memory_extractor import WholeTurnMemoryExtractor
+            from pet_harness.memory.memory_item_repository import MemoryItemRepository
+            self._memory_extractor = WholeTurnMemoryExtractor()
+            self._memory_repository = MemoryItemRepository(self.store, self._character_id)
+        else:
+            self._memory_extractor = self._memory_repository = None
 
         # provider 由 ProviderRuntime 注入;provider_config 僅保留路由偏好,
         # 角色 store 不再持久化任何 provider 設定或狀態。
         self.provider_config = provider_config
         self.provider = provider
+        if self._memory_repository is not None:
+            from pet_harness.memory.memory_extractor import LlmMemoryExtractor
+            self._memory_extractor = LlmMemoryExtractor(self._extract_memory_json)
 
         self.available_skills: list[Skill] = []
         self.skill_load_errors: dict[str, str] = {}
@@ -258,10 +279,19 @@ class PetHarnessEngine:
         tool_first_event, tool_first_result = self._run_tool_first(user_event, deterministic_skill)
 
         conversation_history = list(reversed(self.store.recent_events(limit=6)))
-        memory_hits = self.memory_store.recall(user_event.text, top_k=3)
+        retrieval_result = None
+        if self.memory_retriever is not None:
+            from pet_harness.memory.memory_models import RetrievalRequest
+            from datetime import UTC, datetime
+            from pet_harness.memory.query_rewriter import previous_turn
+            prior_user, prior_assistant, age = previous_turn(conversation_history, datetime.now(UTC))
+            retrieval_result = self.memory_retriever.retrieve(RetrievalRequest(self._character_id or "default", user_event.text, prior_user, prior_assistant, age))
+            memory_hits = retrieval_result.evidence
+        else:
+            memory_hits = self.memory_store.recall(user_event.text, top_k=3)
         memory_status = self.memory_store.status()
 
-        prompt_result = self._build_prompt(user_event, state_before, deterministic_skill, tool_first_result, conversation_history, memory_hits)
+        prompt_result = self._build_prompt(user_event, state_before, deterministic_skill, tool_first_result, conversation_history, memory_hits, retrieval_result)
         provider_reply, agent_result = self._invoke_provider(user_event, deterministic_skill, prompt_result.prompt)
         matched_skill, skill_source = self._parse_and_route(user_event, agent_result, active_capabilities)
         resolved_action, behavior_event = self._resolve_behavior(matched_skill, agent_result)
@@ -299,6 +329,7 @@ class PetHarnessEngine:
                     "memory_status": memory_status.state,
                     "memory_status_reason": memory_status.reason,
                     "memory_hit_count": len(memory_hits),
+                    "retrieval_trace": retrieval_result.trace.to_dict() if retrieval_result else None,
                 },
                 "tool_result": tool_result_payload,
                 "asset_result": asset_result,
@@ -306,6 +337,12 @@ class PetHarnessEngine:
         )
 
         self._persist_and_snapshot(user_event, pet_event)
+        LOGGER.info(
+            "[CONVERSATION] character=%s user=%r assistant=%r",
+            self._character_id,
+            user_event.text,
+            pet_event.reply,
+        )
         return pet_event
 
     def _route_deterministic(self, event: UserEvent, capabilities: set[str]) -> Skill | None:
@@ -319,6 +356,7 @@ class PetHarnessEngine:
         tool_result: ToolResult | None,
         history: list[dict[str, Any]],
         memory_hits: list[Any],
+        retrieval_result=None,
     ):
         return self.prompt_builder.build(
             event=event,
@@ -330,6 +368,7 @@ class PetHarnessEngine:
             tool_result=tool_result,
             conversation_history=history,
             memory_hits=memory_hits,
+            retrieval_result=retrieval_result,
         )
 
     def _run_tool_first(self, event: UserEvent, skill: Skill | None) -> tuple[ToolRequestEvent | None, ToolResult | None]:
@@ -410,6 +449,41 @@ class PetHarnessEngine:
         pet_event.saved_to_db = True
         self._write_snapshot(pet_event)
         self.memory_store.save_turn(user_event.event_id, user_event.text, pet_event.reply)
+        if self._memory_extractor is not None:
+            threading.Thread(
+                target=self._index_memory_turn,
+                args=(user_event.event_id, user_event.text, pet_event.reply),
+                daemon=True,
+                name="memory-item-index",
+            ).start()
+
+    def _index_memory_turn(self, event_id: str, user_text: str, reply: str) -> None:
+        try:
+            items = self._memory_repository.upsert_candidates(self._memory_extractor.extract(event_id, user_text, reply))
+            indexed = self.memory_store.index(items)
+            self._memory_repository.mark_indexed(indexed)
+        except Exception:
+            LOGGER.exception("memory item indexing failed")
+
+    def _extract_memory_json(self, user_text: str, reply: str) -> str:
+        prompt = (
+            "Extract only user-stated facts, or explicit assistant promises, as a JSON array. "
+            "Each item must contain memory_key, memory_type (semantic or episodic), and text. "
+            "Never include character profile claims or assistant guesses.\n"
+            f"User: {user_text}\nAssistant: {reply}"
+        )
+        response = self.provider.generate_reply(UserEvent(text=user_text, source="memory_extractor"), prompt_text=prompt)
+        return response.raw_text or response.reply
+
+    def _rewrite_query(self, request, *, timeout: float) -> str:
+        prompt = (
+            "Rewrite the current user message into a standalone retrieval query. Return only the query.\n"
+            f"Previous user: {request.previous_user_text or ''}\n"
+            f"Previous assistant: {request.previous_assistant_text or ''}\n"
+            f"Current user: {request.current_turn_text}"
+        )
+        response = self.provider.generate_reply(UserEvent(text=request.current_turn_text, source="query_rewriter"), prompt_text=prompt)
+        return response.raw_text or response.reply
 
     def debug_status(self) -> dict[str, Any]:
         return {

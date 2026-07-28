@@ -511,6 +511,18 @@ python -m pytest -q
 - **巴哈 GNN 今日新聞**（`bahamut_daily_news` skill → `web_article_tool`）：RSS → HTTP → Playwright 三層 fallback；以文章 `id`（RSS guid）去重，不用去除 query string 的 URL（GNN 文章識別碼在 `?sn=` 參數，否則會把當日文章誤併成一篇）；回覆為前 5 篇逐篇重點整理。
 - **YouTube 播放**（`youtube_music_playback` skill → `youtube_music_tool`）：`PlaywrightBrowserRuntime` 使用 `launch_persistent_context`，cookie／視覺指紋跨啟動累積，降低反自動化 403 斷流；自動播放被瀏覽器阻擋時回報「未驗證播放」，不會誤稱已播放。
 
+## STT VAD
+
+| 設定 | 預設值 | 用途 |
+|---|---:|---|
+| `STT_VAD_ENABLED` | `false` | 設為 `true` 後，偵測到 Speech Endpoint 會停止錄音；模型或推論失敗時仍保留手動停止。 |
+| `STT_VAD_SILENCE_MS` | `800` | Speech Start 後，要連續靜音多久才結束 Recording Session。 |
+| `STT_VAD_THRESHOLD` | `0.5` | Silero 的語音機率門檻。 |
+
+建議先以 `STT_VAD_ENABLED=false`、`STT_VAD_SILENCE_MS=800` 與
+`STT_VAD_THRESHOLD=0.5` 進行調校。句中自然停頓被截斷時提高靜音時間；講完後送出
+太慢時降低它。請在目標麥克風上驗證短暫停頓、手動停止與按下按鈕但不說話後，再啟用 VAD。
+
 ## Skill routing
 
 路由固定為 deterministic → semantic → provider → none。`SEMANTIC_ROUTING_ENABLED=true` 與預設的 `SEMANTIC_ROUTING_SHADOW_MODE=true` 只收集候選資料、不會新增工具呼叫；確認評估集後才將 shadow 設為 false。可調整 `SEMANTIC_ROUTING_{MODEL,TOP_K,ACCEPT_THRESHOLD,MARGIN_THRESHOLD}`、`QDRANT_{MODE,PATH,URL}`、`PROVIDER_ROUTING_{FALLBACK_ENABLED,CONFIDENCE_THRESHOLD}` 與 `BROWSER_SESSION_RECOVERY_{ENABLED,MAX_RETRIES}`。

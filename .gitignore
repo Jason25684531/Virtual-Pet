@@ -58,3 +58,8 @@ data/characters/*/qdrant/
 device.key
 ComfyUI_Json/*
 test.html
+.agents/*
+ui/web_container/Web/*
+CONTEXT.md
+CONTEXT-STT.md
+skills-lock.json

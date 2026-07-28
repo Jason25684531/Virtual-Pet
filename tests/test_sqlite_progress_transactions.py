@@ -136,5 +136,14 @@ class TestConnectionLifecycle:
                 conn.execute("SELECT 1")
 
 
+def test_initialize_creates_memory_item_source_of_truth_table(tmp_path):
+    store = _store(tmp_path)
+
+    with store.connect() as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(memory_items)")}
+
+    assert {"memory_id", "memory_key", "status", "indexed_at"} <= columns
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

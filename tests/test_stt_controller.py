@@ -29,7 +29,7 @@ _DEFAULT_RESULT = TranscriptionResult(
 
 
 class _FakeRecorder:
-    def __init__(self, audio: np.ndarray | None = None) -> None:
+    def __init__(self, audio: np.ndarray | None = None, chunks: list[np.ndarray] | None = None) -> None:
         self.device_failed = threading.Event()
         self.max_reached = threading.Event()
         self.start_calls = 0
@@ -37,6 +37,7 @@ class _FakeRecorder:
         self.start_should_raise: Exception | None = None
         self._active = False
         self._audio = audio if audio is not None else np.zeros(8000, dtype=np.float32)  # 500ms @ 16kHz
+        self._chunks = chunks or []
 
     def start(self) -> None:
         self.start_calls += 1
@@ -50,6 +51,12 @@ class _FakeRecorder:
 
     def get_audio(self) -> np.ndarray:
         return self._audio
+
+    def read_new_chunks(self, cursor: int) -> tuple[np.ndarray, int]:
+        new_chunks = self._chunks[cursor:]
+        if not new_chunks:
+            return np.zeros(0, dtype=np.float32), len(self._chunks)
+        return np.concatenate(new_chunks), len(self._chunks)
 
     def shutdown(self) -> None:
         self.stop()
@@ -70,6 +77,7 @@ class _FakeProvider:
         self.result = _DEFAULT_RESULT
         self._ready = False
         self._last_error = ""
+        self.received_audio: np.ndarray | None = None
 
     def setup(self) -> None:
         self.setup_calls += 1
@@ -83,6 +91,7 @@ class _FakeProvider:
 
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> TranscriptionResult:
         self.transcribe_calls += 1
+        self.received_audio = audio.copy()
         if self.block_event is not None:
             self.block_event.wait()
         if self.transcribe_should_raise is not None:
@@ -99,6 +108,49 @@ class _FakeProvider:
         return self._last_error
 
 
+class _FakeVad:
+    def __init__(
+        self,
+        endpoints: list[bool] | None = None,
+        *,
+        ready: bool = True,
+        feed_error: Exception | None = None,
+    ) -> None:
+        self._endpoints = iter(endpoints or [])
+        self._ready = ready
+        self.reset_calls = 0
+        self.feed_calls = 0
+        self.shutdown_calls = 0
+        self._feed_error = feed_error
+
+    def is_ready(self) -> bool:
+        return self._ready
+
+    def reset(self) -> None:
+        self.reset_calls += 1
+
+    def feed_audio(self, _samples: np.ndarray) -> bool:
+        self.feed_calls += 1
+        if self._feed_error is not None:
+            raise self._feed_error
+        return next(self._endpoints, False)
+
+    def shutdown(self) -> None:
+        self.shutdown_calls += 1
+
+
+class _BlockingEndpointVad(_FakeVad):
+    def __init__(self) -> None:
+        super().__init__()
+        self.feed_entered = threading.Event()
+        self.allow_endpoint = threading.Event()
+
+    def feed_audio(self, samples: np.ndarray) -> bool:
+        self.feed_entered.set()
+        self.allow_endpoint.wait(timeout=1.0)
+        return super().feed_audio(samples) or True
+
+
 def _wait_for(predicate, timeout: float = 1.0, interval: float = 0.005) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -108,10 +160,13 @@ def _wait_for(predicate, timeout: float = 1.0, interval: float = 0.005) -> bool:
     return predicate()
 
 
-def _make_controller(recorder=None, provider=None, min_recording_ms=100, sample_rate=16000):
+def _make_controller(recorder=None, provider=None, vad=None, min_recording_ms=100, sample_rate=16000):
     recorder = recorder or _FakeRecorder()
     provider = provider or _FakeProvider()
-    controller = SttController(recorder, provider, min_recording_ms=min_recording_ms, sample_rate=sample_rate)
+    kwargs = {"min_recording_ms": min_recording_ms, "sample_rate": sample_rate}
+    if vad is not None:
+        kwargs["vad"] = vad
+    controller = SttController(recorder, provider, **kwargs)
     return controller, recorder, provider
 
 
@@ -134,7 +189,7 @@ def test_normal_session_sequence_and_single_transcript_submission():
     controller.transcript_ready.connect(transcripts.append, Qt.DirectConnection)
 
     controller.start_session()
-    assert _wait_for(lambda: controller.state == "recording")
+    assert _wait_for(lambda: "recording" in states)
     controller.stop_session()
     assert _wait_for(lambda: controller.state == "idle")
     _join_session(controller)
@@ -143,6 +198,99 @@ def test_normal_session_sequence_and_single_transcript_submission():
     assert transcripts == ["你好 hello"]
     assert recorder.start_calls == 1
     assert recorder.stop_calls == 1
+
+
+def test_vad_endpoint_stops_and_submits_through_the_manual_stop_path():
+    recorder = _FakeRecorder(chunks=[np.ones(512, dtype=np.float32)])
+    vad = _FakeVad([True])
+    controller, recorder, provider = _make_controller(recorder=recorder, vad=vad)
+    transcripts: list[str] = []
+    controller.transcript_ready.connect(transcripts.append, Qt.DirectConnection)
+
+    controller.start_session()
+    assert _wait_for(lambda: controller.state == "idle")
+    _join_session(controller)
+
+    assert vad.reset_calls == 1
+    assert vad.feed_calls == 1
+    assert provider.transcribe_calls == 1
+    assert transcripts == ["你好 hello"]
+
+
+def test_vad_failure_keeps_recording_available_for_manual_stop():
+    recorder = _FakeRecorder(chunks=[np.ones(512, dtype=np.float32)])
+    vad = _FakeVad(feed_error=RuntimeError("inference failed"))
+    controller, recorder, provider = _make_controller(recorder=recorder, vad=vad)
+
+    controller.start_session()
+    assert _wait_for(lambda: vad.feed_calls == 1)
+    assert controller.state == "recording"
+    controller.stop_session()
+    assert _wait_for(lambda: controller.state == "idle")
+    _join_session(controller)
+
+    assert provider.transcribe_calls == 1
+
+
+def test_manual_stop_racing_with_vad_endpoint_submits_once():
+    recorder = _FakeRecorder(chunks=[np.ones(512, dtype=np.float32)])
+    vad = _BlockingEndpointVad()
+    controller, recorder, provider = _make_controller(recorder=recorder, vad=vad)
+    transcripts: list[str] = []
+    controller.transcript_ready.connect(transcripts.append, Qt.DirectConnection)
+
+    controller.start_session()
+    assert vad.feed_entered.wait(timeout=1.0)
+    controller.stop_session()
+    vad.allow_endpoint.set()
+    assert _wait_for(lambda: controller.state == "idle")
+    _join_session(controller)
+
+    assert provider.transcribe_calls == 1
+    assert transcripts == ["你好 hello"]
+
+
+def test_vad_endpoint_transcribes_the_full_recording_buffer():
+    full_audio = np.linspace(-1.0, 1.0, 8000, dtype=np.float32)
+    recorder = _FakeRecorder(audio=full_audio, chunks=[np.ones(512, dtype=np.float32)])
+    controller, recorder, provider = _make_controller(recorder=recorder, vad=_FakeVad([True]))
+
+    controller.start_session()
+    assert _wait_for(lambda: controller.state == "idle")
+    _join_session(controller)
+
+    np.testing.assert_array_equal(provider.received_audio, full_audio)
+
+
+def test_vad_endpoint_stops_the_session_within_the_polling_budget():
+    recorder = _FakeRecorder(chunks=[np.ones(512, dtype=np.float32)])
+    controller, recorder, provider = _make_controller(recorder=recorder, vad=_FakeVad([True]))
+
+    started_at = time.monotonic()
+    controller.start_session()
+    assert _wait_for(lambda: controller.state == "idle", timeout=0.25)
+    _join_session(controller)
+
+    assert time.monotonic() - started_at <= 0.25
+    assert provider.transcribe_calls == 1
+
+
+def test_vad_endpoint_after_shutdown_does_not_submit_a_stale_session():
+    recorder = _FakeRecorder(chunks=[np.ones(512, dtype=np.float32)])
+    vad = _BlockingEndpointVad()
+    controller, recorder, provider = _make_controller(recorder=recorder, vad=vad)
+    transcripts: list[str] = []
+    controller.transcript_ready.connect(transcripts.append, Qt.DirectConnection)
+
+    controller.start_session()
+    assert vad.feed_entered.wait(timeout=1.0)
+    release_vad = threading.Timer(0.05, vad.allow_endpoint.set)
+    release_vad.start()
+    controller.shutdown()
+    release_vad.cancel()
+
+    assert provider.transcribe_calls == 0
+    assert transcripts == []
 
 
 # ----------------------------------------------------------------------

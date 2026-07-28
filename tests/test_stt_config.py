@@ -34,6 +34,18 @@ def test_stt_defaults_when_unset(monkeypatch):
         _reload_config()
 
 
+def test_stt_vad_defaults_to_disabled_with_documented_thresholds(monkeypatch):
+    for name in ("STT_VAD_ENABLED", "STT_VAD_SILENCE_MS", "STT_VAD_THRESHOLD"):
+        monkeypatch.delenv(name, raising=False)
+    reloaded = _reload_config()
+    try:
+        assert reloaded.STT_VAD_ENABLED is False
+        assert reloaded.STT_VAD_SILENCE_MS == 800
+        assert reloaded.STT_VAD_THRESHOLD == 0.5
+    finally:
+        _reload_config()
+
+
 def test_stt_env_overrides(monkeypatch):
     monkeypatch.setenv("STT_ENABLED", "false")
     monkeypatch.setenv("STT_MODEL", "small")
@@ -53,10 +65,34 @@ def test_stt_env_overrides(monkeypatch):
         _reload_config()
 
 
+def test_stt_vad_env_overrides(monkeypatch):
+    monkeypatch.setenv("STT_VAD_ENABLED", "true")
+    monkeypatch.setenv("STT_VAD_SILENCE_MS", "1200")
+    monkeypatch.setenv("STT_VAD_THRESHOLD", "0.65")
+    reloaded = _reload_config()
+    try:
+        assert reloaded.STT_VAD_ENABLED is True
+        assert reloaded.STT_VAD_SILENCE_MS == 1200
+        assert reloaded.STT_VAD_THRESHOLD == 0.65
+    finally:
+        _reload_config()
+
+
 def test_stt_invalid_int_env_falls_back_to_default(monkeypatch):
     monkeypatch.setenv("STT_BEAM_SIZE", "not-a-number")
     reloaded = _reload_config()
     try:
         assert reloaded.STT_BEAM_SIZE == 1
+    finally:
+        _reload_config()
+
+
+def test_stt_vad_invalid_numeric_env_falls_back_to_defaults(monkeypatch):
+    monkeypatch.setenv("STT_VAD_SILENCE_MS", "not-a-number")
+    monkeypatch.setenv("STT_VAD_THRESHOLD", "not-a-number")
+    reloaded = _reload_config()
+    try:
+        assert reloaded.STT_VAD_SILENCE_MS == 800
+        assert reloaded.STT_VAD_THRESHOLD == 0.5
     finally:
         _reload_config()
