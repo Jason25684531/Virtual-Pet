@@ -72,8 +72,10 @@ def test_stt_enabled_wires_controller_signals_to_existing_ui_entries(monkeypatch
     fake_controller.error_occurred.connect.assert_called_once()
     window.set_stt_controller.assert_called_once_with(fake_controller)
     fake_controller.preload_model.assert_called_once()
-    # 模型 preload 完成前維持 unavailable，等 availability_changed 訊號才轉為可用。
-    window.set_stt_available.assert_called_once_with(False)
+    # 模型 preload 完成前顯示「載入中」而非「不可用」——後者讀起來像永久壞掉。
+    # 等 availability_changed 訊號才轉為可用；只有載入失敗才會變成 unavailable。
+    window.set_stt_state.assert_called_once_with("loading")
+    window.set_stt_available.assert_not_called()
 
 
 def test_vad_enabled_creates_and_injects_vad(monkeypatch):

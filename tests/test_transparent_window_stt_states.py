@@ -74,3 +74,39 @@ def test_button_click_when_listening_stops_recording():
     TransparentWindow._handle_stt_button_clicked(fake)
 
     fake.stt_stop_requested.emit.assert_called_once()
+
+
+def test_loading_is_distinct_from_unavailable_and_still_not_clickable():
+    """模型預載期間不該顯示成「不可用」——那讀起來像永久壞掉，
+    而不是「等一下就好」。但按鈕仍不能按。"""
+    fake = _make_fake_window()
+    TransparentWindow.set_stt_state(fake, "loading")
+
+    assert fake._stt_state == "loading"
+    assert fake._stt_available is False
+    assert fake._stt_listening is False
+
+
+def test_loading_descriptor_reports_loading_rather_than_unavailable():
+    fake = _make_fake_window(stt_available=False, stt_state="loading")
+    descriptor = TransparentWindow._get_stt_control_descriptor(fake)
+
+    assert descriptor["state"] == "loading"
+    assert descriptor["enabled"] is False
+    assert "不可用" not in descriptor["label"]
+
+
+def test_preload_failure_still_reports_unavailable():
+    fake = _make_fake_window(stt_available=False, stt_state="unavailable")
+    descriptor = TransparentWindow._get_stt_control_descriptor(fake)
+
+    assert descriptor["state"] == "unavailable"
+    assert descriptor["enabled"] is False
+
+
+def test_model_becoming_ready_after_loading_returns_to_idle():
+    fake = _make_fake_window(stt_available=False, stt_state="loading")
+    TransparentWindow.set_stt_available(fake, True)
+
+    assert fake._stt_state == "idle"
+    assert fake._stt_available is True

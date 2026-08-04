@@ -48,6 +48,46 @@ def test_memory_recall_hits_are_injected_into_prompt(harness_env):
     assert "我喜歡的水果是蘋果" in engine.last_prompt
 
 
+def test_persona_instruction_names_the_actual_evidence_section(harness_env):
+    """人設優先指示所指涉的區塊名稱必須是實際存在的 Retrieval Evidence。"""
+    tmp_path, agentic_root = harness_env
+    engine = PetHarnessEngine(
+        FakeProvider(),
+        agentic_root=agentic_root,
+        db_path=tmp_path / "state.db",
+        snapshot_path=tmp_path / "debug" / "latest_pet_event.json",
+        character_id="Choppr",
+    )
+
+    engine.handle_event({"text": "你好", "source": "test"})
+
+    assert "Relevant Memories" not in engine.last_prompt
+    assert "the persona always wins" in engine.last_prompt
+
+
+def test_prompt_instructs_the_model_to_use_evidence_and_keeps_persona_priority(harness_env):
+    """證據使用指示與人設優先指示必須並存:前者管無衝突時要不要用,後者管衝突時誰贏。
+
+    依據 2026-07-29 A/B/C 實測:缺少使用指示時,同一模型即使證據在 prompt 內也拒絕作答。
+    """
+    tmp_path, agentic_root = harness_env
+    engine = PetHarnessEngine(
+        FakeProvider(),
+        agentic_root=agentic_root,
+        db_path=tmp_path / "state.db",
+        snapshot_path=tmp_path / "debug" / "latest_pet_event.json",
+        character_id="Choppr",
+    )
+
+    engine.handle_event({"text": "你好", "source": "test"})
+    prompt = engine.last_prompt
+
+    assert "factual records of what the user told you" in prompt
+    assert "answer from those sections" in prompt
+    assert "cannot access" in prompt
+    assert "the persona always wins" in prompt
+
+
 if __name__ == "__main__":
     import pytest
 

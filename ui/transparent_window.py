@@ -77,7 +77,6 @@ BRIDGE_CONTRACT = {
         "triggerQuickIntent",
         "toggleSkill",
         "toggleTool",
-        "setDragEnabled",
         "beginWindowDrag",
     ],
     "character_bridge": [
@@ -173,9 +172,6 @@ class HarnessUiBridge(QObject):
         self._window.trigger_quick_intent_from_bridge(intent_name)
 
     @pyqtSlot(bool)
-    def setDragEnabled(self, enabled: bool) -> None:
-        self._window.set_drag_surface_enabled(enabled)
-
     @pyqtSlot()
     def beginWindowDrag(self) -> None:
         self._window.begin_window_drag()
@@ -204,10 +200,6 @@ class TransparentWindow(QMainWindow):
     stt_stop_requested = pyqtSignal()
     RAW_JAVASCRIPT_MARKER = "__raw_javascript__"
 
-    # 視窗尺寸（可根據需求調整，或改為全螢幕）：
-    WINDOW_WIDTH = 1920
-    WINDOW_HEIGHT = 1080
-    DRAG_SURFACE_HEIGHT = 160
     DEV_INPUT_WIDTH = 560
     DEV_INPUT_HEIGHT = 44
     DEV_INPUT_MARGIN_BOTTOM = 28
@@ -232,23 +224,6 @@ class TransparentWindow(QMainWindow):
         "speechless": "無言微翻白眼.webm",
         "listen": "專心聆聽.webm",
     }
-
-    XP_BADGE_TOP = 28
-    XP_BADGE_RIGHT = 30
-    XP_BADGE_WIDTH = 260
-    XP_BADGE_HEIGHT = 72
-    AGENTIC_PANEL_TOP = 104
-    AGENTIC_PANEL_RIGHT = 30
-    AGENTIC_PANEL_BOTTOM = 106
-    AGENTIC_PANEL_MAX_WIDTH = 420
-    AGENTIC_PANEL_WIDTH_RATIO = 0.34
-    DOCK_BAND_MAX_WIDTH = 520
-    DOCK_BAND_WIDTH_RATIO = 0.9
-    DOCK_BAND_HEIGHT_RATIO = 0.5
-    UTILITY_BAR_RIGHT = 30
-    UTILITY_BAR_BOTTOM = 26
-    UTILITY_BAR_WIDTH = 260
-    UTILITY_BAR_HEIGHT = 56
 
     def __init__(
         self,
@@ -286,7 +261,6 @@ class TransparentWindow(QMainWindow):
         self._background_status = "fallback_placeholder"
         self._background_url: str | None = None
         self._live_runtime_available = self._runtime_contract["live_runtime_available"]
-        self._drag_pos = None
         self._stt_listening = False
         self._stt_available = bool(self._runtime_contract["live_runtime_available"])
         self._stt_state = "idle"
@@ -301,9 +275,7 @@ class TransparentWindow(QMainWindow):
         self._init_window()
         self._init_webview()
         self._js_gateway = JsGateway(lambda: self.web_view.page(), self.RAW_JAVASCRIPT_MARKER)
-        self._init_drag_surface()
         self._init_developer_input()
-        self._move_to_bottom_right()
         self._init_tray()
 
     def configure_motion(self, coordinator) -> None:
@@ -318,7 +290,7 @@ class TransparentWindow(QMainWindow):
     # ── 視窗初始化 ──────────────────────────────────────────
 
     def _init_window(self):
-        """設定無邊框、置頂視窗"""
+        """設定無邊框、置頂視窗，並填滿主螢幕可用區"""
         self.setWindowFlags(
             Qt.FramelessWindowHint
             | Qt.WindowStaysOnTopHint
@@ -326,7 +298,11 @@ class TransparentWindow(QMainWindow):
         )
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setStyleSheet("background: transparent;")
-        self.resize(self.WINDOW_WIDTH, self.WINDOW_HEIGHT)
+        # 視窗尺寸就是 CSS 視口尺寸：寫死解析度時視窗會超出螢幕，使用者只看得到畫布
+        # 左上角的裁切（角色與底部導覽整個落在畫面外）。availableGeometry 已扣除工作列。
+        screen = QApplication.primaryScreen()
+        if screen:
+            self.setGeometry(screen.availableGeometry())
 
     def _init_webview(self):
         """建立 QWebEngineView 並載入本地 HTML 播放器"""
@@ -345,10 +321,6 @@ class TransparentWindow(QMainWindow):
         self._channel.registerObject("harnessBridge", self._bridge)
         self._channel.registerObject("characterBridge", self._character_bridge)
         self.web_view.page().setWebChannel(self._channel)
-        # overlay 啟動時預設啟用 _overlay_active，讓 nativeEvent WM_NCHITTEST 回傳 HTCLIENT
-        # 不依賴非同步橋接呼叫，確保 Main Menu 開啟後按鈕可立即點擊
-        QTimer.singleShot(1500, lambda: setattr(self, "_overlay_active", True))
-
         self.setCentralWidget(self.web_view)
 
         settings = self.web_view.settings()
@@ -366,16 +338,6 @@ class TransparentWindow(QMainWindow):
         )
         self.web_view.loadFinished.connect(self._on_webview_loaded)
         self.web_view.setUrl(QUrl.fromLocalFile(html_path))
-
-    def _init_drag_surface(self):
-        """建立僅覆蓋房間頂部的拖曳層，避免攔截整個 WebGL 畫面。"""
-        self._drag_surface = QWidget(self)
-        self._drag_surface.setObjectName("drag-surface")
-        self._drag_surface.setStyleSheet("background: transparent;")
-        self._drag_surface.setCursor(Qt.OpenHandCursor)
-        self._drag_surface.installEventFilter(self)
-        self._update_drag_surface_geometry()
-        self._drag_surface.raise_()
 
     def _init_developer_input(self):
         """建立 Dev Mode 底部輸入框，用來手動測試本地大腦與 TTS。"""
@@ -413,7 +375,18 @@ class TransparentWindow(QMainWindow):
         self._update_developer_input_geometry()
 
     def _get_stt_control_descriptor(self) -> dict[str, object]:
-        state = "unavailable" if not self._stt_available else self._stt_state
+        state = self._stt_state
+        if not self._stt_available and state != "loading":
+            state = "unavailable"
+        if state == "loading":
+            return {
+                "label": "STT 載入中",
+                "statusLabel": "載入中",
+                "state": state,
+                "enabled": False,
+                "background": "rgba(88, 120, 160, 205)",
+                "border": "rgba(218, 234, 255, 140)",
+            }
         if state == "unavailable":
             return {
                 "label": "STT 不可用",
@@ -487,10 +460,6 @@ class TransparentWindow(QMainWindow):
             self._tray_stt_toggle_action.setEnabled(enabled)
         self._sync_runtime_controls_ui()
 
-    def _update_drag_surface_geometry(self):
-        if hasattr(self, "_drag_surface"):
-            self._drag_surface.setGeometry(0, 0, self.width(), self.DRAG_SURFACE_HEIGHT)
-
     def _update_developer_input_geometry(self):
         if not hasattr(self, "_developer_input"):
             return
@@ -498,7 +467,7 @@ class TransparentWindow(QMainWindow):
         available_width = max(320, min(self.DEV_INPUT_WIDTH, self.width() - 48))
         x = max(24, (self.width() - available_width) // 2)
         y = max(
-            self.DRAG_SURFACE_HEIGHT + 24,
+            24,
             self.height() - self.DEV_INPUT_HEIGHT - self.DEV_INPUT_MARGIN_BOTTOM,
         )
         self._developer_input.setGeometry(x, y, available_width, self.DEV_INPUT_HEIGHT)
@@ -534,15 +503,6 @@ class TransparentWindow(QMainWindow):
             voice_status_adapter=self._voice_status_adapter,
             runtime_contract=self._runtime_contract,
         )
-
-    def _move_to_bottom_right(self):
-        """將視窗定位到螢幕右下角"""
-        screen = QApplication.primaryScreen()
-        if screen:
-            geo = screen.availableGeometry()
-            x = geo.x() + max(0, geo.width() - self.WINDOW_WIDTH - 20)
-            y = geo.y() + max(0, geo.height() - self.WINDOW_HEIGHT - 20)
-            self.move(x, y)
 
     # ── 系統匣圖示 ─────────────────────────────────────────
 
@@ -619,10 +579,14 @@ class TransparentWindow(QMainWindow):
         menu.addSeparator()
 
         quit_action = QAction("✕  離開 ECHOES", self)
-        quit_action.triggered.connect(QApplication.quit)
+        quit_action.triggered.connect(self._request_close_from_tray)
         menu.addAction(quit_action)
 
         return menu
+
+    def _request_close_from_tray(self) -> None:
+        """Let the web UI honor its persisted Close-confirm preference."""
+        self._js_gateway.call("requestClose")
 
     def _open_settings(self):
         """以非阻塞方式開啟角色設定視窗，避免鎖住主角色視窗操作。"""
@@ -662,26 +626,10 @@ class TransparentWindow(QMainWindow):
                 self.toggle_developer_input()
                 return True
 
-        if watched is self._drag_surface:
-            event_type = event.type()
-            if event_type == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
-                self._handle_drag_press(event)
-                return True
-            if event_type == QEvent.MouseMove and event.buttons() & Qt.LeftButton:
-                self._handle_drag_move(event)
-                return True
-            if event_type == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
-                self._handle_drag_release(event)
-                return True
-            if event_type == QEvent.ContextMenu:
-                self._show_context_menu(event.globalPos())
-                return True
-
         return super().eventFilter(watched, event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._update_drag_surface_geometry()
         self._update_developer_input_geometry()
 
     def keyPressEvent(self, event):
@@ -699,44 +647,6 @@ class TransparentWindow(QMainWindow):
 
     def contextMenuEvent(self, event):
         self._show_context_menu(event.globalPos())
-
-    def mousePressEvent(self, event):
-        if getattr(self, "_overlay_active", False):
-            # overlay 顯示中：不啟動拖曳，交由 QWebEngineView 處理點擊
-            super().mousePressEvent(event)
-            return
-        self._handle_drag_press(event)
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        self._handle_drag_move(event)
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        self._handle_drag_release(event)
-        super().mouseReleaseEvent(event)
-
-    def _handle_drag_press(self, event):
-        if event.button() != Qt.LeftButton:
-            return
-
-        window_handle = self.windowHandle()
-        if window_handle is not None and window_handle.startSystemMove():
-            self._drag_pos = None
-            return
-
-        self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
-
-    def _handle_drag_move(self, event):
-        if not (event.buttons() & Qt.LeftButton):
-            return
-        if self._drag_pos is None:
-            return
-        self.move(event.globalPos() - self._drag_pos)
-
-    def _handle_drag_release(self, event):
-        if event.button() == Qt.LeftButton:
-            self._drag_pos = None
 
     def _restore_current_character(self):
         """啟動時只信任 router 的 active snapshot;無 active 時顯示安全 no-active 狀態,
@@ -935,11 +845,12 @@ class TransparentWindow(QMainWindow):
 
     def set_stt_state(self, state: str):
         normalized = str(state or "idle").strip().lower()
-        if normalized not in {"idle", "starting", "listening", "stopping", "transcribing", "unavailable"}:
+        if normalized not in {"idle", "starting", "listening", "stopping", "transcribing", "loading", "unavailable"}:
             normalized = "idle"
         self._stt_state = normalized
         self._stt_listening = normalized == "listening"
-        self._stt_available = normalized != "unavailable"
+        # loading 也不可按，但要與「不可用」分開顯示：前者是等待，後者是壞掉。
+        self._stt_available = normalized not in {"unavailable", "loading"}
         self._apply_stt_button_state()
 
     def set_stt_controller(self, controller) -> None:
@@ -951,7 +862,7 @@ class TransparentWindow(QMainWindow):
         if not self._stt_available:
             self._stt_state = "unavailable"
             self._stt_listening = False
-        elif self._stt_state == "unavailable":
+        elif self._stt_state in {"unavailable", "loading"}:
             self._stt_state = "idle"
         self._apply_stt_button_state()
 
@@ -1018,25 +929,9 @@ class TransparentWindow(QMainWindow):
         self.consume_interaction_result(result, message="Skill executed.")
         return True
 
-    def set_drag_surface_enabled(self, enabled: bool) -> None:
-        """啟用或停用頂部拖曳層。
-
-        overlay 顯示(enabled=False)時:
-        - 設 _overlay_active = True：nativeEvent 收到 WM_NCHITTEST 時返回 HTCLIENT=1，
-          強制 Windows 把所有點擊路由到 client area，繞過 GPU 透明視窗的 alpha hit-test。
-        - 隱藏 _drag_surface，避免攔截 QWebEngineView 子視窗事件。
-
-        companion 模式(enabled=True)時恢復正常透明 hit-test 行為。
-        """
-        self._overlay_active = not enabled
-        print(f"[OVERLAY] set_drag_surface_enabled({enabled}) → _overlay_active={self._overlay_active}", flush=True)
-        if hasattr(self, "_drag_surface") and self._drag_surface is not None:
-            self._drag_surface.setVisible(enabled)
-
     def begin_window_drag(self) -> None:
-        """由前端（overlay 畫面的標題列）觸發的視窗拖曳：overlay 顯示中 _drag_surface 被隱藏、
-        mousePressEvent 也放行給 QWebEngineView，所以需要這個明確入口讓 HTML 標題列也能拖曳視窗。
-        """
+        """視窗拖曳的唯一入口:整個視窗都是 client area、點擊一律交給 QWebEngineView,
+        所以拖曳由前端的 `.window-drag-handle` 明確呼叫這裡。"""
         window_handle = self.windowHandle()
         if window_handle is not None:
             window_handle.startSystemMove()
@@ -1490,73 +1385,19 @@ class TransparentWindow(QMainWindow):
         self._run_javascript("setCharacterObjectPosition", object_position)
 
     def nativeEvent(self, event_type, message):
+        """整個視窗都是 client area。可點區域一律由前端 UI 決定,Qt 端不再用矩形白名單猜:
+        回 HTCAPTION 會讓 Windows 改送 WM_NCLBUTTONDOWN(視窗管理員接管拖曳),
+        QWebEngineView 就永遠收不到那個點擊。視窗拖曳走前端的 beginWindowDrag()。"""
         if sys.platform != "win32":
             return super().nativeEvent(event_type, message)
 
         wm_nchittest = 0x0084
-        wm_ncrbuttonup = 0x00A5
-        htcaption = 2
-
         try:
-            msg = ctypes.wintypes.MSG.from_address(int(message))
-            if msg.message == wm_ncrbuttonup:
-                sx = ctypes.c_short(msg.lParam & 0xFFFF).value
-                sy = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
-                local = self.mapFromGlobal(QPoint(sx, sy))
-                if self.should_treat_point_as_caption(local.x(), local.y(), self.width(), self.height()):
-                    self._build_menu().exec_(QPoint(sx, sy))
-                    return True, 0
-                return super().nativeEvent(event_type, message)
-            if msg.message == wm_nchittest:
-                # overlay 顯示時：強制 HTCLIENT=1
-                # should_treat_point_as_caption 對大部分區域回傳 True → htcaption=2
-                # Windows 收到 htcaption 送的是 WM_NCLBUTTONDOWN（視窗管理員接管拖曳）
-                # 而不是 WM_LBUTTONDOWN，導致 QWebEngineView 永遠收不到點擊。
-                # 改回 HTCLIENT 讓 Windows 送 WM_LBUTTONDOWN 到 client area，
-                # Qt 才能正確路由到 QWebEngineView → Chromium → HTML 按鈕。
-                if getattr(self, "_overlay_active", False):
-                    return True, 1  # HTCLIENT
-                sx = ctypes.c_short(msg.lParam & 0xFFFF).value
-                sy = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
-                local = self.mapFromGlobal(QPoint(sx, sy))
-                if self.should_treat_point_as_caption(local.x(), local.y(), self.width(), self.height()):
-                    return True, htcaption
-                return super().nativeEvent(event_type, message)
-            return super().nativeEvent(event_type, message)
+            if ctypes.wintypes.MSG.from_address(int(message)).message == wm_nchittest:
+                return True, 1  # HTCLIENT
         except Exception:  # noqa: BLE001
-            return super().nativeEvent(event_type, message)
-
-    @classmethod
-    def should_treat_point_as_caption(cls, local_x: int, local_y: int, width: int, height: int) -> bool:
-        if local_x < 0 or local_y < 0 or local_x > width or local_y > height:
-            return True
-
-        panel_width = min(cls.AGENTIC_PANEL_MAX_WIDTH, int(width * cls.AGENTIC_PANEL_WIDTH_RATIO))
-        panel_left = width - cls.AGENTIC_PANEL_RIGHT - panel_width
-        panel_top = cls.AGENTIC_PANEL_TOP
-        panel_bottom = height - cls.AGENTIC_PANEL_BOTTOM
-        if panel_left <= local_x <= width - cls.AGENTIC_PANEL_RIGHT and panel_top <= local_y <= panel_bottom:
-            return False
-
-        xp_left = width - cls.XP_BADGE_RIGHT - cls.XP_BADGE_WIDTH
-        xp_top = cls.XP_BADGE_TOP
-        xp_bottom = xp_top + cls.XP_BADGE_HEIGHT
-        if xp_left <= local_x <= width - cls.XP_BADGE_RIGHT and xp_top <= local_y <= xp_bottom:
-            return False
-
-        dock_width = min(cls.DOCK_BAND_MAX_WIDTH, int(width * cls.DOCK_BAND_WIDTH_RATIO))
-        dock_left = (width - dock_width) // 2
-        dock_top = height - int(height * cls.DOCK_BAND_HEIGHT_RATIO)
-        if dock_left <= local_x <= dock_left + dock_width and dock_top <= local_y <= height:
-            return False
-
-        utility_left = width - cls.UTILITY_BAR_RIGHT - cls.UTILITY_BAR_WIDTH
-        utility_top = height - cls.UTILITY_BAR_BOTTOM - cls.UTILITY_BAR_HEIGHT
-        utility_bottom = height - cls.UTILITY_BAR_BOTTOM
-        if utility_left <= local_x <= width - cls.UTILITY_BAR_RIGHT and utility_top <= local_y <= utility_bottom:
-            return False
-
-        return True
+            pass
+        return super().nativeEvent(event_type, message)
 
     @staticmethod
     def _coerce_int(value, default: int) -> int:

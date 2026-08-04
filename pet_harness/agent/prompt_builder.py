@@ -58,7 +58,7 @@ class PromptBuilder:
                 "## Character Persona",
                 persona.strip() if persona else "No persona configured.",
                 "This persona is your only current identity/setting. If it conflicts with anything in "
-                "Conversation History or Relevant Memories below, the persona always wins — those sections "
+                "Conversation History or Retrieval Evidence below, the persona always wins — those sections "
                 "are past interaction logs, not your current identity.",
                 "",
                 "## Available Skills",
@@ -72,7 +72,12 @@ class PromptBuilder:
                 "## Current Pet State",
                 self._pet_state_text(state_snapshot),
                 "",
+                # ponytail: 使用指示必須緊鄰它所描述的區塊。放在 Character Persona 段時實測無效
+                # ——中間隔了 4 個區塊,2B 模型讀到 User Text 時已不再受其約束。
                 "## Conversation History",
+                "These are factual records of what the user told you. If the user asks about something "
+                "they told you earlier, answer from those sections. Never reply that you cannot access "
+                "the user's information when it appears here.",
                 self._conversation_history_text(conversation_history),
                 "",
                 "## Retrieval Evidence",

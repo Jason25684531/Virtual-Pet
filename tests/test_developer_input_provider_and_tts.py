@@ -152,13 +152,13 @@ def test_on_agentic_result_skips_empty_reply():
     fake_self.speak_text.assert_not_called()
 
 
-def test_history_panel_is_independent_of_talk_and_skills_docks():
+def test_chat_input_lives_in_the_summonable_chat_hud():
     html = (Path(__file__).parents[1] / "ui" / "web_container" / "index.html").read_text(encoding="utf-8")
 
-    assert html.index('id="conversation-history-panel"') < html.index('id="companion-dock-root"')
-    assert html.count('id="conversation-panel"') == 1
-    assert html.index('id="talk-text-input"') < html.index('id="companion-dock-root"')
-    assert 'id="dock-panel-talk"' not in html
+    chat_hud = _extract_section(html, "hud-chat")
+    assert html.count('id="conversation-list"') == 1
+    assert 'id="talk-text-input"' in chat_hud
+    assert 'conversation-history-panel' not in html
 
 
 def _extract_section(html: str, section_id: str) -> str:
@@ -167,29 +167,19 @@ def _extract_section(html: str, section_id: str) -> str:
     return html[start:end]
 
 
-def test_skills_and_persona_panels_are_cleanly_separated():
-    """Skills 面板規 skills、Persona 面板規 persona；Style/Scene 不含兩者
-    (fix-core-interaction-experience)。"""
+def test_developer_controls_are_hidden_in_the_debug_panel():
+    """CAC UX keeps existing developer controls without exposing them as end-user HUDs."""
     html = (Path(__file__).parents[1] / "ui" / "web_container" / "index.html").read_text(encoding="utf-8")
 
-    agent_panel = _extract_section(html, "dock-panel-agent")
-    persona_panel = _extract_section(html, "dock-panel-persona")
-    style_panel = _extract_section(html, "dock-panel-style")
-    scene_panel = _extract_section(html, "dock-panel-scene")
-
-    # Skills 面板容納全部技能管理:清單、別名/優先度、local skill CRUD、命中預覽。
-    for marker in ("character-skill-list", "persona-builtin-skill-list", "persona-local-skill-list", "persona-local-skill-form", "persona-preview-input"):
-        assert marker in agent_panel, f"expected {marker} inside Skills panel"
-
-    # Persona 面板僅剩人設文字編輯,不含任何技能管理元素。
-    assert "persona-textarea" in persona_panel
-    for marker in ("persona-builtin-skill-list", "persona-local-skill-list", "persona-local-skill-form", "persona-preview-input", "character-skill-list"):
-        assert marker not in persona_panel, f"{marker} leaked into Persona panel"
-
-    # Style / Scene 不含 skills 或 persona 的任何介面元素。
-    for panel_html, name in ((style_panel, "Style"), (scene_panel, "Scene")):
-        for marker in ("persona-", "character-skill-list"):
-            assert marker not in panel_html, f"{marker} leaked into {name} panel"
+    debug_start = html.index('id="debug-panel"')
+    debug_panel = html[debug_start:html.index("</aside>", debug_start)]
+    for marker in ("character-skill-list", "persona-builtin-skill-list", "persona-local-skill-list", "persona-local-skill-form", "persona-preview-input", "persona-textarea"):
+        assert marker in debug_panel, f"expected {marker} inside Debug panel"
+    assert 'id="debug-panel" hidden' in html
+    for hud_id in ("hud-style", "hud-scene"):
+        hud_html = _extract_section(html, hud_id)
+        assert "persona-" not in hud_html
+        assert "character-skill-list" not in hud_html
 
 
 def test_motion_loop_does_not_restore_idle_until_host_stops_it():

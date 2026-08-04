@@ -26,7 +26,33 @@ def test_fallback_extracts_assistant_promises_but_not_greetings_tool_results_or_
     assert extractor.extract("e4", "你是誰", "我是初音未來，住在東京") == []
 
 
-def test_fallback_splits_multiple_atomic_user_facts():
+def test_fallback_keeps_multiple_user_preferences_under_one_allowed_key():
     items = WholeTurnMemoryExtractor().extract("e1", "我喜歡蘋果，也喜歡芒果", "知道了")
-    assert len(items) == 2
+    assert len(items) == 1
     assert all(is_valid_memory_key(item.memory_key) for item in items)
+
+
+def test_questions_and_conditional_offers_do_not_become_memory_items():
+    extractor = WholeTurnMemoryExtractor()
+
+    assert extractor.extract("e1", "我下周有什麼規劃嗎？", "你下周要看牙醫") == []
+    assert LlmMemoryExtractor(lambda *_: '[{"memory_key":"角色.承諾","memory_type":"episodic","text":"如果需要幫忙請告訴我"}]').extract(
+        "e2", "可以幫忙嗎？", "如果需要幫忙請告訴我"
+    ) == []
+
+
+def test_extractor_keeps_explicit_promises_but_drops_second_person_echoes():
+    promise = LlmMemoryExtractor(lambda *_: '[{"memory_key":"角色.承諾","memory_type":"episodic","text":"下次我幫你查攻略"}]').extract(
+        "e1", "幫我查攻略", "下次我幫你查攻略"
+    )
+    assert [(item.memory_key, item.text) for item in promise] == [("角色.承諾", "下次我幫你查攻略")]
+
+    echo = LlmMemoryExtractor(lambda *_: '[{"memory_key":"使用者.喜好","memory_type":"semantic","text":"你喜歡蘋果"}]').extract(
+        "e2", "我喜歡蘋果", "你喜歡蘋果"
+    )
+    assert [(item.memory_key, item.text) for item in echo] == [("使用者.喜好", "我喜歡蘋果")]
+
+
+def test_memory_key_uses_only_the_allowed_traditional_attributes():
+    assert not is_valid_memory_key("使用者.偏好")
+    assert not is_valid_memory_key("角色.计划")

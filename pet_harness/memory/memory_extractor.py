@@ -7,12 +7,32 @@ import re
 from pet_harness.agent.result_parser import parse_fenced_json
 from pet_harness.memory.memory_models import MemoryCandidate
 
-_MEMORY_KEY_RE = re.compile(r"^(?:使用者|角色)\.[^.\s]{1,40}$")
+_MEMORY_KEY_RE = re.compile(r"^(使用者|角色)\.([^\.\s]{1,40})$")
+_ALLOWED_ATTRIBUTES = {
+    "使用者": {"事件", "喜好", "最愛水果", "狀態", "計劃"},
+    "角色": {"承諾"},
+}
 _GREETINGS = {"你好", "嗨", "哈囉", "早安", "午安", "晚安"}
 
 
 def is_valid_memory_key(value: str) -> bool:
-    return bool(_MEMORY_KEY_RE.fullmatch(value))
+    match = _MEMORY_KEY_RE.fullmatch(value)
+    return bool(match and match.group(2) in _ALLOWED_ATTRIBUTES[match.group(1)])
+
+
+def _is_explicit_promise(text: str) -> bool:
+    return (
+        not any(marker in text for marker in ("如果", "希望", "可以", "能夠"))
+        and any(marker in text for marker in ("我會", "我將", "我答應", "下次我幫", "我來"))
+    )
+
+
+def _is_usable_candidate(candidate: MemoryCandidate, user_text: str) -> bool:
+    if candidate.text.lstrip().startswith("你"):
+        return False
+    if candidate.memory_key == "角色.承諾":
+        return _is_explicit_promise(candidate.text)
+    return "?" not in user_text and "？" not in user_text
 
 
 class BaseMemoryExtractor(ABC):
@@ -29,15 +49,14 @@ class WholeTurnMemoryExtractor(BaseMemoryExtractor):
             return []
         if "你是誰" in text and reply.strip().startswith("我是"):
             return []
-        if any(token in reply for token in ("我會", "我將")):
+        if _is_explicit_promise(reply):
             return [MemoryCandidate("角色.承諾", "episodic", reply.strip(), event_id)]
+        if "?" in text or "？" in text:
+            return []
         if "我" not in text:
             return []
-        parts = [part.strip() for part in re.split(r"[，,；;、]", text) if part.strip()]
-        if not parts:
-            return []
         base_key = "使用者.最愛水果" if "最喜歡" in text else "使用者.喜好" if "喜歡" in text else "使用者.事件"
-        return [MemoryCandidate(base_key if index == 0 else f"{base_key}{index + 1}", "episodic", part, event_id) for index, part in enumerate(parts)]
+        return [MemoryCandidate(base_key, "episodic", text, event_id)]
 
 
 class LlmMemoryExtractor(BaseMemoryExtractor):
@@ -64,7 +83,8 @@ class LlmMemoryExtractor(BaseMemoryExtractor):
                 and item.get("memory_key")
                 and item.get("text")
             ]
-            if not candidates or not all(is_valid_memory_key(item.memory_key) for item in candidates):
+            candidates = [item for item in candidates if is_valid_memory_key(item.memory_key) and _is_usable_candidate(item, user_text)]
+            if not candidates:
                 raise ValueError("invalid memory candidate")
             return candidates
         except Exception:

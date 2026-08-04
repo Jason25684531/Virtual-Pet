@@ -469,8 +469,11 @@ class PetHarnessEngine:
         prompt = (
             "Extract only user-stated facts, or explicit assistant promises, as a JSON array. "
             "Each item must contain memory_key, memory_type (semantic or episodic), and text. "
-            "memory_key must be exactly 使用者.<屬性> or 角色.<屬性>. "
-            "Never include character profile claims or assistant guesses.\n"
+            "memory_key must be one of 使用者.事件, 使用者.喜好, 使用者.最愛水果, 使用者.狀態, 使用者.計劃, 角色.承諾. "
+            "A promise must answer『你之前答應要做什麼？』. "
+            "Examples to extract: 使用者事實『我喜歡蘋果』; true promise『下次我幫你查攻略』. "
+            "Do not extract conditional offers『如果需要幫忙請告訴我』, wishes『希望你的牙齒能健康』, "
+            "使用者的提問, or 角色自述設定. Never include character profile claims or assistant guesses.\n"
             f"User: {user_text}\nAssistant: {reply}"
         )
         response = self.provider.generate_reply(UserEvent(text=user_text, source="memory_extractor"), prompt_text=prompt)

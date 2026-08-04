@@ -63,3 +63,6 @@ ui/web_container/Web/*
 CONTEXT.md
 CONTEXT-STT.md
 skills-lock.json
+
+artifacts/*
+CONTEXT-UI.md

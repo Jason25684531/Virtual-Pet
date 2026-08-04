@@ -12,8 +12,8 @@
     var audio = document.getElementById('room-audio');
     var roomCharacterName = document.getElementById('room-character-name');
     var runtimeModeBadge = document.getElementById('runtime-mode-badge');
-    var actionStatus = document.getElementById('action-status');
-    var actionStatusText = document.getElementById('action-status-text');
+    var actionStatus = null;
+    var actionStatusText = null;
     var conversationList = document.getElementById('conversation-list');
     var conversationQueueText = document.getElementById('conversation-queue-text');
     var runtimeSttStatus = document.getElementById('runtime-stt-status');
@@ -50,18 +50,16 @@
     var personaPreviewResult = document.getElementById('persona-preview-result');
 
     // ── UC01-1 / UC02-1 / UC03-1 / UC05-1 陪伴 dock DOM 參照 ────────
-    var hudScore = document.getElementById('hud-score');
+    var hudScore = document.getElementById('hud-level-badge');
     var hudScoreText = document.getElementById('hud-score-text');
     var hudScoreLevel = document.getElementById('hud-score-level');
     var hudScoreDelta = document.getElementById('hud-score-delta');
-    var hudScoreProgressFill = document.getElementById('hud-score-progress-fill');
     var appScreens = document.getElementById('app-screens');
     var screenMainMenu = document.getElementById('screen-main-menu');
-    var screenPresetSelect = document.getElementById('screen-preset-select');
+    var screenPresetSelect = document.getElementById('screen-create-character');
     var screenLoadSave = document.getElementById('screen-load-save');
     var menuCreateButton = document.getElementById('menu-create-button');
     var menuLoadButton = document.getElementById('menu-load-button');
-    var menuSettingsButton = document.getElementById('menu-settings-button');
     var menuQuitButton = document.getElementById('menu-quit-button');
     var presetCarouselIndex = document.getElementById('preset-carousel-index');
     var presetCarouselPrev = document.getElementById('preset-carousel-prev');
@@ -69,11 +67,8 @@
     var presetName = document.getElementById('preset-name');
     var presetPersona = document.getElementById('preset-persona');
     var presetSelectButton = document.getElementById('preset-select-button');
-    var presetCustomizeToggle = document.getElementById('preset-customize-toggle');
-    var presetCustomizePanel = document.getElementById('preset-customize-panel');
     var presetCustomizeGenerate = document.getElementById('preset-customize-generate');
     var presetThumbList = document.getElementById('preset-thumb-list');
-    var presetBackButton = document.getElementById('preset-back-button');
     var saveCardGrid = document.getElementById('save-card-grid');
     var saveBackButton = document.getElementById('save-back-button');
     var saveDeleteButton = document.getElementById('save-delete-button');
@@ -86,13 +81,10 @@
     var agentChipNews = document.getElementById('agent-chip-news');
     var agentResultText = document.getElementById('agent-result-text');
     var agentResultDelta = document.getElementById('agent-result-delta');
-    var companionDockPanel = document.getElementById('companion-dock-panel');
-    var dockButtons = Array.prototype.slice.call(document.querySelectorAll('.dock-icon'));
-    var dockPanels = Array.prototype.slice.call(document.querySelectorAll('.dock-panel'));
+    var companionDockPanel = document.getElementById('hud-layer');
+    var dockButtons = Array.prototype.slice.call(document.querySelectorAll('[data-hud]'));
+    var dockPanels = Array.prototype.slice.call(document.querySelectorAll('.hud-panel'));
     var talkTextInput = document.getElementById('talk-text-input');
-    var talkSendButton = document.getElementById('talk-send-button');
-    var companionSettingsButton = document.getElementById('companion-settings-button');
-    var companionLeaveButton = document.getElementById('companion-leave-button');
 
     // ── 狀態變數 ──────────────────────────────────────────────
     var idleSource = '';
@@ -168,9 +160,12 @@
     }
 
     function setAgentResult(message, delta) {
-        // 回覆一律由 Conversation 區承接；不得為了結果自動打開 Skills。
-        void message;
-        void delta;
+        setText(agentResultText, message, '輸入問題或點選快捷指令。');
+        var normalizedDelta = Math.max(0, Number(delta) || 0);
+        if (agentResultDelta) {
+            agentResultDelta.hidden = normalizedDelta <= 0;
+            agentResultDelta.textContent = '+' + normalizedDelta;
+        }
     }
 
     function setStatus(message, tone, timeoutMs) {
@@ -189,7 +184,7 @@
     }
 
     function updateStageScale() {
-        // 1920x1080 鎖定，不需要動態縮放
+        // 2560x1440 鎖定，不需要動態縮放
         document.documentElement.style.setProperty('--stage-scale', '1');
     }
 
@@ -299,7 +294,7 @@
             var toggleLabel = item.enabled ? 'Disable' : 'Enable';
             var deleteLabel = item.is_builtin ? 'Disable only' : 'Delete';
             return [
-                '<article class="entity-card">',
+                '<article class="entity-card" data-skill-enabled="' + String(Boolean(item.enabled)) + '">',
                 '  <div class="entity-card__head">',
                 '    <div>' + skillCardTitleMeta(item) + '</div>',
                 '    <span class="status-pill">' + (item.enabled ? 'enabled' : 'disabled') + '</span>',
@@ -330,7 +325,7 @@
         characterSkillList.innerHTML = items.map(function (item) {
             var isEnabled = item.enabled !== false;
             return [
-                '<article class="entity-card">',
+                '<article class="entity-card" data-skill-enabled="' + String(isEnabled) + '">',
                 '  <div class="entity-card__head">',
                 '    <div>' + skillCardTitleMeta(item) + '</div>',
                 '    <span class="status-pill">' + (isEnabled ? '啟用中' : '已關閉') + '</span>',
@@ -623,7 +618,8 @@
             runtimeSttStatus.textContent = stt.statusLabel || stt.state || 'idle';
         }
         if (runtimeSttButton) {
-            runtimeSttButton.textContent = stt.label || '開始收音';
+            // 只留圖示：狀態文案塞進 42px 方框會撐破 Chat 面板，改掛 title 與 data-state。
+            runtimeSttButton.title = stt.label || '開始聆聽';
             runtimeSttButton.disabled = stt.enabled === false;
             runtimeSttButton.dataset.state = stt.state || 'idle';
         }
@@ -683,31 +679,175 @@
 
     // ── App Screens 狀態機（UC01-1 / UC02-1 / UC03-1）────────────
 
-    function showOverlay(screenId) {
-        if (appScreens) appScreens.hidden = false;
-        [screenMainMenu, screenPresetSelect, screenLoadSave].forEach(function (screen) {
-            if (screen) screen.hidden = (screen.id !== screenId);
-        });
-        // 隱藏 UC05 遊戲 UI 元素（HUD / Dock / Live UI）
-        document.body.classList.add('overlay-active');
-        // 隱藏 Qt 拖曳層，讓 HTML 按鈕可接收點擊
-        console.log('[ECHOES UI] calling setDragEnabled(false), type=' + (harnessBridge ? typeof harnessBridge.setDragEnabled : 'NO_BRIDGE'));
-        callBridge('setDragEnabled', false);
-        if (screenId === 'screen-main-menu') refreshMainMenu();
-        if (screenId === 'screen-preset-select') loadPresetCarousel();
-        if (screenId === 'screen-load-save') loadSaveGrid();
+    var uiRoute = { screen: 'screen-main-menu', hud: null, modal: null };
+    var modalReturn = null;
+
+    function renderRoute() {
+        var screens = Array.prototype.slice.call(document.querySelectorAll('.app-screen'));
+        screens.forEach(function (screen) { screen.hidden = screen.id !== uiRoute.screen; });
+        if (appScreens) appScreens.hidden = !uiRoute.screen;
+        if (stageRoot) stageRoot.hidden = Boolean(uiRoute.screen);
+
+        var hudLayer = document.getElementById('hud-layer');
+        dockPanels.forEach(function (panel) { panel.hidden = panel.id !== uiRoute.hud; });
+        if (hudLayer) hudLayer.hidden = !uiRoute.hud;
+        dockButtons.forEach(function (button) { button.classList.toggle('is-active', button.dataset.hud === uiRoute.hud); });
+        var nav = document.getElementById('companion-nav');
+        var badge = document.getElementById('hud-level-badge');
+        var stageMenu = document.getElementById('stage-menu-button');
+        if (nav) nav.hidden = Boolean(uiRoute.screen);
+        if (badge) badge.hidden = Boolean(uiRoute.screen);
+        if (stageMenu) stageMenu.hidden = Boolean(uiRoute.screen);
+
+        var modalLayer = document.getElementById('modal-layer');
+        Array.prototype.slice.call(document.querySelectorAll('.modal')).forEach(function (modal) { modal.hidden = modal.id !== uiRoute.modal; });
+        if (modalLayer) modalLayer.hidden = !uiRoute.modal;
     }
 
-    function hideOverlay() {
-        if (appScreens) appScreens.hidden = true;
-        document.body.classList.remove('overlay-active');
-        callBridge('setDragEnabled', true);
+    function routeToScreen(screenId) {
+        var mappedId = screenId === 'screen-preset-select' ? 'screen-create-character' : screenId;
+        uiRoute.screen = mappedId;
+        uiRoute.hud = null;
+        if (mappedId === 'screen-create-character') {
+            var presetTab = document.getElementById('tab-preset');
+            var customizeTab = document.getElementById('tab-customize');
+            if (presetTab) presetTab.hidden = false;
+            if (customizeTab) customizeTab.hidden = true;
+            loadPresetCarousel();
+        }
+        if (mappedId === 'screen-main-menu') refreshMainMenu();
+        if (mappedId === 'screen-load-save') loadSaveGrid();
+        renderRoute();
     }
+
+    function returnToCompanionMain() {
+        uiRoute.screen = null;
+        uiRoute.hud = null;
+        renderRoute();
+    }
+
+    function openHud(hudId) {
+        if (uiRoute.screen || uiRoute.modal) return;
+        uiRoute.hud = hudId;
+        if (hudId === 'hud-chat') {
+            var unread = document.querySelector('.nav-badge');
+            if (unread) unread.hidden = true;
+        }
+        if (hudId === 'hud-agent') loadPersonaEditor();
+        renderRoute();
+    }
+
+    function closeHud() {
+        uiRoute.hud = null;
+        renderRoute();
+    }
+
+    function openModal(modalId) {
+        if (uiRoute.modal) return;
+        modalReturn = { screen: uiRoute.screen, hud: uiRoute.hud };
+        uiRoute.modal = modalId;
+        uiRoute.hud = null;
+        renderRoute();
+    }
+
+    function closeModal() {
+        uiRoute.modal = null;
+        if (modalReturn) {
+            uiRoute.screen = modalReturn.screen;
+            uiRoute.hud = modalReturn.hud;
+        }
+        modalReturn = null;
+        renderRoute();
+    }
+
+    window.requestClose = function () {
+        if (localStorage.getItem('echoes.skipCloseConfirm') === '1') {
+            callBridge('triggerOverlayAction', 'quit');
+            return;
+        }
+        openModal('modal-close-confirm');
+    };
 
     function enterCompanionStage() {
-        hideOverlay();
-        refreshCharacterHud();
-        callBridge('refreshState');
+        uiRoute.screen = 'screen-loading';
+        uiRoute.hud = null;
+        var loadingPercent = document.getElementById('loading-percent');
+        if (loadingPercent) loadingPercent.textContent = '0%';
+        var progress = 0;
+        var progressTimer = window.setInterval(function () {
+            progress = Math.min(96, progress + 12);
+            if (loadingPercent) loadingPercent.textContent = progress + '%';
+        }, 100);
+        renderRoute();
+        window.setTimeout(function () {
+            window.clearInterval(progressTimer);
+            if (loadingPercent) loadingPercent.textContent = '100%';
+            uiRoute.screen = null;
+            renderRoute();
+            refreshCharacterHud();
+            callBridge('refreshState');
+        }, 900);
+    }
+
+    // Fixed mock data deliberately isolates the new Slot UI from the existing character bridge.
+    var styleSlots = [
+        { slot_id: 'style-base', state: 'ready', label: '起始造型', thumb: '' },
+        { slot_id: 'style-2', state: 'ready', label: '造型 2', thumb: '' },
+        { slot_id: 'style-next', state: 'generating', label: '生成中', thumb: '' },
+        { slot_id: 'style-empty', state: 'empty', label: '空格', thumb: '' }
+    ];
+    var sceneSlots = {
+        scenes: [{ slot_id: 'scene-base', state: 'ready', label: '初始房', thumb: '' }, { slot_id: 'scene-next', state: 'generating', label: '生成中', thumb: '' }, { slot_id: 'scene-empty', state: 'empty', label: '空格', thumb: '' }],
+        objects: [{ slot_id: 'object-base', state: 'ready', label: '起始物件', thumb: '' }, { slot_id: 'object-empty', state: 'empty', label: '空格', thumb: '' }]
+    };
+    var selectedSlots = { style: null, scene: null };
+    var pendingCreation = null;
+
+    function renderSlots(containerId, slots) {
+        var container = document.getElementById(containerId);
+        if (!container) return;
+        var selectionType = containerId === 'style-slot-grid' ? 'style' : 'scene';
+        container.innerHTML = slots.map(function (slot) {
+            var selected = selectedSlots[selectionType] === slot.slot_id;
+            return '<button type="button" class="asset-slot slot--' + slot.state + (selected ? ' is-selected' : '') + '" data-slot-type="' + selectionType + '" data-slot-id="' + escapeHtml(slot.slot_id) + '"' + (slot.state === 'ready' ? '' : ' disabled') + '><b>' + escapeHtml(slot.label) + '</b><small>' + (slot.state === 'generating' ? '達門檻自動生成' : slot.state === 'empty' ? '待成長生成' : '') + '</small></button>';
+        }).join('');
+        var apply = document.getElementById(selectionType + '-apply-button');
+        if (apply) apply.disabled = !selectedSlots[selectionType];
+        if (selectionType === 'style') {
+            var occupiedCount = slots.filter(function (slot) { return slot.state !== 'empty'; }).length;
+            setText(document.getElementById('style-slot-count'), '格子 ' + occupiedCount + ' / ' + slots.length);
+        }
+    }
+
+    function setupSlots() {
+        renderSlots('style-slot-grid', styleSlots);
+        renderSlots('scene-slot-grid', sceneSlots.scenes);
+        document.querySelectorAll('.slot-grid').forEach(function (grid) {
+            grid.addEventListener('click', function (event) {
+                var slot = event.target.closest('[data-slot-id]');
+                if (!slot || slot.disabled) return;
+                selectedSlots[slot.dataset.slotType] = slot.dataset.slotId;
+                if (slot.dataset.slotType === 'style') renderSlots('style-slot-grid', styleSlots);
+                else {
+                    var active = document.querySelector('[data-scene-tab].is-active');
+                    renderSlots('scene-slot-grid', sceneSlots[active ? active.dataset.sceneTab : 'scenes']);
+                }
+            });
+        });
+        ['style', 'scene'].forEach(function (kind) {
+            var button = document.getElementById(kind + '-apply-button');
+            if (button) button.addEventListener('click', function () {
+                var slotId = selectedSlots[kind];
+                if (!slotId) return;
+                stageRoot.dataset[kind + 'Slot'] = slotId;
+                stageRoot.classList.add('asset-applying');
+                window.setTimeout(function () { stageRoot.classList.remove('asset-applying'); }, 360);
+                selectedSlots[kind] = null;
+                closeHud();
+            });
+        });
+        var importer = document.getElementById('scene-import-button');
+        if (importer) importer.addEventListener('click', function () { setStatus('Import 功能待 bridge 提供檔案選擇器。', 'idle', 2400); });
     }
 
     // ── UC02-1 Preset 聚光燈輪播 ───────────────────────────────
@@ -727,7 +867,7 @@
                 if (preset) {
                     slots.push(
                         '<button type="button" class="preset-thumb' + (i === presetIndex ? ' is-active' : '') + '" data-preset-index="' + i + '">' +
-                        escapeHtml(preset.name) + '</button>'
+                        String(i + 1) + '</button>'
                     );
                 } else {
                     slots.push('<div class="preset-thumb preset-thumb--empty" aria-hidden="true"></div>');
@@ -758,15 +898,10 @@
     function selectCurrentPreset() {
         var current = presetList[presetIndex];
         if (!current || !presetSelectButton) return;
-        presetSelectButton.disabled = true;
-        callCharacterBridge('createFromPreset', current.character_id, '').then(function () {
-            enterCompanionStage();
-        }).catch(function (err) {
-            console.warn('[ECHOES UI] createFromPreset failed:', err.message);
-            setStatus('建立角色失敗：' + err.message, 'error', 4800);
-        }).then(function () {
-            presetSelectButton.disabled = false;
-        });
+        var nameInput = document.getElementById('name-character-input');
+        if (nameInput) nameInput.value = current.name || 'New Companion';
+        pendingCreation = { kind: 'preset', preset: current };
+        openModal('modal-name-character');
     }
 
     // ── UC03-1 Load Save ──────────────────────────────────────
@@ -799,9 +934,19 @@
 
     function deleteSelectedSave() {
         if (!selectedSaveId) return;
+        var selected = saveList.filter(function (item) { return item.character_id === selectedSaveId; })[0];
+        var title = document.getElementById('delete-save-title');
+        if (title) title.textContent = '刪除「' + (selected ? selected.name : '此角色') + ' · Lv.' + (selected ? selected.level : '-') + '」存檔？';
+        openModal('modal-delete-confirm');
+    }
+
+    function confirmDeleteSelectedSave() {
+        if (!selectedSaveId) return;
         callCharacterBridge('deleteCharacter', selectedSaveId).then(function () {
             selectedSaveId = null;
+            uiRoute.modal = null;
             loadSaveGrid();
+            renderRoute();
         }).catch(function (err) {
             console.warn('[ECHOES UI] deleteCharacter failed:', err.message);
             setStatus('刪除存檔失敗：' + err.message, 'error', 4800);
@@ -813,18 +958,13 @@
     function setupAppScreens() {
         if (menuCreateButton) {
             menuCreateButton.addEventListener('click', function () {
-                showOverlay('screen-preset-select');
+                routeToScreen('screen-preset-select');
             });
         }
         if (menuLoadButton) {
             menuLoadButton.addEventListener('click', function () {
                 if (menuLoadButton.disabled) return;
-                showOverlay('screen-load-save');
-            });
-        }
-        if (menuSettingsButton) {
-            menuSettingsButton.addEventListener('click', function () {
-                setStatus('Settings 尚未串接（本次變更範圍外）。', 'idle', 2400);
+                routeToScreen('screen-load-save');
             });
         }
         if (menuQuitButton) {
@@ -841,11 +981,6 @@
         if (presetSelectButton) {
             presetSelectButton.addEventListener('click', selectCurrentPreset);
         }
-        if (presetCustomizeToggle && presetCustomizePanel) {
-            presetCustomizeToggle.addEventListener('click', function () {
-                presetCustomizePanel.hidden = !presetCustomizePanel.hidden;
-            });
-        }
         if (presetCustomizeGenerate) {
             presetCustomizeGenerate.addEventListener('click', function () {
                 var current = presetList[presetIndex];
@@ -861,14 +996,11 @@
                 renderPresetCarousel();
             });
         }
-        if (presetBackButton) {
-            presetBackButton.addEventListener('click', function () { showOverlay('screen-main-menu'); });
-        }
         if (saveCardGrid) {
             saveCardGrid.addEventListener('click', function (event) {
                 var addCard = event.target.closest('[data-save-add]');
                 if (addCard) {
-                    showOverlay('screen-preset-select');
+                    routeToScreen('screen-preset-select');
                     return;
                 }
                 var card = event.target.closest('[data-save-id]');
@@ -884,8 +1016,88 @@
             saveDeleteButton.addEventListener('click', deleteSelectedSave);
         }
         if (saveBackButton) {
-            saveBackButton.addEventListener('click', function () { showOverlay('screen-main-menu'); });
+            saveBackButton.addEventListener('click', function () { routeToScreen('screen-main-menu'); });
         }
+
+        document.querySelectorAll('[data-screen]').forEach(function (button) {
+            button.addEventListener('click', function () { routeToScreen(button.dataset.screen); });
+        });
+        document.querySelectorAll('[data-modal]').forEach(function (button) {
+            button.addEventListener('click', function () { openModal(button.dataset.modal); });
+        });
+        document.querySelectorAll('[data-close-modal]').forEach(function (button) {
+            button.addEventListener('click', closeModal);
+        });
+        var presetTabButton = document.getElementById('preset-tab-button');
+        var customizeTabButton = document.getElementById('customize-tab-button');
+        var presetTab = document.getElementById('tab-preset');
+        var customizeTab = document.getElementById('tab-customize');
+        function switchCreateTab(customize) {
+            if (presetTab) presetTab.hidden = customize;
+            if (customizeTab) customizeTab.hidden = !customize;
+            if (presetTabButton) presetTabButton.classList.toggle('is-active', !customize);
+            if (customizeTabButton) customizeTabButton.classList.toggle('is-active', customize);
+        }
+        if (presetTabButton) presetTabButton.addEventListener('click', function () { switchCreateTab(false); });
+        if (customizeTabButton) customizeTabButton.addEventListener('click', function () { switchCreateTab(true); });
+        if (presetCustomizeGenerate) presetCustomizeGenerate.addEventListener('click', function () {
+            if (customizeTab) customizeTab.dataset.state = 'generating';
+            window.setTimeout(function () { if (customizeTab) customizeTab.dataset.state = 'done'; }, 900);
+        });
+        var customUseButton = document.getElementById('custom-use-button');
+        if (customUseButton) customUseButton.addEventListener('click', function () {
+            var nameInput = document.getElementById('name-character-input');
+            var customName = document.getElementById('custom-character-name');
+            if (nameInput && customName) nameInput.value = customName.value || 'New Companion';
+            pendingCreation = { kind: 'custom' };
+            openModal('modal-name-character');
+        });
+        var discardButton = document.getElementById('discard-confirm-button');
+        if (discardButton) discardButton.addEventListener('click', function () {
+            if (customizeTab) customizeTab.dataset.state = 'before';
+            closeModal();
+        });
+        var nameConfirm = document.getElementById('name-character-confirm');
+        if (nameConfirm) nameConfirm.addEventListener('click', function () {
+            var chosenName = (document.getElementById('name-character-input').value || '').trim();
+            var creation = pendingCreation;
+            if (!creation) { closeModal(); return; }
+            if (creation.kind === 'custom') {
+                pendingCreation = null;
+                uiRoute.modal = null;
+                enterCompanionStage();
+                return;
+            }
+            nameConfirm.disabled = true;
+            callCharacterBridge('createFromPreset', creation.preset.character_id, chosenName).then(function () {
+                pendingCreation = null;
+                uiRoute.modal = null;
+                enterCompanionStage();
+            }).catch(function (err) {
+                console.warn('[ECHOES UI] createFromPreset failed:', err.message);
+                setStatus('建立角色失敗：' + err.message, 'error', 4800);
+            }).then(function () { nameConfirm.disabled = false; });
+        });
+        var deleteConfirm = document.getElementById('delete-confirm-button');
+        if (deleteConfirm) deleteConfirm.addEventListener('click', confirmDeleteSelectedSave);
+        var closeConfirm = document.getElementById('close-confirm-button');
+        if (closeConfirm) closeConfirm.addEventListener('click', function () {
+            if (document.getElementById('skip-close-confirm').checked) localStorage.setItem('echoes.skipCloseConfirm', '1');
+            uiRoute.modal = null;
+            renderRoute();
+            callBridge('triggerOverlayAction', 'quit');
+        });
+        var sceneTabs = Array.prototype.slice.call(document.querySelectorAll('[data-scene-tab]'));
+        sceneTabs.forEach(function (button) { button.addEventListener('click', function () { selectedSlots.scene = null; sceneTabs.forEach(function (candidate) { candidate.classList.toggle('is-active', candidate === button); }); renderSlots('scene-slot-grid', sceneSlots[button.dataset.sceneTab]); }); });
+        setupSlots();
+        document.addEventListener('keydown', function (event) {
+            if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'd') {
+                var debug = document.getElementById('debug-panel');
+                if (debug) debug.hidden = !debug.hidden;
+            }
+        });
+        var debugClose = document.getElementById('debug-close-button');
+        if (debugClose) debugClose.addEventListener('click', function () { document.getElementById('debug-panel').hidden = true; });
 
         setupWindowDragHandles();
         setupCompanionDock();
@@ -904,27 +1116,12 @@
     // ── UC05-1 Companion Dock（Talk / Agent / Style / Scene）────
 
     function collapseCompanionDock() {
-        if (companionDockPanel) companionDockPanel.hidden = true;
-        dockPanels.forEach(function (panel) { panel.hidden = true; });
-        dockButtons.forEach(function (button) { button.classList.remove('is-active'); });
-        // 離開 Skills／Persona 面板(收合 dock、切換其他分頁、返回主選單)一律視為取消草稿。
+        closeHud();
         discardPersonaDraft();
     }
 
     function activateCompanionDock(button) {
-        var targetId = button.dataset.dockPanel;
-        var alreadyActive = button.classList.contains('is-active');
-        collapseCompanionDock();
-        if (alreadyActive) return;
-        dockButtons.forEach(function (candidate) {
-            candidate.classList.toggle('is-active', candidate === button);
-        });
-        var targetPanel = document.getElementById(targetId);
-        if (targetPanel) targetPanel.hidden = false;
-        if (companionDockPanel) companionDockPanel.hidden = false;
-        // Skills 面板現在也含技能別名/優先度、角色專屬技能與命中預覽,
-        // 與 Persona 面板共用同一份 getCustomization() 資料來源。
-        if (targetId === 'dock-panel-persona' || targetId === 'dock-panel-agent') loadPersonaEditor();
+        openHud(button.dataset.hud);
     }
 
     function sendTalkText() {
@@ -1044,10 +1241,9 @@
             }
             console.log('[ECHOES UI] bridge=ready');
             setStatus('Bridge ready.', 'idle', 1800);
-            callBridge('setDragEnabled', false);
             callBridge('refreshState');
             refreshMainMenu();
-            showOverlay('screen-main-menu');
+            routeToScreen('screen-main-menu');
             startHudPolling();
         });
     }
@@ -1081,6 +1277,10 @@
             turn.assistantText.classList.add('conversation-turn__text--muted');
         } else {
             turn.assistantText.classList.remove('conversation-turn__text--muted');
+            if (uiRoute.hud !== 'hud-chat') {
+                var unread = document.querySelector('.nav-badge');
+                if (unread) unread.hidden = false;
+            }
         }
     };
 
@@ -1322,11 +1522,13 @@
             var list = Array.isArray(characters) ? characters : [];
             var hasCharacters = list.length > 0;
             menuLoadButton.disabled = !hasCharacters;
-            menuLoadButton.querySelector('.menu-item__sub').textContent = hasCharacters ? (list.length + ' 個角色') : '尚無角色';
+            var subLabel = menuLoadButton.querySelector('.menu-item__sub, small');
+            if (subLabel) subLabel.textContent = hasCharacters ? (list.length + ' 個角色') : '尚無角色';
         }).catch(function (err) {
             console.log('[ECHOES UI] listCharacters FAILED: ' + err.message);
             menuLoadButton.disabled = true;
-            menuLoadButton.querySelector('.menu-item__sub').textContent = '尚無角色';
+            var subLabel = menuLoadButton.querySelector('.menu-item__sub, small');
+            if (subLabel) subLabel.textContent = '尚無角色';
         });
     }
 
@@ -1340,12 +1542,11 @@
         if (!saveCardGrid) return;
         var cards = saveList.map(function (item) {
             var selected = item.character_id === selectedSaveId;
-            var thumbStyle = '';
-            if (item.background_image) {
-                thumbStyle = ' style="background-image:url(\'' + escapeHtml(normalizeProjectAssetSource(item.background_image)) + '\')"';
-            }
+            var thumbnail = item.background_image
+                ? '<img class="save-card__thumb" src="' + escapeHtml(normalizeProjectAssetSource(item.background_image)) + '" alt="' + escapeHtml(item.name) + '">'
+                : '<span class="save-card__thumb" aria-hidden="true"></span>';
             return '<button type="button" class="save-card' + (selected ? ' is-selected' : '') + '" data-save-id="' + escapeHtml(item.character_id) + '">' +
-                '<span class="save-card__thumb" aria-hidden="true"' + thumbStyle + '></span>' +
+                thumbnail +
                 '<span class="save-card__meta">' +
                 '<span class="save-card__name">' + escapeHtml(item.name) + ' · Lv.' + escapeHtml(item.level) + '</span>' +
                 '<span class="save-card__sub">' + escapeHtml(formatPlaytime(item.playtime_seconds)) + ' · ' + escapeHtml(formatLastPlayed(item.last_played_at)) + '</span>' +
@@ -1405,15 +1606,9 @@
         var xpState = state.xp || {};
         var xpTotal = Number(xpState.xp_total != null ? xpState.xp_total : state.xp_total) || 0;
         var level = Number(xpState.level != null ? xpState.level : state.level) || 1;
-        var progressPercent = Number(
-            xpState.progress_percent != null
-                ? xpState.progress_percent
-                : (state.progress_percent != null ? state.progress_percent : 0)
-        ) || 0;
         hudScore.hidden = false;
-        if (hudScoreText) hudScoreText.textContent = 'Score ' + xpTotal;
-        if (hudScoreLevel) hudScoreLevel.textContent = 'Lv.' + level;
-        if (hudScoreProgressFill) hudScoreProgressFill.style.width = Math.max(0, Math.min(100, progressPercent)) + '%';
+        if (hudScoreText) hudScoreText.textContent = '★ Score ' + xpTotal;
+        if (hudScoreLevel) hudScoreLevel.textContent = '· Lv.' + level;
         showHudDelta(xpDeltaOverride != null ? xpDeltaOverride : xpState.last_delta);
     }
 
@@ -1481,10 +1676,11 @@
     function setupCompanionDock() {
         wirePersonaEditor();
         dockButtons.forEach(function (button) {
-            button.addEventListener('click', function () { activateCompanionDock(button); });
+            button.addEventListener('click', function () { openHud(button.dataset.hud); });
         });
-        if (talkSendButton) {
-            talkSendButton.addEventListener('click', sendTalkText);
+        var stageMenuButton = document.getElementById('stage-menu-button');
+        if (stageMenuButton) {
+            stageMenuButton.addEventListener('click', function () { routeToScreen('screen-main-menu'); });
         }
         if (talkTextInput) {
             talkTextInput.addEventListener('keydown', function (event) {
@@ -1519,17 +1715,11 @@
                 callBridge('triggerOverlayAction', 'report_news');
             });
         }
-        if (companionSettingsButton) {
-            companionSettingsButton.addEventListener('click', function () {
-                setStatus('Settings 版位保留，後續會沿用既有流程。', 'idle', 2400);
-            });
-        }
-        if (companionLeaveButton) {
-            companionLeaveButton.addEventListener('click', function () {
-                collapseCompanionDock();
-                showOverlay('screen-main-menu');
-            });
-        }
+        var character = document.getElementById('pet-character');
+        if (character) character.addEventListener('click', function () { openHud('hud-chat'); });
+        document.querySelectorAll('[data-close-hud]').forEach(function (button) {
+            button.addEventListener('click', closeHud);
+        });
     }
 
     try {
@@ -1549,6 +1739,7 @@
         setStatus('', 'idle', 0);
         window.setConversationQueueDepth(0);
         window.setRuntimeMode('harness');
+        routeToScreen('screen-main-menu');
     } catch (error) {
         console.error('[ECHOES APP.JS] init error:', error.message);
     }

@@ -84,7 +84,7 @@ def _build_stt_controller(window):
         vad=vad,
     )
 
-    window.set_stt_available(False)  # 模型 preload 完成前維持 unavailable
+    window.set_stt_state("loading")  # 模型 preload 完成前顯示「載入中」，失敗才轉為不可用
     window.stt_start_requested.connect(controller.start_session)
     window.stt_stop_requested.connect(controller.stop_session)
     # controller 的 RecordingState 用字與既有 UI 白名單不完全相同（recording -> listening），

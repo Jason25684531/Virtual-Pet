@@ -1,261 +1,79 @@
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ECHOES Pet</title>
-    <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ECHOES Pet</title>
+  <link rel="stylesheet" href="style.css">
 </head>
-<body class="overlay-active">
-    <main id="stage-root" class="room-shell stage-root" aria-label="ECHOES room scene">
-        <section class="room-scene">
-            <div id="stage-background" class="stage-background" aria-hidden="true">
-                <img
-                    class="room-background"
-                    src="../../assets/backgrounds/default_room.jpg"
-                    alt="ECHOES room background"
-                >
-                <div class="room-atmosphere"></div>
-            </div>
-
-            <div id="stage-pet-layer" class="stage-pet-layer" aria-hidden="true">
-                <div id="panel-video-anchor" class="room-panel-anchor">
-                    <video id="panel-video" class="room-panel-video" muted playsinline></video>
-                </div>
-                <div id="pet-stage-anchor" class="room-character-anchor">
-                    <div id="pet-character" class="room-character">
-                        <video id="pet-video" autoplay loop muted playsinline></video>
-                    </div>
-                </div>
-            </div>
-
-            <div id="stage-live-ui" class="stage-live-ui">
-                <div class="room-chrome">
-                    <p class="room-eyebrow">ECHOES Room</p>
-                    <h1 id="room-character-name">Pet Preview</h1>
-                    <span id="runtime-mode-badge" class="status-pill">mode: harness</span>
-                </div>
-
-                <div id="hud-score" class="hud-score" hidden>
-                    <div class="hud-score__row">
-                        <span id="hud-score-text" class="hud-score__text">Score 0</span>
-                        <span id="hud-score-level" class="hud-score__level">Lv.1</span>
-                        <span id="hud-score-delta" class="hud-score__delta" hidden>+0</span>
-                    </div>
-                    <div class="hud-score__progress" aria-hidden="true">
-                        <span id="hud-score-progress-fill" class="hud-score__progress-fill"></span>
-                    </div>
-                </div>
-            </div>
-
-            <div id="stage-bottom-ui" class="stage-bottom-ui">
-                <section id="action-status" class="action-status" data-tone="idle" aria-live="polite">
-                    <span class="action-status__dot"></span>
-                    <div class="action-status__copy">
-                        <p class="action-status__label">Status</p>
-                        <p id="action-status-text" class="action-status__text">Waiting for room updates.</p>
-                    </div>
-                </section>
-            </div>
-
-            <aside id="conversation-history-panel" class="conversation-history-panel" aria-label="聊天歷程">
-                <div class="conversation-composer">
-                    <div class="talk-input-row">
-                        <input id="talk-text-input" class="text-field" type="text" placeholder="輸入訊息、問題或聊天內容...">
-                        <button id="talk-send-button" class="primary-button" type="button">Send</button>
-                    </div>
-                    <div class="runtime-control-grid runtime-control-grid--primary">
-                        <button id="runtime-stt-button" class="primary-button" type="button">Start STT</button>
-                        <button id="runtime-reset-button" class="ghost-button" type="button">Reset</button>
-                        <span id="runtime-stt-status" class="status-pill">idle</span>
-                    </div>
-                </div>
-                <section id="conversation-panel" class="conversation-panel" aria-live="polite">
-                    <div class="conversation-panel__header">
-                        <div>
-                            <p class="conversation-panel__eyebrow">Recent Turns</p>
-                            <p class="conversation-panel__label">聊天歷程</p>
-                        </div>
-                        <p id="conversation-queue-text" class="conversation-panel__queue">Queue 0</p>
-                    </div>
-                    <div id="conversation-list" class="conversation-list"></div>
-                </section>
-            </aside>
-
-            <div id="companion-dock-root" class="companion-dock-root">
-                <div id="companion-dock-panel" class="companion-dock-panel window-drag-handle" hidden>
-                    <section id="dock-panel-agent" class="dock-panel" hidden>
-                        <div class="character-skill-panel">
-                            <div class="list-actions agent-list-actions">
-                                <span class="panel-help">Skills</span>
-                                <span id="character-skill-count" class="status-pill">0 skills</span>
-                            </div>
-                            <div id="character-skill-list" class="entity-list"></div>
-
-                            <p class="panel-help persona-section-title persona-field">內建技能別名／優先度（僅本角色，不改動技能本體）</p>
-                            <div id="persona-builtin-skill-list" class="entity-list persona-field"></div>
-
-                            <div class="list-actions agent-list-actions persona-field">
-                                <span class="panel-help">角色專屬技能</span>
-                                <button id="persona-local-skill-new-button" class="secondary-button" type="button">+ 新增技能</button>
-                            </div>
-                            <div id="persona-local-skill-list" class="entity-list persona-field"></div>
-
-                            <div id="persona-local-skill-form" class="persona-local-skill-form persona-field" hidden>
-                                <input id="local-skill-id-input" class="text-field persona-field" type="text" placeholder="skill_id（英數/_/-，新增後不可改）">
-                                <input id="local-skill-display-name-input" class="text-field persona-field" type="text" placeholder="顯示名稱">
-                                <input id="local-skill-description-input" class="text-field persona-field" type="text" placeholder="描述">
-                                <input id="local-skill-triggers-input" class="text-field persona-field" type="text" placeholder="觸發詞（逗號分隔，例如：講笑話, 說個笑話）">
-                                <input id="local-skill-behavior-input" class="text-field persona-field" type="text" placeholder="behavior（動作 key，例如：laugh）">
-                                <input id="local-skill-required-tool-input" class="text-field persona-field" type="text" placeholder="required_tool（選填）">
-                                <p id="local-skill-form-error" class="panel-help persona-form-error persona-field" hidden></p>
-                                <div class="entity-card__actions persona-field">
-                                    <button id="local-skill-save-button" class="primary-button" type="button">儲存技能</button>
-                                    <button id="local-skill-form-cancel-button" class="ghost-button" type="button">取消</button>
-                                </div>
-                            </div>
-
-                            <p class="panel-help persona-section-title persona-field">命中預覽（僅預覽，不會執行技能）</p>
-                            <div class="persona-preview-row persona-field">
-                                <input id="persona-preview-input" class="text-field" type="text" placeholder="輸入文字測試命中結果...">
-                                <button id="persona-preview-button" class="secondary-button" type="button">預覽</button>
-                            </div>
-                            <div id="persona-preview-result" class="entity-card persona-field" hidden></div>
-                        </div>
-                    </section>
-
-                    <section id="dock-panel-persona" class="dock-panel" hidden>
-                        <div class="character-persona-panel">
-                            <div class="list-actions agent-list-actions">
-                                <span class="panel-help">Persona / 人設</span>
-                                <span id="persona-validation-status" class="status-pill">-</span>
-                            </div>
-                            <textarea id="persona-textarea" class="text-area persona-field" rows="4" placeholder="輸入角色人設，儲存後套用於目前角色..."></textarea>
-                            <div class="entity-card__actions persona-field">
-                                <button id="persona-save-button" class="primary-button" type="button">儲存人設</button>
-                                <button id="persona-cancel-button" class="ghost-button" type="button">取消</button>
-                            </div>
-                        </div>
-                    </section>
-
-                    <section id="dock-panel-style" class="dock-panel" hidden>
-                        <p class="panel-help">Style / 造型目前保留版位，後續沿用既有角色與素材流程。</p>
-                    </section>
-
-                    <section id="dock-panel-scene" class="dock-panel" hidden>
-                        <p class="panel-help">Scene / 場景目前保留版位，後續沿用既有背景與房間流程。</p>
-                    </section>
-                </div>
-
-                <nav class="companion-dock window-drag-handle" aria-label="Companion actions">
-                    <button id="dock-agent-button" class="dock-icon" type="button" data-dock-panel="dock-panel-agent">
-                        <span class="dock-icon__glyph" aria-hidden="true">&#10022;</span>
-                        <span class="dock-icon__label">Skills</span>
-                    </button>
-                    <button id="dock-persona-button" class="dock-icon" type="button" data-dock-panel="dock-panel-persona">
-                        <span class="dock-icon__glyph" aria-hidden="true">&#9998;</span>
-                        <span class="dock-icon__label">Persona<br>人設</span>
-                    </button>
-                    <button id="dock-style-button" class="dock-icon" type="button" data-dock-panel="dock-panel-style">
-                        <span class="dock-icon__glyph" aria-hidden="true">&#9670;</span>
-                        <span class="dock-icon__label">Style<br>造型</span>
-                    </button>
-                    <button id="dock-scene-button" class="dock-icon" type="button" data-dock-panel="dock-panel-scene">
-                        <span class="dock-icon__glyph" aria-hidden="true">&#9635;</span>
-                        <span class="dock-icon__label">Scene<br>場景</span>
-                    </button>
-                </nav>
-
-                <div class="companion-utility-bar">
-                    <!-- <button id="companion-settings-button" class="utility-link" type="button">&#9881; 設定</button> -->
-                    <span class="utility-sep">&middot;</span>
-                    <button id="companion-leave-button" class="utility-link" type="button">&#9211; 返回主選單</button>
-                </div>
-            </div>
-        </section>
-    </main>
-
-    <div id="app-screens" class="app-screens">
-        <section id="screen-main-menu" class="app-screen app-screen--main-menu" aria-label="Main Menu">
-            <div class="app-screen__panel app-screen__panel--menu">
-                <div class="menu-shell">
-                    <header class="menu-hero window-drag-handle">
-                        <span class="app-screen__eyebrow">ECHOES</span>
-                        <h2 class="app-screen__title">主選單</h2>
-                    </header>
-                    <div class="menu-layout">
-                        <nav class="menu-list">
-                            <button id="menu-create-button" class="menu-item menu-item--primary" type="button">
-                                <span class="menu-item__label">Create</span>
-                                <span class="menu-item__sub">建立新角色</span>
-                            </button>
-                            <button id="menu-load-button" class="menu-item" type="button" disabled>
-                                <span class="menu-item__label">Load</span>
-                                <span class="menu-item__sub">載入存檔</span>
-                            </button>
-                            <button id="menu-settings-button" class="menu-item" type="button">
-                                <span class="menu-item__label">Settings</span>
-                                <span class="menu-item__sub">設定</span>
-                            </button>
-                            <button id="menu-quit-button" class="menu-item" type="button">
-                                <span class="menu-item__label">Quit</span>
-                                <span class="menu-item__sub">離開</span>
-                            </button>
-                        </nav>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <section id="screen-preset-select" class="app-screen app-screen--preset-select" aria-label="Create Character" hidden>
-            <div class="app-screen__panel app-screen__panel--carousel">
-                <header class="carousel-header window-drag-handle">
-                    <h2 class="app-screen__title">Choose Character 候選角色</h2>
-                    <span id="preset-carousel-index" class="status-pill">0 / 0</span>
-                </header>
-                <div class="carousel-stage">
-                    <button id="preset-carousel-prev" class="carousel-nav carousel-nav--prev" type="button" aria-label="Previous">&#10094;</button>
-                    <div class="carousel-preview">
-                        <div class="carousel-preview__portrait" aria-hidden="true"></div>
-                    </div>
-                    <div class="carousel-detail">
-                        <p id="preset-name" class="carousel-detail__name">-</p>
-                        <p id="preset-persona" class="carousel-detail__persona">[ 角色介紹 / Persona ]</p>
-                        <button id="preset-select-button" class="primary-button" type="button" disabled>Select 套用角色</button>
-                        <button id="preset-customize-toggle" class="ghost-button" type="button">Customize 自訂素材</button>
-                        <div id="preset-customize-panel" class="preset-customize-panel" hidden>
-                            <p class="panel-help">自訂素材仍沿用既有流程，這裡保留入口與狀態提示。</p>
-                            <input id="preset-customize-file" type="file" accept="image/*" disabled>
-                            <button id="preset-customize-generate" class="secondary-button" type="button">Generate 預留</button>
-                        </div>
-                    </div>
-                    <button id="preset-carousel-next" class="carousel-nav carousel-nav--next" type="button" aria-label="Next">&#10095;</button>
-                </div>
-                <div id="preset-thumb-list" class="preset-thumb-list"></div>
-                <button id="preset-back-button" class="ghost-button" type="button">Back 返回</button>
-            </div>
-        </section>
-
-        <section id="screen-load-save" class="app-screen app-screen--load-save" aria-label="Load Save" hidden>
-            <div class="app-screen__panel app-screen__panel--save">
-                <header class="save-screen__header window-drag-handle">
-                    <div>
-                        <p class="app-screen__eyebrow">Load Save</p>
-                        <h2 class="app-screen__title">選擇存檔</h2>
-                    </div>
-                </header>
-                <div id="save-card-grid" class="save-card-grid"></div>
-                <div class="save-actions">
-                    <button id="save-back-button" class="ghost-button" type="button">Back 返回</button>
-                    <button id="save-delete-button" class="danger-button" type="button" disabled>Delete 刪除</button>
-                    <button id="save-continue-button" class="primary-button" type="button" disabled>Continue 繼續</button>
-                </div>
-            </div>
-        </section>
+<body>
+  <main id="stage-root" class="stage-root" aria-label="ECHOES Companion Main">
+    <div id="stage-background" class="stage-background" aria-hidden="true"><img class="room-background" src="../../assets/backgrounds/default_room.jpg" alt=""></div>
+    <div id="stage-pet-layer" class="stage-pet-layer" aria-label="角色，點擊可開啟聊天">
+      <div id="panel-video-anchor" class="room-panel-anchor"><video id="panel-video" muted playsinline></video></div>
+      <button id="pet-character" class="room-character" type="button" aria-label="與角色聊天"><video id="pet-video" autoplay loop muted playsinline></video></button>
     </div>
+    <div id="hud-level-badge" class="level-badge" aria-live="polite"><span id="hud-score-text">★ Score 0</span><span id="hud-score-level">· Lv.1</span><span id="hud-score-delta" hidden>+0</span></div>
+    <nav id="companion-nav" aria-label="Companion actions">
+      <button class="companion-nav__item" type="button" data-hud="hud-chat" aria-label="Chat"><span class="nav-glyph">◌</span><span class="nav-badge" hidden></span><span>Chat</span></button>
+      <button class="companion-nav__item" type="button" data-hud="hud-agent" aria-label="Agent"><span class="nav-glyph">✦</span><span>Agent</span></button>
+      <button class="companion-nav__item" type="button" data-hud="hud-style" aria-label="Style"><span class="nav-glyph">◇</span><span>Style</span></button>
+      <button class="companion-nav__item" type="button" data-hud="hud-scene" aria-label="Scene"><span class="nav-glyph">▦</span><span>Scene</span></button>
+    </nav>
+    <button id="stage-menu-button" class="stage-menu-button" type="button" aria-label="返回主選單">‹ Menu</button>
+  </main>
 
-    <audio id="room-audio" preload="none"></audio>
-    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-    <script src="app.js"></script>
+  <div id="app-screens" aria-live="polite">
+    <section id="screen-main-menu" class="app-screen menu-screen window-drag-handle" aria-label="Main Menu">
+      <div id="menu-screen-layout" class="menu-screen__layout">
+      <nav class="menu-screen__actions">
+        <button id="menu-create-button" class="menu-action menu-action--primary" type="button"><b>Create</b><small>建立新角色</small></button>
+        <button id="menu-load-button" class="menu-action" type="button" disabled><b>Load</b><small>尚無角色</small></button>
+        <button id="menu-quit-button" class="menu-action" type="button"><b>Quit</b><small>離開</small></button>
+      </nav>
+      <section class="menu-screen__preview" aria-label="Companion preview"><h2>Customized AI Companion</h2><div class="menu-screen__preview-card" aria-hidden="true"><span></span></div><b>Character</b></section>
+      </div>
+    </section>
+
+    <section id="screen-create-character" class="app-screen creation-screen" aria-label="Create Character" hidden>
+      <div class="screen-card screen-card--wide">
+        <header class="screen-header"><div><h1>Create Character</h1><p>建立角色</p></div><button class="icon-button" type="button" data-screen="screen-main-menu" aria-label="Back">×</button></header>
+        <nav class="screen-tabs" aria-label="角色建立方式"><button id="preset-tab-button" class="is-active" type="button">Preset <small>預設 ×7</small></button><button id="customize-tab-button" type="button">Customize <small>客製化</small></button></nav>
+        <section id="tab-preset" class="create-tab">
+          <div class="preset-carousel"><button id="preset-carousel-prev" class="carousel-arrow" type="button" aria-label="Previous">‹</button><div class="preset-spotlight"><div class="preset-portrait"></div><div><span id="preset-carousel-index" class="counter-pill">0 / 0</span><h2 id="preset-name">尚無預設角色</h2><p id="preset-persona">選擇一位角色開始冒險。</p><button id="preset-select-button" class="primary-button" type="button" disabled>Select</button></div></div><button id="preset-carousel-next" class="carousel-arrow" type="button" aria-label="Next">›</button></div>
+          <div id="preset-thumb-list" class="number-pager" aria-label="Preset pages"></div>
+        </section>
+        <section id="tab-customize" class="create-tab" data-state="before" hidden>
+          <div class="customize-grid"><div class="customize-form"><label class="upload-box" for="preset-customize-file"><span>＋</span><b>Upload image</b><small>上傳單張圖片</small></label><input id="preset-customize-file" type="file" accept="image/*" hidden><label>Character Name<input id="custom-character-name" type="text" placeholder="Character name..."></label><label>Prompt <small>(optional)</small><textarea id="custom-character-prompt" rows="4" placeholder="Describe style..."></textarea></label><button id="preset-customize-generate" class="primary-button" type="button">Generate</button></div><div class="customize-preview"><div class="customize-state customize-state--before"><p>等待生成</p><span>上傳圖片並輸入角色資訊</span></div><div class="customize-state customize-state--generating"><b>Generating</b><p>正在建立 13 組動作模板…</p><div class="progress-line"><span></span></div><button class="ghost-button" type="button" data-modal="modal-discard-confirm">Back</button></div><div class="customize-state customize-state--done"><b>Done</b><div class="preview-orb"></div><p>13 組動作模板已生成 · 10 情緒 + 3 Agent</p><button id="custom-use-button" class="primary-button" type="button">Use this character</button><button class="ghost-button" type="button" data-modal="modal-discard-confirm">Regenerate</button></div></div></div>
+        </section>
+      </div>
+    </section>
+
+    <section id="screen-load-save" class="app-screen load-screen window-drag-handle" aria-label="Load Save" hidden>
+      <div class="screen-card screen-card--save"><header class="screen-header"><div><h1>Load Save</h1><p>載入存檔</p></div><button class="icon-button" type="button" data-screen="screen-main-menu" aria-label="Back">×</button></header><div id="save-card-grid" class="save-card-grid"></div><footer class="screen-footer"><button id="save-back-button" class="ghost-button" type="button">Back</button><span></span><button id="save-delete-button" class="danger-button" type="button" disabled>Delete</button><button id="save-continue-button" class="primary-button" type="button" disabled>Continue</button></footer></div>
+    </section>
+
+    <section id="screen-loading" class="app-screen loading-screen" aria-label="Loading" hidden><span id="loading-percent" class="loading-percent">0%</span><div class="loading-screen__copy"><h1>Loading your companion</h1><p>場景與角色正在就位</p><div class="progress-line"><span></span></div></div></section>
+  </div>
+
+  <div id="hud-layer" hidden>
+    <section id="hud-chat" class="hud-panel" aria-label="Chat" hidden><header class="hud-header"><div><h1>Chat</h1><p>對話</p></div><button class="icon-button" type="button" data-close-hud aria-label="Close">×</button></header><div id="conversation-list" class="message-list" aria-live="polite"></div><footer class="hud-composer"><input id="talk-text-input" type="text" placeholder="輸入訊息…"><button id="runtime-stt-button" class="icon-button" type="button" aria-label="Voice input">◉</button></footer><span id="conversation-queue-text" hidden>Queue 0</span></section>
+    <section id="hud-agent" class="hud-panel" aria-label="Agent" hidden><header class="hud-header"><h1>Agent</h1><button class="icon-button" type="button" data-close-hud aria-label="Close">×</button></header><div class="agent-command"><input id="agent-command-input" type="text" placeholder="問我或下指令…"><button id="agent-command-mic" class="icon-button" type="button" aria-label="Voice input">◉</button><button id="agent-command-submit" class="primary-button" type="button">GO</button></div><div class="chip-row"><button id="agent-chip-joke" type="button">✦ 幸運星</button><button id="agent-chip-music" type="button">♫ 音樂</button><button id="agent-chip-news" type="button">▤ 遊戲新聞</button></div><div class="agent-result"><span id="agent-result-text">輸入問題或點選快捷指令。</span><b id="agent-result-delta">+0</b></div></section>
+    <section id="hud-style" class="hud-panel" aria-label="Style" hidden><header class="hud-header"><div><h1>Styles</h1><p>造型 <span id="style-slot-count" class="counter-pill">格子 2 / 4</span></p></div><button class="icon-button" type="button" data-close-hud aria-label="Close">×</button></header><div id="style-slot-grid" class="slot-grid"></div><div class="slot-legend"><span>□ 已生成</span><span>◌ 生成中</span><span>┄ 空格待生成</span></div><button id="style-apply-button" class="apply-button" type="button" disabled>Apply</button></section>
+    <section id="hud-scene" class="hud-panel" aria-label="Scene" hidden><header class="hud-header"><nav class="pill-tabs"><button class="is-active" type="button" data-scene-tab="scenes">● Scenes 場景</button><button type="button" data-scene-tab="objects">Objects 物件</button></nav><button class="icon-button" type="button" data-close-hud aria-label="Close">×</button></header><div id="scene-slot-grid" class="slot-grid"></div><div class="slot-legend"><span>□ 已生成</span><span>◌ 生成中</span><span>┄ 空格待生成</span></div><button id="scene-import-button" class="import-button" type="button">＋ Import folder / file</button><button id="scene-apply-button" class="apply-button" type="button" disabled>Apply</button></section>
+  </div>
+
+  <div id="modal-layer" hidden>
+    <section id="modal-name-character" class="modal" role="dialog" aria-modal="true" aria-label="Name character" hidden><h1>Name your character</h1><p>確認名稱後建立角色。</p><input id="name-character-input" type="text" value="New Companion"><footer><button class="ghost-button" type="button" data-close-modal>Cancel</button><button id="name-character-confirm" class="primary-button" type="button">Confirm</button></footer></section>
+    <section id="modal-discard-confirm" class="modal" role="dialog" aria-modal="true" aria-label="Discard generated content" hidden><div class="modal-warning">!</div><h1>回上一步將刪除已生成內容</h1><p>重新生成或返回編輯會清除目前已完成的 13 組動作模板，此操作無法復原。</p><footer><button class="ghost-button" type="button" data-close-modal>Cancel</button><button id="discard-confirm-button" class="danger-button" type="button">Discard &amp; back</button></footer></section>
+    <section id="modal-delete-confirm" class="modal" role="dialog" aria-modal="true" aria-label="Delete save" hidden><div class="modal-warning">!</div><h1 id="delete-save-title">刪除存檔？</h1><p>此角色的等級、造型與場景進度將永久刪除、無法復原。</p><footer><button class="ghost-button" type="button" data-close-modal>Cancel</button><button id="delete-confirm-button" class="danger-button" type="button">Delete</button></footer></section>
+    <section id="modal-close-confirm" class="modal" role="dialog" aria-modal="true" aria-label="Close app" hidden><h1>Close ECHOES?</h1><label><input id="skip-close-confirm" type="checkbox"> 不再顯示此提示</label><footer><button class="ghost-button" type="button" data-close-modal>Cancel</button><button id="close-confirm-button" class="danger-button" type="button">Close</button></footer></section>
+    <section id="modal-reward-popup" class="modal" role="dialog" aria-modal="true" aria-label="Reward" hidden><h1>New reward ready</h1><p>新的素材已完成生成。</p><footer><button class="ghost-button" type="button" data-close-modal>Later</button><button class="primary-button" type="button" data-close-modal>Apply</button></footer></section>
+  </div>
+
+  <aside id="debug-panel" hidden aria-label="Debug panel"><button id="debug-close-button" class="icon-button" type="button">×</button><h2>Debug</h2><p id="room-character-name">Pet Preview</p><span id="runtime-mode-badge">mode: harness</span><span id="runtime-stt-status">idle</span><button id="runtime-reset-button" type="button">Reset</button><button id="runtime-joke-button" type="button">Joke</button><button id="runtime-share-button" type="button">Share</button><button id="runtime-music-button" type="button">Music</button><button id="runtime-news-button" type="button">News</button><button id="refresh-skills-button" type="button">Refresh skills</button><span id="skill-count-badge">0 skills</span><div id="skill-list"></div><span id="character-skill-count">0 skills</span><div id="character-skill-list"></div><span id="persona-validation-status">-</span><textarea id="persona-textarea" rows="4" placeholder="輸入角色人設"></textarea><button id="persona-save-button" type="button">儲存人設</button><button id="persona-cancel-button" type="button">取消</button><div id="persona-builtin-skill-list"></div><button id="persona-local-skill-new-button" type="button">新增技能</button><div id="persona-local-skill-list"></div><div id="persona-local-skill-form" hidden><input id="local-skill-id-input" placeholder="skill_id"><input id="local-skill-display-name-input" placeholder="顯示名稱"><input id="local-skill-description-input" placeholder="描述"><input id="local-skill-triggers-input" placeholder="觸發詞"><input id="local-skill-behavior-input" placeholder="behavior"><input id="local-skill-required-tool-input" placeholder="required_tool"><p id="local-skill-form-error" hidden></p><button id="local-skill-save-button" type="button">儲存技能</button><button id="local-skill-form-cancel-button" type="button">取消</button></div><input id="persona-preview-input" placeholder="測試技能"><button id="persona-preview-button" type="button">預覽</button><div id="persona-preview-result" hidden></div></aside>
+  <audio id="room-audio" preload="none"></audio>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
