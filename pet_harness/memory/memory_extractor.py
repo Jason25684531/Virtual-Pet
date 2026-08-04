@@ -27,12 +27,14 @@ def _is_explicit_promise(text: str) -> bool:
     )
 
 
-def _is_usable_candidate(candidate: MemoryCandidate, user_text: str) -> bool:
-    if candidate.text.lstrip().startswith("你"):
+def is_eligible_memory_item(memory_key: str, text: str) -> bool:
+    if not is_valid_memory_key(memory_key) or text.lstrip().startswith("你") or "?" in text or "？" in text:
         return False
-    if candidate.memory_key == "角色.承諾":
-        return _is_explicit_promise(candidate.text)
-    return "?" not in user_text and "？" not in user_text
+    return memory_key != "角色.承諾" or _is_explicit_promise(text)
+
+
+def _is_usable_candidate(candidate: MemoryCandidate, user_text: str) -> bool:
+    return is_eligible_memory_item(candidate.memory_key, candidate.text) and "?" not in user_text and "？" not in user_text
 
 
 class BaseMemoryExtractor(ABC):
@@ -56,7 +58,8 @@ class WholeTurnMemoryExtractor(BaseMemoryExtractor):
         if "我" not in text:
             return []
         base_key = "使用者.最愛水果" if "最喜歡" in text else "使用者.喜好" if "喜歡" in text else "使用者.事件"
-        return [MemoryCandidate(base_key, "episodic", text, event_id)]
+        memory_type = "semantic" if base_key != "使用者.事件" else "episodic"
+        return [MemoryCandidate(base_key, memory_type, text, event_id)]
 
 
 class LlmMemoryExtractor(BaseMemoryExtractor):

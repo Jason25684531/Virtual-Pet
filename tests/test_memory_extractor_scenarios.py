@@ -32,6 +32,12 @@ def test_fallback_keeps_multiple_user_preferences_under_one_allowed_key():
     assert all(is_valid_memory_key(item.memory_key) for item in items)
 
 
+def test_fallback_stores_user_preferences_as_semantic_memory():
+    item = WholeTurnMemoryExtractor().extract("e1", "我最喜歡蘋果", "知道了")[0]
+
+    assert item.memory_type == "semantic"
+
+
 def test_questions_and_conditional_offers_do_not_become_memory_items():
     extractor = WholeTurnMemoryExtractor()
 

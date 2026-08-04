@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pet_harness.memory.hybrid_qdrant_memory_store import HybridQdrantMemoryStore
-from pet_harness.memory.memory_extractor import WholeTurnMemoryExtractor
+from pet_harness.memory.memory_extractor import WholeTurnMemoryExtractor, is_eligible_memory_item
 from pet_harness.memory.memory_item_repository import MemoryItemRepository
 from pet_harness.storage.sqlite_store import SQLiteStore
 
@@ -22,6 +22,13 @@ def main() -> int:
     store.initialize()
     repository = MemoryItemRepository(store, args.character)
     extractor = WholeTurnMemoryExtractor()
+    with store.connect() as conn:
+        rows = conn.execute("SELECT memory_id, memory_key, text FROM memory_items WHERE status='active'").fetchall()
+    invalid_ids = [row["memory_id"] for row in rows if not is_eligible_memory_item(row["memory_key"], row["text"])]
+    if invalid_ids and not args.dry_run:
+        with store.connect() as conn, conn:
+            conn.executemany("UPDATE memory_items SET status='superseded' WHERE memory_id=?", [(item_id,) for item_id in invalid_ids])
+    superseded = len(invalid_ids)
     created = 0
     with store.connect() as conn:
         events = conn.execute("SELECT event_id, input_payload, output_payload FROM event_log ORDER BY id").fetchall()
@@ -65,7 +72,7 @@ def main() -> int:
         indexed_ids = index.index(pending)
         repository.mark_indexed(indexed_ids)
         indexed = len(indexed_ids)
-    print(f"character={args.character} event_log={len(events)} legacy={len(legacy)} candidates={created} pending={len(pending)} indexed={indexed} dry_run={args.dry_run}")
+    print(f"character={args.character} event_log={len(events)} legacy={len(legacy)} candidates={created} superseded={superseded} pending={len(pending)} indexed={indexed} dry_run={args.dry_run}")
     return 0
 
 

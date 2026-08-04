@@ -162,7 +162,6 @@ def test_chat_history_is_in_its_hud_and_developer_controls_use_the_debug_panel(p
     assert page.locator("#debug-panel").is_hidden()
     page.keyboard.press("Control+Shift+D")
     assert page.locator("#debug-panel").is_visible()
-    assert page.locator("#debug-panel #persona-textarea").input_value() == "A considerate companion"
 
     page.evaluate("window.hydrateAgenticUI({skills: [{skill_id: 'news', display_name: 'Game News', enabled: true, triggers: []}]})")
     page.locator("#debug-panel #skill-list [data-skill-toggle]").click()
@@ -205,7 +204,9 @@ def test_companion_stage_offers_a_way_back_to_the_main_menu(page):
     assert not back.is_visible()
 
 
-def test_skill_cards_show_at_a_glance_whether_each_skill_is_on(page):
+def test_skill_toggle_button_shows_on_off_by_opacity_not_the_whole_card(page):
+    """整張卡片變半透明會連說明文字都讀不清楚，且不像個可互動的開關。
+    改成只有「啟動／關閉」按鈕本身透明度隨狀態變化，卡片內容全程可讀。"""
     _enter_companion_stage(page)
     page.keyboard.press("Control+Shift+D")
     page.evaluate(
@@ -215,12 +216,15 @@ def test_skill_cards_show_at_a_glance_whether_each_skill_is_on(page):
     )
 
     cards = page.locator("#skill-list .entity-card")
-    assert cards.nth(0).get_attribute("data-skill-enabled") == "true"
-    assert cards.nth(1).get_attribute("data-skill-enabled") == "false"
+    card_on = float(cards.nth(0).evaluate("e => getComputedStyle(e).opacity"))
+    card_off = float(cards.nth(1).evaluate("e => getComputedStyle(e).opacity"))
+    assert card_on == 1
+    assert card_off == 1
 
-    on = float(cards.nth(0).evaluate("e => getComputedStyle(e).opacity"))
-    off = float(cards.nth(1).evaluate("e => getComputedStyle(e).opacity"))
-    assert off < on
+    toggles = page.locator("#skill-list [data-skill-toggle]")
+    button_on = float(toggles.nth(0).evaluate("e => getComputedStyle(e).opacity"))
+    button_off = float(toggles.nth(1).evaluate("e => getComputedStyle(e).opacity"))
+    assert button_off < button_on
 
 
 def test_voice_button_stays_an_icon_and_carries_its_label_as_a_tooltip(page):
@@ -239,3 +243,83 @@ def test_voice_button_stays_an_icon_and_carries_its_label_as_a_tooltip(page):
 
     box = button.bounding_box()
     assert box["width"] <= 48 and box["height"] <= 48
+
+
+def test_hud_panel_sits_above_the_nav_instead_of_dead_center(page):
+    """面板曾用 place-items:center，中心點精準落在螢幕正中央（與角色臉部/身體中線重疊）。
+    面板中心點離視口正中央要有實質距離（不論偏移方向），且底部不與底部導覽互壓。
+    用距離而非單一軸向斷言，允許版面之後在水平或垂直任一軸調整位置。"""
+    _enter_companion_stage(page)
+    page.locator('[data-hud="hud-agent"]').click()
+
+    panel = page.locator("#hud-agent")
+    box = panel.bounding_box()
+    nav = page.locator("#companion-nav").bounding_box()
+    panel_center_x = box["x"] + box["width"] / 2
+    panel_center_y = box["y"] + box["height"] / 2
+    distance_from_dead_center = ((panel_center_x - CENTER_X) ** 2 + (panel_center_y - CENTER_Y) ** 2) ** 0.5
+
+    assert distance_from_dead_center > 150
+    assert box["y"] + box["height"] <= nav["y"]
+
+
+def test_persona_field_lives_in_the_agent_hud_not_the_debug_panel(page):
+    """人設欄位原本只藏在 Ctrl+Shift+D 的除錯面板裡，一般使用流程完全看不到。
+    移入 Agent HUD 本體，開啟 Agent 面板時沿用既有 bridge 自動載入目前人設。"""
+    _enter_companion_stage(page)
+    page.locator('[data-hud="hud-agent"]').click()
+
+    persona_field = page.locator("#hud-agent #persona-textarea")
+    assert persona_field.is_visible()
+    assert persona_field.input_value() == "A considerate companion"
+    assert page.locator("#hud-agent #persona-save-button").is_visible()
+
+
+def test_agent_chips_go_solid_only_when_a_matching_skill_is_enabled(page):
+    """音樂／新聞快捷鍵原本不論底下技能是否啟用都長得一樣，點下去也沒有任何回饋。
+    改為重用既有的 button:disabled 樣式：有已啟用的對應技能才是實體可按，否則變淡。"""
+    _enter_companion_stage(page)
+    page.locator('[data-hud="hud-agent"]').click()
+
+    page.evaluate(
+        "window.hydrateAgenticUI({skills: ["
+        "{skill_id: 'bahamut_daily_news', default_behavior: 'news_idle', enabled: true},"
+        "{skill_id: 'music_bgm', default_behavior: 'music_idle', enabled: false},"
+        "{skill_id: 'youtube_music_playback', default_behavior: 'music_idle', enabled: false}]})"
+    )
+
+    assert page.locator("#agent-chip-news").is_enabled()
+    assert page.locator("#agent-chip-music").is_disabled()
+    music_opacity = float(page.locator("#agent-chip-music").evaluate("e => getComputedStyle(e).opacity"))
+    news_opacity = float(page.locator("#agent-chip-news").evaluate("e => getComputedStyle(e).opacity"))
+    assert music_opacity < news_opacity
+
+    page.evaluate(
+        "window.hydrateAgenticUI({skills: ["
+        "{skill_id: 'music_bgm', default_behavior: 'music_idle', enabled: true}]})"
+    )
+    assert page.locator("#agent-chip-music").is_enabled()
+
+
+def test_agent_chips_have_a_toggle_for_the_highest_priority_matching_skill(page):
+    """音樂/新聞各對應兩顆候選技能，開關鈕固定切最高優先度那顆
+    （youtube_music_playback / bahamut_daily_news），沿用既有 toggleSkill bridge。"""
+    _enter_companion_stage(page)
+    page.locator('[data-hud="hud-agent"]').click()
+
+    page.evaluate(
+        "window.hydrateAgenticUI({skills: ["
+        "{skill_id: 'music_bgm', default_behavior: 'music_idle', enabled: false, priority: 0},"
+        "{skill_id: 'youtube_music_playback', default_behavior: 'music_idle', enabled: true, priority: 100},"
+        "{skill_id: 'game_news', default_behavior: 'news_idle', enabled: false, priority: 0},"
+        "{skill_id: 'bahamut_daily_news', default_behavior: 'news_idle', enabled: true, priority: 100}]})"
+    )
+
+    music_toggle = page.locator("#agent-toggle-music")
+    news_toggle = page.locator("#agent-toggle-news")
+    assert music_toggle.get_attribute("data-skill-id") == "youtube_music_playback"
+    assert music_toggle.get_attribute("data-skill-enabled") == "true"
+    assert news_toggle.get_attribute("data-skill-id") == "bahamut_daily_news"
+
+    music_toggle.click()
+    assert page.evaluate("window.__skill_toggles") == 1

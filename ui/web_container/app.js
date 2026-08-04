@@ -76,9 +76,10 @@
     var agentCommandInput = document.getElementById('agent-command-input');
     var agentCommandMic = document.getElementById('agent-command-mic');
     var agentCommandSubmit = document.getElementById('agent-command-submit');
-    var agentChipJoke = document.getElementById('agent-chip-joke');
     var agentChipMusic = document.getElementById('agent-chip-music');
     var agentChipNews = document.getElementById('agent-chip-news');
+    var agentToggleMusic = document.getElementById('agent-toggle-music');
+    var agentToggleNews = document.getElementById('agent-toggle-news');
     var agentResultText = document.getElementById('agent-result-text');
     var agentResultDelta = document.getElementById('agent-result-delta');
     var companionDockPanel = document.getElementById('hud-layer');
@@ -1646,12 +1647,42 @@
         });
     }
 
+    function pickPrimarySkillForBehavior(items, behavior) {
+        var candidates = items.filter(function (s) { return s.default_behavior === behavior; });
+        if (!candidates.length) return null;
+        candidates.sort(function (a, b) { return (b.priority || 0) - (a.priority || 0); });
+        return candidates[0];
+    }
+
+    // ponytail: 開關鈕固定切「該類別優先度最高」的技能（youtube_music_playback／
+    // bahamut_daily_news）。若使用者另外從除錯面板把次要技能（music_bgm／game_news）
+    // 也開啟，實際觸發走 trigger_enabled_skill_for_behavior 的 discovery 順序，
+    // 未必等於這裡認定的「主要技能」——雙開才會有落差，預設情境下不會發生。
+    function syncSkillToggleButton(button, skill) {
+        if (!button) return;
+        if (!skill) { button.hidden = true; return; }
+        button.hidden = false;
+        button.dataset.skillId = skill.skill_id;
+        button.dataset.skillEnabled = String(Boolean(skill.enabled));
+    }
+
+    function updateAgentChipAvailability(skills) {
+        var items = Array.isArray(skills) ? skills : [];
+        var musicSkill = pickPrimarySkillForBehavior(items, 'music_idle');
+        var newsSkill = pickPrimarySkillForBehavior(items, 'news_idle');
+        if (agentChipMusic) agentChipMusic.disabled = !(musicSkill && musicSkill.enabled);
+        if (agentChipNews) agentChipNews.disabled = !(newsSkill && newsSkill.enabled);
+        syncSkillToggleButton(agentToggleMusic, musicSkill);
+        syncSkillToggleButton(agentToggleNews, newsSkill);
+    }
+
     window.hydrateAgenticUI = function (payload) {
         payload = payload || {};
         renderState(payload.state || null);
         renderRuntimeControls(payload.runtimeControls || null);
         renderSkills(payload.skills || []);
         renderCharacterSkills(payload.skills || []);
+        updateAgentChipAvailability(payload.skills || []);
         if (payload.message) {
             setStatus(payload.message, payload.tone || 'idle', payload.timeoutMs || 0);
         }
@@ -1700,11 +1731,6 @@
                 callBridge('toggleStt');
             });
         }
-        if (agentChipJoke) {
-            agentChipJoke.addEventListener('click', function () {
-                callBridge('triggerQuickIntent', 'joke');
-            });
-        }
         if (agentChipMusic) {
             agentChipMusic.addEventListener('click', function () {
                 callBridge('triggerOverlayAction', 'play_music');
@@ -1715,6 +1741,14 @@
                 callBridge('triggerOverlayAction', 'report_news');
             });
         }
+        [agentToggleMusic, agentToggleNews].forEach(function (button) {
+            if (!button) return;
+            button.addEventListener('click', function () {
+                var skillId = button.dataset.skillId;
+                if (!skillId) return;
+                callBridge('toggleSkill', skillId, button.dataset.skillEnabled !== 'true');
+            });
+        });
         var character = document.getElementById('pet-character');
         if (character) character.addEventListener('click', function () { openHud('hud-chat'); });
         document.querySelectorAll('[data-close-hud]').forEach(function (button) {

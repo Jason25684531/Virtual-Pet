@@ -17,7 +17,10 @@ def test_quick_intent_bridge_and_overlay_aliases_reach_their_command_entries():
     TransparentWindow.trigger_overlay_action_from_bridge(window, "news")
 
     assert quick_calls == [("joke", "joke 面板觸發")]
-    assert skill_calls == ["play_music", "report_news"]
+    # 技能定義的 behavior 欄位一律是 music_idle/news_idle（見 .agentic/skills/*.md），
+    # play_music/report_news 是 action_dispatcher 的一次性動作播放鍵，命名空間不同、
+    # 從未有技能以此為 behavior，比對永遠落空。
+    assert skill_calls == ["music_idle", "news_idle"]
 
 
 def test_submit_agentic_text_sends_a_conversation_command_to_action_bus():

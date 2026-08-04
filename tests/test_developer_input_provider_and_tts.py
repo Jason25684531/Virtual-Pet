@@ -168,18 +168,32 @@ def _extract_section(html: str, section_id: str) -> str:
 
 
 def test_developer_controls_are_hidden_in_the_debug_panel():
-    """CAC UX keeps existing developer controls without exposing them as end-user HUDs."""
+    """CAC UX keeps skill-CRUD developer controls out of end-user HUDs.
+
+    人設欄位是例外：使用者要求它移入 Agent HUD 本體，不再只藏在除錯面板裡
+    （見 test_persona_editor_lives_in_the_agent_hud）。"""
     html = (Path(__file__).parents[1] / "ui" / "web_container" / "index.html").read_text(encoding="utf-8")
 
     debug_start = html.index('id="debug-panel"')
     debug_panel = html[debug_start:html.index("</aside>", debug_start)]
-    for marker in ("character-skill-list", "persona-builtin-skill-list", "persona-local-skill-list", "persona-local-skill-form", "persona-preview-input", "persona-textarea"):
+    for marker in ("character-skill-list", "persona-builtin-skill-list", "persona-local-skill-list", "persona-local-skill-form", "persona-preview-input"):
         assert marker in debug_panel, f"expected {marker} inside Debug panel"
+    assert "persona-textarea" not in debug_panel
     assert 'id="debug-panel" hidden' in html
     for hud_id in ("hud-style", "hud-scene"):
         hud_html = _extract_section(html, hud_id)
         assert "persona-" not in hud_html
         assert "character-skill-list" not in hud_html
+
+
+def test_persona_editor_lives_in_the_agent_hud():
+    """人設編輯原本只藏在 Ctrl+Shift+D 的除錯面板裡，一般使用流程完全看不到。
+    移入 Agent HUD 本體，沿用既有 bridge（見 loadPersonaEditor／savePersonaDraft）。"""
+    html = (Path(__file__).parents[1] / "ui" / "web_container" / "index.html").read_text(encoding="utf-8")
+
+    agent_html = _extract_section(html, "hud-agent")
+    for marker in ("persona-textarea", "persona-save-button", "persona-cancel-button", "persona-validation-status"):
+        assert marker in agent_html, f"expected {marker} inside Agent HUD"
 
 
 def test_motion_loop_does_not_restore_idle_until_host_stops_it():

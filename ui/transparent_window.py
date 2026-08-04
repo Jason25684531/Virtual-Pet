@@ -897,11 +897,13 @@ class TransparentWindow(QMainWindow):
             "news": "report_news",
         }
         resolved = alias_map.get(normalized, normalized)
+        # 技能定義的 behavior 欄位一律是 music_idle/news_idle（見 .agentic/skills/*.md）；
+        # play_music/report_news 是 action_dispatcher 的一次性動作播放鍵，命名空間不同。
         if resolved == "play_music":
-            self.trigger_enabled_skill_for_behavior("play_music")
+            self.trigger_enabled_skill_for_behavior("music_idle")
             return
         if resolved == "report_news":
-            self.trigger_enabled_skill_for_behavior("report_news")
+            self.trigger_enabled_skill_for_behavior("news_idle")
             return
         if resolved == "quit":
             QApplication.quit()

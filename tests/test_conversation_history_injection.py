@@ -82,10 +82,27 @@ def test_prompt_instructs_the_model_to_use_evidence_and_keeps_persona_priority(h
     engine.handle_event({"text": "你好", "source": "test"})
     prompt = engine.last_prompt
 
-    assert "factual records of what the user told you" in prompt
+    assert "Conversation History and Retrieval Evidence are factual records of what the user told you" in prompt
     assert "answer from those sections" in prompt
     assert "cannot access" in prompt
     assert "the persona always wins" in prompt
+
+
+def test_prompt_keeps_user_facts_separate_from_echoes_own_state(harness_env):
+    """使用者記憶不得用來回答 ECHOES 自己的行程或狀態。"""
+    tmp_path, agentic_root = harness_env
+    engine = PetHarnessEngine(
+        FakeProvider(),
+        agentic_root=agentic_root,
+        db_path=tmp_path / "state.db",
+        snapshot_path=tmp_path / "debug" / "latest_pet_event.json",
+        character_id="Choppr",
+    )
+
+    engine.handle_event({"text": "我要去福岡七天六夜", "source": "test"})
+    engine.handle_event({"text": "那你下周要幹嘛？", "source": "test"})
+
+    assert "Do not use user facts to answer questions about ECHOES's own plans" in engine.last_prompt
 
 
 if __name__ == "__main__":

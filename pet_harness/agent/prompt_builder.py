@@ -75,9 +75,13 @@ class PromptBuilder:
                 # ponytail: 使用指示必須緊鄰它所描述的區塊。放在 Character Persona 段時實測無效
                 # ——中間隔了 4 個區塊,2B 模型讀到 User Text 時已不再受其約束。
                 "## Conversation History",
-                "These are factual records of what the user told you. If the user asks about something "
+                "Conversation History and Retrieval Evidence are factual records of what the user told you. "
+                "If the user asks about something "
                 "they told you earlier, answer from those sections. Never reply that you cannot access "
-                "the user's information when it appears here.",
+                "the user's information when it appears here. In the current user message, I/my (including "
+                "Chinese 我/我的) refers to the user and you/your (including Chinese 你/你的) refers to ECHOES. "
+                "Do not use user facts to answer questions about ECHOES's own plans, identity, preferences, "
+                "or state.",
                 self._conversation_history_text(conversation_history),
                 "",
                 "## Retrieval Evidence",
