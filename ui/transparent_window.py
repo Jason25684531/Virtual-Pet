@@ -13,11 +13,11 @@ import sys
 import time
 from uuid import uuid4
 
-from PyQt5.QtCore import QEvent, QObject, QPoint, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QEvent, QObject, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QLineEdit, QMainWindow, QMenu, QSystemTrayIcon, QWidget,
+    QAction, QApplication, QLineEdit, QMainWindow, QMenu, QSystemTrayIcon,
 )
 from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineSettings, QWebEngineView
 

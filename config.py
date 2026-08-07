@@ -28,11 +28,6 @@ DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_ELEVENLABS_VOICE_ID = "zENt0ljwLXypGqHDsdzz"
 DEFAULT_TTS_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_TTS_TIMEOUT = (5, 45)
-DEFAULT_AZURE_STT_LANGUAGE = "zh-TW"
-DEFAULT_AZURE_STT_INITIAL_SILENCE_TIMEOUT_MS = 5000
-DEFAULT_AZURE_STT_END_SILENCE_TIMEOUT_MS = 350
-DEFAULT_AZURE_STT_SEGMENTATION_SILENCE_TIMEOUT_MS = 300
-DEFAULT_AZURE_STT_SEGMENTATION_MAX_TIME_MS = 4000
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL).strip() or DEFAULT_OLLAMA_BASE_URL
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL
@@ -47,20 +42,7 @@ ELEVENLABS_VOICE_ID = (
 )
 
 # --- i18n 語系設定 ---
-CURRENT_LANG: str = os.getenv("CURRENT_LANG", "zh-TW").strip() or "zh-TW"
-
-LANG_PROFILES: dict[str, dict] = {
-    "zh-TW": {"stt_language": "zh-TW"},
-    "en-US": {"stt_language": "en-US"},
-}
-
 # --- 多語系 TTS 聲線 ---
-# 英文預設聲線（Rachel）；在 .env 設定 ELEVENLABS_VOICE_ID_EN 可覆蓋
-ELEVENLABS_VOICE_ID_EN: str = (
-    os.getenv("ELEVENLABS_VOICE_ID_EN", "21m00Tcm4TlvDq8ikWAM").strip()
-    or "21m00Tcm4TlvDq8ikWAM"
-)
-
 CHARACTER_ELEVENLABS_VOICE_ENV_KEYS: dict[str, tuple[str, ...]] = {
     "miku": (
         "ELEVENLABS_MIKU_VOICE_ID",
@@ -170,29 +152,6 @@ BROWSER_SESSION_RECOVERY_ENABLED = _read_bool_env("BROWSER_SESSION_RECOVERY_ENAB
 BROWSER_SESSION_RECOVERY_MAX_RETRIES = _read_int_env("BROWSER_SESSION_RECOVERY_MAX_RETRIES", 1)
 
 
-AZURE_STT_API_KEY = os.getenv("AZURE_STT_API_KEY", "").strip()
-AZURE_STT_REGION = os.getenv("AZURE_STT_REGION", "").strip()
-AZURE_STT_LANGUAGE = (
-    os.getenv("AZURE_STT_LANGUAGE", DEFAULT_AZURE_STT_LANGUAGE).strip()
-    or DEFAULT_AZURE_STT_LANGUAGE
-)
-AZURE_STT_ENABLED = _read_bool_env("AZURE_STT_ENABLED", default=True)
-AZURE_STT_INITIAL_SILENCE_TIMEOUT_MS = _read_int_env(
-    "AZURE_STT_INITIAL_SILENCE_TIMEOUT_MS",
-    DEFAULT_AZURE_STT_INITIAL_SILENCE_TIMEOUT_MS,
-)
-AZURE_STT_END_SILENCE_TIMEOUT_MS = _read_int_env(
-    "AZURE_STT_END_SILENCE_TIMEOUT_MS",
-    DEFAULT_AZURE_STT_END_SILENCE_TIMEOUT_MS,
-)
-AZURE_STT_SEGMENTATION_SILENCE_TIMEOUT_MS = _read_int_env(
-    "AZURE_STT_SEGMENTATION_SILENCE_TIMEOUT_MS",
-    DEFAULT_AZURE_STT_SEGMENTATION_SILENCE_TIMEOUT_MS,
-)
-AZURE_STT_SEGMENTATION_MAX_TIME_MS = _read_int_env(
-    "AZURE_STT_SEGMENTATION_MAX_TIME_MS",
-    DEFAULT_AZURE_STT_SEGMENTATION_MAX_TIME_MS,
-)
 ACTION_SYNC_TIMEOUT_MS = _read_int_env("ACTION_SYNC_TIMEOUT_MS", 6000)
 
 # ComfyUI asset generation is opt-in; the mock service remains the safe default.
@@ -204,10 +163,6 @@ COMFYUI_MAX_RETRIES = _read_int_env("COMFYUI_MAX_RETRIES", 2)
 COMFYUI_ENABLED = _read_bool_env("COMFYUI_ENABLED", False)
 XP_PER_LEVEL = _read_int_env("XP_PER_LEVEL", 6)
 EVENT_INTERVAL_MINUTES = _read_float_env("EVENT_INTERVAL_MINUTES", 3.0)
-AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "").strip()
-AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()
-ASSET_GENERATION_CONTEXT_MAX_CHARS = _read_int_env("ASSET_GENERATION_CONTEXT_MAX_CHARS", 2000)
-
 # --- Faster Whisper STT（toggle-recording，Week 4） ---
 STT_ENABLED = _read_bool_env("STT_ENABLED", True)
 STT_MODEL = os.getenv("STT_MODEL", "large-v3-turbo").strip() or "large-v3-turbo" #Whisper Model
@@ -233,22 +188,6 @@ PERSONA_PROMPTS = {
     "default": (
         "你是       ECHOES，本機桌面陪伴 AI。"
         "請以自然、簡潔、溫暖的繁體中文回覆。"
-        "若需要觸發 Host action，你必須把單一 [ACTION:...] 標籤放在回覆的第一句第一個字，"
-        "不能先輸出任何空白、說明、標點或寒暄。"
-        "若不需要動作，就直接輸出自然語言。"
-        f"{LOW_LATENCY_REPLY_POLICY}"
-    ),
-    "初音 (正式版)": (
-        "你是 ECHOES 的初音系桌面角色。"
-        "語氣清亮、活潑、友善，保持簡潔，不要過度冗長。"
-        "若需要觸發 Host action，你必須把單一 [ACTION:...] 標籤放在回覆的第一句第一個字，"
-        "不能先輸出任何空白、說明、標點或寒暄。"
-        "若不需要動作，就直接輸出自然語言。"
-        f"{LOW_LATENCY_REPLY_POLICY}"
-    ),
-    "20260415_168888_初音": (
-        "你是 ECHOES 的初音系桌面角色。"
-        "語氣清亮、活潑、友善，保持簡潔，不要過度冗長。"
         "若需要觸發 Host action，你必須把單一 [ACTION:...] 標籤放在回覆的第一句第一個字，"
         "不能先輸出任何空白、說明、標點或寒暄。"
         "若不需要動作，就直接輸出自然語言。"
@@ -351,13 +290,6 @@ def canonicalize_host_action(action_name: str | None) -> str:
     if normalized in HOST_ACTION_NAMES:
         return normalized
     return HOST_ACTION_ALIASES.get(normalized, "")
-
-
-def get_voice_id_for_character(character_id: str | None) -> str:
-    """回傳角色對應的 ElevenLabs Voice ID。
-    優先順序：CHARACTER_VOICE_IDS[character_id] → ELEVENLABS_VOICE_ID（全域預設）。
-    """
-    return get_elevenlabs_voice_id_for_character(character_id)
 
 
 def get_elevenlabs_voice_id_for_character(character_id: str | None) -> str:

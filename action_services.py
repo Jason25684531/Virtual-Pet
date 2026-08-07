@@ -44,10 +44,6 @@ FIXED_INTENT_LABELS = {
     "joke": "Joke",
     "share": "share",
 }
-FIXED_INTENT_KEYWORDS = {
-    "joke": ("笑話",),
-    "share": ("分享",),
-}
 FIXED_INTENT_ACTIONS = {
     "joke": "laugh",
     "share": "listen",
@@ -467,20 +463,6 @@ def build_fixed_intent_payload(
     payload["intent"] = intent_name
     payload["action_name"] = FIXED_INTENT_ACTIONS[intent_name]
     return payload
-
-
-def resolve_fixed_intent_from_text(text: str) -> str | None:
-    normalized = str(text or "")
-    best_match: tuple[int, int, str] | None = None
-    for intent_name, keywords in FIXED_INTENT_KEYWORDS.items():
-        for index, keyword in enumerate(keywords):
-            position = normalized.find(keyword)
-            if position < 0:
-                continue
-            candidate = (position, index, intent_name)
-            if best_match is None or candidate < best_match:
-                best_match = candidate
-    return best_match[2] if best_match is not None else None
 
 
 class NewsFetchWorker(QThread):

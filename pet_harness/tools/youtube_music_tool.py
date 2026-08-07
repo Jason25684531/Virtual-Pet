@@ -18,7 +18,6 @@ def rank_candidates(candidates: list[dict[str, Any]], query: str) -> list[dict[s
     def score(item: dict[str, Any]) -> tuple[int, str, str]:
         title = str(item.get("title", "")).casefold()
         channel = str(item.get("channel", "")).casefold()
-        badges = " ".join(map(str, item.get("badges", []))).casefold()
         points = 3 * len(tokens.intersection(title.split())) + (2 if "topic" in channel else 0) + (1 if "official" in channel else 0)
         return (points, title, str(item.get("href", "")))
     playable = [item for item in candidates if not any(word in f"{item.get('title', '')} {' '.join(map(str, item.get('badges', [])))}".casefold() for word in ("shorts", "live", "playlist"))]

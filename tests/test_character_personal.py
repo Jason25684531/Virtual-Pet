@@ -7,7 +7,6 @@ import pytest
 
 import pet_harness.character.profile as profile_module
 from pet_harness.character.personal import PersonalValidationError, load_local_skills, load_personal
-from pet_harness.character.profile import CharacterProfile
 from pet_harness.character.registry import CharacterRegistry
 from pet_harness.character.router import CharacterRouter
 from pet_harness.runtime.provider_runtime import ProviderRuntime

@@ -5,9 +5,7 @@ from pathlib import Path
 from datetime import timezone, timedelta
 
 from pet_harness.engine.tool_execution_lifecycle import ToolExecutionLifecycle
-from pet_harness.models.events import UserEvent
-from pet_harness.models.skill import Skill
-from pet_harness.runtime.base_browser_runtime import BaseBrowserRuntime, BrowserCommand, BrowserCommandResult, RuntimeCheckResult
+from pet_harness.runtime.base_browser_runtime import BaseBrowserRuntime, BrowserCommandResult, RuntimeCheckResult
 from pet_harness.runtime.browser_session_manager import BrowserSessionManager
 from pet_harness.skills.skill_loader import SkillLoader
 from pet_harness.tools.article_fetchers import Article, BaseArticleFetcher

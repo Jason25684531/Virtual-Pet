@@ -12,7 +12,6 @@ import threading
 import time
 
 import numpy as np
-import pytest
 from PyQt5.QtCore import Qt
 
 from sensors.base_stt import SttModelLoadError, SttTranscriptionError, TranscriptionResult

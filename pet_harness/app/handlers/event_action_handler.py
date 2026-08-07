@@ -1,6 +1,5 @@
 from ..action_handler import ActionHandler
 from ..commands import ActionCommand
-from ..event_bus import EventBus
 from ..ports.motion_port import MotionPort
 from ..results import ActionResult
 

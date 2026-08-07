@@ -25,7 +25,6 @@ from action_services import (
 )
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
 from text_utils import sanitize_tts_text
-from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker  # noqa: F401 — 保留供降級使用
 from audio_worker import AudioStreamWorker
 from character_library import ASSETS_WEBM_DIR
 import config

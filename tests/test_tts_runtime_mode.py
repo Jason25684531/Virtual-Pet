@@ -1,6 +1,5 @@
 """Unit tests for TTS runtime mode resolution and worker behavior."""
 
-import os
 import pytest
 
 
