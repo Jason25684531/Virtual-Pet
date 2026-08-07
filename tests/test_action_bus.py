@@ -4,7 +4,7 @@ from pet_harness.app.action_handler import ActionHandler
 from pet_harness.app.commands import ActionCommand
 from pet_harness.app.events import AppEvent
 from pet_harness.app.event_bus import SimpleEventBus
-from pet_harness.app.ports.conversation_port import PreparedTurn
+from pet_harness.app.ports import PreparedTurn
 from pet_harness.app.results import ActionResult
 from tests.fakes.fake_background_executor import FakeBackgroundExecutor
 from tests.conftest import FakeProvider

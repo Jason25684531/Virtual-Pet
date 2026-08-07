@@ -21,7 +21,7 @@ from pet_harness.tools.tool_models import ToolDefinition, ToolExecutionClass, To
 from pet_harness.ui.character_ui_service import CharacterUiService
 from pet_harness.app.secret_masking import SecretMasker, load_project_env
 from pet_harness.app.provider_config_service import ProviderConfigService
-from pet_harness.app.ports.conversation_port import PreparedTurn
+from pet_harness.app.ports import PreparedTurn
 from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
 from ui.background_resolver import BackgroundResolver
 

@@ -1,6 +1,6 @@
 from typing import Any, Callable
 
-from pet_harness.app.ports.background_executor import BackgroundExecutor
+from pet_harness.app.ports import BackgroundExecutor
 
 
 class FakeBackgroundExecutor(BackgroundExecutor):

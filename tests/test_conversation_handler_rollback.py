@@ -1,8 +1,8 @@
 from pet_harness.app.action_bus import ActionBus
 from pet_harness.app.commands import ActionCommand
 from pet_harness.app.event_bus import SimpleEventBus
-from pet_harness.app.handlers.conversation_handler import ConversationHandler
-from pet_harness.app.ports.conversation_port import PreparedTurn
+from pet_harness.app.handlers import ConversationHandler
+from pet_harness.app.ports import PreparedTurn
 
 
 class _Conversation:

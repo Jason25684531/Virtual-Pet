@@ -10,9 +10,8 @@ from pet_harness.runtime.provider_runtime import ProviderRuntime, migrate_legacy
 from .action_bus import ActionBus
 from .event_bus import EventBus, SimpleEventBus
 from .runtime_lifecycle import RuntimeLifecycle
-from .handlers import MusicHandler, MotionOnlyHandler, NewsHandler, QuickIntentHandler, ResetHandler, SpeakHandler, WaveHandler
-from .handlers.conversation_handler import ConversationHandler
-from .ports.motion_port import MotionPort
+from .handlers import ConversationHandler, MusicHandler, MotionOnlyHandler, NewsHandler, QuickIntentHandler, ResetHandler, SpeakHandler, WaveHandler
+from .ports import MotionPort
 
 
 class ApplicationCoordinator:

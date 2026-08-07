@@ -1,6 +1,6 @@
 """Presentation adapter for the existing MotionCoordinator state machine."""
 
-from pet_harness.app.ports.motion_port import MotionPort
+from pet_harness.app.ports import MotionPort
 
 
 class MotionPortAdapter(MotionPort):

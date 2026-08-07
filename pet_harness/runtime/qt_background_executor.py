@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
-from pet_harness.app.ports.background_executor import BackgroundExecutor
+from pet_harness.app.ports import BackgroundExecutor
 
 
 LOGGER = logging.getLogger(__name__)
