@@ -18,8 +18,7 @@ class MemoryStoreStatus:
 
 
 class BaseMemoryStore(ABC):
-    """跨輪對話記憶介面;callers 只依賴此 ABC,不得依賴具體實作
-    (見 fix-core-interaction-experience / conversation-memory)。"""
+    """Fail-open interface for per-character conversation memory."""
 
     @abstractmethod
     def save_turn(self, event_id: str, user_text: str, reply: str) -> None: ...
@@ -35,9 +34,7 @@ class BaseMemoryStore(ABC):
 
 
 class NullMemoryStore(BaseMemoryStore):
-    """未注入實際記憶庫時的預設值:零執行緒、零磁碟/網路存取,恆為 fail-open 空結果。
-    供未走 CharacterRouter(例如單元測試直接建構 PetHarnessEngine)的呼叫端使用,
-    真正的 QdrantMemoryStore 由 CharacterRouter.switch_character 依 character_id 注入。"""
+    """Fail-open fallback when no memory store is configured."""
 
     def save_turn(self, event_id: str, user_text: str, reply: str) -> None:
         return None

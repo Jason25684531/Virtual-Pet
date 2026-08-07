@@ -16,8 +16,7 @@ def test_memory_extension_points_are_abstract(interface):
 
 
 def test_hybrid_index_is_separate_from_memory_store():
-    """index()/search() 刻意不在 BaseMemoryStore 上:QdrantMemoryStore 的舊 collection
-    沒有 sparse vector 也沒有 payload schema,結構上無法索引 Memory Item。"""
+    """Index/search stay out of the conversation-memory interface."""
     assert not issubclass(BaseHybridIndex, BaseMemoryStore)
     assert not hasattr(NullMemoryStore, "index")
     assert not hasattr(NullMemoryStore, "search")
