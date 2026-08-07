@@ -101,6 +101,20 @@ class PyQtHarnessAdapter:
         self._last_skill_discovery_log: tuple[int, int, int] | None = None
         self._refresh_runtime()
         self._log_active_character_diagnostics()
+        self._resume_upload_asset_jobs()
+
+    @staticmethod
+    def _resume_upload_asset_jobs() -> None:
+        """上傳流程的 job 存放於全域 data/pet_state.db(非每角色 state.db);
+        啟動時在這顆 store 上建一次 asset service,讓 factory 的 resume 執行緒
+        接手殘留的 queued job(例如未算完的情緒動態)。"""
+        from character_library import CharacterLibrary
+        from pet_harness.asset.factory import build_asset_service
+        from pet_harness.storage.sqlite_store import SQLiteStore
+
+        store = SQLiteStore(Path("data") / "pet_state.db")
+        store.initialize()
+        build_asset_service(store, None, CharacterLibrary())
 
     def _log_active_character_diagnostics(self) -> None:
         profile = self.router.get_active_character()
@@ -120,6 +134,14 @@ class PyQtHarnessAdapter:
 
     def get_active_character(self):
         return self.router.get_active_character()
+
+    def switch_character(self, character_id: str):
+        profile = self.router.switch_character(character_id)
+        engine = self.router.get_active_engine()
+        if engine is not None and engine.growth_trigger is not None:
+            engine.growth_trigger.check_time_trigger(f"startup-{character_id}")
+        self._refresh_runtime()
+        return profile
 
     @property
     def store(self) -> SQLiteStore:

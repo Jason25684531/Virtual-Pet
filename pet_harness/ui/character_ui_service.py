@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import gc
+import time
+from pathlib import Path
 from typing import Any
 
+from character_library import CharacterLibrary
+from pet_harness.asset.asset_repository import AssetRepository
+from pet_harness.asset.factory import build_asset_service
 from pet_harness.character.customization_service import CharacterCustomizationService
 from pet_harness.character.exceptions import NoActiveCharacterError
 from pet_harness.character.profile import CharacterProfile
@@ -33,7 +38,14 @@ class CharacterUiService:
         )
 
     def list_characters(self) -> list[dict[str, Any]]:
-        return [self._summarize(profile) for profile in self._registry.list_characters()]
+        items = {profile.character_id: self._summarize(profile) for profile in self._registry.list_characters()}
+        # 上傳生成的角色(library)不在 registry;經 router 的統一解析補進清單。
+        for manifest in CharacterLibrary().list_characters():
+            character_id = str(manifest.get("id") or "")
+            if character_id and character_id not in items:
+                profile, _ = self._router.load_profile(character_id)
+                items[character_id] = self._summarize(profile)
+        return list(items.values())
 
     def list_presets(self) -> list[dict[str, Any]]:
         return [item for item in self.list_characters() if item["is_preset"]]
@@ -54,7 +66,7 @@ class CharacterUiService:
     def add_playtime(self, character_id: str, seconds: int) -> None:
         """累加指定角色的遊玩秒數並更新最後遊玩時間戳記;供 UI 層週期性 flush 呼叫,
         取代直接開 SQLiteStore 寫入(見 week2-day2-uiux-layout-refinement 的封裝缺口)。"""
-        profile = self._registry.load_character(character_id)
+        profile, _ = self._router.load_profile(character_id)
         store = SQLiteStore(profile.sqlite_path)
         store.initialize()
         if seconds > 0:
@@ -120,6 +132,44 @@ class CharacterUiService:
         payload = event.to_dict()
         payload["user_text"] = f"立即執行：{skill.display_name or skill.name}"
         return payload
+
+    def create_from_upload(self, image_path: str, name: str) -> dict[str, Any]:
+        """上傳圖片走角色審核流程(character-validation-flow);回傳 job 資訊供前端輪詢。"""
+        if not image_path or not Path(image_path).is_file():
+            raise ValueError("請先選擇要上傳的圖片")
+        if not (name or "").strip():
+            raise ValueError("請輸入角色名稱")
+        store = self._asset_store()
+        service = build_asset_service(store, None, CharacterLibrary())
+        response = service.create_character_validation_request(image_path, name.strip(), f"ui-{time.time_ns()}")
+        return response.to_dict()
+
+    def get_validation_status(self, job_id: str) -> dict[str, Any]:
+        job = AssetRepository(self._asset_store()).get(job_id)
+        if job is None:
+            raise ValueError(f"validation job not found: {job_id}")
+        # 過審 ≠ 可用:idle WebM 與背景都落地後,新角色才算就緒(character-validation-flow)。
+        assets_ready = False
+        if job.status.value == "completed" and job.character_id:
+            library = CharacterLibrary()
+            assets_ready = bool(
+                library.get_motion_path(job.character_id, "idle")
+                and library.get_background_path(job.character_id)
+            )
+        return {
+            "job_id": job.job_id,
+            "status": job.status.value,
+            "character_id": job.character_id,
+            "error_message": job.error_message,
+            "assets_ready": assets_ready,
+        }
+
+    @staticmethod
+    def _asset_store() -> SQLiteStore:
+        # 與 ui/settings_dialog.py 共用同一顆全域 job 資料庫。
+        store = SQLiteStore(Path("data") / "pet_state.db")
+        store.initialize()
+        return store
 
     def get_customization(self, character_id: str) -> dict[str, Any]:
         return self._customization.get_customization(character_id)

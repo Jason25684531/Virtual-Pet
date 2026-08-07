@@ -83,6 +83,9 @@ BRIDGE_CONTRACT = {
         "listCharacters",
         "listPresets",
         "createFromPreset",
+        "pickCharacterImage",
+        "createFromUpload",
+        "getValidationStatus",
         "switchCharacter",
         "deleteCharacter",
         "getActiveState",
@@ -666,6 +669,11 @@ class TransparentWindow(QMainWindow):
 
     def apply_character(self, character_id: str) -> bool:
         """套用指定角色並切回 idle。character_id 一律來自 router snapshot。"""
+        snapshot = TransparentWindow._active_snapshot(self)
+        if snapshot is None or snapshot.character_id != character_id:
+            switcher = getattr(self._adapter, "switch_character", None)
+            if callable(switcher):
+                switcher(character_id)
         character_name = self._library.get_character_name(character_id) or character_id
         idle_path = self._library.get_motion_path(character_id, "idle")
         if not idle_path:

@@ -982,13 +982,6 @@
         if (presetSelectButton) {
             presetSelectButton.addEventListener('click', selectCurrentPreset);
         }
-        if (presetCustomizeGenerate) {
-            presetCustomizeGenerate.addEventListener('click', function () {
-                var current = presetList[presetIndex];
-                var label = current ? current.name : '預設角色';
-                setStatus('已套用 ' + label + ' 的預設造型（佔位邏輯，尚未接真實產圖）。', 'idle', 3200);
-            });
-        }
         if (presetThumbList) {
             presetThumbList.addEventListener('click', function (event) {
                 var thumb = event.target.closest('[data-preset-index]');
@@ -1041,17 +1034,71 @@
         }
         if (presetTabButton) presetTabButton.addEventListener('click', function () { switchCreateTab(false); });
         if (customizeTabButton) customizeTabButton.addEventListener('click', function () { switchCreateTab(true); });
+        // ── UC02 Customize：上傳圖 → 角色審核 → 過審建角色（character-validation-flow）──
+        var customImagePath = '';
+        var createdCharacterId = '';
+        var validationPollTimer = null;
+        var customUploadBox = document.querySelector('label[for="preset-customize-file"]');
+        if (customUploadBox) customUploadBox.addEventListener('click', function (event) {
+            event.preventDefault();
+            callCharacterBridge('pickCharacterImage').then(function (result) {
+                if (!result.image_path) return;
+                customImagePath = result.image_path;
+                var nameEl = customUploadBox.querySelector('b');
+                if (nameEl) nameEl.textContent = customImagePath.split(/[\\/]/).pop();
+            }).catch(function (err) {
+                setStatus('選擇圖片失敗：' + err.message, 'error', 4000);
+            });
+        });
+        function pollValidation(jobId) {
+            var generatingText = document.querySelector('#tab-customize .customize-state--generating p');
+            validationPollTimer = window.setInterval(function () {
+                callCharacterBridge('getValidationStatus', jobId).then(function (job) {
+                    if (job.status === 'completed' && job.assets_ready) {
+                        // 過審 ≠ 可用：idle 動態與背景都算完，角色才開放使用。
+                        window.clearInterval(validationPollTimer);
+                        createdCharacterId = job.character_id || '';
+                        if (customizeTab) customizeTab.dataset.state = 'done';
+                        setStatus('新角色已就緒。', 'idle', 5000);
+                    } else if (job.status === 'completed') {
+                        createdCharacterId = job.character_id || createdCharacterId;
+                        if (generatingText) generatingText.textContent = '審核通過，正在生成動態與背景（約需數分鐘）…';
+                    } else if (job.status === 'failed' || job.status === 'timed_out' || job.status === 'cancelled') {
+                        window.clearInterval(validationPollTimer);
+                        if (customizeTab) customizeTab.dataset.state = 'before';
+                        setStatus(job.error_message || '角色審核失敗。', 'error', 6400);
+                    }
+                }).catch(function () { /* 單次輪詢失敗容忍，下一輪再試 */ });
+            }, 2000);
+        }
         if (presetCustomizeGenerate) presetCustomizeGenerate.addEventListener('click', function () {
+            var customName = ((document.getElementById('custom-character-name') || {}).value || '').trim();
+            if (!customImagePath) { setStatus('請先上傳角色圖片。', 'error', 3600); return; }
+            if (!customName) { setStatus('請輸入角色名稱。', 'error', 3600); return; }
             if (customizeTab) customizeTab.dataset.state = 'generating';
-            window.setTimeout(function () { if (customizeTab) customizeTab.dataset.state = 'done'; }, 900);
+            var generatingText = document.querySelector('#tab-customize .customize-state--generating p');
+            if (generatingText) generatingText.textContent = '角色審核中…';
+            callCharacterBridge('createFromUpload', customImagePath, customName).then(function (job) {
+                if (job.status === 'failed') throw new Error(job.error_message || '無法排入角色審核');
+                if (job.status === 'completed') {
+                    createdCharacterId = job.character_id || '';
+                    if (customizeTab) customizeTab.dataset.state = 'done';
+                    return;
+                }
+                pollValidation(job.job_id);
+            }).catch(function (err) {
+                if (customizeTab) customizeTab.dataset.state = 'before';
+                setStatus('建立角色失敗：' + err.message, 'error', 6400);
+            });
         });
         var customUseButton = document.getElementById('custom-use-button');
         if (customUseButton) customUseButton.addEventListener('click', function () {
-            var nameInput = document.getElementById('name-character-input');
-            var customName = document.getElementById('custom-character-name');
-            if (nameInput && customName) nameInput.value = customName.value || 'New Companion';
-            pendingCreation = { kind: 'custom' };
-            openModal('modal-name-character');
+            if (!createdCharacterId) { enterCompanionStage(); return; }
+            callCharacterBridge('switchCharacter', createdCharacterId).then(function () {
+                enterCompanionStage();
+            }).catch(function (err) {
+                setStatus('切換角色失敗：' + err.message, 'error', 4800);
+            });
         });
         var discardButton = document.getElementById('discard-confirm-button');
         if (discardButton) discardButton.addEventListener('click', function () {
@@ -1063,12 +1110,6 @@
             var chosenName = (document.getElementById('name-character-input').value || '').trim();
             var creation = pendingCreation;
             if (!creation) { closeModal(); return; }
-            if (creation.kind === 'custom') {
-                pendingCreation = null;
-                uiRoute.modal = null;
-                enterCompanionStage();
-                return;
-            }
             nameConfirm.disabled = true;
             callCharacterBridge('createFromPreset', creation.preset.character_id, chosenName).then(function () {
                 pendingCreation = null;

@@ -4,6 +4,8 @@ ECHOES — 角色設定對話框
 """
 
 import os
+import time
+from pathlib import Path
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap
@@ -13,59 +15,54 @@ from PyQt5.QtWidgets import (
     QComboBox, QScrollArea, QWidget,
 )
 
-from api_client.comfyui_client import ComfyUIClient
 from character_library import CharacterLibrary, MOTION_SPECS
+from pet_harness.asset.asset_models import JobStatus
+from pet_harness.asset.asset_repository import AssetRepository
+from pet_harness.asset.factory import build_asset_service
+from pet_harness.storage.sqlite_store import SQLiteStore
 
 
 # ── 背景算圖 Worker ─────────────────────────────────────────
 
 class GenerationWorker(QThread):
-    """在背景執行緒中執行完整 ComfyUI 算圖流程。"""
+    """在背景執行緒排入角色審核並等待其結果。"""
 
     progress_updated = pyqtSignal(int)                  # 0-100
-    finished_signal = pyqtSignal(bool, str, str, object)  # (成功?, 訊息, character_id, archived)
+    finished_signal = pyqtSignal(bool, str, str)  # (成功?, 訊息, character_id)
 
     def __init__(
         self,
-        image_dir: str,
-        target_dir: str,
-        character_id: str,
-        positive_prompt: str = "",
-        negative_prompt: str = "",
+        image_path: str,
+        character_name: str,
         parent=None,
     ):
         super().__init__(parent)
-        self._image_dir = image_dir
-        self._target_dir = target_dir
-        self._character_id = character_id
-        self._positive_prompt = positive_prompt
-        self._negative_prompt = negative_prompt
+        self._image_path = image_path
+        self._character_name = character_name
 
     def run(self):
         try:
-            client = ComfyUIClient()
-
-            if not client.check_connection():
-                self.finished_signal.emit(
-                    False, "無法連線至 ComfyUI，請確認已啟動。"
-                )
+            store = SQLiteStore(Path("data") / "pet_state.db")
+            store.initialize()
+            response = build_asset_service(store, None, CharacterLibrary()).create_character_validation_request(self._image_path, self._character_name, f"ui-{time.time_ns()}")
+            if response.status != "queued" or not response.job_id:
+                self.finished_signal.emit(False, response.error_message or "無法排入角色審核。", "")
                 return
-
-            archived = client.generate(
-                self._image_dir,
-                self._target_dir,
-                on_progress=self._on_progress,
-                positive_prompt=self._positive_prompt,
-                negative_prompt=self._negative_prompt,
-            )
-            self.finished_signal.emit(
-                True,
-                f"✓ 生成完成！已歸檔 {len(archived)} 支影片。",
-                self._character_id,
-                archived,
-            )
+            repository = AssetRepository(store)
+            while True:
+                job = repository.get(response.job_id)
+                if job is None:
+                    raise RuntimeError("找不到角色審核 job")
+                if job.status == JobStatus.COMPLETED:
+                    self.finished_signal.emit(True, "✓ 審核通過，已開始生成動態與背景。", job.character_id)
+                    return
+                if job.status in {JobStatus.FAILED, JobStatus.TIMED_OUT, JobStatus.CANCELLED}:
+                    self.finished_signal.emit(False, job.error_message or "角色審核失敗。", job.character_id)
+                    return
+                self._on_progress(50 if job.status == JobStatus.RUNNING else 10)
+                time.sleep(0.5)
         except Exception as e:
-            self.finished_signal.emit(False, f"算圖失敗: {e}", self._character_id, None)
+            self.finished_signal.emit(False, f"算圖失敗: {e}", "")
 
     def _on_progress(self, percent: int):
         self.progress_updated.emit(percent)
@@ -110,7 +107,6 @@ class SettingsDialog(QDialog):
 
         self._image_path: str | None = None
         self._worker: GenerationWorker | None = None
-        self._pending_character_id: str | None = None
         self._init_ui()
         self._reload_characters(select_id=None)
 
@@ -332,26 +328,15 @@ class SettingsDialog(QDialog):
             return
 
         character_name = self._name_edit.text().strip()
-        positive_prompt = self._positive_edit.toPlainText().strip()
-        negative_prompt = self._negative_edit.text().strip()
-
-        manifest = self._library.create_character(self._image_path, character_name)
-        character_id = manifest["id"]
-        image_dir = self._library.get_source_dir_path(character_id)
-        target_dir = self._library.get_motions_dir_path(character_id)
-        self._pending_character_id = character_id
 
         self._set_generation_state(True)
         self._progress.setValue(0)
         self._progress.setVisible(True)
-        self._status.setText("算圖中，請稍候…")
+        self._status.setText("角色審核中，請稍候…")
 
         self._worker = GenerationWorker(
-            image_dir,
-            target_dir,
-            character_id,
-            positive_prompt=positive_prompt,
-            negative_prompt=negative_prompt,
+            self._image_path,
+            character_name,
             parent=self,
         )
         self._worker.progress_updated.connect(self._on_progress)
@@ -361,17 +346,11 @@ class SettingsDialog(QDialog):
     def _on_progress(self, percent: int):
         self._progress.setValue(percent)
 
-    def _on_finished(self, success: bool, message: str, character_id: str, archived):
+    def _on_finished(self, success: bool, message: str, character_id: str):
         self._status.setText(message)
         self._set_generation_state(False)
 
         if success:
-            self._library.register_generated_assets(
-                character_id,
-                archived or {},
-                positive_prompt=self._positive_edit.toPlainText().strip(),
-                negative_prompt=self._negative_edit.text().strip(),
-            )
             self._status.setStyleSheet("font-size: 13px; color: #27ae60;")
             self._reload_characters(select_id=character_id)
             self.generation_done.emit(character_id)
@@ -380,7 +359,6 @@ class SettingsDialog(QDialog):
             self._gen_btn.setEnabled(bool(self._image_path))
 
         self._worker = None
-        self._pending_character_id = None
 
     # ── 角色庫控制 ───────────────────────────────────────
 

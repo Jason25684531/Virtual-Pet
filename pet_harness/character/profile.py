@@ -16,7 +16,7 @@ from pet_harness.character.personal import (
 
 _LOGGER = logging.getLogger(__name__)
 
-_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_]+$")
+_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -52,7 +52,7 @@ class CharacterProfile:
     def __post_init__(self) -> None:
         if not _ID_PATTERN.match(self.character_id):
             raise InvalidCharacterIdError(
-                f"character_id '{self.character_id}' must match [a-zA-Z0-9_]+"
+                f"character_id '{self.character_id}' must match [a-zA-Z0-9_-]+"
             )
         self.sqlite_path = f"data/characters/{self.character_id}/state.db"
         self.qdrant_collection = f"{self.character_id}_memory"

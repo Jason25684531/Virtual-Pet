@@ -57,6 +57,33 @@ class CharacterUiBridge(QObject):
         except Exception as exc:  # noqa: BLE001
             return self._error(exc)
 
+    @pyqtSlot(result=str)
+    def pickCharacterImage(self) -> str:
+        """QtWebEngine 的 <input type=file> 拿不到真實路徑，改由原生對話框選檔。"""
+        try:
+            from PyQt5.QtWidgets import QFileDialog
+
+            path, _ = QFileDialog.getOpenFileName(
+                self._window, "選擇角色圖片", "", "Images (*.png *.jpg *.jpeg *.webp)"
+            )
+            return self._ok({"image_path": path})
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
+    @pyqtSlot(str, str, result=str)
+    def createFromUpload(self, image_path: str, name: str) -> str:
+        try:
+            return self._ok(self._service.create_from_upload(image_path, name))
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
+    @pyqtSlot(str, result=str)
+    def getValidationStatus(self, job_id: str) -> str:
+        try:
+            return self._ok(self._service.get_validation_status(job_id))
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
     @pyqtSlot(str, result=str)
     def switchCharacter(self, character_id: str) -> str:
         try:

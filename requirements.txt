@@ -19,6 +19,7 @@ feedparser>=6.0
 qdrant-client>=1.13
 fastembed>=0.5
 jieba>=0.42
+unidecode>=1.3  # 中文角色名音譯成 character_id slug（char-ya-zhou-tong-shen）
 onnxruntime>=1.27
 numpy>=1.26
 sounddevice>=0.5

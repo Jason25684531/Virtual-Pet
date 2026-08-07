@@ -70,6 +70,8 @@ class ComfyUIClient(BaseComfyUIClient):
                         return self.get_history(prompt_id)
             finally:
                 ws.close()
+        except RuntimeError:
+            raise
         except Exception:
             pass  # WebSocket is an optimization; history polling is authoritative.
         while time.monotonic() < deadline:

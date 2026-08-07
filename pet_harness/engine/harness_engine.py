@@ -54,6 +54,7 @@ class PetHarnessEngine:
         snapshot_path: str | Path = Path("debug") / "events" / "latest_pet_event.json",
         provider_config: ProviderConfig | None = None,
         character_id: str | None = None,
+        character_profile: CharacterProfile | None = None,
         memory_store: BaseMemoryStore | None = None,
         memory_retriever=None,
         semantic_index_enabled: bool = False,
@@ -65,9 +66,13 @@ class PetHarnessEngine:
         self._semantic_index_enabled = semantic_index_enabled
 
         self._character_id = character_id
-        self._profile: CharacterProfile | None = None
+        self._profile: CharacterProfile | None = character_profile
+        self._profile_is_external = character_profile is not None
         effective_db_path = db_path
-        if character_id is not None:
+        if self._profile is not None:
+            self._character_id = self._profile.character_id
+            effective_db_path = self._profile.sqlite_path
+        elif character_id is not None:
             self._profile = CharacterProfile.load(character_id)
             effective_db_path = self._profile.sqlite_path
 
@@ -125,6 +130,16 @@ class PetHarnessEngine:
         self.media_session_context = MediaSessionContext(self.store)
         self._tool_lifecycle = ToolExecutionLifecycle(self.safety_guard, self.tool_registry, self.store, self.skills, self.media_session_context)
         self.asset_service = build_asset_service(self.store, self._character_id, self.character_library)
+        self.growth_trigger = None
+        if self._profile_is_external and self._character_id:
+            from pet_harness.asset.growth_trigger import GrowthTriggerService
+            self.growth_trigger = GrowthTriggerService(
+                self.store,
+                self.asset_service,
+                self._character_id,
+                config.XP_PER_LEVEL,
+                config.EVENT_INTERVAL_MINUTES,
+            )
         self.last_prompt: str | None = None
         self.last_provider_raw_result: str | None = None
         self.last_agent_result: AgentResult | None = None
@@ -171,6 +186,8 @@ class PetHarnessEngine:
         personal.json 無論經由 customization 面板、手動編輯或外部工具修改,
         下一次互動都會套用;載入失敗時保留前一份 profile,不中斷互動。"""
         if self._character_id is None:
+            return
+        if self._profile_is_external:
             return
         try:
             self._profile = CharacterProfile.load(self._character_id)
@@ -442,6 +459,12 @@ class PetHarnessEngine:
             xp_delta += tool_xp_bonus
         rewards = self.reward_manager.check_unlocks(self.store.get_user_progress()["xp_total"])
         assets = self._handle_reward_assets(source_event_id=event.event_id, reward_events=rewards, behavior_id=behavior_id)
+        if self.growth_trigger is not None:
+            growth = self.growth_trigger.on_xp_awarded(self.store.get_user_progress()["xp_total"], event.event_id)
+            timed = self.growth_trigger.check_time_trigger(event.event_id)
+            trigger_response = timed or growth
+            if trigger_response is not None:
+                assets = trigger_response.to_dict()
         return xp_delta, rewards, assets
 
     def _persist_and_snapshot(self, user_event: UserEvent, pet_event: PetEvent) -> None:

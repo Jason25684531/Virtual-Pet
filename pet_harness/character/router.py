@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from threading import RLock
 
 from pet_harness.character.exceptions import NoActiveCharacterError
+from pet_harness.character.exceptions import CharacterNotFoundError
 from pet_harness.character.profile import CharacterProfile
 from pet_harness.character.registry import CharacterRegistry
 from pet_harness.engine.harness_engine import PetHarnessEngine
@@ -9,6 +10,7 @@ from pet_harness.memory.base_memory_store import BaseMemoryStore, NullMemoryStor
 from pet_harness.models.events import PetEvent, UserEvent
 from pet_harness.runtime.provider_runtime import ProviderRuntime
 from typing import Callable
+from character_library import CharacterLibrary
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,7 @@ class CharacterRouter:
         semantic_index_enabled: bool = False,
     ):
         self._registry = registry or CharacterRegistry()
+        self._library = CharacterLibrary()
         self._agentic_root = agentic_root
         # 未注入時建立 fail-closed 的預設 runtime(未設定 → unavailable,不會退回 mock)。
         self._provider_runtime = provider_runtime or ProviderRuntime()
@@ -62,7 +65,7 @@ class CharacterRouter:
 
     def switch_character(self, character_id: str) -> CharacterProfile:
         """切換 active 角色;character_id 不存在時拋出例外且不影響現有 active。"""
-        profile = self._registry.load_character(character_id)
+        profile, is_library_character = self.load_profile(character_id)
         with self._lock:
             previous_engine = self._active_engine
             if previous_engine is not None:
@@ -71,6 +74,7 @@ class CharacterRouter:
             engine = PetHarnessEngine(
                 provider=self._provider_runtime,
                 character_id=character_id,
+                character_profile=profile if is_library_character else None,
                 agentic_root=self._agentic_root,
                 memory_store=memory_store,
                 semantic_index_enabled=self._semantic_index_enabled,
@@ -91,6 +95,28 @@ class CharacterRouter:
             self._active_engine = engine
             self._active_snapshot = snapshot
         return profile
+
+    def load_profile(self, character_id: str) -> tuple[CharacterProfile, bool]:
+        """解析角色 profile:registry 優先,退回 library(上傳生成的角色)。
+        回傳 (profile, is_library_character);所有需要跨兩個世界找角色的呼叫端都走這裡。"""
+        try:
+            return self._registry.load_character(character_id), False
+        except CharacterNotFoundError:
+            manifest = self._library.get_character(character_id)
+            if not manifest:
+                raise
+            return CharacterProfile(
+                character_id=str(manifest["id"]),
+                name=str(manifest.get("name") or character_id),
+                background_image=str(manifest.get("background_image") or ""),
+                motions_dir=str(manifest.get("motions_dir") or ""),
+                motions=dict(manifest.get("motions") or {}),
+                idle_pool=list(manifest.get("idle_pool") or []),
+                voice_id_env_key=str(manifest.get("voice_id_env_key") or ""),
+                layout=dict(manifest.get("layout") or {}),
+                persona_description="",
+                skill_config=[],
+            ), True
 
     def shutdown(self) -> None:
         with self._lock:

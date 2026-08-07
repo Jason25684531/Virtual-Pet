@@ -38,3 +38,9 @@ class MockAssetService(AssetService):
 
     def create_character_motion_request(self, source_event_id: str) -> AssetResponse:
         return self.create_asset(AssetRequest(asset_type="motion_set", prompt_params={}, source_event_id=source_event_id))
+
+    def create_character_validation_request(self, upload_path: str, character_name: str, source_event_id: str) -> AssetResponse:
+        return self.create_asset(AssetRequest(asset_type="character_validation", prompt_params={"upload_path": upload_path, "character_name": character_name}, source_event_id=source_event_id))
+
+    def create_background_request(self, character_id: str, source_event_id: str) -> AssetResponse:
+        return self.create_asset(AssetRequest(asset_type="background_png", prompt_params={"character_id": character_id}, source_event_id=source_event_id))

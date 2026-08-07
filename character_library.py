@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import secrets
 from datetime import datetime
 from pathlib import Path
 
@@ -45,6 +46,11 @@ def _slugify(value: str) -> str:
     cleaned = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "-", value.strip())
     cleaned = re.sub(r"-+", "-", cleaned).strip("-_")
     return cleaned or "character"
+
+
+def _character_id(value: str) -> str:
+    slug = re.sub(r"[^0-9A-Za-z]+", "-", value).strip("-").lower()
+    return slug or f"char-{secrets.token_hex(4)}"
 
 
 class CharacterLibrary:
@@ -105,6 +111,45 @@ class CharacterLibrary:
             "positive_prompt": "",
             "negative_prompt": "",
         }
+        self._save_manifest(character_id, manifest)
+        return manifest
+
+    def create_validated_character(self, character_id: str, image_path: str, display_name: str) -> dict:
+        source_path = Path(image_path)
+        if not source_path.is_file():
+            raise FileNotFoundError(f"找不到角色圖片: {image_path}")
+        character_id = character_id or _character_id(display_name)
+        character_dir = CHARACTER_LIBRARY_DIR / character_id
+        if character_dir.exists():
+            raise FileExistsError(f"角色已存在: {character_id}")
+        og_dir = character_dir / "images" / "og"
+        motions_dir = character_dir / "motions"
+        og_dir.mkdir(parents=True)
+        motions_dir.mkdir()
+        og_path = og_dir / f"{character_id}{source_path.suffix.lower() or '.png'}"
+        shutil.copy2(source_path, og_path)
+        manifest = {
+            "id": character_id,
+            "name": display_name.strip() or character_id,
+            "created_at": _now_iso(),
+            "updated_at": _now_iso(),
+            "source_image": self._to_relative(og_path),
+            "source_dir": self._to_relative(og_dir),
+            "motions_dir": self._to_relative(motions_dir),
+            "motions": {},
+            "background_image": "",
+            "positive_prompt": "",
+            "negative_prompt": "",
+        }
+        self._save_manifest(character_id, manifest)
+        return manifest
+
+    def set_background(self, character_id: str, image_path: str) -> dict:
+        manifest = self.get_character(character_id)
+        if not manifest:
+            raise FileNotFoundError(f"找不到角色資料: {character_id}")
+        manifest["background_image"] = self._to_relative(Path(image_path))
+        manifest["updated_at"] = _now_iso()
         self._save_manifest(character_id, manifest)
         return manifest
 
