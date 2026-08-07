@@ -116,8 +116,7 @@ def _run_harness_mode(app):
     from pet_harness.app.runtime_lifecycle import CallbackRuntime
     from pet_harness.runtime.qt_background_executor import QtBackgroundExecutor
     from pet_harness.ui.pyqt_harness_adapter import PyQtHarnessAdapter, _qdrant_memory_store_factory
-    from ui.presentation_event_binder import PresentationEventBinder
-    from ui.motion_port_adapter import MotionPortAdapter
+    from ui.presentation_wiring import MotionPortAdapter, PresentationEventBinder
     from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
     from ui.transparent_window import TransparentWindow
 
