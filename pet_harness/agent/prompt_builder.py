@@ -76,6 +76,7 @@ class PromptBuilder:
                 # ponytail: 使用指示必須緊鄰它所描述的區塊。放在 Character Persona 段時實測無效
                 # ——中間隔了 4 個區塊,2B 模型讀到 User Text 時已不再受其約束。
                 "## Conversation History",
+                "Conversation History and Retrieval Evidence are factual records of what the user told you.",
                 "These are factual records of what the user told you. If the user asks about something "
                 "they told you earlier, answer from those sections. Never reply that you cannot access "
                 "the user's information when it appears here. In the current user message, I/my refers "
