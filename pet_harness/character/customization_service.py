@@ -39,11 +39,11 @@ class CharacterCustomizationService:
         self._project_root = Path(project_root) if project_root is not None else profile_module._PROJECT_ROOT
 
     def get_customization(self, character_id: str) -> dict[str, Any]:
-        profile = self._registry.load_character(character_id)
+        profile, _ = self._router.load_profile(character_id)
         return self._build_view(profile)
 
     def save_persona(self, character_id: str, persona_text: str | None) -> dict[str, Any]:
-        profile = self._registry.load_character(character_id)
+        profile, _ = self._router.load_profile(character_id)
         previous_persona = profile.effective_persona
         candidate = self._mutate(profile, persona=persona_text)
         personal.write_personal(self._character_dir(character_id), candidate)
@@ -56,7 +56,7 @@ class CharacterCustomizationService:
         return self.get_customization(character_id)
 
     def _clear_character_history(self, character_id: str) -> None:
-        profile = self._registry.load_character(character_id)
+        profile, _ = self._router.load_profile(character_id)
         store = SQLiteStore(profile.sqlite_path)
         store.initialize()
         store.clear_events()
@@ -66,7 +66,7 @@ class CharacterCustomizationService:
             active_engine.memory_store.clear()
 
     def upsert_local_skill(self, character_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        profile = self._registry.load_character(character_id)
+        profile, _ = self._router.load_profile(character_id)
         skill_id = str(payload.get("skill_id") or payload.get("name") or "").strip()
         skill_payload = dict(payload)
         skill_payload["name"] = skill_id
@@ -83,7 +83,7 @@ class CharacterCustomizationService:
         return self.get_customization(character_id)
 
     def delete_local_skill(self, character_id: str, skill_id: str) -> dict[str, Any]:
-        profile = self._registry.load_character(character_id)
+        profile, _ = self._router.load_profile(character_id)
         remaining_refs = [
             ref for ref in (profile.personal.local_skill_refs if profile.personal else ())
             if ref != skill_id
@@ -101,7 +101,7 @@ class CharacterCustomizationService:
         aliases: list[str] | None,
         priority: int,
     ) -> dict[str, Any]:
-        profile = self._registry.load_character(character_id)
+        profile, _ = self._router.load_profile(character_id)
         builtin_names = {skill.name for skill in self._load_builtin_skills()}
         if skill_id not in set(profile.allowed_skill_refs) or skill_id not in builtin_names:
             raise personal.PersonalValidationError(f"skill not authorized for override: {skill_id}")

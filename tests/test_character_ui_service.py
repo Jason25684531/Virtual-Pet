@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+import character_library as library_module
 import pet_harness.character.profile as profile_module
 from pet_harness.character.exceptions import CharacterNotFoundError, NoActiveCharacterError
 from pet_harness.character.registry import CharacterRegistry
@@ -150,6 +151,36 @@ class TestSwitchAndDelete:
             ui_service.delete_character("Choppr")
 
         assert (tmp_path / "assets" / "webm" / "characters" / "Choppr").exists()
+
+    def test_delete_library_character_removes_library_and_runtime_data(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(library_module, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(library_module, "CHARACTER_LIBRARY_DIR", tmp_path / "assets" / "characters")
+        monkeypatch.setattr(library_module, "LEGACY_CHARACTER_LIBRARY_DIR", tmp_path / "assets" / "webm" / "characters")
+        monkeypatch.setattr(library_module, "UI_MUSIC_DIR", tmp_path / "ui" / "assets" / "music")
+        character_dir = tmp_path / "assets" / "characters" / "char-lei-jie"
+        (character_dir / "motions").mkdir(parents=True)
+        (character_dir / "manifest.json").write_text(json.dumps({
+            "id": "char-lei-jie", "name": "Lei Jie", "background_image": "",
+            "motions_dir": "assets/characters/char-lei-jie/motions", "motions": {},
+            "idle_pool": [], "voice_id_env_key": "", "layout": {},
+        }), encoding="utf-8")
+        data_dir = tmp_path / "data" / "characters" / "char-lei-jie"
+        data_dir.mkdir(parents=True)
+        (data_dir / "state.db").write_bytes(b"runtime data")
+        registry = CharacterRegistry(
+            assets_dir=str(tmp_path / "assets" / "webm" / "characters"),
+            data_dir=str(tmp_path / "data" / "characters"),
+        )
+        service = CharacterUiService(
+            router=CharacterRouter(registry=registry, agentic_root=str(tmp_path / ".agentic")),
+            registry=registry,
+            customization_service=object(),
+        )
+
+        assert service.delete_character("char-lei-jie") == {"character_id": "char-lei-jie", "deleted": True}
+        assert not character_dir.exists()
+        assert not data_dir.exists()
 
     def test_switch_character_writes_last_played_at(self, service):
         ui_service, router, _registry = service

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import character_library as library_module
 import pet_harness.character.profile as profile_module
 from pet_harness.character.customization_service import CharacterCustomizationService
 from pet_harness.character.personal import PersonalValidationError
@@ -103,6 +104,25 @@ class TestSavePersona:
         assert router.get_active_character().effective_persona == "safe persona"
         personal_path = tmp_path / "data" / "characters" / "miku" / "personal.json"
         assert json.loads(personal_path.read_text(encoding="utf-8"))["persona"] == "safe persona"
+
+    def test_library_character_gets_and_saves_persona_in_character_data(self, env, monkeypatch):
+        tmp_path, router, service = env
+        monkeypatch.setattr(library_module, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(library_module, "CHARACTER_LIBRARY_DIR", tmp_path / "assets" / "characters")
+        monkeypatch.setattr(library_module, "LEGACY_CHARACTER_LIBRARY_DIR", tmp_path / "assets" / "webm" / "characters")
+        monkeypatch.setattr(library_module, "UI_MUSIC_DIR", tmp_path / "ui" / "assets" / "music")
+        character_dir = tmp_path / "assets" / "characters" / "char-angle"
+        character_dir.mkdir(parents=True)
+        (character_dir / "manifest.json").write_text(json.dumps({
+            "id": "char-angle", "name": "Angle", "background_image": "",
+            "motions_dir": "assets/characters/char-angle/motions", "motions": {},
+            "idle_pool": [], "voice_id_env_key": "", "layout": {},
+        }), encoding="utf-8")
+
+        assert router.load_profile("char-angle")[0].allowed_skill_refs == ["youtube_music_playback", "bahamut_daily_news"]
+        assert service.get_customization("char-angle")["character_id"] == "char-angle"
+        assert service.save_persona("char-angle", "library persona")["persona"] == "library persona"
+        assert json.loads((tmp_path / "data" / "characters" / "char-angle" / "personal.json").read_text(encoding="utf-8"))["persona"] == "library persona"
 
 
 class TestLocalSkillCrud:

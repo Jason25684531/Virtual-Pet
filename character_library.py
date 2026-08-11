@@ -80,6 +80,12 @@ class CharacterLibrary:
             return None
         return self._load_manifest(manifest_path)
 
+    def delete_character(self, character_id: str) -> None:
+        character_dir = CHARACTER_LIBRARY_DIR / character_id
+        if not character_dir.is_dir():
+            raise FileNotFoundError(f"character not found: {character_id}")
+        shutil.rmtree(character_dir)
+
     def create_character(self, image_path: str, display_name: str = "") -> dict:
         source_path = Path(image_path)
         if not source_path.is_file():
@@ -221,9 +227,7 @@ class CharacterLibrary:
         manifest = self.get_character(character_id)
         if not manifest:
             return []
-        actions = manifest.get("actions")
-        if not isinstance(actions, dict):
-            return []
+        actions = self._manifest_actions(manifest)
         return [
             tag for tag in actions
             if isinstance(tag, str) and self.resolve_action_tag(str(character_id), tag) is not None
@@ -242,9 +246,7 @@ class CharacterLibrary:
         manifest = self.get_character(normalized_character_id)
         if not manifest:
             return None
-        actions = manifest.get("actions")
-        if not isinstance(actions, dict):
-            return None
+        actions = self._manifest_actions(manifest)
         motion_key = actions.get(normalized_tag)
         if not isinstance(motion_key, str) or not motion_key.strip():
             return None
@@ -256,6 +258,16 @@ class CharacterLibrary:
         if not path:
             return None
         return {"action_tag": normalized_tag, "motion_key": motion_key, "path": path}
+
+    @staticmethod
+    def _manifest_actions(manifest: dict) -> dict:
+        actions = manifest.get("actions")
+        if isinstance(actions, dict):
+            return actions
+        motions = manifest.get("motions")
+        if not isinstance(motions, dict):
+            return {}
+        return {key: key for key in motions if isinstance(key, str) and key != "idle"}
 
     def is_valid_action_tag(self, character_id: str | None, action_tag: str | None) -> bool:
         return self.resolve_action_tag(character_id, action_tag) is not None

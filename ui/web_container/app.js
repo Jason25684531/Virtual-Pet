@@ -116,6 +116,7 @@
     var personaCharacterId = null;
     var personaOriginal = null;
     var editingLocalSkillId = null;
+    var personaLoadGeneration = 0;
 
     window.echoes = window.echoes || {};
 
@@ -559,16 +560,20 @@
     }
 
     function loadPersonaEditor() {
+        var generation = ++personaLoadGeneration;
         callCharacterBridge('getActiveState').then(function (state) {
+            if (generation !== personaLoadGeneration) return null;
             if (!state || state.active === false) {
                 discardPersonaDraft();
                 return null;
             }
             return callCharacterBridge('getCustomization', state.character_id);
         }).then(function (customization) {
-            if (customization) renderPersonaEditor(customization);
+            if (generation === personaLoadGeneration && customization) renderPersonaEditor(customization);
         }).catch(function (err) {
+            if (generation !== personaLoadGeneration) return;
             console.warn('[ECHOES UI] loadPersonaEditor failed:', err.message);
+            discardPersonaDraft();
             setStatus('載入人設編輯器失敗：' + err.message, 'error', 3200);
         });
     }
@@ -943,6 +948,8 @@
 
     function confirmDeleteSelectedSave() {
         if (!selectedSaveId) return;
+        var deleteConfirm = document.getElementById('delete-confirm-button');
+        if (deleteConfirm) deleteConfirm.disabled = true;
         callCharacterBridge('deleteCharacter', selectedSaveId).then(function () {
             selectedSaveId = null;
             uiRoute.modal = null;
@@ -951,6 +958,8 @@
         }).catch(function (err) {
             console.warn('[ECHOES UI] deleteCharacter failed:', err.message);
             setStatus('刪除存檔失敗：' + err.message, 'error', 4800);
+        }).then(function () {
+            if (deleteConfirm) deleteConfirm.disabled = false;
         });
     }
 
@@ -1146,12 +1155,26 @@
     }
 
     function setupWindowDragHandles() {
-        document.querySelectorAll('.window-drag-handle').forEach(function (handle) {
-            handle.addEventListener('mousedown', function (event) {
-                if (event.button !== 0) return;
-                if (event.target.closest('button, input, a, textarea, select')) return;
+        var dragStart = null;
+        document.addEventListener('mousedown', function (event) {
+            if (event.button !== 0) return;
+            var control = event.target.closest('button, input, a, textarea, select, label, [contenteditable="true"]');
+            if (control && control.id !== 'pet-character') return;
+            if (!control) {
                 callBridge('beginWindowDrag');
-            });
+                return;
+            }
+            dragStart = { x: event.clientX, y: event.clientY };
+        });
+        document.addEventListener('mousemove', function (event) {
+            if (!dragStart || !(event.buttons & 1)) return;
+            if (Math.hypot(event.clientX - dragStart.x, event.clientY - dragStart.y) < 5) return;
+            dragStart = null;
+            event.preventDefault();
+            callBridge('beginWindowDrag');
+        });
+        document.addEventListener('mouseup', function () {
+            dragStart = null;
         });
     }
 

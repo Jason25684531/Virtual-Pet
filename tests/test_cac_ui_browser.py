@@ -104,6 +104,23 @@ def test_screens_are_centered_isolate_the_stage_and_offer_a_drag_surface(page):
     assert abs(load_card["y"] + load_card["height"] / 2 - CENTER_Y) <= 1
 
 
+def test_companion_stage_can_drag_without_stealing_character_clicks(page):
+    _enter_companion_stage(page)
+    character = page.locator("#pet-character")
+
+    page.evaluate("window.__drag_calls = 0")
+    character.click(position={"x": 500, "y": 400})
+    assert page.evaluate("window.__drag_calls") == 0
+    assert page.locator("#hud-chat").is_visible()
+
+    page.locator("#hud-chat [data-close-hud]").click()
+    character.hover(position={"x": 500, "y": 400})
+    page.mouse.down()
+    page.mouse.move(510, 410)
+    page.mouse.up()
+    assert page.evaluate("window.__drag_calls") == 1
+
+
 def test_stage_furniture_stays_inside_the_visible_viewport(page):
     """視窗尺寸即主螢幕可用區,所以任何超出視口的元件在實機上就是看不到。
     寫死過大的視口曾讓角色、底部導覽與等級徽章整個落在畫面外。"""

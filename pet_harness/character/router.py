@@ -1,8 +1,11 @@
 from dataclasses import dataclass, field
 from threading import RLock
 
+from pet_harness.character import personal as character_personal
 from pet_harness.character.exceptions import NoActiveCharacterError
 from pet_harness.character.exceptions import CharacterNotFoundError
+from pet_harness.character.personal import PersonalValidationError
+from pet_harness.character import profile as profile_module
 from pet_harness.character.profile import CharacterProfile
 from pet_harness.character.registry import CharacterRegistry
 from pet_harness.engine.harness_engine import PetHarnessEngine
@@ -12,6 +15,7 @@ from pet_harness.runtime.provider_runtime import ProviderRuntime
 from typing import Callable
 from character_library import CharacterLibrary
 
+_DEFAULT_LIBRARY_SKILLS = ["youtube_music_playback", "bahamut_daily_news"]
 
 @dataclass(frozen=True)
 class ActiveCharacterSnapshot:
@@ -105,8 +109,16 @@ class CharacterRouter:
             manifest = self._library.get_character(character_id)
             if not manifest:
                 raise
+            resolved_id = str(manifest["id"])
+            try:
+                library_personal = character_personal.load_personal(
+                    resolved_id,
+                    profile_module._PROJECT_ROOT / "data" / "characters" / resolved_id,
+                )
+            except PersonalValidationError:
+                library_personal = None
             return CharacterProfile(
-                character_id=str(manifest["id"]),
+                character_id=resolved_id,
                 name=str(manifest.get("name") or character_id),
                 background_image=str(manifest.get("background_image") or ""),
                 motions_dir=str(manifest.get("motions_dir") or ""),
@@ -115,7 +127,8 @@ class CharacterRouter:
                 voice_id_env_key=str(manifest.get("voice_id_env_key") or ""),
                 layout=dict(manifest.get("layout") or {}),
                 persona_description="",
-                skill_config=[],
+                skill_config=list(_DEFAULT_LIBRARY_SKILLS),
+                personal=library_personal,
             ), True
 
     def shutdown(self) -> None:

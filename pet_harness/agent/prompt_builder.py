@@ -98,6 +98,7 @@ class PromptBuilder:
                 "Do not include private chain-of-thought.",
                 "Only use a skill name from the provided skill list or null.",
                 "action_tag must be one of the available character action tags or null; never put control tags in reply.",
+                "Write reply in 繁體中文（台灣用語）.",
             ]
         )
         return PromptBuildResult(prompt=prompt, warnings=warnings)

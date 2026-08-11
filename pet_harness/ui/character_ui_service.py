@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -75,11 +76,15 @@ class CharacterUiService:
         store.set_setting(LAST_PLAYED_AT_KEY, utc_now())
 
     def delete_character(self, character_id: str) -> dict[str, Any]:
-        profile = self._registry.load_character(character_id)
+        profile, is_library_character = self._router.load_profile(character_id)
         if profile.is_preset:
             raise ValueError(f"preset character cannot be deleted: {character_id}")
         gc.collect()
-        self._registry.delete_character(character_id)
+        if is_library_character:
+            CharacterLibrary().delete_character(character_id)
+            shutil.rmtree(Path("data") / "characters" / character_id, ignore_errors=True)
+        else:
+            self._registry.delete_character(character_id)
         return {"character_id": character_id, "deleted": True}
 
     def get_active_state(self) -> dict[str, Any]:
