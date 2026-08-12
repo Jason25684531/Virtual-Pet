@@ -80,6 +80,10 @@ class CharacterLibrary:
             return None
         return self._load_manifest(manifest_path)
 
+    def get_voice_gender(self, character_id: str | None) -> str:
+        manifest = self.get_character(character_id)
+        return str(manifest.get("voice_gender") or "") if manifest else ""
+
     def delete_character(self, character_id: str) -> None:
         character_dir = CHARACTER_LIBRARY_DIR / character_id
         if not character_dir.is_dir():
@@ -120,7 +124,7 @@ class CharacterLibrary:
         self._save_manifest(character_id, manifest)
         return manifest
 
-    def create_validated_character(self, character_id: str, image_path: str, display_name: str) -> dict:
+    def create_validated_character(self, character_id: str, image_path: str, display_name: str, voice_gender: str = "") -> dict:
         source_path = Path(image_path)
         if not source_path.is_file():
             raise FileNotFoundError(f"找不到角色圖片: {image_path}")
@@ -144,6 +148,7 @@ class CharacterLibrary:
             "motions_dir": self._to_relative(motions_dir),
             "motions": {},
             "background_image": "",
+            "voice_gender": voice_gender,
             "positive_prompt": "",
             "negative_prompt": "",
         }
@@ -241,14 +246,14 @@ class CharacterLibrary:
         """
         normalized_character_id = str(character_id or "").strip()
         normalized_tag = str(action_tag or "").strip()
-        if not normalized_character_id or not normalized_tag:
+        if not normalized_character_id or not normalized_tag or normalized_tag.lower() == "idle":
             return None
         manifest = self.get_character(normalized_character_id)
         if not manifest:
             return None
         actions = self._manifest_actions(manifest)
         motion_key = actions.get(normalized_tag)
-        if not isinstance(motion_key, str) or not motion_key.strip():
+        if not isinstance(motion_key, str) or not motion_key.strip() or motion_key.strip().lower() == "idle":
             return None
         motion_key = motion_key.strip()
         motions = manifest.get("motions")
@@ -267,7 +272,7 @@ class CharacterLibrary:
         motions = manifest.get("motions")
         if not isinstance(motions, dict):
             return {}
-        return {key: key for key in motions if isinstance(key, str) and key != "idle"}
+        return {key: key for key in motions if isinstance(key, str) and key.lower() != "idle"}
 
     def is_valid_action_tag(self, character_id: str | None, action_tag: str | None) -> bool:
         return self.resolve_action_tag(character_id, action_tag) is not None

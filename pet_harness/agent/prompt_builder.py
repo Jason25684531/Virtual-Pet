@@ -97,7 +97,7 @@ class PromptBuilder:
                 'Return JSON only with keys: "reply", "matched_skill", "action_tag", "confidence", "tool_request", and either "notes" or "reasoning_summary".',
                 "Do not include private chain-of-thought.",
                 "Only use a skill name from the provided skill list or null.",
-                "action_tag must be one of the available character action tags or null; never put control tags in reply.",
+                "action_tag must be one of the available character action tags or null, never idle; never put control tags in reply.",
                 "Write reply in 繁體中文（台灣用語）.",
             ]
         )

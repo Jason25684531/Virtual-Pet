@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from character_library import CharacterLibrary
 from pet_harness.asset.asset_job_worker import AssetJobWorker
 from pet_harness.asset.asset_orchestrator import AssetOrchestrator
@@ -26,7 +28,8 @@ class FakeClient:
         return b"png"
 
 
-def test_validation_approval_creates_character_and_fans_out(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("gender_output", "expected_gender"), [("F", "F"), (" m ", "M"), (None, ""), ("robot", "")])
+def test_validation_approval_creates_character_and_fans_out(tmp_path, monkeypatch, gender_output, expected_gender):
     import character_library as library_module
 
     monkeypatch.setattr(library_module, "PROJECT_ROOT", tmp_path)
@@ -39,17 +42,21 @@ def test_validation_approval_creates_character_and_fans_out(tmp_path, monkeypatc
         AssetRepository(store),
         Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_video_gen_260728.json",
         Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_image_gen_260720.json",
-        validation_template=Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_character validation_260728.json",
+        validation_template=Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_character validation_260811_API.json",
         background_template=Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_background_gen_260728.json",
     )
     job = orchestrator.create_character_validation_job(str(source), "丘比", "event-1")
-    worker = AssetJobWorker(orchestrator.repository, orchestrator, FakeClient({"outputs": {"16": {"images": [{"filename": "approved.png"}]}}}), CharacterLibrary())
+    outputs = {"16": {"images": [{"filename": "approved.png"}]}}
+    if gender_output is not None:
+        outputs["56"] = {"text": [gender_output]}
+    worker = AssetJobWorker(orchestrator.repository, orchestrator, FakeClient({"outputs": outputs}), CharacterLibrary())
 
     assert worker.run_once() is True
     completed = orchestrator.repository.get(job.job_id)
     assert completed.status == JobStatus.COMPLETED
     manifest = CharacterLibrary().get_character(completed.character_id)
     assert manifest["name"] == "丘比"
+    assert manifest["voice_gender"] == expected_gender
     assert Path(tmp_path / manifest["source_image"]).read_bytes() == b"png"
     assert len(orchestrator.repository.children(next(item.job_id for item in orchestrator.repository.pending() if item.workflow_type == "motion_set"))) == 7
     assert any(item.workflow_type == "background_png" for item in orchestrator.repository.pending())
@@ -64,7 +71,7 @@ def test_validation_rejection_leaves_no_character(tmp_path, monkeypatch):
     source.write_bytes(b"input")
     store = SQLiteStore(tmp_path / "state.db")
     store.initialize()
-    orchestrator = AssetOrchestrator(AssetRepository(store), Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_video_gen_260728.json", Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_image_gen_260720.json", validation_template=Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_character validation_260728.json")
+    orchestrator = AssetOrchestrator(AssetRepository(store), Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_video_gen_260728.json", Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_image_gen_260720.json", validation_template=Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_character validation_260811_API.json")
     job = orchestrator.create_character_validation_job(str(source), "Nope", "event-1")
 
     AssetJobWorker(orchestrator.repository, orchestrator, FakeClient({"outputs": {"30": {"text": ["not a character"]}}}), CharacterLibrary()).run_once()
@@ -84,7 +91,7 @@ def test_character_id_uses_name_slug_with_version_suffix(tmp_path, monkeypatch):
     source.write_bytes(b"input")
     store = SQLiteStore(tmp_path / "state.db")
     store.initialize()
-    orchestrator = AssetOrchestrator(AssetRepository(store), Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_video_gen_260728.json", Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_image_gen_260720.json", validation_template=Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_character validation_260728.json")
+    orchestrator = AssetOrchestrator(AssetRepository(store), Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_video_gen_260728.json", Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_image_gen_260720.json", validation_template=Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_character validation_260811_API.json")
 
     job = orchestrator.create_character_validation_job(str(source), "Chopper", "event-1")
     assert job.character_id == "char-chopper"

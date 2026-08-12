@@ -17,13 +17,20 @@ class AssetJobWorker:
         self.repository, self.orchestrator, self.client, self.library = repository, orchestrator, client, library or CharacterLibrary()
 
     def run_once(self) -> bool:
-        jobs = [job for job in self.repository.pending() if job.status == JobStatus.QUEUED and job.workflow_type != "motion_set"]
+        jobs = [
+            job for job in self.repository.pending()
+            if job.workflow_type != "motion_set"
+            and (job.status == JobStatus.QUEUED or job.status == JobStatus.TIMED_OUT and job.retry_count < job.max_retries)
+        ]
         if not jobs:
             return False
         # 優先序:審核 → idle 動態 → 背景 → 其餘動態;就緒閘門(idle+背景)最快放行。
         tier = {"character_validation": 0, "background_png": 2}
         jobs.sort(key=lambda job: 1 if job.motion_key == "idle" else tier.get(job.workflow_type, 3))
-        self._run(jobs[0])
+        job = jobs[0]
+        if job.status == JobStatus.TIMED_OUT:
+            self.repository.update(job.job_id, JobStatus.TIMED_OUT, retry_count=job.retry_count + 1)
+        self._run(job)
         return True
 
     def _run(self, job) -> None:
@@ -46,13 +53,7 @@ class AssetJobWorker:
             prompt_id = self.client.submit_prompt(workflow)
             self.repository.update(job.job_id, JobStatus.RUNNING, comfy_prompt_id=prompt_id)
             output = ComfyUIClient.output(self.client.watch_prompt(prompt_id, job.timeout_sec), node_id)
-            content = self.client.download_output(output["filename"], output.get("subfolder", ""), output.get("type", "output"))
-            self._save(job, content, suffix, asset_type)
-            self.repository.update(job.job_id, JobStatus.COMPLETED, completed_at=utc_now())
-            if job.workflow_type == "variant_png":
-                self.orchestrator.create_motion_set(job.character_id, str(self._asset_path(job, suffix)), job.job_id, job.variant, str(job.metadata.get("trigger_reason", "")))
-            if job.parent_job_id:
-                self.orchestrator.aggregate_parent(job.parent_job_id)
+            self._finalize(job, output, suffix, asset_type)
         except TimeoutError as error:
             self.repository.update(job.job_id, JobStatus.TIMED_OUT, error_code="timeout", error_message=str(error))
         except Exception as error:
@@ -75,8 +76,13 @@ class AssetJobWorker:
         temp = library_module.PROJECT_ROOT / "assets" / ".validation" / f"{job.job_id}.png"
         temp.parent.mkdir(parents=True, exist_ok=True)
         temp.write_bytes(content)
+        gender_output = history.get("outputs", {}).get("56", {}).get("text", "")
+        if isinstance(gender_output, list):
+            gender_output = gender_output[0] if gender_output else ""
+        voice_gender = str(gender_output).strip()[:1].upper()
+        voice_gender = voice_gender if voice_gender in {"F", "M"} else ""
         try:
-            manifest = self.library.create_validated_character(job.character_id, str(temp), str(job.metadata.get("character_name", "")))
+            manifest = self.library.create_validated_character(job.character_id, str(temp), str(job.metadata.get("character_name", "")), voice_gender)
         finally:
             temp.unlink(missing_ok=True)
         source_path = str(library_module.PROJECT_ROOT / manifest["source_image"])
@@ -96,6 +102,23 @@ class AssetJobWorker:
         if job.workflow_type == "background_png":
             self.library.set_background(job.character_id, str(path))
 
+    def _finalize(self, job, output, suffix: str, asset_type: str) -> None:
+        content = self.client.download_output(output["filename"], output.get("subfolder", ""), output.get("type", "output"))
+        self._save(job, content, suffix, asset_type)
+        self.repository.update(job.job_id, JobStatus.COMPLETED, completed_at=utc_now())
+        if job.workflow_type == "variant_png":
+            self.orchestrator.create_motion_set(job.character_id, str(self._asset_path(job, suffix)), job.job_id, job.variant, str(job.metadata.get("trigger_reason", "")))
+        if job.parent_job_id:
+            self.orchestrator.aggregate_parent(job.parent_job_id)
+
+    @staticmethod
+    def _output_info(job) -> tuple[str, str, str]:
+        if job.workflow_type == "motion_clip":
+            return "770", ".webm", "motion_webm"
+        if job.workflow_type == "background_png":
+            return "16", ".png", "character_background_png"
+        return {"og": ("475", ".png", "character_variant_png"), "development": ("467", ".png", "character_variant_png"), "event": ("492", ".png", "character_variant_png")}[job.variant]
+
     @staticmethod
     def _asset_path(job, suffix: str) -> Path:
         root = library_module.PROJECT_ROOT / "assets" / "characters" / job.character_id
@@ -109,6 +132,11 @@ class AssetJobWorker:
     def recover(self) -> None:
         for job in self.repository.pending():
             if job.status == JobStatus.QUEUED:
+                if job.workflow_type == "motion_set":
+                    self.orchestrator.aggregate_parent(job.job_id)
+                continue
+            if job.workflow_type == "character_validation":
+                self.repository.update(job.job_id, JobStatus.FAILED, error_code="recovery_unresolved", error_message="validation job interrupted")
                 continue
             if not job.comfy_prompt_id:
                 self.repository.update(job.job_id, JobStatus.FAILED, error_code="recovery_unresolved", error_message="missing prompt id")
@@ -117,5 +145,8 @@ class AssetJobWorker:
                 history = self.client.get_history(job.comfy_prompt_id)
                 if not history.get("outputs"):
                     self.repository.update(job.job_id, JobStatus.FAILED, error_code="recovery_unresolved", error_message="prompt missing from history")
+                    continue
+                node_id, suffix, asset_type = self._output_info(job)
+                self._finalize(job, ComfyUIClient.output(history, node_id), suffix, asset_type)
             except Exception as error:
                 self.repository.update(job.job_id, JobStatus.FAILED, error_code="comfyui_unavailable", error_message=str(error))

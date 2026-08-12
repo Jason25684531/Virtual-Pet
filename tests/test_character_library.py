@@ -38,7 +38,21 @@ def test_action_tags_fall_back_to_non_idle_manifest_motions(tmp_path, monkeypatc
 
 def test_explicit_manifest_actions_take_precedence_over_motion_fallback(tmp_path, monkeypatch):
     library = _library(tmp_path, monkeypatch)
-    _write_manifest(tmp_path, "miku", ["idle", "laugh", "wave"], {"greet": "wave"})
+    _write_manifest(tmp_path, "miku", ["idle", "laugh", "wave"], {"greet": "wave", "idle": "idle"})
 
     assert library.list_action_tags("miku") == ["greet"]
     assert library.resolve_action_tag("miku", "greet")["motion_key"] == "wave"
+    assert library.resolve_action_tag("miku", "idle") is None
+
+
+def test_validated_character_persists_and_reads_voice_gender(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+    source = tmp_path / "source.png"
+    source.write_bytes(b"png")
+
+    manifest = library.create_validated_character("char-1", str(source), "Character", "F")
+
+    assert manifest["voice_gender"] == "F"
+    assert library.get_voice_gender("char-1") == "F"
+    _write_manifest(tmp_path, "legacy", [])
+    assert library.get_voice_gender("legacy") == ""

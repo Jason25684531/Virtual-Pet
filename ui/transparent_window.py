@@ -139,6 +139,10 @@ class HarnessUiBridge(QObject):
 
     @pyqtSlot()
     def refreshState(self) -> None:
+        # QWebChannel can invoke this while TransparentWindow is still being
+        # constructed.  Do not let that startup race abort the JS callback.
+        if getattr(self._window, "_adapter", None) is None:
+            return
         self._window.refresh_agentic_ui()
 
     @pyqtSlot()

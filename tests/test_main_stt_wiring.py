@@ -136,6 +136,46 @@ def test_vad_preload_runs_in_a_separate_background_thread(monkeypatch):
     fake_controller.preload_model.assert_called_once()
 
 
+def test_preload_stt_provider_disabled_returns_none(monkeypatch):
+    monkeypatch.setattr(config, "STT_ENABLED", False)
+
+    assert main._preload_stt_provider() is None
+
+
+def test_preload_stt_provider_calls_setup_before_qapplication_exists(monkeypatch):
+    """CUDA 原生初始化必須發生在 QApplication 建構前(見 main.py 內的說明),
+    這裡驗證 _preload_stt_provider 會同步呼叫 provider.setup(),
+    且回傳同一個實例供 _build_stt_controller 重用、不重新初始化模型。"""
+    monkeypatch.setattr(config, "STT_ENABLED", True)
+    fake_provider = MagicMock(name="provider")
+    monkeypatch.setattr(
+        "sensors.faster_whisper_stt.FasterWhisperSTT", MagicMock(return_value=fake_provider)
+    )
+
+    result = main._preload_stt_provider()
+
+    assert result is fake_provider
+    fake_provider.setup.assert_called_once()
+
+
+def test_build_stt_controller_reuses_preloaded_provider(monkeypatch):
+    monkeypatch.setattr(config, "STT_ENABLED", True)
+    monkeypatch.setattr(config, "STT_VAD_ENABLED", False)
+    fw_ctor = MagicMock()
+    monkeypatch.setattr("sensors.faster_whisper_stt.FasterWhisperSTT", fw_ctor)
+    monkeypatch.setattr(
+        "sensors.microphone_recorder.MicrophoneRecorder", MagicMock(return_value=MagicMock())
+    )
+    fake_provider = MagicMock(name="preloaded_provider")
+    controller_ctor = MagicMock(return_value=MagicMock(name="controller"))
+    monkeypatch.setattr("sensors.stt_controller.SttController", controller_ctor)
+
+    main._build_stt_controller(_fake_window(), provider=fake_provider)
+
+    fw_ctor.assert_not_called()
+    assert controller_ctor.call_args.args[1] is fake_provider
+
+
 def test_state_changed_mapping_translates_recording_to_listening(monkeypatch):
     """controller 的 RecordingState 用字（recording）與既有 UI 白名單（listening）不同，
     submitting/error 不在白名單內、set_stt_state 既有 fallback 會自動視為 idle。"""

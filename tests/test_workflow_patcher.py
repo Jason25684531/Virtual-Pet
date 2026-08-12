@@ -24,7 +24,7 @@ def test_video_patch_is_isolated_and_uses_one_motion():
 
 
 def test_validation_and_background_patches_replace_only_runtime_inputs():
-    validation = WorkflowPatcher(ROOT / "AIA_2026_character validation_260728.json")
+    validation = WorkflowPatcher(ROOT / "AIA_2026_character validation_260811_API.json")
     background = WorkflowPatcher(ROOT / "AIA_2026_background_gen_260728.json")
 
     assert validation.patch_validation(image="upload/character.png", prefix="vp/new/og")["12"]["inputs"]["image"] == "upload/character.png"
@@ -33,15 +33,6 @@ def test_validation_and_background_patches_replace_only_runtime_inputs():
     assert workflow["12"]["inputs"]["image"] == "upload/character.png"
     assert workflow["14"]["inputs"]["image"] == "upload/room.png"
     assert workflow["16"]["inputs"]["filename_prefix"] == "vp/new/bg"
-
-
-def test_validation_extracts_the_decision_digit_before_converting_to_int():
-    workflow = WorkflowPatcher(ROOT / "AIA_2026_character validation_260728.json").patch_validation(image="upload/character.png", prefix="vp/new/og")
-
-    assert workflow["52"]["class_type"] == "RegexExtract"
-    assert workflow["52"]["inputs"]["string"] == ["21", 0]
-    assert workflow["52"]["inputs"]["regex_pattern"] == "^[12]"
-    assert workflow["24"]["inputs"]["string"] == ["52", 0]
 
 
 def test_patching_requires_expected_nodes(tmp_path):

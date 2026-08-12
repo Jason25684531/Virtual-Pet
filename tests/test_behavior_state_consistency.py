@@ -124,6 +124,23 @@ class TestPetEventMirrorsBehaviorEvent:
         assert event.behavior_id == event.metadata["behavior"]["behavior_id"]
         assert event.webm_key == event.metadata["behavior"]["webm_key"]
 
+    def test_conversation_selects_an_available_character_action(self, harness_env, monkeypatch):
+        engine = self._build_engine(harness_env)
+        monkeypatch.setattr(engine.character_library, "list_action_tags", lambda _character_id: ["laugh", "angry"])
+        monkeypatch.setattr(
+            engine.character_library,
+            "resolve_action_tag",
+            lambda _character_id, tag: {"action_tag": tag, "motion_key": tag, "path": f"{tag}.webm"},
+        )
+        event = engine.handle_event({"text": "totally unmatched text xyz", "source": "test"})
+
+        assert event.action_tag in {"laugh", "angry"}
+        assert event.webm_key == event.action_tag
+
+        skill_event = engine.handle_event({"text": "mood", "source": "test"})
+        assert skill_event.matched_skill == "mood_skill"
+        assert skill_event.action_tag in {"laugh", "angry"}
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

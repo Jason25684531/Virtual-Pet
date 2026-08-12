@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 import threading
 from dataclasses import dataclass, replace
@@ -311,7 +312,7 @@ class PetHarnessEngine:
         prompt_result = self._build_prompt(user_event, state_before, deterministic_skill, tool_first_result, conversation_history, memory_hits, retrieval_result)
         provider_reply, agent_result = self._invoke_provider(user_event, deterministic_skill, prompt_result.prompt)
         matched_skill, skill_source = self._parse_and_route(user_event, agent_result, active_capabilities)
-        resolved_action, behavior_event = self._resolve_behavior(matched_skill, agent_result)
+        resolved_action, behavior_event = self._resolve_behavior(matched_skill)
         tool_event, tool_result_payload, tool_xp_bonus = self._run_tool_fallback(
             user_event, matched_skill, agent_result, tool_first_event, tool_first_result
         )
@@ -424,12 +425,14 @@ class PetHarnessEngine:
         LOGGER.info("[SKILL ROUTE] text_length=%s matched=%s source=%s", len(event.text), getattr(skill, "name", None), source)
         return skill, source
 
-    def _resolve_behavior(self, skill: Skill | None, result: AgentResult):
+    def _resolve_behavior(self, skill: Skill | None):
         resolved_action = None
-        if skill is None and result.action_tag:
-            resolved_action = self.character_library.resolve_action_tag(self._character_id, result.action_tag)
+        action_tags = self.character_library.list_action_tags(self._character_id)
+        if action_tags:
+            action_tag = random.choice(action_tags)
+            resolved_action = self.character_library.resolve_action_tag(self._character_id, action_tag)
             if resolved_action is None:
-                LOGGER.warning("Ignoring invalid action tag for character %s: %s", self._character_id, result.action_tag)
+                LOGGER.warning("Ignoring unavailable action tag for character %s: %s", self._character_id, action_tag)
         behavior = self.behavior_manager.resolve(skill, action_motion_key=resolved_action["motion_key"] if resolved_action else None)
         return resolved_action, behavior
 

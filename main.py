@@ -33,7 +33,35 @@ def _create_application(argv):
     return QApplication(argv)
 
 
-def _build_stt_controller(window):
+def _preload_stt_provider():
+    """faster-whisper（ctranslate2）的 CUDA 原生初始化如果發生在 QApplication 建構之後，
+    會在這台機器上直接讓整個行程 segfault（實測與 _preload_onnx_runtime 的 DLL 衝突同一類
+    問題，但 ctranslate2 目前沒有等效的 preload）。故在 QApplication 建構前，於這裡先同步
+    載入模型；_build_stt_controller 之後重用同一個 provider 實例，不再重新初始化。"""
+    import config
+
+    if not config.STT_ENABLED:
+        return None
+
+    from sensors.faster_whisper_stt import FasterWhisperSTT
+
+    provider = FasterWhisperSTT(
+        config.STT_MODEL,
+        config.STT_DEVICE,
+        config.STT_COMPUTE_TYPE,
+        config.STT_MODEL_PATH,
+        language=config.STT_LANGUAGE or None,
+        beam_size=config.STT_BEAM_SIZE,
+    )
+    print(f"[STT] 於 QApplication 建構前預先載入模型：model={config.STT_MODEL} device={config.STT_DEVICE}")
+    try:
+        provider.setup()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[STT] 模型預先載入失敗，STT 將標記為不可用: {exc}")
+    return provider
+
+
+def _build_stt_controller(window, provider=None):
     """STT_ENABLED=false 時完全不建立任何 STT 物件（按鈕維持 unavailable）。"""
     import config
 
@@ -47,7 +75,6 @@ def _build_stt_controller(window):
         f"compute_type={config.STT_COMPUTE_TYPE} sample_rate={config.STT_SAMPLE_RATE}"
     )
 
-    from sensors.faster_whisper_stt import FasterWhisperSTT
     from sensors.microphone_recorder import MicrophoneRecorder
     from sensors.stt_controller import SttController
 
@@ -64,14 +91,17 @@ def _build_stt_controller(window):
             f"threshold={config.STT_VAD_THRESHOLD}"
         )
 
-    provider = FasterWhisperSTT(
-        config.STT_MODEL,
-        config.STT_DEVICE,
-        config.STT_COMPUTE_TYPE,
-        config.STT_MODEL_PATH,
-        language=config.STT_LANGUAGE or None,
-        beam_size=config.STT_BEAM_SIZE,
-    )
+    if provider is None:
+        from sensors.faster_whisper_stt import FasterWhisperSTT
+
+        provider = FasterWhisperSTT(
+            config.STT_MODEL,
+            config.STT_DEVICE,
+            config.STT_COMPUTE_TYPE,
+            config.STT_MODEL_PATH,
+            language=config.STT_LANGUAGE or None,
+            beam_size=config.STT_BEAM_SIZE,
+        )
     recorder = MicrophoneRecorder(
         sample_rate=config.STT_SAMPLE_RATE,
         max_recording_seconds=config.STT_MAX_RECORDING_SECONDS,
@@ -108,7 +138,7 @@ def _build_stt_controller(window):
     return controller
 
 
-def _run_harness_mode(app):
+def _run_harness_mode(app, stt_provider=None):
     from character_library import CharacterLibrary
     from action_dispatcher import MotionCoordinator
     from interaction_trace import InteractionLatencyTracker
@@ -147,7 +177,7 @@ def _run_harness_mode(app):
     executor = QtBackgroundExecutor(window)
     coordinator.configure_conversation(adapter, executor)
 
-    stt_controller = _build_stt_controller(window)
+    stt_controller = _build_stt_controller(window, provider=stt_provider)
     coordinator.lifecycle.register(CallbackRuntime("adapter", lambda _wait_ms: adapter.shutdown()))
     coordinator.lifecycle.register(CallbackRuntime("motion", motion.shutdown))
     if stt_controller is not None:
@@ -183,10 +213,11 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     print("[ECHOES] brain mode: harness")
     _preload_onnx_runtime()
+    stt_provider = _preload_stt_provider()
 
     app = _create_application(sys.argv)
     _configure_sigint_timer(app)
-    _run_harness_mode(app)
+    _run_harness_mode(app, stt_provider=stt_provider)
     sys.exit(app.exec_())
 
 

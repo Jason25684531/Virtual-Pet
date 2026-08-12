@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING, Any
 
-from PyQt5.QtCore import QObject, pyqtSlot
+LOGGER = logging.getLogger(__name__)
+
+from PyQt5.QtCore import QObject, QTimer, pyqtSlot
 
 from pet_harness.ui.character_ui_service import CharacterUiService
 
@@ -52,7 +55,7 @@ class CharacterUiBridge(QObject):
     def createFromPreset(self, preset_id: str, name: str) -> str:
         try:
             result = self._service.create_from_preset(preset_id, name or None)
-            self._window.on_character_switched(result)
+            self._notify_character_switched(result)
             return self._ok(result)
         except Exception as exc:  # noqa: BLE001
             return self._error(exc)
@@ -88,10 +91,25 @@ class CharacterUiBridge(QObject):
     def switchCharacter(self, character_id: str) -> str:
         try:
             result = self._service.switch_character(character_id)
-            self._window.on_character_switched(result)
+            self._notify_character_switched(result)
             return self._ok(result)
         except Exception as exc:  # noqa: BLE001
             return self._error(exc)
+
+    def _notify_character_switched(self, profile_payload: dict[str, Any]) -> None:
+        """Run WebView work after the current QWebChannel slot returns its response.
+
+        This runs outside the calling slot's try/except (deferred via QTimer), so an
+        uncaught exception here would escape into a bare Qt callback. PyQt5 aborts the
+        whole process with no traceback in that case, so it must be caught here instead.
+        """
+        QTimer.singleShot(0, lambda: self._safe_notify_character_switched(profile_payload))
+
+    def _safe_notify_character_switched(self, profile_payload: dict[str, Any]) -> None:
+        try:
+            self._window.on_character_switched(profile_payload)
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("on_character_switched failed for payload=%s", profile_payload)
 
     @pyqtSlot(str, result=str)
     def deleteCharacter(self, character_id: str) -> str:

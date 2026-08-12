@@ -298,7 +298,11 @@ def get_elevenlabs_voice_id_for_character(character_id: str | None) -> str:
     優先順序：CHARACTER_VOICE_IDS[character_id] → ELEVENLABS_VOICE_ID（全域預設）。
     """
     cid = str(character_id or "").strip()
-    return CHARACTER_VOICE_IDS.get(cid) or ELEVENLABS_VOICE_ID
+    if cid in CHARACTER_VOICE_IDS:
+        return CHARACTER_VOICE_IDS[cid]
+    from character_library import CharacterLibrary
+    voice_key = {"F": "miku", "M": "Choppr"}.get(CharacterLibrary().get_voice_gender(cid), "")
+    return CHARACTER_VOICE_IDS.get(voice_key) or ELEVENLABS_VOICE_ID
 
 
 def get_voai_config_for_character(character_id: str | None) -> dict:
@@ -306,7 +310,11 @@ def get_voai_config_for_character(character_id: str | None) -> dict:
     找不到時回傳預設設定。
     """
     cid = str(character_id or "").strip()
-    return dict(CHARACTER_VOAI_CONFIGS.get(cid) or _DEFAULT_VOAI_CONFIG)
+    if cid in CHARACTER_VOAI_CONFIGS:
+        return dict(CHARACTER_VOAI_CONFIGS[cid])
+    from character_library import CharacterLibrary
+    voice_key = {"F": "miku", "M": "Choppr"}.get(CharacterLibrary().get_voice_gender(cid), "")
+    return dict(CHARACTER_VOAI_CONFIGS.get(voice_key) or _DEFAULT_VOAI_CONFIG)
 
 
 def get_voai_api_key() -> str:
