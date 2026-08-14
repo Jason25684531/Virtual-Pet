@@ -368,6 +368,15 @@ class SQLiteStore:
         with self.connect() as conn:
             conn.execute(f"UPDATE asset_jobs SET {assignments} WHERE job_id=?", (*updates.values(), job_id))
 
+    def claim_asset_job(self, job_id: str, expected_status: str, retry_count: int, started_at: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE asset_jobs SET status='uploading', retry_count=?, started_at=? "
+                "WHERE job_id=? AND status=?",
+                (retry_count, started_at, job_id, expected_status),
+            )
+        return cursor.rowcount == 1
+
     def get_asset_job(self, job_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM asset_jobs WHERE job_id=?", (job_id,)).fetchone()

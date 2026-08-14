@@ -118,6 +118,7 @@ class CharacterLibrary:
             "source_dir": self._to_relative(source_dir),
             "motions_dir": self._to_relative(motions_dir),
             "motions": {},
+            "active_variant": "og",
             "positive_prompt": "",
             "negative_prompt": "",
         }
@@ -147,6 +148,7 @@ class CharacterLibrary:
             "source_dir": self._to_relative(og_dir),
             "motions_dir": self._to_relative(motions_dir),
             "motions": {},
+            "active_variant": "og",
             "background_image": "",
             "voice_gender": voice_gender,
             "positive_prompt": "",
@@ -159,7 +161,7 @@ class CharacterLibrary:
         manifest = self.get_character(character_id)
         if not manifest:
             raise FileNotFoundError(f"找不到角色資料: {character_id}")
-        manifest["background_image"] = self._to_relative(Path(image_path))
+        manifest["background_image"] = self._to_relative(Path(image_path)) if image_path else ""
         manifest["updated_at"] = _now_iso()
         self._save_manifest(character_id, manifest)
         return manifest
@@ -185,19 +187,65 @@ class CharacterLibrary:
         self._save_manifest(character_id, manifest)
         return manifest
 
+    def set_active_variant(self, character_id: str, variant: str) -> dict:
+        manifest = self.get_character(character_id)
+        if not manifest:
+            raise FileNotFoundError(f"character not found: {character_id}")
+        manifest["active_variant"] = str(variant or "og").strip() or "og"
+        manifest["updated_at"] = _now_iso()
+        self._save_manifest(character_id, manifest)
+        return manifest
+
     def get_motion_path(self, character_id: str, motion_key: str) -> str | None:
         manifest = self.get_character(character_id)
         if not manifest:
             return None
 
+        motions_dir = manifest.get("motions_dir")
+        if motions_dir:
+            candidate = PROJECT_ROOT / str(motions_dir) / str(manifest.get("active_variant") or "og") / f"{motion_key}.webm"
+            if candidate.is_file():
+                return str(candidate)
         relative_path = manifest.get("motions", {}).get(motion_key)
-        if not relative_path:
-            return None
+        if relative_path:
+            absolute_path = PROJECT_ROOT / relative_path
+            if absolute_path.is_file():
+                return str(absolute_path)
+        if motions_dir:
+            candidate = PROJECT_ROOT / str(motions_dir) / "og" / f"{motion_key}.webm"
+            if candidate.is_file():
+                return str(candidate)
+        return None
 
-        absolute_path = PROJECT_ROOT / relative_path
-        if not absolute_path.is_file():
-            return None
-        return str(absolute_path)
+    def list_variant_inventory(self, character_id: str) -> list[dict[str, object]]:
+        manifest = self.get_character(character_id)
+        if not manifest:
+            return []
+        root = self._manifest_path(character_id).parent
+        images_root, motions_root = root / "images", root / "motions"
+        variants = set()
+        if images_root.is_dir():
+            variants.update(path.name for path in images_root.iterdir() if path.is_dir() and path.name != "bg")
+        if motions_root.is_dir():
+            variants.update(path.name for path in motions_root.iterdir() if path.is_dir())
+        background_root = images_root / "bg"
+        if background_root.is_dir():
+            variants.update(path.stem for path in background_root.glob("*.png"))
+        active_variant = str(manifest.get("active_variant") or "og")
+        items = []
+        for variant in sorted(variants):
+            images = sorted((images_root / variant).glob("*.png"), key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
+            items.append({
+                "variant": variant,
+                "state": "ready" if (motions_root / variant / "idle.webm").is_file() else "generating" if images else "empty",
+                "thumb": self._to_relative(images[0]) if images else "",
+                "is_active": variant == active_variant,
+            })
+        return items
+
+    def variant_background_path(self, character_id: str, variant: str) -> str | None:
+        path = self._manifest_path(character_id).parent / "images" / "bg" / f"{variant}.png"
+        return str(path) if path.is_file() else None
 
     def get_idle_motion_candidates(self, character_id: str | None) -> list[dict[str, object]]:
         manifest = self.get_character(character_id)

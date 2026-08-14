@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from pathlib import Path
 
 import character_library as library_module
@@ -12,11 +13,30 @@ from pet_harness.asset.comfyui_client import BaseComfyUIClient, ComfyUIClient
 from pet_harness.models.events import utc_now
 
 
+_STORE_LOCKS: dict[str, threading.Lock] = {}
+_STORE_LOCKS_GUARD = threading.Lock()
+
+
+def _store_lock(repository: AssetRepository) -> threading.Lock:
+    key = str(repository.store.db_path.resolve())
+    with _STORE_LOCKS_GUARD:
+        return _STORE_LOCKS.setdefault(key, threading.Lock())
+
+
 class AssetJobWorker:
     def __init__(self, repository: AssetRepository, orchestrator: AssetOrchestrator, client: BaseComfyUIClient, library: CharacterLibrary | None = None) -> None:
         self.repository, self.orchestrator, self.client, self.library = repository, orchestrator, client, library or CharacterLibrary()
+        self._run_lock = _store_lock(repository)
 
     def run_once(self) -> bool:
+        if not self._run_lock.acquire(blocking=False):
+            return False
+        try:
+            return self._run_once()
+        finally:
+            self._run_lock.release()
+
+    def _run_once(self) -> bool:
         jobs = [
             job for job in self.repository.pending()
             if job.workflow_type != "motion_set"
@@ -27,15 +47,18 @@ class AssetJobWorker:
         # 優先序:審核 → idle 動態 → 背景 → 其餘動態;就緒閘門(idle+背景)最快放行。
         tier = {"character_validation": 0, "background_png": 2}
         jobs.sort(key=lambda job: 1 if job.motion_key == "idle" else tier.get(job.workflow_type, 3))
-        job = jobs[0]
-        if job.status == JobStatus.TIMED_OUT:
-            self.repository.update(job.job_id, JobStatus.TIMED_OUT, retry_count=job.retry_count + 1)
+        job = next((candidate for candidate in jobs if self.repository.claim(candidate)), None)
+        if job is None:
+            return False
         self._run(job)
         return True
 
     def _run(self, job) -> None:
         try:
-            self.repository.update(job.job_id, JobStatus.UPLOADING, started_at=utc_now())
+            if job.status == JobStatus.TIMED_OUT and job.error_code == "fanout_interrupted" and job.comfy_prompt_id:
+                self._fanout_variant(job)
+                self.repository.update(job.job_id, JobStatus.COMPLETED, completed_at=utc_now())
+                return
             if job.workflow_type == "character_validation":
                 self._run_validation(job)
                 return
@@ -57,7 +80,10 @@ class AssetJobWorker:
         except TimeoutError as error:
             self.repository.update(job.job_id, JobStatus.TIMED_OUT, error_code="timeout", error_message=str(error))
         except Exception as error:
-            self.repository.update(job.job_id, JobStatus.FAILED, error_code="execution_error", error_message=str(error))
+            if job.workflow_type == "variant_png" and self._asset_path(job, ".png").is_file():
+                self.repository.update(job.job_id, JobStatus.TIMED_OUT, error_code="fanout_interrupted", error_message=str(error))
+            else:
+                self.repository.update(job.job_id, JobStatus.FAILED, error_code="execution_error", error_message=str(error))
 
     def _run_validation(self, job) -> None:
         image = self.client.upload_image(job.metadata["source_path"], f"validation/{job.job_id}")
@@ -87,7 +113,7 @@ class AssetJobWorker:
             temp.unlink(missing_ok=True)
         source_path = str(library_module.PROJECT_ROOT / manifest["source_image"])
         self.orchestrator.create_motion_set(job.character_id, source_path, job.job_id)
-        self.orchestrator.create_background_job(job.character_id, source_path, "assets/backgrounds/default_room.jpg", job.job_id)
+        self.orchestrator.create_background_job(job.character_id, source_path, "assets/backgrounds/default_room.jpg", job.job_id, variant="og")
         self.repository.update(job.job_id, JobStatus.COMPLETED, completed_at=utc_now())
 
     def _save(self, job, content: bytes, suffix: str, asset_type: str) -> None:
@@ -99,17 +125,23 @@ class AssetJobWorker:
         self.repository.save_asset(GeneratedAsset(job.character_id, asset_type, job.variant, path.as_posix(), path.name, "video/webm" if suffix == ".webm" else "image/png", hashlib.sha256(content).hexdigest(), job.job_id, motion_key=job.motion_key, reward_id=job.metadata.get("reward_id"), event_id=job.metadata.get("event_id")))
         if job.motion_key:
             self.library.register_generated_assets(job.character_id, {job.motion_key: str(path)})
-        if job.workflow_type == "background_png":
+        if job.workflow_type == "background_png" and str(self.library.get_character(job.character_id).get("active_variant") or "og") == job.variant:
             self.library.set_background(job.character_id, str(path))
 
     def _finalize(self, job, output, suffix: str, asset_type: str) -> None:
         content = self.client.download_output(output["filename"], output.get("subfolder", ""), output.get("type", "output"))
         self._save(job, content, suffix, asset_type)
-        self.repository.update(job.job_id, JobStatus.COMPLETED, completed_at=utc_now())
         if job.workflow_type == "variant_png":
-            self.orchestrator.create_motion_set(job.character_id, str(self._asset_path(job, suffix)), job.job_id, job.variant, str(job.metadata.get("trigger_reason", "")))
+            self._fanout_variant(job)
+        self.repository.update(job.job_id, JobStatus.COMPLETED, completed_at=utc_now())
         if job.parent_job_id:
             self.orchestrator.aggregate_parent(job.parent_job_id)
+
+    def _fanout_variant(self, job) -> None:
+        source = str(self._asset_path(job, ".png"))
+        self.orchestrator.create_motion_set(job.character_id, source, job.job_id, job.variant, str(job.metadata.get("trigger_reason", "")))
+        if self.orchestrator.background is not None:
+            self.orchestrator.create_background_job(job.character_id, source, "assets/backgrounds/default_room.jpg", job.job_id, variant=job.variant)
 
     @staticmethod
     def _output_info(job) -> tuple[str, str, str]:
@@ -125,11 +157,19 @@ class AssetJobWorker:
         if job.workflow_type == "motion_clip":
             return root / "motions" / job.variant / f"{job.motion_key}{suffix}"
         elif job.workflow_type == "background_png":
-            return root / "images" / "bg" / f"{job.job_id}{suffix}"
+            return root / "images" / "bg" / f"{job.variant}{suffix}"
         name = job.metadata.get("event_id") or job.metadata.get("reward_id") or job.job_id
         return root / "images" / job.variant / f"{name}{suffix}"
 
     def recover(self) -> None:
+        if not self._run_lock.acquire(blocking=False):
+            return
+        try:
+            self._recover()
+        finally:
+            self._run_lock.release()
+
+    def _recover(self) -> None:
         for job in self.repository.pending():
             if job.status == JobStatus.QUEUED:
                 if job.workflow_type == "motion_set":
@@ -138,15 +178,32 @@ class AssetJobWorker:
             if job.workflow_type == "character_validation":
                 self.repository.update(job.job_id, JobStatus.FAILED, error_code="recovery_unresolved", error_message="validation job interrupted")
                 continue
+            if job.workflow_type == "variant_png" and job.error_code == "fanout_interrupted" and self._asset_path(job, ".png").is_file():
+                try:
+                    self._fanout_variant(job)
+                    self.repository.update(job.job_id, JobStatus.COMPLETED, completed_at=utc_now())
+                except Exception as error:
+                    self.repository.update(job.job_id, JobStatus.TIMED_OUT, error_code="fanout_interrupted", error_message=str(error))
+                continue
             if not job.comfy_prompt_id:
                 self.repository.update(job.job_id, JobStatus.FAILED, error_code="recovery_unresolved", error_message="missing prompt id")
                 continue
             try:
                 history = self.client.get_history(job.comfy_prompt_id)
                 if not history.get("outputs"):
-                    self.repository.update(job.job_id, JobStatus.FAILED, error_code="recovery_unresolved", error_message="prompt missing from history")
-                    continue
+                    if not self.client.has_prompt(job.comfy_prompt_id):
+                        history = self.client.get_history(job.comfy_prompt_id)
+                        if not history.get("outputs"):
+                            self.repository.update(job.job_id, JobStatus.FAILED, error_code="recovery_unresolved", error_message="prompt missing from ComfyUI history and queue")
+                            continue
+                    else:
+                        history = self.client.watch_prompt(job.comfy_prompt_id, job.timeout_sec)
                 node_id, suffix, asset_type = self._output_info(job)
                 self._finalize(job, ComfyUIClient.output(history, node_id), suffix, asset_type)
+            except TimeoutError as error:
+                self.repository.update(job.job_id, JobStatus.TIMED_OUT, error_code="timeout", error_message=str(error))
             except Exception as error:
-                self.repository.update(job.job_id, JobStatus.FAILED, error_code="comfyui_unavailable", error_message=str(error))
+                if job.workflow_type == "variant_png" and self._asset_path(job, ".png").is_file():
+                    self.repository.update(job.job_id, JobStatus.TIMED_OUT, error_code="fanout_interrupted", error_message=str(error))
+                else:
+                    self.repository.update(job.job_id, JobStatus.FAILED, error_code="comfyui_unavailable", error_message=str(error))

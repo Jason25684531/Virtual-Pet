@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from character_library import CharacterLibrary
+from pet_harness.asset.asset_contract import AssetRequest
 from pet_harness.asset.asset_repository import AssetRepository
 from pet_harness.asset.factory import build_asset_service
 from pet_harness.character.customization_service import CharacterCustomizationService
@@ -118,7 +119,58 @@ class CharacterUiService:
                 }
                 for skill in engine.skills
             ],
+            "pending_offer": engine.store.get_setting("asset_pending_offer"),
         }
+
+    def list_style_variants(self, character_id: str) -> list[dict[str, object]]:
+        items = CharacterLibrary().list_variant_inventory(character_id)
+        profile, _ = self._router.load_profile(character_id)
+        store = SQLiteStore(profile.sqlite_path)
+        store.initialize()
+        generating = {
+            job.variant for job in AssetRepository(store).pending()
+            if job.workflow_type == "variant_png" or job.workflow_type == "motion_clip" and job.motion_key == "idle"
+        }
+        for item in items:
+            if item["variant"] in generating:
+                item["state"] = "generating"
+        return items
+
+    def apply_style(self, character_id: str, variant: str) -> dict[str, object]:
+        library = CharacterLibrary()
+        item = next((item for item in self.list_style_variants(character_id) if item["variant"] == variant), None)
+        if item is None or item["state"] != "ready":
+            raise ValueError(f"style is not ready: {variant}")
+        manifest = library.set_active_variant(character_id, variant)
+        manifest = library.set_background(character_id, library.variant_background_path(character_id, variant))
+        return {"character_id": character_id, "variant": variant, "background_image": manifest.get("background_image", "")}
+
+    def confirm_growth_offer(self, character_id: str, accept: bool) -> dict[str, Any]:
+        profile, _ = self._router.load_profile(character_id)
+        store = SQLiteStore(profile.sqlite_path)
+        store.initialize()
+        offer = store.get_setting("asset_pending_offer")
+        if not offer:
+            return {"accepted": False, "pending": False}
+        if not accept:
+            store.set_setting("asset_pending_offer", None)
+            return {"accepted": False, "pending": False}
+        context = "\n".join(str(row["text"]) for row in self._active_memory_rows(store, character_id))[:2000]
+        response = build_asset_service(store, character_id, CharacterLibrary()).create_asset(AssetRequest(
+            asset_type="variant_png", prompt_params={"generation_context": context},
+            source_event_id=str(offer["source_event_id"]),
+            metadata={"variant_type": str(offer["variant"]), "trigger_reason": str(offer["reason"])},
+        ))
+        accepted = response.status in {"queued", "completed"} and response.metadata.get("service") != "mock_asset_service"
+        if accepted:
+            store.set_setting("asset_pending_offer", None)
+        return {"accepted": accepted, "pending": bool(store.get_setting("asset_pending_offer")), "asset": response.to_dict()}
+
+    @staticmethod
+    def _active_memory_rows(store: SQLiteStore, character_id: str):
+        now = utc_now()
+        with store.connect() as conn:
+            return conn.execute("SELECT text FROM memory_items WHERE character_id=? AND status='active' AND (expires_at IS NULL OR expires_at>?) ORDER BY created_at DESC", (character_id, now)).fetchall()
 
     def trigger_skill(self, skill_id: str) -> dict[str, Any]:
         profile = self._router.get_active_character()

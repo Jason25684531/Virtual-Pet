@@ -1,7 +1,9 @@
 import logging
+from types import SimpleNamespace
 
 from character_library import CharacterLibrary
 from pet_harness.asset import factory
+from pet_harness.asset.asset_contract import AssetRequest
 from pet_harness.asset.comfyui_asset_service import ComfyUIAssetService
 from pet_harness.asset.mock_asset_service import MockAssetService
 from pet_harness.storage.sqlite_store import SQLiteStore
@@ -36,3 +38,28 @@ def test_comfy_service_initializes_with_the_current_validation_template(tmp_path
     service = factory.build_asset_service(store, None, CharacterLibrary())
 
     assert isinstance(service, ComfyUIAssetService)
+
+
+def test_comfy_service_forwards_trigger_reason_to_variant_job(monkeypatch):
+    class Orchestrator:
+        def create_variant_png_job(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+            return SimpleNamespace(job_id="job-1")
+
+    class Library:
+        def get_preview_image_path(self, character_id):
+            return "source.png"
+
+    orchestrator = Orchestrator()
+    service = ComfyUIAssetService(orchestrator, object(), "char-1", Library())
+    monkeypatch.setattr(service, "_start_worker", lambda _name: None)
+
+    service.create_asset(AssetRequest(
+        asset_type="variant_png",
+        prompt_params={},
+        source_event_id="event-1",
+        metadata={"variant_type": "development", "trigger_reason": "level_up"},
+    ))
+
+    assert orchestrator.kwargs["trigger_reason"] == "level_up"

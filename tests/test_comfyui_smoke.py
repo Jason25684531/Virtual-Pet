@@ -30,3 +30,25 @@ def test_execution_error_is_not_reported_as_timeout(monkeypatch):
 
     with pytest.raises(RuntimeError, match="broken workflow"):
         ComfyUIClient("http://127.0.0.1:8188").watch_prompt("prompt-1", 1)
+
+
+def test_has_prompt_checks_running_and_pending_queues():
+    class Response:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {
+                "queue_running": [[1, "running-id", {}, {}, []]],
+                "queue_pending": [[2, "pending-id", {}, {}, []]],
+            }
+
+    class Session:
+        def get(self, url, timeout):
+            assert url.endswith("/queue")
+            return Response()
+
+    client = ComfyUIClient("http://127.0.0.1:8188", session=Session())
+
+    assert client.has_prompt("running-id") is True
+    assert client.has_prompt("pending-id") is True
+    assert client.has_prompt("missing-id") is False

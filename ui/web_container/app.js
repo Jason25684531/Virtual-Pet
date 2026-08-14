@@ -735,6 +735,7 @@
     function openHud(hudId) {
         if (uiRoute.screen || uiRoute.modal) return;
         uiRoute.hud = hudId;
+        if (hudId === 'hud-style') refreshStyleSlots(activeStyleCharacterId);
         if (hudId === 'hud-chat') {
             var unread = document.querySelector('.nav-badge');
             if (unread) unread.hidden = true;
@@ -795,19 +796,31 @@
         }, 900);
     }
 
-    // Fixed mock data deliberately isolates the new Slot UI from the existing character bridge.
-    var styleSlots = [
-        { slot_id: 'style-base', state: 'ready', label: '起始造型', thumb: '' },
-        { slot_id: 'style-2', state: 'ready', label: '造型 2', thumb: '' },
-        { slot_id: 'style-next', state: 'generating', label: '生成中', thumb: '' },
-        { slot_id: 'style-empty', state: 'empty', label: '空格', thumb: '' }
-    ];
+    var styleSlots = [];
     var sceneSlots = {
-        scenes: [{ slot_id: 'scene-base', state: 'ready', label: '初始房', thumb: '' }, { slot_id: 'scene-next', state: 'generating', label: '生成中', thumb: '' }, { slot_id: 'scene-empty', state: 'empty', label: '空格', thumb: '' }],
+        scenes: [],
         objects: [{ slot_id: 'object-base', state: 'ready', label: '起始物件', thumb: '' }, { slot_id: 'object-empty', state: 'empty', label: '空格', thumb: '' }]
     };
     var selectedSlots = { style: null, scene: null };
     var pendingCreation = null;
+    var activeStyleCharacterId = '';
+    var styleRefreshSequence = 0;
+
+    function refreshStyleSlots(characterId) {
+        if (!characterId) return;
+        activeStyleCharacterId = characterId;
+        var sequence = ++styleRefreshSequence;
+        callCharacterBridge('listStyleVariants', characterId).then(function (items) {
+            if (sequence !== styleRefreshSequence || characterId !== activeStyleCharacterId) return;
+            styleSlots = (items || []).map(function (item) {
+                return { slot_id: item.variant, state: item.state, label: item.variant, thumb: normalizeProjectAssetSource(item.thumb) };
+            });
+            if (!styleSlots.some(function (slot) { return slot.slot_id === selectedSlots.style && slot.state === 'ready'; })) {
+                selectedSlots.style = null;
+            }
+            renderSlots('style-slot-grid', styleSlots);
+        }).catch(function (err) { console.warn('[ECHOES UI] listStyleVariants failed:', err.message); });
+    }
 
     function renderSlots(containerId, slots) {
         var container = document.getElementById(containerId);
@@ -815,7 +828,7 @@
         var selectionType = containerId === 'style-slot-grid' ? 'style' : 'scene';
         container.innerHTML = slots.map(function (slot) {
             var selected = selectedSlots[selectionType] === slot.slot_id;
-            return '<button type="button" class="asset-slot slot--' + slot.state + (selected ? ' is-selected' : '') + '" data-slot-type="' + selectionType + '" data-slot-id="' + escapeHtml(slot.slot_id) + '"' + (slot.state === 'ready' ? '' : ' disabled') + '><b>' + escapeHtml(slot.label) + '</b><small>' + (slot.state === 'generating' ? '達門檻自動生成' : slot.state === 'empty' ? '待成長生成' : '') + '</small></button>';
+            return '<button type="button" class="asset-slot slot--' + slot.state + (selected ? ' is-selected' : '') + '" data-slot-type="' + selectionType + '" data-slot-id="' + escapeHtml(slot.slot_id) + '"' + (slot.state === 'ready' ? '' : ' disabled') + '>' + (slot.thumb ? '<img class="asset-slot__thumb" src="' + escapeHtml(slot.thumb) + '" alt="">' : '') + '<b>' + escapeHtml(slot.label) + '</b><small>' + (slot.state === 'generating' ? 'Generating' : slot.state === 'empty' ? 'Empty' : '') + '</small></button>';
         }).join('');
         var apply = document.getElementById(selectionType + '-apply-button');
         if (apply) apply.disabled = !selectedSlots[selectionType];
@@ -826,6 +839,8 @@
     }
 
     function setupSlots() {
+        styleSlots = [];
+        sceneSlots.scenes = [];
         renderSlots('style-slot-grid', styleSlots);
         renderSlots('scene-slot-grid', sceneSlots.scenes);
         document.querySelectorAll('.slot-grid').forEach(function (grid) {
@@ -845,11 +860,14 @@
             if (button) button.addEventListener('click', function () {
                 var slotId = selectedSlots[kind];
                 if (!slotId) return;
-                stageRoot.dataset[kind + 'Slot'] = slotId;
-                stageRoot.classList.add('asset-applying');
-                window.setTimeout(function () { stageRoot.classList.remove('asset-applying'); }, 360);
-                selectedSlots[kind] = null;
-                closeHud();
+                if (kind !== 'style') return;
+                callCharacterBridge('applyStyle', activeStyleCharacterId, slotId).then(function () {
+                    stageRoot.classList.add('asset-applying');
+                    window.setTimeout(function () { stageRoot.classList.remove('asset-applying'); }, 360);
+                    selectedSlots.style = null;
+                    refreshStyleSlots(activeStyleCharacterId);
+                    closeHud();
+                }).catch(function (err) { setStatus('Style apply failed: ' + err.message, 'error', 3200); });
             });
         });
         var importer = document.getElementById('scene-import-button');
@@ -1137,6 +1155,19 @@
             uiRoute.modal = null;
             renderRoute();
             callBridge('triggerOverlayAction', 'quit');
+        });
+        ['growth-offer-accept', 'growth-offer-decline'].forEach(function (id) {
+            var button = document.getElementById(id);
+            if (button) button.addEventListener('click', function () {
+                callCharacterBridge('confirmGrowthOffer', activeStyleCharacterId, id === 'growth-offer-accept').then(function (result) {
+                    if (result.accepted || id === 'growth-offer-decline') {
+                        closeModal();
+                        refreshStyleSlots(activeStyleCharacterId);
+                    } else {
+                        setStatus('ComfyUI unavailable; generation was not queued.', 'error', 4800);
+                    }
+                }).catch(function (err) { setStatus('Growth offer failed: ' + err.message, 'error', 3200); });
+            });
         });
         var sceneTabs = Array.prototype.slice.call(document.querySelectorAll('[data-scene-tab]'));
         sceneTabs.forEach(function (button) { button.addEventListener('click', function () { selectedSlots.scene = null; sceneTabs.forEach(function (candidate) { candidate.classList.toggle('is-active', candidate === button); }); renderSlots('scene-slot-grid', sceneSlots[button.dataset.sceneTab]); }); });
@@ -1706,6 +1737,9 @@
                 mergedState.xp = latestRuntimeState.xp;
             }
             renderCharacterHud(mergedState, latestRuntimeState && latestRuntimeState.xp ? latestRuntimeState.xp.last_delta : 0);
+            if (mergedState.character_id) activeStyleCharacterId = mergedState.character_id;
+            if (activeStyleCharacterId) refreshStyleSlots(activeStyleCharacterId);
+            if (mergedState.pending_offer && !uiRoute.modal) openModal('modal-growth-offer');
         }).catch(function (err) {
             console.warn('[ECHOES UI] getActiveState failed:', err.message);
         });

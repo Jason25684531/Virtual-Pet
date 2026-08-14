@@ -465,9 +465,9 @@ class PetHarnessEngine:
         if self.growth_trigger is not None:
             growth = self.growth_trigger.on_xp_awarded(self.store.get_user_progress()["xp_total"], event.event_id)
             timed = self.growth_trigger.check_time_trigger(event.event_id)
-            trigger_response = timed or growth
-            if trigger_response is not None:
-                assets = trigger_response.to_dict()
+            offer = timed or growth
+            if offer is not None:
+                assets = {"pending_offer": offer.to_dict()}
         return xp_delta, rewards, assets
 
     def _persist_and_snapshot(self, user_event: UserEvent, pet_event: PetEvent) -> None:

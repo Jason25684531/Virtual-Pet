@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -139,7 +140,7 @@ class PyQtHarnessAdapter:
         profile = self.router.switch_character(character_id)
         engine = self.router.get_active_engine()
         if engine is not None and engine.growth_trigger is not None:
-            engine.growth_trigger.check_time_trigger(f"startup-{character_id}")
+            engine.growth_trigger.check_time_trigger(f"startup-{character_id}-{time.time_ns()}")
         self._refresh_runtime()
         return profile
 

@@ -31,6 +31,12 @@ class AssetRepository:
     def pending(self) -> list[AssetJob]:
         return [self._job(item) for item in self.store.list_pending_asset_jobs()]
 
+    def claim(self, job: AssetJob) -> bool:
+        from pet_harness.asset.asset_models import JobStatus
+        from pet_harness.models.events import utc_now
+        retry_count = job.retry_count + (job.status == JobStatus.TIMED_OUT)
+        return self.store.claim_asset_job(job.job_id, job.status.value, retry_count, utc_now())
+
     def children(self, parent_job_id: str) -> list[AssetJob]:
         return [self._job(item) for item in self.store.list_asset_jobs_by_parent(parent_job_id)]
 

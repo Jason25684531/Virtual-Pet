@@ -4,12 +4,15 @@ from pathlib import Path
 import pytest
 
 import character_library as library_module
+import pet_harness.ui.character_ui_service as character_ui_module
 import pet_harness.character.profile as profile_module
 from pet_harness.character.exceptions import CharacterNotFoundError, NoActiveCharacterError
 from pet_harness.character.registry import CharacterRegistry
 from pet_harness.character.router import CharacterRouter
 from pet_harness.storage.sqlite_store import SQLiteStore
 from pet_harness.ui.character_ui_service import LAST_PLAYED_AT_KEY, PLAYTIME_SECONDS_KEY, CharacterUiService
+from pet_harness.asset.asset_contract import AssetResponse
+from pet_harness.asset.asset_repository import AssetRepository
 
 _SKILL_FIXTURES = {
     "joke_skill": {"trigger": "joke, funny", "behavior": "laugh", "xp_reward": "5"},
@@ -222,6 +225,85 @@ class TestGetActiveState:
         skill_names = {item["skill_id"] for item in state["skills"]}
         assert skill_names == {"music_skill"}
         assert "joke_skill" not in skill_names
+
+    def test_confirming_growth_offer_queues_asset_and_clears_pending(self, service, monkeypatch):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        store.set_setting("asset_pending_offer", {"variant": "development", "reason": "level_up", "source_event_id": "event-1"})
+
+        class AssetService:
+            def create_asset(self, request):
+                assert request.metadata["variant_type"] == "development"
+                return AssetResponse(request_id=request.request_id, status="queued")
+
+        monkeypatch.setattr(character_ui_module, "build_asset_service", lambda *_: AssetService())
+        assert ui_service.confirm_growth_offer("Choppr", True)["accepted"] is True
+        assert store.get_setting("asset_pending_offer") is None
+
+    def test_confirming_growth_offer_keeps_pending_when_comfyui_falls_back_to_mock(self, service, monkeypatch):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        offer = {"variant": "development", "reason": "level_up", "source_event_id": "event-1"}
+        store.set_setting("asset_pending_offer", offer)
+
+        class MockFallback:
+            def create_asset(self, request):
+                return AssetResponse(
+                    request_id=request.request_id,
+                    status="completed",
+                    metadata={"service": "mock_asset_service"},
+                )
+
+        monkeypatch.setattr(character_ui_module, "build_asset_service", lambda *_: MockFallback())
+
+        result = ui_service.confirm_growth_offer("Choppr", True)
+
+        assert result["accepted"] is False
+        assert result["pending"] is True
+        assert store.get_setting("asset_pending_offer") == offer
+
+    def test_pending_regeneration_overrides_an_existing_ready_idle(self, service, monkeypatch):
+        ui_service, router, _registry = service
+        profile = router.switch_character("Choppr")
+        store = SQLiteStore(profile.sqlite_path)
+        store.initialize()
+        monkeypatch.setattr(character_ui_module.CharacterLibrary, "list_variant_inventory", lambda _self, _id: [
+            {"variant": "event", "state": "ready", "thumb": "old.png", "is_active": False},
+        ])
+        from pet_harness.asset.asset_models import AssetJob
+        AssetRepository(store).create_job(AssetJob(
+            "Choppr", "variant_png", "event", "regenerate-event",
+            metadata={"source_path": "source.png"},
+        ))
+
+        assert ui_service.list_style_variants("Choppr")[0]["state"] == "generating"
+        with pytest.raises(ValueError, match="not ready"):
+            ui_service.apply_style("Choppr", "event")
+
+    def test_applying_variant_without_background_clears_the_previous_background(self, service, monkeypatch):
+        ui_service, _router, _registry = service
+        manifest = {"background_image": "old-background.png"}
+
+        class Library:
+            def list_variant_inventory(self, _character_id):
+                return [{"variant": "event", "state": "ready"}]
+            def set_active_variant(self, _character_id, _variant):
+                return manifest
+            def variant_background_path(self, _character_id, _variant):
+                return None
+            def set_background(self, _character_id, image_path):
+                manifest["background_image"] = image_path or ""
+                return manifest
+
+        monkeypatch.setattr(character_ui_module, "CharacterLibrary", Library)
+
+        result = ui_service.apply_style("Choppr", "event")
+
+        assert result["background_image"] == ""
 
 
 class TestPlaytime:

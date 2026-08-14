@@ -20,6 +20,8 @@ class BaseComfyUIClient(ABC):
     @abstractmethod
     def get_history(self, prompt_id: str) -> dict[str, Any]: ...
     @abstractmethod
+    def has_prompt(self, prompt_id: str) -> bool: ...
+    @abstractmethod
     def download_output(self, filename: str, subfolder: str = "", output_type: str = "output") -> bytes: ...
     @abstractmethod
     def cancel_prompt(self, prompt_id: str) -> None: ...
@@ -55,6 +57,16 @@ class ComfyUIClient(BaseComfyUIClient):
         response = self.session.get(f"{self.base_url}/history/{prompt_id}", timeout=self.timeout_sec)
         response.raise_for_status()
         return response.json().get(prompt_id) or response.json()
+
+    def has_prompt(self, prompt_id: str) -> bool:
+        response = self.session.get(f"{self.base_url}/queue", timeout=self.timeout_sec)
+        response.raise_for_status()
+        queue = response.json()
+        return any(
+            str(item.get("prompt_id") if isinstance(item, dict) else item[1] if len(item) > 1 else "") == prompt_id
+            for name in ("queue_running", "queue_pending")
+            for item in queue.get(name, [])
+        )
 
     def watch_prompt(self, prompt_id: str, timeout_sec: int) -> dict[str, Any]:
         deadline = time.monotonic() + timeout_sec

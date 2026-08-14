@@ -55,10 +55,10 @@ class AssetOrchestrator:
             version += 1
         return self.repository.create_job(AssetJob(character_id, "character_validation", "og", self._key("character_validation", upload_path, character_name, trigger_id), timeout_sec=self.timeout_sec, max_retries=self.max_retries, metadata={"source_path": upload_path, "character_name": character_name, "seed": secrets.randbits(63)}))
 
-    def create_background_job(self, character_id: str, source_path: str, room_path: str, trigger_id: str) -> AssetJob:
+    def create_background_job(self, character_id: str, source_path: str, room_path: str, trigger_id: str, variant: str = "og") -> AssetJob:
         if self.background is None:
             raise RuntimeError("background workflow is not configured")
-        return self.repository.create_job(AssetJob(character_id, "background_png", "bg", self._key(character_id, "background_png", trigger_id), timeout_sec=self.timeout_sec, max_retries=self.max_retries, metadata={"source_path": source_path, "room_path": room_path}))
+        return self.repository.create_job(AssetJob(character_id, "background_png", variant, self._key(character_id, "background_png", variant, trigger_id), timeout_sec=self.timeout_sec, max_retries=self.max_retries, metadata={"source_path": source_path, "room_path": room_path, "variant": variant}))
 
     def aggregate_parent(self, parent_id: str) -> None:
         children = self.repository.children(parent_id)

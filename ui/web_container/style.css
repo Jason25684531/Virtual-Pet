@@ -116,4 +116,4 @@ button:disabled { cursor: not-allowed; opacity: .38; }
 .slot-legend > * + * { margin-left: 20px; }
 .modal footer > * + * { margin-left: 16px; }
 
-#stage-root[data-style-slot] .stage-pet-layer { filter: saturate(1.16) brightness(1.06); }#stage-root[data-style-slot="style-2"] .stage-pet-layer { filter: hue-rotate(45deg) saturate(1.2); }#stage-root[data-scene-slot] .stage-background { filter: contrast(1.08) saturate(1.12); }
+.asset-slot__thumb { display: block; width: 100%; height: 72px; object-fit: cover; border-radius: 10px; }

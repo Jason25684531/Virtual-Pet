@@ -26,7 +26,15 @@ class ComfyUIAssetService(AssetService):
         if not source_path:
             return AssetResponse(request_id=request.request_id, status="failed", error_message="character source image is unavailable")
         variant = str(request.metadata.get("variant_type", "development"))
-        job = self.orchestrator.create_variant_png_job(self.character_id, source_path, variant, request.source_event_id, reward_id=request.requested_reward or "", generation_context=str(request.prompt_params.get("generation_context", "")))
+        job = self.orchestrator.create_variant_png_job(
+            self.character_id,
+            source_path,
+            variant,
+            request.source_event_id,
+            reward_id=request.requested_reward or "",
+            generation_context=str(request.prompt_params.get("generation_context", "")),
+            trigger_reason=str(request.metadata.get("trigger_reason", "")),
+        )
         self._start_worker("comfyui-asset-worker")
         return AssetResponse(request_id=request.request_id, status="queued", job_id=job.job_id, asset_id=job.job_id, metadata={"service": "comfyui", "variant_type": variant})
 

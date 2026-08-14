@@ -126,6 +126,33 @@ class CharacterUiBridge(QObject):
             return self._error(exc)
 
     @pyqtSlot(str, result=str)
+    def listStyleVariants(self, character_id: str) -> str:
+        try:
+            result = self._service.list_style_variants(character_id)
+            active = self._service.get_active_state()
+            if active.get("character_id") == character_id and any(item.get("is_active") for item in result):
+                self._window._apply_resolved_background(self._window._library.get_background_path(character_id))
+            return self._ok(result)
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
+    @pyqtSlot(str, str, result=str)
+    def applyStyle(self, character_id: str, variant: str) -> str:
+        try:
+            result = self._service.apply_style(character_id, variant)
+            self._window.apply_character(character_id)
+            return self._ok(result)
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
+    @pyqtSlot(str, bool, result=str)
+    def confirmGrowthOffer(self, character_id: str, accept: bool) -> str:
+        try:
+            return self._ok(self._service.confirm_growth_offer(character_id, accept))
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
+    @pyqtSlot(str, result=str)
     def triggerSkill(self, skill_id: str) -> str:
         try:
             result = self._service.trigger_skill(skill_id)

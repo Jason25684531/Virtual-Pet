@@ -22,6 +22,16 @@ class AssetRequest:
 
 
 @dataclass
+class GrowthOffer:
+    variant: str
+    reason: str
+    source_event_id: str
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+
+@dataclass
 class AssetResponse:
     request_id: str
     status: str

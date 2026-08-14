@@ -23,7 +23,7 @@ load_dotenv(ENV_PATH, override=False)
 
 DEFAULT_PERSONA_KEY = "default"
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
-DEFAULT_OLLAMA_MODEL = "minimax-m2.7:cloud"
+DEFAULT_OLLAMA_MODEL = "gemma4:e2b"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_ELEVENLABS_VOICE_ID = "zENt0ljwLXypGqHDsdzz"
 DEFAULT_TTS_MODEL_ID = "eleven_flash_v2_5"

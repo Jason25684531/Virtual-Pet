@@ -31,6 +31,9 @@ def page():
                   listPresets: function (done) { done(ok([{character_id: 'miku', name: 'Miku', persona_description: 'Virtual singer'}])); },
                   createFromPreset: function (_, __, done) { done(ok({})); },
                   getActiveState: function (done) { done(ok({active: true, character_id: 'miku', xp: {xp_total: 72, level: 2}})); },
+                  listStyleVariants: function (_, done) { done(ok([{variant: 'og', state: 'ready', thumb: '', is_active: true}, {variant: 'event', state: 'generating', thumb: 'preview.png', is_active: false}, {variant: 'development', state: 'ready', thumb: '', is_active: false}])); },
+                  applyStyle: function (_, variant, done) { window.__applied_style = variant; done(ok({})); },
+                  confirmGrowthOffer: function (_, __, done) { done(ok({accepted: window.__growthAccepted !== false})); },
                   getCustomization: function (_, done) { window.__persona_loads = (window.__persona_loads || 0) + 1; done(ok({character_id: 'miku', persona: 'A considerate companion', builtin_skills: [], local_skills: []})); }
                 }
               }});
@@ -65,13 +68,15 @@ def test_user_can_create_a_companion_then_switch_between_one_hud_at_a_time(page)
 
     score_before = page.locator("#hud-level-badge").inner_text()
     page.locator('[data-hud="hud-style"]').click()
-    assert page.locator("#style-slot-count").inner_text() == "格子 3 / 4"
+    assert page.locator("#style-slot-count").inner_text() == "格子 3 / 3"
+    assert page.locator("#style-slot-grid .slot--generating img").get_attribute("src").endswith("preview.png")
+    assert page.locator("#style-slot-grid .slot--generating").is_disabled()
     page.locator("#style-slot-grid .slot--ready").nth(1).click()
     assert page.locator("#style-apply-button").is_enabled()
     page.locator("#style-apply-button").click()
     assert not page.locator("#hud-layer").is_visible()
     assert page.locator("#hud-level-badge").inner_text() == score_before
-    assert page.locator("#stage-root").get_attribute("data-style-slot") == "style-2"
+    assert page.evaluate("window.__applied_style") == "development"
 
     page.evaluate("window.requestClose()")
     assert page.locator("#modal-close-confirm").is_visible()
@@ -79,6 +84,16 @@ def test_user_can_create_a_companion_then_switch_between_one_hud_at_a_time(page)
     page.locator("#close-confirm-button").click()
     page.evaluate("window.requestClose()")
     assert not page.locator("#modal-close-confirm").is_visible()
+
+
+def test_growth_offer_stays_open_when_generation_was_not_queued(page):
+    page.evaluate("window.__growthAccepted = false")
+    page.locator("#modal-layer").evaluate("element => element.hidden = false")
+    page.locator("#modal-growth-offer").evaluate("element => element.hidden = false")
+
+    page.locator("#growth-offer-accept").click()
+
+    assert page.locator("#modal-growth-offer").is_visible()
 
 
 def test_screens_are_centered_isolate_the_stage_and_offer_a_drag_surface(page):

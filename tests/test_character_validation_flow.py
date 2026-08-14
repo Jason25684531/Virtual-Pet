@@ -194,7 +194,7 @@ def test_variant_completion_queues_a_replacement_motion_set(tmp_path, monkeypatc
     library.create_validated_character("char-1", str(source), "Char")
     store = SQLiteStore(tmp_path / "state.db")
     store.initialize()
-    orchestrator = AssetOrchestrator(AssetRepository(store), Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_video_gen_260728.json", Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_image_gen_260720.json")
+    orchestrator = AssetOrchestrator(AssetRepository(store), Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_video_gen_260728.json", Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_image_gen_260720.json", background_template=Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_background_gen_260728.json")
     orchestrator.create_variant_png_job("char-1", str(source), "development", "event-1", trigger_reason="level_up")
 
     AssetJobWorker(orchestrator.repository, orchestrator, FakeClient({"outputs": {"467": {"images": [{"filename": "variant.png"}]}}}), library).run_once()
@@ -202,3 +202,5 @@ def test_variant_completion_queues_a_replacement_motion_set(tmp_path, monkeypatc
     parent = next(job for job in orchestrator.repository.pending() if job.workflow_type == "motion_set")
     assert len(orchestrator.repository.children(parent.job_id)) == 7
     assert parent.metadata["trigger_reason"] == "level_up"
+    background = next(job for job in orchestrator.repository.pending() if job.workflow_type == "background_png")
+    assert background.variant == "development"
