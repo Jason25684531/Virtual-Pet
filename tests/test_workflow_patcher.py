@@ -49,3 +49,16 @@ def test_image_patch_uses_literal_selector_and_removes_router_chain():
     assert workflow["496"]["inputs"]["select"] == 3
     assert all(node not in workflow for node in ("498", "501", "504"))
     assert len(workflow["736"]["inputs"]["value"]) == 2000
+
+
+def test_image_patch_injects_event_prompt_into_node_491():
+    patcher = WorkflowPatcher(ROOT / "AIA_2026_image_gen_260720.json")
+    workflow = patcher.patch_image(image="miku/source.png", variant="event", seed=9, prefix="vp/miku/job", event_prompt="這個角色手上拿春聯")
+    assert workflow["491"]["inputs"]["prompt"] == "這個角色手上拿春聯"
+
+
+def test_image_patch_leaves_node_491_untouched_when_no_event_prompt():
+    patcher = WorkflowPatcher(ROOT / "AIA_2026_image_gen_260720.json")
+    template_prompt = patcher.fresh()["491"]["inputs"]["prompt"]
+    workflow = patcher.patch_image(image="miku/source.png", variant="og", seed=9, prefix="vp/miku/job")
+    assert workflow["491"]["inputs"]["prompt"] == template_prompt

@@ -456,6 +456,10 @@ class PetHarnessEngine:
         return tool_event, payload, bonus
 
     def _award_and_reward(self, event: UserEvent, skill: Skill | None, tool_xp_bonus: int, behavior_id: str):
+        import config
+        from pet_harness.asset.growth_trigger import is_generation_frozen
+        if is_generation_frozen(self.store, config.PREVIEW_OFFER_TTL_HOURS):
+            return 0, [], None
         xp_delta = self.xp_manager.award_for_event(skill)
         if tool_xp_bonus:
             self.store.add_user_xp(tool_xp_bonus)

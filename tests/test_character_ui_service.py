@@ -266,6 +266,151 @@ class TestGetActiveState:
         assert result["pending"] is True
         assert store.get_setting("asset_pending_offer") == offer
 
+    def test_confirming_growth_offer_sets_generation_freeze(self, service, monkeypatch):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        store.set_setting("asset_pending_offer", {"variant": "development", "reason": "level_up", "source_event_id": "event-1"})
+
+        class AssetService:
+            def create_asset(self, request):
+                return AssetResponse(request_id=request.request_id, status="queued")
+
+        monkeypatch.setattr(character_ui_module, "build_asset_service", lambda *_: AssetService())
+        ui_service.confirm_growth_offer("Choppr", True)
+
+        assert store.get_setting("asset_generation_freeze") is not None
+
+    def test_confirm_motion_generation_accept_releases_freeze(self, service, monkeypatch):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        store.set_setting("asset_generation_freeze", {"created_at": "2026-08-14T00:00:00+00:00"})
+        store.set_setting("asset_pending_motion_offer", {"variant": "development", "source_png": "png", "job_id": "job-1", "reason": "level_up", "created_at": "2026-08-14T00:00:00+00:00"})
+
+        class AssetService:
+            def create_variant_motion_request(self, *_args, **_kwargs):
+                return AssetResponse(request_id="job-1", status="queued")
+
+        monkeypatch.setattr(character_ui_module, "build_asset_service", lambda *_: AssetService())
+        ui_service.confirm_motion_generation("Choppr", True)
+
+        assert store.get_setting("asset_generation_freeze") is None
+
+    def test_confirm_motion_generation_decline_releases_freeze(self, service):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        store.set_setting("asset_generation_freeze", {"created_at": "2026-08-14T00:00:00+00:00"})
+        store.set_setting("asset_pending_motion_offer", {"variant": "development", "source_png": "png", "job_id": "job-1", "reason": "level_up", "created_at": "2026-08-14T00:00:00+00:00"})
+
+        ui_service.confirm_motion_generation("Choppr", False)
+
+        assert store.get_setting("asset_generation_freeze") is None
+
+    def test_confirming_event_growth_offer_picks_unused_festival_prompt(self, service, monkeypatch):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        store.set_setting("asset_pending_offer", {"variant": "event", "reason": "time_interval", "source_event_id": "event-1"})
+        store.set_setting("asset_event_prompt_history", ["這個角色戴上聖誕帽", "這個角色手上拿春聯"])
+
+        captured = {}
+
+        class AssetService:
+            def create_asset(self, request):
+                captured["prompt"] = request.metadata.get("event_prompt")
+                return AssetResponse(request_id=request.request_id, status="queued")
+
+        monkeypatch.setattr(character_ui_module, "build_asset_service", lambda *_: AssetService())
+        ui_service.confirm_growth_offer("Choppr", True)
+
+        assert captured["prompt"] == "這個角色手上拿粽子"
+        assert store.get_setting("asset_event_prompt_history") == ["這個角色手上拿春聯", "這個角色手上拿粽子"]
+
+    def test_declining_event_growth_offer_does_not_consume_rotation(self, service):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        store.set_setting("asset_pending_offer", {"variant": "event", "reason": "time_interval", "source_event_id": "event-1"})
+
+        ui_service.confirm_growth_offer("Choppr", False)
+
+        assert store.get_setting("asset_event_prompt_history") is None
+
+    def test_active_state_reports_pending_motion_offer(self, service):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        store.set_setting("asset_pending_motion_offer", {"variant": "development", "source_png": "png", "job_id": "job-1", "reason": "level_up", "created_at": "2026-08-14T00:00:00+00:00"})
+
+        state = ui_service.get_active_state()
+
+        assert state["pending_motion_offer"]["variant"] == "development"
+
+    def test_active_state_clears_expired_pending_motion_offer(self, service):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        store.set_setting("asset_pending_motion_offer", {"variant": "development", "source_png": "png", "job_id": "job-1", "reason": "level_up", "created_at": "2000-01-01T00:00:00+00:00"})
+
+        state = ui_service.get_active_state()
+
+        assert state["pending_motion_offer"] is None
+        assert store.get_setting("asset_pending_motion_offer") is None
+
+    def test_style_variant_awaiting_confirm_when_motion_offer_pending(self, service, monkeypatch):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        store.set_setting("asset_pending_motion_offer", {"variant": "event", "source_png": "png", "job_id": "job-1", "reason": "time_interval", "created_at": "2026-08-14T00:00:00+00:00"})
+        monkeypatch.setattr(character_ui_module.CharacterLibrary, "list_variant_inventory", lambda _self, _id: [
+            {"variant": "event", "state": "generating", "thumb": "png", "is_active": False},
+        ])
+
+        assert ui_service.list_style_variants("Choppr")[0]["state"] == "awaiting_confirm"
+
+    def test_confirm_motion_generation_accept_queues_motion_set(self, service, monkeypatch):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        store.set_setting("asset_pending_motion_offer", {"variant": "development", "source_png": "png", "job_id": "job-1", "reason": "level_up", "created_at": "2026-08-14T00:00:00+00:00"})
+
+        captured = {}
+
+        class AssetService:
+            def create_variant_motion_request(self, character_id, variant, source_png, source_event_id, trigger_reason=""):
+                captured.update(character_id=character_id, variant=variant, source_png=source_png, trigger_reason=trigger_reason)
+                return AssetResponse(request_id=source_event_id, status="queued")
+
+        monkeypatch.setattr(character_ui_module, "build_asset_service", lambda *_: AssetService())
+        result = ui_service.confirm_motion_generation("Choppr", True)
+
+        assert result["accepted"] is True
+        assert captured == {"character_id": "Choppr", "variant": "development", "source_png": "png", "trigger_reason": "level_up"}
+        assert store.get_setting("asset_pending_motion_offer") is None
+
+    def test_confirm_motion_generation_decline_clears_offer_without_queueing(self, service):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        store.set_setting("asset_pending_motion_offer", {"variant": "development", "source_png": "png", "job_id": "job-1", "reason": "level_up", "created_at": "2026-08-14T00:00:00+00:00"})
+
+        result = ui_service.confirm_motion_generation("Choppr", False)
+
+        assert result == {"accepted": False, "pending": False}
+        assert store.get_setting("asset_pending_motion_offer") is None
+
     def test_pending_regeneration_overrides_an_existing_ready_idle(self, service, monkeypatch):
         ui_service, router, _registry = service
         profile = router.switch_character("Choppr")
@@ -298,12 +443,96 @@ class TestGetActiveState:
             def set_background(self, _character_id, image_path):
                 manifest["background_image"] = image_path or ""
                 return manifest
+            def get_background_mode(self, _character_id):
+                return "follow"
 
         monkeypatch.setattr(character_ui_module, "CharacterLibrary", Library)
 
         result = ui_service.apply_style("Choppr", "event")
 
         assert result["background_image"] == ""
+
+    def test_applying_variant_in_manual_mode_does_not_touch_background(self, service, monkeypatch):
+        ui_service, _router, _registry = service
+        manifest = {"background_image": "manual-background.png"}
+        calls = []
+
+        class Library:
+            def list_variant_inventory(self, _character_id):
+                return [{"variant": "event", "state": "ready"}]
+            def set_active_variant(self, _character_id, _variant):
+                return manifest
+            def variant_background_path(self, _character_id, _variant):
+                return "assets/characters/Choppr/images/bg/event.png"
+            def set_background(self, _character_id, image_path):
+                calls.append(image_path)
+                manifest["background_image"] = image_path or ""
+                return manifest
+            def get_background_mode(self, _character_id):
+                return "manual"
+
+        monkeypatch.setattr(character_ui_module, "CharacterLibrary", Library)
+
+        result = ui_service.apply_style("Choppr", "event")
+
+        assert calls == []
+        assert result["background_image"] == "manual-background.png"
+
+    def test_list_scene_backgrounds_delegates_to_library(self, service, monkeypatch):
+        ui_service, _router, _registry = service
+        monkeypatch.setattr(character_ui_module.CharacterLibrary, "list_background_scenes", lambda _self, _id: [
+            {"scene_id": "og", "thumb": "bg/og.png", "is_current": True},
+        ])
+
+        assert ui_service.list_scene_backgrounds("Choppr") == [{"scene_id": "og", "thumb": "bg/og.png", "is_current": True}]
+
+    def test_apply_scene_sets_manual_mode_and_background(self, service, monkeypatch):
+        ui_service, _router, _registry = service
+        manifest = {"background_image": ""}
+        calls = []
+
+        class Library:
+            def variant_background_path(self, _character_id, variant):
+                return f"assets/characters/Choppr/images/bg/{variant}.png"
+            def set_background_mode(self, _character_id, mode):
+                calls.append(mode)
+            def set_background(self, _character_id, image_path):
+                manifest["background_image"] = image_path or ""
+                return manifest
+            def get_character(self, _character_id):
+                return {"active_variant": "og"}
+
+        monkeypatch.setattr(character_ui_module, "CharacterLibrary", Library)
+
+        result = ui_service.apply_scene("Choppr", "event")
+
+        assert calls == ["manual"]
+        assert result["background_mode"] == "manual"
+        assert result["background_image"] == "assets/characters/Choppr/images/bg/event.png"
+
+    def test_apply_scene_follow_restores_active_variant_background(self, service, monkeypatch):
+        ui_service, _router, _registry = service
+        manifest = {"background_image": ""}
+        calls = []
+
+        class Library:
+            def variant_background_path(self, _character_id, variant):
+                return f"assets/characters/Choppr/images/bg/{variant}.png"
+            def set_background_mode(self, _character_id, mode):
+                calls.append(mode)
+            def set_background(self, _character_id, image_path):
+                manifest["background_image"] = image_path or ""
+                return manifest
+            def get_character(self, _character_id):
+                return {"active_variant": "development"}
+
+        monkeypatch.setattr(character_ui_module, "CharacterLibrary", Library)
+
+        result = ui_service.apply_scene("Choppr", "follow")
+
+        assert calls == ["follow"]
+        assert result["background_mode"] == "follow"
+        assert result["background_image"] == "assets/characters/Choppr/images/bg/development.png"
 
 
 class TestPlaytime:

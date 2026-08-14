@@ -71,7 +71,7 @@ class AssetJobWorker:
                 workflow = self.orchestrator.background.patch_background(character_image=image, room_image=room, prefix=f"vp/{job.character_id}/{job.job_id}")
                 node_id, suffix, asset_type = "16", ".png", "character_background_png"
             else:
-                workflow = self.orchestrator.image.patch_image(image=image, variant=job.variant, seed=int(job.metadata["seed"]), prefix=f"vp/{job.character_id}/{job.job_id}", generation_context=str(job.metadata.get("generation_context", "")))
+                workflow = self.orchestrator.image.patch_image(image=image, variant=job.variant, seed=int(job.metadata["seed"]), prefix=f"vp/{job.character_id}/{job.job_id}", generation_context=str(job.metadata.get("generation_context", "")), event_prompt=str(job.metadata.get("event_prompt", "")))
                 node_id, suffix, asset_type = {"og": ("475", ".png", "character_variant_png"), "development": ("467", ".png", "character_variant_png"), "event": ("492", ".png", "character_variant_png")}[job.variant]
             prompt_id = self.client.submit_prompt(workflow)
             self.repository.update(job.job_id, JobStatus.RUNNING, comfy_prompt_id=prompt_id)
@@ -84,6 +84,8 @@ class AssetJobWorker:
                 self.repository.update(job.job_id, JobStatus.TIMED_OUT, error_code="fanout_interrupted", error_message=str(error))
             else:
                 self.repository.update(job.job_id, JobStatus.FAILED, error_code="execution_error", error_message=str(error))
+                if job.workflow_type == "variant_png":
+                    self.repository.store.set_setting("asset_generation_freeze", None)
 
     def _run_validation(self, job) -> None:
         image = self.client.upload_image(job.metadata["source_path"], f"validation/{job.job_id}")
@@ -125,7 +127,7 @@ class AssetJobWorker:
         self.repository.save_asset(GeneratedAsset(job.character_id, asset_type, job.variant, path.as_posix(), path.name, "video/webm" if suffix == ".webm" else "image/png", hashlib.sha256(content).hexdigest(), job.job_id, motion_key=job.motion_key, reward_id=job.metadata.get("reward_id"), event_id=job.metadata.get("event_id")))
         if job.motion_key:
             self.library.register_generated_assets(job.character_id, {job.motion_key: str(path)})
-        if job.workflow_type == "background_png" and str(self.library.get_character(job.character_id).get("active_variant") or "og") == job.variant:
+        if job.workflow_type == "background_png" and str(self.library.get_character(job.character_id).get("active_variant") or "og") == job.variant and self.library.get_background_mode(job.character_id) == "follow":
             self.library.set_background(job.character_id, str(path))
 
     def _finalize(self, job, output, suffix: str, asset_type: str) -> None:
@@ -138,10 +140,18 @@ class AssetJobWorker:
             self.orchestrator.aggregate_parent(job.parent_job_id)
 
     def _fanout_variant(self, job) -> None:
+        # 兩段式確認(D3):PNG 完工只排背景 job + 寫入 pending motion offer,
+        # 使用者看過預覽同意後才由 confirm_motion_generation 排 motion_set。
         source = str(self._asset_path(job, ".png"))
-        self.orchestrator.create_motion_set(job.character_id, source, job.job_id, job.variant, str(job.metadata.get("trigger_reason", "")))
         if self.orchestrator.background is not None:
             self.orchestrator.create_background_job(job.character_id, source, "assets/backgrounds/default_room.jpg", job.job_id, variant=job.variant)
+        self.repository.store.set_setting("asset_pending_motion_offer", {
+            "variant": job.variant,
+            "source_png": source,
+            "job_id": job.job_id,
+            "reason": str(job.metadata.get("trigger_reason", "")),
+            "created_at": utc_now(),
+        })
 
     @staticmethod
     def _output_info(job) -> tuple[str, str, str]:

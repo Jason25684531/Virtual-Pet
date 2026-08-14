@@ -34,6 +34,7 @@ class ComfyUIAssetService(AssetService):
             reward_id=request.requested_reward or "",
             generation_context=str(request.prompt_params.get("generation_context", "")),
             trigger_reason=str(request.metadata.get("trigger_reason", "")),
+            event_prompt=str(request.metadata.get("event_prompt", "")),
         )
         self._start_worker("comfyui-asset-worker")
         return AssetResponse(request_id=request.request_id, status="queued", job_id=job.job_id, asset_id=job.job_id, metadata={"service": "comfyui", "variant_type": variant})
@@ -61,3 +62,8 @@ class ComfyUIAssetService(AssetService):
         job = self.orchestrator.create_background_job(character_id, source_path, "assets/backgrounds/default_room.jpg", source_event_id)
         self._start_worker("comfyui-background-worker")
         return AssetResponse(request_id=source_event_id, status="queued", job_id=job.job_id, asset_id=job.job_id)
+
+    def create_variant_motion_request(self, character_id: str, variant: str, source_png: str, source_event_id: str, trigger_reason: str = "") -> AssetResponse:
+        parent, children = self.orchestrator.create_motion_set(character_id, source_png, source_event_id, variant, trigger_reason)
+        self._start_worker("comfyui-motion-worker")
+        return AssetResponse(request_id=source_event_id, status="queued", job_id=parent.job_id, asset_id=parent.job_id, metadata={"child_job_ids": [item.job_id for item in children]})

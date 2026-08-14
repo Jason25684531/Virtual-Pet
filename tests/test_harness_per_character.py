@@ -202,6 +202,40 @@ class TestXpLevelConvenienceMethods:
         assert miku.get_xp() == 0
 
 
+class TestGenerationFreeze:
+    def test_frozen_interaction_does_not_award_xp(self, harness_env):
+        from datetime import UTC, datetime
+
+        tmp_path, agentic_root = harness_env
+        choppr = _build_engine(agentic_root, tmp_path, character_id="Choppr")
+        choppr.store.set_setting("asset_generation_freeze", {"created_at": datetime.now(UTC).isoformat()})
+
+        choppr.handle_event({"text": "tell me a joke", "source": "test"})
+
+        assert choppr.store.get_user_progress()["xp_total"] == 0
+
+    def test_expired_freeze_resumes_xp_award(self, harness_env):
+        tmp_path, agentic_root = harness_env
+        choppr = _build_engine(agentic_root, tmp_path, character_id="Choppr")
+        choppr.store.set_setting("asset_generation_freeze", {"created_at": "2000-01-01T00:00:00+00:00"})
+
+        choppr.handle_event({"text": "tell me a joke", "source": "test"})
+
+        assert choppr.store.get_user_progress()["xp_total"] > 0
+        assert choppr.store.get_setting("asset_generation_freeze") is None
+
+    def test_frozen_interaction_still_persists_conversation_memory(self, harness_env):
+        from datetime import UTC, datetime
+
+        tmp_path, agentic_root = harness_env
+        choppr = _build_engine(agentic_root, tmp_path, character_id="Choppr")
+        choppr.store.set_setting("asset_generation_freeze", {"created_at": datetime.now(UTC).isoformat()})
+
+        choppr.handle_event({"text": "tell me a joke", "source": "test"})
+
+        assert choppr.store.recent_events(limit=1)
+
+
 class TestLegacyCompatibility:
     def test_no_character_id_keeps_legacy_behavior(self, harness_env):
         tmp_path, agentic_root = harness_env

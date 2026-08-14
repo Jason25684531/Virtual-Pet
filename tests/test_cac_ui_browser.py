@@ -30,10 +30,13 @@ def page():
                   listCharacters: function (done) { done(ok([])); },
                   listPresets: function (done) { done(ok([{character_id: 'miku', name: 'Miku', persona_description: 'Virtual singer'}])); },
                   createFromPreset: function (_, __, done) { done(ok({})); },
-                  getActiveState: function (done) { done(ok({active: true, character_id: 'miku', xp: {xp_total: 72, level: 2}})); },
+                  getActiveState: function (done) { done(ok(Object.assign({active: true, character_id: 'miku', xp: {xp_total: 72, level: 2}}, window.__activeStateExtra || {}))); },
                   listStyleVariants: function (_, done) { done(ok([{variant: 'og', state: 'ready', thumb: '', is_active: true}, {variant: 'event', state: 'generating', thumb: 'preview.png', is_active: false}, {variant: 'development', state: 'ready', thumb: '', is_active: false}])); },
                   applyStyle: function (_, variant, done) { window.__applied_style = variant; done(ok({})); },
                   confirmGrowthOffer: function (_, __, done) { done(ok({accepted: window.__growthAccepted !== false})); },
+                  confirmMotionGeneration: function (_, accept, done) { window.__motion_confirm = accept; done(ok({accepted: true})); },
+                  listSceneBackgrounds: function (_, done) { done(ok(window.__sceneBackgrounds || [])); },
+                  applyScene: function (_, sceneId, done) { window.__applied_scene = sceneId; done(ok({})); },
                   getCustomization: function (_, done) { window.__persona_loads = (window.__persona_loads || 0) + 1; done(ok({character_id: 'miku', persona: 'A considerate companion', builtin_skills: [], local_skills: []})); }
                 }
               }});
@@ -94,6 +97,54 @@ def test_growth_offer_stays_open_when_generation_was_not_queued(page):
     page.locator("#growth-offer-accept").click()
 
     assert page.locator("#modal-growth-offer").is_visible()
+
+
+def test_scene_panel_shows_real_backgrounds_with_no_objects_tab(page):
+    _enter_companion_stage(page)
+    page.evaluate(
+        "window.__sceneBackgrounds = ["
+        "{scene_id: 'og', thumb: 'bg/og.png', is_current: true},"
+        "{scene_id: 'development', thumb: 'bg/development.png', is_current: false}]"
+    )
+
+    page.locator('[data-hud="hud-scene"]').click()
+
+    assert page.locator("[data-scene-tab]").count() == 0
+    assert page.locator("#scene-slot-grid .slot--ready").count() == 2
+    assert page.locator("#scene-slot-grid .slot--empty").count() == 1
+
+    page.locator("#scene-slot-grid .slot--ready").nth(1).click()
+    page.locator("#scene-apply-button").click()
+    assert page.evaluate("window.__applied_scene") == "development"
+
+
+def test_scene_follow_button_restores_style_linked_background(page):
+    _enter_companion_stage(page)
+    page.locator('[data-hud="hud-scene"]').click()
+
+    page.locator("#scene-follow-button").click()
+
+    assert page.evaluate("window.__applied_scene") == "follow"
+
+
+def test_motion_offer_accept_closes_modal_and_confirms_generation(page):
+    page.locator("#modal-layer").evaluate("element => element.hidden = false")
+    page.locator("#modal-motion-offer").evaluate("element => element.hidden = false")
+
+    page.locator("#motion-offer-accept").click()
+
+    assert not page.locator("#modal-motion-offer").is_visible()
+    assert page.evaluate("window.__motion_confirm") is True
+
+
+def test_motion_offer_decline_closes_modal_and_keeps_the_png(page):
+    page.locator("#modal-layer").evaluate("element => element.hidden = false")
+    page.locator("#modal-motion-offer").evaluate("element => element.hidden = false")
+
+    page.locator("#motion-offer-decline").click()
+
+    assert not page.locator("#modal-motion-offer").is_visible()
+    assert page.evaluate("window.__motion_confirm") is False
 
 
 def test_screens_are_centered_isolate_the_stage_and_offer_a_drag_surface(page):

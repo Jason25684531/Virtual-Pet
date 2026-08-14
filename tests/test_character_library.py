@@ -103,6 +103,55 @@ def test_motion_resolution_prefers_active_then_flat_manifest_then_og(tmp_path, m
     assert library.get_motion_path("miku", "idle").endswith("motions\\og\\idle.webm")
 
 
+def test_new_character_defaults_to_follow_background_mode(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+    source = tmp_path / "source.png"
+    source.write_bytes(b"png")
+
+    manifest = library.create_validated_character("char-1", str(source), "Character")
+
+    assert manifest["background_mode"] == "follow"
+    assert library.get_background_mode("char-1") == "follow"
+
+
+def test_legacy_manifest_without_background_mode_defaults_to_follow(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+    _write_manifest(tmp_path, "legacy", [])
+
+    assert library.get_background_mode("legacy") == "follow"
+
+
+def test_set_background_mode_persists(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+    source = tmp_path / "source.png"
+    source.write_bytes(b"png")
+    library.create_validated_character("char-1", str(source), "Character")
+
+    manifest = library.set_background_mode("char-1", "manual")
+
+    assert manifest["background_mode"] == "manual"
+    assert library.get_background_mode("char-1") == "manual"
+
+
+def test_list_background_scenes_reports_available_variant_backgrounds(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+    character_dir = tmp_path / "assets" / "characters" / "miku"
+    bg_dir = character_dir / "images" / "bg"
+    bg_dir.mkdir(parents=True)
+    (bg_dir / "og.png").write_bytes(b"og")
+    (bg_dir / "event.png").write_bytes(b"event")
+    (character_dir / "manifest.json").write_text(json.dumps({
+        "id": "miku", "motions_dir": "assets/characters/miku/motions", "motions": {},
+        "active_variant": "og", "background_image": "assets/characters/miku/images/bg/og.png",
+    }), encoding="utf-8")
+
+    scenes = {item["scene_id"]: item for item in library.list_background_scenes("miku")}
+
+    assert set(scenes) == {"og", "event"}
+    assert scenes["og"]["is_current"] is True
+    assert scenes["event"]["is_current"] is False
+
+
 def test_variant_inventory_uses_newest_png_as_thumbnail(tmp_path, monkeypatch):
     library = _library(tmp_path, monkeypatch)
     character_dir = tmp_path / "assets" / "characters" / "miku"

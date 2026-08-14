@@ -75,7 +75,7 @@ class WorkflowPatcher:
         self._input(workflow, "16", "filename_prefix")["filename_prefix"] = prefix
         return self._inject_secrets(workflow)
 
-    def patch_image(self, *, image: str, variant: str, seed: int, prefix: str, generation_context: str = "") -> dict[str, Any]:
+    def patch_image(self, *, image: str, variant: str, seed: int, prefix: str, generation_context: str = "", event_prompt: str = "") -> dict[str, Any]:
         selector = {"og": 1, "development": 2, "event": 3}.get(variant)
         if selector is None:
             raise WorkflowPatchError(f"unknown variant: {variant}")
@@ -83,6 +83,8 @@ class WorkflowPatcher:
         self._input(workflow, "472", "image")["image"] = image
         self._input(workflow, "736", "value")["value"] = generation_context[:2000]
         self._input(workflow, "496", "select")["select"] = selector
+        if event_prompt:
+            self._input(workflow, "491", "prompt")["prompt"] = event_prompt
         for node_id in ("498", "501", "504"):
             workflow.pop(node_id, None)
         for node_id in ("462", "487"):

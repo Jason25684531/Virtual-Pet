@@ -183,7 +183,34 @@ def test_background_completion_updates_character_library(tmp_path, monkeypatch):
     assert library.get_background_path("char-1").endswith(".png")
 
 
-def test_variant_completion_queues_a_replacement_motion_set(tmp_path, monkeypatch):
+def test_background_completion_does_not_override_manual_background(tmp_path, monkeypatch):
+    import character_library as library_module
+
+    monkeypatch.setattr(library_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(library_module, "CHARACTER_LIBRARY_DIR", tmp_path / "assets" / "characters")
+    source = tmp_path / "og.png"
+    source.write_bytes(b"og")
+    room = tmp_path / "room.jpg"
+    room.write_bytes(b"room")
+    library = CharacterLibrary()
+    library.create_validated_character("char-1", str(source), "Char")
+    manual_bg = tmp_path / "manual-choice.png"
+    manual_bg.write_bytes(b"manual")
+    library.set_background_mode("char-1", "manual")
+    library.set_background("char-1", str(manual_bg))
+    store = SQLiteStore(tmp_path / "state.db")
+    store.initialize()
+    orchestrator = AssetOrchestrator(AssetRepository(store), Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_video_gen_260728.json", Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_image_gen_260720.json", background_template=Path(__file__).parents[1] / "ComfyUI_Json" / "AIA_2026_background_gen_260728.json")
+    orchestrator.create_background_job("char-1", str(source), str(room), "event-1")
+
+    AssetJobWorker(orchestrator.repository, orchestrator, FakeClient({"outputs": {"16": {"images": [{"filename": "background.png"}]}}}), library).run_once()
+
+    assert library.get_background_path("char-1") == str(manual_bg.resolve())
+
+
+def test_variant_completion_writes_pending_motion_offer_not_a_motion_set(tmp_path, monkeypatch):
+    """兩段式確認(festival-preview-consent D3):PNG 完工只排背景 job + 寫入
+    待確認的 motion offer,不自動排 motion_set;使用者需再次同意才生成 webm。"""
     import character_library as library_module
 
     monkeypatch.setattr(library_module, "PROJECT_ROOT", tmp_path)
@@ -199,8 +226,14 @@ def test_variant_completion_queues_a_replacement_motion_set(tmp_path, monkeypatc
 
     AssetJobWorker(orchestrator.repository, orchestrator, FakeClient({"outputs": {"467": {"images": [{"filename": "variant.png"}]}}}), library).run_once()
 
-    parent = next(job for job in orchestrator.repository.pending() if job.workflow_type == "motion_set")
-    assert len(orchestrator.repository.children(parent.job_id)) == 7
-    assert parent.metadata["trigger_reason"] == "level_up"
+    assert all(job.workflow_type != "motion_set" for job in orchestrator.repository.pending())
     background = next(job for job in orchestrator.repository.pending() if job.workflow_type == "background_png")
     assert background.variant == "development"
+    offer = store.get_setting("asset_pending_motion_offer")
+    assert offer["variant"] == "development"
+    assert offer["reason"] == "level_up"
+
+    # 使用者於第二確認框同意後(confirm_motion_generation)才真正排 motion_set。
+    parent, children = orchestrator.create_motion_set("char-1", offer["source_png"], offer["job_id"], offer["variant"], offer["reason"])
+    assert len(children) == 7
+    assert parent.metadata["trigger_reason"] == "level_up"

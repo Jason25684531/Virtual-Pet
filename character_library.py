@@ -150,12 +150,39 @@ class CharacterLibrary:
             "motions": {},
             "active_variant": "og",
             "background_image": "",
+            "background_mode": "follow",
             "voice_gender": voice_gender,
             "positive_prompt": "",
             "negative_prompt": "",
         }
         self._save_manifest(character_id, manifest)
         return manifest
+
+    def get_background_mode(self, character_id: str) -> str:
+        manifest = self.get_character(character_id)
+        return "manual" if manifest and manifest.get("background_mode") == "manual" else "follow"
+
+    def set_background_mode(self, character_id: str, mode: str) -> dict:
+        manifest = self.get_character(character_id)
+        if not manifest:
+            raise FileNotFoundError(f"找不到角色資料: {character_id}")
+        manifest["background_mode"] = "manual" if mode == "manual" else "follow"
+        manifest["updated_at"] = _now_iso()
+        self._save_manifest(character_id, manifest)
+        return manifest
+
+    def list_background_scenes(self, character_id: str) -> list[dict[str, object]]:
+        manifest = self.get_character(character_id)
+        if not manifest:
+            return []
+        background_root = self._manifest_path(character_id).parent / "images" / "bg"
+        if not background_root.is_dir():
+            return []
+        current = manifest.get("background_image") or ""
+        return [
+            {"scene_id": path.stem, "thumb": self._to_relative(path), "is_current": self._to_relative(path) == current}
+            for path in sorted(background_root.glob("*.png"))
+        ]
 
     def set_background(self, character_id: str, image_path: str) -> dict:
         manifest = self.get_character(character_id)

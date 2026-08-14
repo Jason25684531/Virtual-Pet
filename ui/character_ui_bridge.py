@@ -152,6 +152,29 @@ class CharacterUiBridge(QObject):
         except Exception as exc:  # noqa: BLE001
             return self._error(exc)
 
+    @pyqtSlot(str, bool, result=str)
+    def confirmMotionGeneration(self, character_id: str, accept: bool) -> str:
+        try:
+            return self._ok(self._service.confirm_motion_generation(character_id, accept))
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
+    @pyqtSlot(str, result=str)
+    def listSceneBackgrounds(self, character_id: str) -> str:
+        try:
+            return self._ok(self._service.list_scene_backgrounds(character_id))
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
+    @pyqtSlot(str, str, result=str)
+    def applyScene(self, character_id: str, scene_id: str) -> str:
+        try:
+            result = self._service.apply_scene(character_id, scene_id)
+            self._window._apply_resolved_background(self._window._library.get_background_path(character_id))
+            return self._ok(result)
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
     @pyqtSlot(str, result=str)
     def triggerSkill(self, skill_id: str) -> str:
         try:

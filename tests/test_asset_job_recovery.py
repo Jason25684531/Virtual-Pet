@@ -50,6 +50,7 @@ def _worker(tmp_path, monkeypatch, history):
     orchestrator = AssetOrchestrator(
         AssetRepository(store), ROOT / "AIA_2026_video_gen_260728.json", ROOT / "AIA_2026_image_gen_260720.json",
         max_retries=1, validation_template=ROOT / "AIA_2026_character validation_260811_API.json",
+        background_template=ROOT / "AIA_2026_background_gen_260728.json",
     )
     return orchestrator, AssetJobWorker(orchestrator.repository, orchestrator, FakeClient(history), library), source
 
@@ -123,7 +124,7 @@ def test_recover_finalizes_interrupted_job_with_outputs(tmp_path, monkeypatch):
 def test_variant_fanout_failure_remains_recoverable(tmp_path, monkeypatch):
     orchestrator, worker, source = _worker(tmp_path, monkeypatch, {"outputs": {"467": {"images": [{"filename": "variant.png"}]}}})
     job = orchestrator.create_variant_png_job("char-1", str(source), "development", "event-1")
-    original = orchestrator.create_motion_set
+    original = orchestrator.create_background_job
     calls = 0
 
     def fail_once(*args, **kwargs):
@@ -133,7 +134,7 @@ def test_variant_fanout_failure_remains_recoverable(tmp_path, monkeypatch):
             raise RuntimeError("fan-out interrupted")
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(orchestrator, "create_motion_set", fail_once)
+    monkeypatch.setattr(orchestrator, "create_background_job", fail_once)
 
     worker.run_once()
     assert orchestrator.repository.get(job.job_id).status == JobStatus.TIMED_OUT
@@ -141,6 +142,9 @@ def test_variant_fanout_failure_remains_recoverable(tmp_path, monkeypatch):
     worker.client.get_history = lambda _prompt_id: (_ for _ in ()).throw(AssertionError("local fan-out must not read Comfy history"))
     worker.recover()
     assert orchestrator.repository.get(job.job_id).status == JobStatus.COMPLETED
+    # 兩段式確認:恢復後只等第二次同意,不自動排入 motion_set。
+    assert all(child.workflow_type != "motion_set" for child in orchestrator.repository.pending())
+    assert orchestrator.repository.store.get_setting("asset_pending_motion_offer")["variant"] == "development"
 
 
 def test_drain_retries_fanout_without_resubmitting_png(tmp_path, monkeypatch):
@@ -148,7 +152,7 @@ def test_drain_retries_fanout_without_resubmitting_png(tmp_path, monkeypatch):
     job = orchestrator.create_variant_png_job("char-1", str(source), "development", "event-1")
     submitted = 0
     original_submit = worker.client.submit_prompt
-    original_fanout = orchestrator.create_motion_set
+    original_fanout = orchestrator.create_background_job
     fanout_calls = 0
 
     def submit(workflow):
@@ -164,13 +168,27 @@ def test_drain_retries_fanout_without_resubmitting_png(tmp_path, monkeypatch):
         return original_fanout(*args, **kwargs)
 
     worker.client.submit_prompt = submit
-    monkeypatch.setattr(orchestrator, "create_motion_set", fail_once)
+    monkeypatch.setattr(orchestrator, "create_background_job", fail_once)
 
     assert worker.run_once() is True
     assert worker.run_once() is True
 
     assert submitted == 1
     assert orchestrator.repository.get(job.job_id).status == JobStatus.COMPLETED
+
+
+def test_variant_png_completion_writes_pending_motion_offer_without_motion_set(tmp_path, monkeypatch):
+    orchestrator, worker, source = _worker(tmp_path, monkeypatch, {"outputs": {"467": {"images": [{"filename": "variant.png"}]}}})
+    job = orchestrator.create_variant_png_job("char-1", str(source), "development", "event-1")
+
+    assert worker.run_once() is True
+
+    assert orchestrator.repository.get(job.job_id).status == JobStatus.COMPLETED
+    assert all(pending.workflow_type != "motion_set" for pending in orchestrator.repository.pending())
+    offer = orchestrator.repository.store.get_setting("asset_pending_motion_offer")
+    assert offer["variant"] == "development"
+    assert offer["job_id"] == job.job_id
+    assert Path(offer["source_png"]).is_file()
 
 
 def test_recover_and_run_once_share_the_same_store_lock(tmp_path, monkeypatch):
@@ -235,6 +253,21 @@ def test_recover_rechecks_history_after_prompt_leaves_queue(tmp_path, monkeypatc
     worker.recover()
 
     assert orchestrator.repository.get(job.job_id).status == JobStatus.COMPLETED
+
+
+def test_variant_png_failure_releases_generation_freeze(tmp_path, monkeypatch):
+    orchestrator, worker, source = _worker(tmp_path, monkeypatch, {"outputs": {}})
+    job = orchestrator.create_variant_png_job("char-1", str(source), "development", "event-1")
+    orchestrator.repository.store.set_setting("asset_generation_freeze", {"created_at": "2026-08-14T00:00:00+00:00"})
+
+    def fail_submit(_workflow):
+        raise RuntimeError("comfyui unavailable")
+
+    worker.client.submit_prompt = fail_submit
+
+    assert worker.run_once() is True
+    assert orchestrator.repository.get(job.job_id).status == JobStatus.FAILED
+    assert orchestrator.repository.store.get_setting("asset_generation_freeze") is None
 
 
 def test_recover_finalizes_a_stuck_motion_set_when_all_children_are_terminal(tmp_path, monkeypatch):

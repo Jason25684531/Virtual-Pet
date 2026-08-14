@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import gc
+import random
 import shutil
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ from pet_harness.storage.sqlite_store import SQLiteStore
 
 PLAYTIME_SECONDS_KEY = "ui_playtime_seconds"
 LAST_PLAYED_AT_KEY = "ui_last_played_at"
+FESTIVAL_PROMPT_HISTORY_KEY = "asset_event_prompt_history"
 
 
 def _level_for_xp(xp_total: int) -> int:
@@ -120,6 +123,7 @@ class CharacterUiService:
                 for skill in engine.skills
             ],
             "pending_offer": engine.store.get_setting("asset_pending_offer"),
+            "pending_motion_offer": self._active_pending_motion_offer(engine.store),
         }
 
     def list_style_variants(self, character_id: str) -> list[dict[str, object]]:
@@ -131,10 +135,53 @@ class CharacterUiService:
             job.variant for job in AssetRepository(store).pending()
             if job.workflow_type == "variant_png" or job.workflow_type == "motion_clip" and job.motion_key == "idle"
         }
+        motion_offer = self._active_pending_motion_offer(store)
         for item in items:
             if item["variant"] in generating:
                 item["state"] = "generating"
+            elif motion_offer and item["variant"] == motion_offer["variant"]:
+                item["state"] = "awaiting_confirm"
         return items
+
+    def _active_pending_motion_offer(self, store: SQLiteStore) -> dict[str, Any] | None:
+        offer = store.get_setting("asset_pending_motion_offer")
+        if not offer:
+            return None
+        import config
+
+        if self._offer_expired(offer.get("created_at"), config.PREVIEW_OFFER_TTL_HOURS):
+            store.set_setting("asset_pending_motion_offer", None)
+            return None
+        return offer
+
+    @staticmethod
+    def _offer_expired(created_at: str | None, ttl_hours: float) -> bool:
+        if not created_at:
+            return False
+        try:
+            return datetime.now(UTC) - datetime.fromisoformat(created_at) > timedelta(hours=ttl_hours)
+        except ValueError:
+            return False
+
+    def confirm_motion_generation(self, character_id: str, accept: bool) -> dict[str, Any]:
+        profile, _ = self._router.load_profile(character_id)
+        store = SQLiteStore(profile.sqlite_path)
+        store.initialize()
+        offer = self._active_pending_motion_offer(store)
+        if not offer:
+            return {"accepted": False, "pending": False}
+        if not accept:
+            store.set_setting("asset_pending_motion_offer", None)
+            store.set_setting("asset_generation_freeze", None)
+            return {"accepted": False, "pending": False}
+        response = build_asset_service(store, character_id, CharacterLibrary()).create_variant_motion_request(
+            character_id, str(offer["variant"]), str(offer["source_png"]), str(offer["job_id"]), str(offer.get("reason", "")),
+        )
+        accepted = response.status in {"queued", "completed"} and response.metadata.get("service") != "mock_asset_service"
+        if accepted:
+            store.set_setting("asset_pending_motion_offer", None)
+            store.set_setting("asset_generation_freeze", None)
+        return {"accepted": accepted, "pending": bool(store.get_setting("asset_pending_motion_offer")), "asset": response.to_dict()}
 
     def apply_style(self, character_id: str, variant: str) -> dict[str, object]:
         library = CharacterLibrary()
@@ -142,8 +189,26 @@ class CharacterUiService:
         if item is None or item["state"] != "ready":
             raise ValueError(f"style is not ready: {variant}")
         manifest = library.set_active_variant(character_id, variant)
-        manifest = library.set_background(character_id, library.variant_background_path(character_id, variant))
+        if library.get_background_mode(character_id) == "follow":
+            manifest = library.set_background(character_id, library.variant_background_path(character_id, variant))
         return {"character_id": character_id, "variant": variant, "background_image": manifest.get("background_image", "")}
+
+    def list_scene_backgrounds(self, character_id: str) -> list[dict[str, object]]:
+        return CharacterLibrary().list_background_scenes(character_id)
+
+    def apply_scene(self, character_id: str, scene_id: str) -> dict[str, object]:
+        library = CharacterLibrary()
+        if scene_id == "follow":
+            library.set_background_mode(character_id, "follow")
+            active_variant = str((library.get_character(character_id) or {}).get("active_variant") or "og")
+            manifest = library.set_background(character_id, library.variant_background_path(character_id, active_variant))
+            return {"character_id": character_id, "background_mode": "follow", "background_image": manifest.get("background_image", "")}
+        path = library.variant_background_path(character_id, scene_id)
+        if not path:
+            raise ValueError(f"scene background not ready: {scene_id}")
+        library.set_background_mode(character_id, "manual")
+        manifest = library.set_background(character_id, path)
+        return {"character_id": character_id, "background_mode": "manual", "background_image": manifest.get("background_image", "")}
 
     def confirm_growth_offer(self, character_id: str, accept: bool) -> dict[str, Any]:
         profile, _ = self._router.load_profile(character_id)
@@ -156,15 +221,30 @@ class CharacterUiService:
             store.set_setting("asset_pending_offer", None)
             return {"accepted": False, "pending": False}
         context = "\n".join(str(row["text"]) for row in self._active_memory_rows(store, character_id))[:2000]
+        metadata = {"variant_type": str(offer["variant"]), "trigger_reason": str(offer["reason"])}
+        if metadata["variant_type"] == "event":
+            metadata["event_prompt"] = self._select_festival_prompt(store)
         response = build_asset_service(store, character_id, CharacterLibrary()).create_asset(AssetRequest(
             asset_type="variant_png", prompt_params={"generation_context": context},
             source_event_id=str(offer["source_event_id"]),
-            metadata={"variant_type": str(offer["variant"]), "trigger_reason": str(offer["reason"])},
+            metadata=metadata,
         ))
         accepted = response.status in {"queued", "completed"} and response.metadata.get("service") != "mock_asset_service"
         if accepted:
             store.set_setting("asset_pending_offer", None)
+            store.set_setting("asset_generation_freeze", {"created_at": utc_now()})
         return {"accepted": accepted, "pending": bool(store.get_setting("asset_pending_offer")), "asset": response.to_dict()}
+
+    @staticmethod
+    def _select_festival_prompt(store: SQLiteStore) -> str:
+        """三種節慶 prompt 排除前兩輪已用;僅在使用者確認 event offer 時消耗輪替順位。"""
+        import config
+
+        history = store.get_setting(FESTIVAL_PROMPT_HISTORY_KEY, []) or []
+        candidates = [prompt for prompt in config.FESTIVAL_EVENT_PROMPTS if prompt not in history] or list(config.FESTIVAL_EVENT_PROMPTS)
+        prompt = random.choice(candidates)
+        store.set_setting(FESTIVAL_PROMPT_HISTORY_KEY, (list(history) + [prompt])[-2:])
+        return prompt
 
     @staticmethod
     def _active_memory_rows(store: SQLiteStore, character_id: str):
