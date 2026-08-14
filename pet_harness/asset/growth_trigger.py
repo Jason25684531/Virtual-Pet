@@ -43,12 +43,16 @@ class GrowthTriggerService:
 
     def check_time_trigger(self, source_event_id: str) -> GrowthOffer | None:
         previous = self._store.get_setting("asset_last_event_variant_at")
-        if previous:
-            try:
-                if datetime.now(UTC) - datetime.fromisoformat(previous) < self._event_interval:
-                    return None
-            except ValueError:
-                pass
+        if previous is None:
+            # 沒有基準時間就代表這是本次啟動/角色的第一次檢查——先記錄基準,
+            # 不能把「從未檢查過」誤判成「間隔已過」而立刻觸發算圖。
+            self._store.set_setting("asset_last_event_variant_at", datetime.now(UTC).isoformat())
+            return None
+        try:
+            if datetime.now(UTC) - datetime.fromisoformat(previous) < self._event_interval:
+                return None
+        except ValueError:
+            pass
         offer = self._offer("event", "time_interval", source_event_id)
         if offer is not None:
             self._store.set_setting("asset_last_event_variant_at", datetime.now(UTC).isoformat())

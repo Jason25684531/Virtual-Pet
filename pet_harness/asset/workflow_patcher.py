@@ -85,7 +85,10 @@ class WorkflowPatcher:
         self._input(workflow, "496", "select")["select"] = selector
         if event_prompt:
             self._input(workflow, "491", "prompt")["prompt"] = event_prompt
-        for node_id in ("498", "501", "504"):
+        # 498/501/504 是舊版「LLM 判斷造型方向」子圖(已被 496 的靜態 selector 取代);
+        # 509 是純顯示用的除錯節點,吃 504 的輸出——一併刪除,否則 504 沒了會讓 ComfyUI
+        # 驗證 509 時噴 Exception when validating node: '504'。
+        for node_id in ("498", "501", "504", "509"):
             workflow.pop(node_id, None)
         for node_id in ("462", "487"):
             self._input(workflow, node_id, "seed")["seed"] = seed

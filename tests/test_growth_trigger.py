@@ -36,6 +36,7 @@ def test_context_excludes_expired_and_time_trigger_persists(tmp_path):
     with store.connect() as conn, conn:
         conn.execute("INSERT INTO memory_items (memory_id, character_id, user_id, memory_key, memory_type, text, source_event_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", ("new", "char-1", "default", "new", "semantic", "new memory", "e", now.isoformat(), None))
         conn.execute("INSERT INTO memory_items (memory_id, character_id, user_id, memory_key, memory_type, text, source_event_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", ("expired", "char-1", "default", "old", "episodic", "expired memory", "e", (now - timedelta(days=2)).isoformat(), (now - timedelta(days=1)).isoformat()))
+    store.set_setting("asset_last_event_variant_at", (now - timedelta(minutes=10)).isoformat())
     service = FakeAssetService()
     growth = GrowthTriggerService(store, service, "char-1", xp_per_level=6, event_interval_minutes=3)
 
@@ -45,9 +46,21 @@ def test_context_excludes_expired_and_time_trigger_persists(tmp_path):
     assert store.get_setting("asset_pending_offer")["variant"] == "event"
 
 
+def test_first_ever_time_trigger_check_only_establishes_baseline(tmp_path):
+    store = SQLiteStore(tmp_path / "state.db")
+    store.initialize()
+    service = FakeAssetService()
+    growth = GrowthTriggerService(store, service, "char-1", xp_per_level=6, event_interval_minutes=3)
+
+    assert growth.check_time_trigger("event-1") is None
+    assert store.get_setting("asset_pending_offer") is None
+    assert store.get_setting("asset_last_event_variant_at") is not None
+
+
 def test_empty_memory_does_not_block_event_trigger(tmp_path):
     store = SQLiteStore(tmp_path / "state.db")
     store.initialize()
+    store.set_setting("asset_last_event_variant_at", (datetime.now(UTC) - timedelta(minutes=10)).isoformat())
     service = FakeAssetService()
     growth = GrowthTriggerService(store, service, "char-1", xp_per_level=6, event_interval_minutes=3)
 
@@ -69,6 +82,7 @@ def test_generation_freeze_blocks_new_offers(tmp_path):
     store = SQLiteStore(tmp_path / "state.db")
     store.initialize()
     store.set_setting("asset_generation_freeze", {"created_at": datetime.now(UTC).isoformat()})
+    store.set_setting("asset_last_event_variant_at", (datetime.now(UTC) - timedelta(minutes=10)).isoformat())
     service = FakeAssetService()
     growth = GrowthTriggerService(store, service, "char-1", xp_per_level=6, event_interval_minutes=3)
 
@@ -81,6 +95,7 @@ def test_expired_generation_freeze_is_released(tmp_path):
     store = SQLiteStore(tmp_path / "state.db")
     store.initialize()
     store.set_setting("asset_generation_freeze", {"created_at": "2000-01-01T00:00:00+00:00"})
+    store.set_setting("asset_last_event_variant_at", (datetime.now(UTC) - timedelta(minutes=10)).isoformat())
     service = FakeAssetService()
     growth = GrowthTriggerService(store, service, "char-1", xp_per_level=6, event_interval_minutes=3)
 

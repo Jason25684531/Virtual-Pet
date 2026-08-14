@@ -47,7 +47,7 @@ def test_image_patch_uses_literal_selector_and_removes_router_chain():
     patcher = WorkflowPatcher(ROOT / "AIA_2026_image_gen_260720.json")
     workflow = patcher.patch_image(image="miku/source.png", variant="event", seed=9, prefix="vp/miku/job", generation_context="x" * 3000)
     assert workflow["496"]["inputs"]["select"] == 3
-    assert all(node not in workflow for node in ("498", "501", "504"))
+    assert all(node not in workflow for node in ("498", "501", "504", "509"))
     assert len(workflow["736"]["inputs"]["value"]) == 2000
 
 

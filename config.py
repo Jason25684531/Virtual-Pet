@@ -162,7 +162,7 @@ COMFYUI_VIDEO_TIMEOUT_SEC = _read_int_env("COMFYUI_VIDEO_TIMEOUT_SEC", 900)
 COMFYUI_MAX_RETRIES = _read_int_env("COMFYUI_MAX_RETRIES", 2)
 COMFYUI_ENABLED = _read_bool_env("COMFYUI_ENABLED", False)
 XP_PER_LEVEL = _read_int_env("XP_PER_LEVEL", 6)
-EVENT_INTERVAL_MINUTES = _read_float_env("EVENT_INTERVAL_MINUTES", 3.0)
+EVENT_INTERVAL_MINUTES = _read_float_env("EVENT_INTERVAL_MINUTES", 1.0) #時間的設定
 FESTIVAL_EVENT_PROMPTS = ("這個角色戴上聖誕帽", "這個角色手上拿春聯", "這個角色手上拿粽子")
 PREVIEW_OFFER_TTL_HOURS = _read_float_env("PREVIEW_OFFER_TTL_HOURS", 24.0)
 # --- Faster Whisper STT（toggle-recording，Week 4） ---

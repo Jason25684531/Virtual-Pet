@@ -101,7 +101,7 @@ button:disabled { cursor: not-allowed; opacity: .38; }
 .loading-percent { position: fixed; top: 40px; right: 48px; color: var(--accent); font-size: 48px; font-weight: 800; }
 .loading-screen::before, .loading-screen::after { position: absolute; content: ""; opacity: 0; animation: loading-fade .55s forwards; }.loading-screen::before { top: 0; right: 0; bottom: 0; left: 0; background: radial-gradient(circle at 70% 35%, #3b3647, #121214 70%); }.loading-screen::after { width: 260px; height: 420px; bottom: 110px; left: calc(50% - 130px); border-radius: 50% 50% 20% 20%; background: rgba(255,255,255,.09); animation-delay: .35s; }.loading-screen__copy { position: relative; z-index: 1; }.loading-percent { z-index: 1; }@keyframes loading-fade { to { opacity: 1; } }
 .slot--ready { cursor: pointer; }.slot--ready.is-selected { border-color: #fff; box-shadow: inset 0 0 0 1px #fff; }.slot--ready.is-selected::after { display: block; width: 8px; height: 8px; margin: 8px auto 0; border-radius: 50%; background: var(--accent); content: ""; }.slot--generating { border-color: var(--accent); color: var(--accent); }.slot--awaiting_confirm { border-color: #f0b429; color: #f0b429; }.slot--empty { border-style: dashed; color: #71717a; }
-.modal-preview { display: block; width: 100%; max-height: 320px; margin-top: 24px; border-radius: 16px; object-fit: cover; }
+.modal-preview { display: block; max-width: 100%; max-height: min(70vh, 640px); margin: 24px auto 0; border-radius: 16px; }
 .agent-result span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.agent-result b { flex: 0 0 auto; }
 /* 實機是 QtWebEngine 5.15 (Chromium 83)，flex 的 gap 要 84 才支援，這裡以相鄰兄弟 margin 取代。
    grid 的 gap 可用，故僅 flex 容器需要。 */

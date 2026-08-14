@@ -429,6 +429,21 @@ class TestGetActiveState:
         with pytest.raises(ValueError, match="not ready"):
             ui_service.apply_style("Choppr", "event")
 
+    def test_first_time_generation_stays_empty_until_content_lands(self, service, monkeypatch):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        monkeypatch.setattr(character_ui_module.CharacterLibrary, "list_variant_inventory", lambda _self, _id: [
+            {"variant": "event", "state": "empty", "thumb": "", "is_active": False},
+        ])
+        from pet_harness.asset.asset_models import AssetJob
+        AssetRepository(store).create_job(AssetJob(
+            "Choppr", "variant_png", "event", "first-time-event",
+        ))
+
+        assert ui_service.list_style_variants("Choppr")[0]["state"] == "empty"
+
     def test_applying_variant_without_background_clears_the_previous_background(self, service, monkeypatch):
         ui_service, _router, _registry = service
         manifest = {"background_image": "old-background.png"}

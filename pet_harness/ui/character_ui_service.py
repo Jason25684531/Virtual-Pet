@@ -137,7 +137,8 @@ class CharacterUiService:
         }
         motion_offer = self._active_pending_motion_offer(store)
         for item in items:
-            if item["variant"] in generating:
+            # 未落地任何素材的格子不進「生成中」態,避免 HUD 顯示空白預覽的生成中格子。
+            if item["variant"] in generating and item["state"] != "empty":
                 item["state"] = "generating"
             elif motion_offer and item["variant"] == motion_offer["variant"]:
                 item["state"] = "awaiting_confirm"
