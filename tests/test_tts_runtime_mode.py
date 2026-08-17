@@ -113,6 +113,16 @@ class TestAdaptiveTTSFallbackWorker:
         assert normalized["resolved_mode"] == "fallback_enabled"
         assert normalized["attempted_providers"] == []
 
+    def test_elevenlabs_failure_does_not_retry_a_provider(self):
+        from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
+
+        worker = AdaptiveTTSFallbackWorker(text="test", preferred_provider="voai")
+        worker._provider_chain = ["voai", "elevenlabs"]
+
+        worker._handle_result(False, "connection lost after first chunk", {"stream_started": True}, "elevenlabs")
+
+        assert worker._provider_chain == ["voai", "elevenlabs"]
+
 
 class TestVoAIFastFailClassification:
     """VoAI 失敗時必須標記 fast_fail，才能 cascade 到 ElevenLabs（api provider）。"""

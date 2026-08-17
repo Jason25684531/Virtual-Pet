@@ -1,11 +1,10 @@
 """Presentation adapters that wire the app's events and motion port to the window."""
 
-from pet_harness.app.event_bus import EventBus
+from pet_harness.app.event_bus import SimpleEventBus
 from pet_harness.app.events import AppEvent
-from pet_harness.app.ports import MotionPort
 
 
-class MotionPortAdapter(MotionPort):
+class MotionPortAdapter:
     def __init__(self, coordinator, window) -> None:
         self._coordinator, self._window = coordinator, window
 
@@ -24,7 +23,7 @@ class MotionPortAdapter(MotionPort):
 
 
 class PresentationEventBinder:
-    def __init__(self, window, events: EventBus) -> None:
+    def __init__(self, window, events: SimpleEventBus) -> None:
         self._window = window
         events.subscribe("EVT_CONVERSATION_TURN", self._on_conversation)
         events.subscribe("EVT_RUNTIME_ERROR", self._on_error)

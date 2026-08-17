@@ -17,6 +17,20 @@ def _store(tmp_path) -> SQLiteStore:
     return store
 
 
+def test_relative_database_path_is_bound_when_store_is_created(tmp_path, monkeypatch):
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    monkeypatch.chdir(origin)
+    store = SQLiteStore("data/state.db")
+
+    monkeypatch.chdir(tmp_path)
+    store.initialize()
+
+    assert store.db_path == (origin / "data" / "state.db").resolve()
+    assert store.db_path.exists()
+    assert not (tmp_path / "data" / "state.db").exists()
+
+
 class TestUserXpReadAfterWrite:
     def test_returns_updated_value_and_persists(self, tmp_path):
         store = _store(tmp_path)

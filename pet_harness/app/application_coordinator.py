@@ -8,10 +8,9 @@ from pet_harness.memory.base_memory_store import BaseMemoryStore
 from pet_harness.runtime.provider_runtime import ProviderRuntime, migrate_legacy_provider_config
 
 from .action_bus import ActionBus
-from .event_bus import EventBus, SimpleEventBus
+from .event_bus import SimpleEventBus
 from .runtime_lifecycle import RuntimeLifecycle
-from .handlers import ConversationHandler, MusicHandler, MotionOnlyHandler, NewsHandler, QuickIntentHandler, ResetHandler, SpeakHandler, WaveHandler
-from .ports import MotionPort
+from .handlers import ConversationHandler, MotionOnlyHandler, QuickIntentHandler, ResetHandler, SpeakHandler
 
 
 class ApplicationCoordinator:
@@ -20,7 +19,7 @@ class ApplicationCoordinator:
     def __init__(
         self,
         *,
-        event_bus: EventBus | None = None,
+        event_bus: SimpleEventBus | None = None,
         lifecycle: RuntimeLifecycle | None = None,
         provider_runtime: ProviderRuntime | None = None,
         character_registry: CharacterRegistry | None = None,
@@ -52,7 +51,7 @@ class ApplicationCoordinator:
         return self._bus
 
     @property
-    def event_bus(self) -> EventBus:
+    def event_bus(self) -> SimpleEventBus:
         return self._events
 
     @property
@@ -63,11 +62,13 @@ class ApplicationCoordinator:
         # ProviderRuntime owns configuration and clients supplied by callers; it has no closeable resource.
         self._lifecycle.shutdown_all()
 
-    def configure_motion(self, motion: MotionPort) -> None:
+    def configure_motion(self, motion) -> None:
         if self._motion_configured:
             raise RuntimeError("motion already configured")
-        for handler in (NewsHandler(motion), MusicHandler(motion), WaveHandler(motion), QuickIntentHandler(motion), SpeakHandler(motion), MotionOnlyHandler(motion), ResetHandler(motion)):
+        for handler in (QuickIntentHandler(motion), SpeakHandler(motion), ResetHandler(motion)):
             self._bus.register(handler)
+        # MotionOnlyHandler is the catch-all and must be registered last.
+        self._bus.register(MotionOnlyHandler(motion))
         self._motion_configured = True
 
     def configure_conversation(self, conversation, executor) -> None:

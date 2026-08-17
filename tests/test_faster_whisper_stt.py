@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from sensors import faster_whisper_stt as faster_whisper_stt_module
-from sensors.base_stt import SttModelLoadError, SttTranscriptionError
+from sensors.faster_whisper_stt import SttModelLoadError, SttTranscriptionError
 from sensors.faster_whisper_stt import FasterWhisperSTT
 
 

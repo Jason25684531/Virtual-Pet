@@ -96,7 +96,7 @@ class PyQtHarnessAdapter:
         self._brain_mode = str(brain_mode or "harness")
         self._background_resolver = background_resolver or BackgroundResolver(project_root=self._project_root)
         self._voice_status_adapter = voice_status_adapter or VoiceRuntimeStatusAdapter()
-        _default_contract = {"brain_mode": "harness", "harness_runtime_available": True, "live_runtime_available": False, "openclaw_enabled": False}
+        _default_contract = {"brain_mode": "harness", "harness_runtime_available": True, "openclaw_enabled": False}
         self._runtime_contract = dict(runtime_contract or _default_contract)
         self._last_skill_discovery_log: tuple[int, int, int] | None = None
         self._refresh_runtime()
@@ -135,6 +135,13 @@ class PyQtHarnessAdapter:
     def get_active_character(self):
         return self.router.get_active_character()
 
+    def create_save_snapshot(self):
+        from pet_harness.storage.save_snapshot_service import SaveSnapshotService
+        profile = self.get_active_character()
+        if profile is None:
+            raise ValueError("no active character")
+        return SaveSnapshotService(self._project_root).create_snapshot(profile.character_id)
+
     def switch_character(self, character_id: str):
         profile = self.router.switch_character(character_id)
         engine = self.router.get_active_engine()
@@ -169,7 +176,7 @@ class PyQtHarnessAdapter:
         if runtime_contract is not None:
             self._runtime_contract = dict(runtime_contract)
         else:
-            self._runtime_contract = {"brain_mode": "harness", "harness_runtime_available": True, "live_runtime_available": False, "openclaw_enabled": False}
+            self._runtime_contract = {"brain_mode": "harness", "harness_runtime_available": True, "openclaw_enabled": False}
 
     def handle_text_input(self, text: str) -> dict[str, Any]:
         """文字提交只接受 text;Provider 選擇是 application 層設定,
@@ -705,7 +712,6 @@ class PyQtHarnessAdapter:
         provider_diagnostics = self._build_provider_diagnostics(provider_config, provider_status)
         runtime_section = {
             "brain_mode": self._runtime_contract["brain_mode"],
-            "live_runtime_available": self._runtime_contract["live_runtime_available"],
             "harness_runtime_available": self._runtime_contract["harness_runtime_available"],
             "openclaw_enabled": self._runtime_contract["openclaw_enabled"],
         }

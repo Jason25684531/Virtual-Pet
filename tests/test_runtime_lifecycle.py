@@ -1,9 +1,9 @@
-from pet_harness.app.runtime_lifecycle import CallbackRuntime, ManagedRuntime, RuntimeLifecycle
+from pet_harness.app.runtime_lifecycle import CallbackRuntime, RuntimeLifecycle
 from pet_harness.character.router import CharacterRouter
 from unittest.mock import MagicMock
 
 
-class _Runtime(ManagedRuntime):
+class _Runtime:
     def __init__(self, name, events, fail_stop=False):
         self._name, self._events, self._fail_stop = name, events, fail_stop
 

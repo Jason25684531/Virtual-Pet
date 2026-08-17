@@ -14,7 +14,7 @@ import time
 import numpy as np
 from PyQt5.QtCore import Qt
 
-from sensors.base_stt import SttModelLoadError, SttTranscriptionError, TranscriptionResult
+from sensors.faster_whisper_stt import SttModelLoadError, SttTranscriptionError, TranscriptionResult
 from sensors.microphone_recorder import MicrophoneError
 from sensors.stt_controller import SttController
 

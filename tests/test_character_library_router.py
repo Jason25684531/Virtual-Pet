@@ -19,7 +19,7 @@ def test_router_uses_character_library_character_and_its_state_db(tmp_path, monk
     profile = router.switch_character("char_1234")
 
     assert profile.name == "丘比"
-    assert router.get_active_engine().store.db_path == Path("data/characters/char_1234/state.db")
+    assert router.get_active_engine().store.db_path == Path("data/characters/char_1234/state.db").resolve()
 
 
 def test_playtime_and_listing_work_for_library_characters(tmp_path, monkeypatch):

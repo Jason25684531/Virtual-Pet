@@ -1,4 +1,3 @@
-from abc import ABC, abstractmethod
 import logging
 from collections.abc import Callable
 
@@ -6,24 +5,12 @@ from collections.abc import Callable
 LOGGER = logging.getLogger(__name__)
 
 
-class ManagedRuntime(ABC):
-    @property
-    @abstractmethod
-    def name(self) -> str: ...
-
-    @abstractmethod
-    def start(self) -> None: ...
-
-    @abstractmethod
-    def stop(self, wait_ms: int = 5000) -> None: ...
-
-
 class RuntimeLifecycle:
     def __init__(self) -> None:
-        self._runtimes: list[ManagedRuntime] = []
+        self._runtimes: list[CallbackRuntime] = []
         self._shutdown = False
 
-    def register(self, runtime: ManagedRuntime) -> None:
+    def register(self, runtime: "CallbackRuntime") -> None:
         self._runtimes.append(runtime)
 
     def shutdown_all(self, wait_ms: int = 5000) -> None:
@@ -37,7 +24,7 @@ class RuntimeLifecycle:
                 LOGGER.warning("runtime stop failed: %s", runtime.name, exc_info=True)
 
 
-class CallbackRuntime(ManagedRuntime):
+class CallbackRuntime:
     """Minimal adapter for legacy resources that already expose start/stop callbacks."""
 
     def __init__(self, name: str, stop: Callable[[int], None], start: Callable[[], None] | None = None) -> None:

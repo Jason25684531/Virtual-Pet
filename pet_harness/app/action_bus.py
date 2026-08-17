@@ -1,12 +1,12 @@
 from .action_handler import ActionHandler
 from .commands import ActionCommand
-from .event_bus import EventBus
+from .event_bus import SimpleEventBus
 from .events import AppEvent
 from .results import ActionResult
 
 
 class ActionBus:
-    def __init__(self, event_bus: EventBus, handlers: tuple[ActionHandler, ...] = ()) -> None:
+    def __init__(self, event_bus: SimpleEventBus, handlers: tuple[ActionHandler, ...] = ()) -> None:
         self._events = event_bus
         self._handlers = list(handlers)
 

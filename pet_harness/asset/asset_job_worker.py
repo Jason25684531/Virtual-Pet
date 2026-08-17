@@ -9,7 +9,7 @@ from character_library import CharacterLibrary
 from pet_harness.asset.asset_models import GeneratedAsset, JobStatus
 from pet_harness.asset.asset_orchestrator import AssetOrchestrator
 from pet_harness.asset.asset_repository import AssetRepository
-from pet_harness.asset.comfyui_client import BaseComfyUIClient, ComfyUIClient
+from pet_harness.asset.comfyui_client import ComfyUIClient
 from pet_harness.models.events import utc_now
 
 
@@ -24,7 +24,7 @@ def _store_lock(repository: AssetRepository) -> threading.Lock:
 
 
 class AssetJobWorker:
-    def __init__(self, repository: AssetRepository, orchestrator: AssetOrchestrator, client: BaseComfyUIClient, library: CharacterLibrary | None = None) -> None:
+    def __init__(self, repository: AssetRepository, orchestrator: AssetOrchestrator, client: ComfyUIClient, library: CharacterLibrary | None = None) -> None:
         self.repository, self.orchestrator, self.client, self.library = repository, orchestrator, client, library or CharacterLibrary()
         self._run_lock = _store_lock(repository)
 

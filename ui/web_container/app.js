@@ -700,10 +700,11 @@
         dockButtons.forEach(function (button) { button.classList.toggle('is-active', button.dataset.hud === uiRoute.hud); });
         var nav = document.getElementById('companion-nav');
         var badge = document.getElementById('hud-level-badge');
-        var stageMenu = document.getElementById('stage-menu-button');
+        var stageMenu = document.getElementById('stage-menu-button'); var stageSave = document.getElementById('stage-save-button');
         if (nav) nav.hidden = Boolean(uiRoute.screen);
         if (badge) badge.hidden = Boolean(uiRoute.screen);
         if (stageMenu) stageMenu.hidden = Boolean(uiRoute.screen);
+        if (stageSave) stageSave.hidden = Boolean(uiRoute.screen);
 
         var modalLayer = document.getElementById('modal-layer');
         Array.prototype.slice.call(document.querySelectorAll('.modal')).forEach(function (modal) { modal.hidden = modal.id !== uiRoute.modal; });
@@ -1852,6 +1853,8 @@
         if (stageMenuButton) {
             stageMenuButton.addEventListener('click', function () { routeToScreen('screen-main-menu'); });
         }
+        var stageSaveButton = document.getElementById('stage-save-button');
+        if (stageSaveButton) stageSaveButton.addEventListener('click', function () { callBridge('saveProgress'); });
         if (talkTextInput) {
             talkTextInput.addEventListener('keydown', function (event) {
                 if (event.key === 'Enter') sendTalkText();

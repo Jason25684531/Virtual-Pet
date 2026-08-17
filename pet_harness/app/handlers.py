@@ -4,14 +4,14 @@ from typing import Any
 
 from .action_handler import ActionHandler
 from .commands import ActionCommand
-from .event_bus import EventBus
+from .event_bus import SimpleEventBus
 from .events import AppEvent
-from .ports import BackgroundExecutor, ConversationPort, MotionPort
+from .ports import BackgroundExecutor
 from .results import ActionResult
 
 
 class ConversationHandler(ActionHandler):
-    def __init__(self, conversation: ConversationPort, executor: BackgroundExecutor, events: EventBus) -> None:
+    def __init__(self, conversation, executor: BackgroundExecutor, events: SimpleEventBus) -> None:
         self._conversation = conversation
         self._executor = executor
         self._events = events
@@ -50,7 +50,7 @@ class ConversationHandler(ActionHandler):
 
 
 class EventActionHandler(ActionHandler):
-    def __init__(self, actions: set[str], motion: MotionPort) -> None:
+    def __init__(self, actions: set[str], motion) -> None:
         self._actions, self._motion = actions, motion
 
     def can_handle(self, command: ActionCommand) -> bool:
@@ -62,18 +62,11 @@ class EventActionHandler(ActionHandler):
 
 
 class MotionOnlyHandler(EventActionHandler):
-    def __init__(self, motion): super().__init__({"laugh", "angry", "awkward", "speechless", "listen", "idle"}, motion)
+    def __init__(self, motion) -> None:
+        self._motion = motion
 
     def can_handle(self, command):
         return command.action not in {"conversation", "reset"}
-
-
-class MusicHandler(EventActionHandler):
-    def __init__(self, motion): super().__init__({"play_music"}, motion)
-
-
-class NewsHandler(EventActionHandler):
-    def __init__(self, motion): super().__init__({"report_news"}, motion)
 
 
 class QuickIntentHandler(EventActionHandler):
@@ -85,7 +78,7 @@ class QuickIntentHandler(EventActionHandler):
 
 
 class ResetHandler(ActionHandler):
-    def __init__(self, motion: MotionPort) -> None: self._motion = motion
+    def __init__(self, motion) -> None: self._motion = motion
     def can_handle(self, command: ActionCommand) -> bool: return command.action == "reset"
     def handle(self, command: ActionCommand) -> ActionResult:
         self._motion.reset()
@@ -98,7 +91,3 @@ class SpeakHandler(ActionHandler):
     def handle(self, command) -> ActionResult:
         self._motion.speak(command.text, trace_id=command.trace_id, has_action=bool(command.metadata.get("has_action")))
         return ActionResult("ok", payload={"accepted": True})
-
-
-class WaveHandler(EventActionHandler):
-    def __init__(self, motion): super().__init__({"wave_response"}, motion)

@@ -1,15 +1,9 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 import threading
 
 from pet_harness.memory.memory_models import RetrievalRequest
-
-
-class BaseQueryRewriter(ABC):
-    @abstractmethod
-    def rewrite(self, request: RetrievalRequest) -> str | None: ...
 
 
 def previous_turn(
@@ -43,7 +37,7 @@ class FollowUpDetector:
         return None
 
 
-class LlmQueryRewriter(BaseQueryRewriter):
+class LlmQueryRewriter:
     def __init__(self, rewrite_call, timeout_seconds: float = 1.25, enabled: bool = False) -> None:
         self.rewrite_call = rewrite_call
         self.timeout_seconds = timeout_seconds

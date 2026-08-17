@@ -1,4 +1,4 @@
-"""FasterWhisperSTT — faster-whisper 的 BaseSTT 實作。
+"""FasterWhisperSTT — faster-whisper 的具體實作。
 
 faster_whisper 的 import 與 API 只存在於這一個檔案，避免第三方 library 散落在
 UI 或 Harness。CUDA-only（第一版無 CPU fallback），模型全程只載入一次。
@@ -10,10 +10,30 @@ import importlib
 import os
 import threading
 import time
+from dataclasses import dataclass
 
 import numpy as np
 
-from sensors.base_stt import BaseSTT, SttModelLoadError, SttTranscriptionError, TranscriptionResult
+
+class SttError(Exception):
+    pass
+
+
+class SttModelLoadError(SttError):
+    pass
+
+
+class SttTranscriptionError(SttError):
+    pass
+
+
+@dataclass(frozen=True)
+class TranscriptionResult:
+    text: str
+    language: str
+    language_probability: float
+    audio_duration_seconds: float
+    inference_duration_seconds: float
 
 
 def _register_windows_cuda_dll_directories() -> None:
@@ -37,7 +57,7 @@ def _register_windows_cuda_dll_directories() -> None:
         os.environ["PATH"] = os.pathsep.join(bin_dirs) + os.pathsep + os.environ.get("PATH", "")
 
 
-class FasterWhisperSTT(BaseSTT):
+class FasterWhisperSTT:
     def __init__(
         self,
         model_name: str,

@@ -1,20 +1,11 @@
 from __future__ import annotations
 
 import threading
-from abc import ABC, abstractmethod
 
 from pet_harness.memory.base_memory_store import MemoryStoreStatus
 
 
-class BaseSparseEncoder(ABC):
-    @abstractmethod
-    def encode(self, text: str) -> dict[int, float]: ...
-
-    @abstractmethod
-    def status(self) -> MemoryStoreStatus: ...
-
-
-class JiebaBm25SparseEncoder(BaseSparseEncoder):
+class JiebaBm25SparseEncoder:
     _ONNX_LOCK = threading.Lock()
 
     def __init__(self) -> None:

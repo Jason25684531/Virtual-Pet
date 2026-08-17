@@ -13,13 +13,13 @@ import sys
 import time
 from uuid import uuid4
 
-from PyQt5.QtCore import QEvent, QObject, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QEvent, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QLineEdit, QMainWindow, QMenu, QSystemTrayIcon,
+    QAction, QApplication, QMainWindow, QMenu, QSystemTrayIcon,
 )
-from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineSettings, QWebEngineView
+from PyQt5.QtWebEngineWidgets import QWebEngineSettings, QWebEngineView
 
 from character_library import ASSETS_WEBM_DIR, CharacterLibrary, MOTION_MAP
 from interaction_trace import InteractionLatencyTracker
@@ -31,173 +31,8 @@ from pet_harness.character.profile import CharacterProfile
 from ui.background_resolver import BackgroundResolver
 from ui.character_ui_bridge import CharacterUiBridge
 from ui.js_gateway import JsGateway
-
-
-BRIDGE_CONTRACT = {
-    "python_to_js": [
-        "appendConversationAssistant",
-        "beginConversationTurn",
-        "changeVideo",
-        "clearConversationTurns",
-        "clearPanelVideo",
-        "clearRoomBackground",
-        "finishConversationTurn",
-        "hydrateAgenticUI",
-        "moveCharacter",
-        "playPanelVideo",
-        "playRoomAudio",
-        "playTemporaryVideo",
-        "restoreIdleMotion",
-        "setActionStatus",
-        "setAgenticBusy",
-        "setCharacterObjectPosition",
-        "setConversationAssistant",
-        "setConversationQueueDepth",
-        "setIdleMotionCandidates",
-        "setIdleVideo",
-        "setPanelVideoMuted",
-        "setRoomBackground",
-        "setRoomCharacter",
-        "setRuntimeMode",
-        "startMotionLoop",
-        "stopMotionLoop",
-        "stopRoomAudio",
-    ],
-    "js_to_python": [
-        "addSkill",
-        "addToolConfig",
-        "deleteSkill",
-        "deleteToolConfig",
-        "refreshState",
-        "resetRuntime",
-        "sendLiveText",
-        "sendText",
-        "toggleStt",
-        "triggerOverlayAction",
-        "triggerQuickIntent",
-        "toggleSkill",
-        "toggleTool",
-        "beginWindowDrag",
-    ],
-    "character_bridge": [
-        "listCharacters",
-        "listPresets",
-        "createFromPreset",
-        "pickCharacterImage",
-        "createFromUpload",
-        "getValidationStatus",
-        "switchCharacter",
-        "deleteCharacter",
-        "getActiveState",
-        "triggerSkill",
-    ],
-}
-
-class EchoesWebPage(QWebEnginePage):
-    """自訂 WebPage，將前端 console 訊息轉印至 Python Terminal。"""
-
-    _LEVEL_LABELS = {
-        QWebEnginePage.InfoMessageLevel: "INFO",
-        QWebEnginePage.WarningMessageLevel: "WARN",
-        QWebEnginePage.ErrorMessageLevel: "ERROR",
-    }
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.panel_ended_callback = None
-        self.main_video_ended_callback = None
-        self.room_audio_ended_callback = None
-
-    def javaScriptConsoleMessage(self, level, message, line_number, source_id):
-        label = self._LEVEL_LABELS.get(level, "LOG")
-        print(f"[JS {label}] {message}  (line {line_number}, {source_id})")
-        if message == "[ECHOES:PANEL_ENDED]" and callable(self.panel_ended_callback):
-            self.panel_ended_callback()
-        if message == "[ECHOES:MAIN_VIDEO_ENDED]" and callable(self.main_video_ended_callback):
-            self.main_video_ended_callback()
-        if message == "[ECHOES:ROOM_AUDIO_ENDED]" and callable(self.room_audio_ended_callback):
-            self.room_audio_ended_callback()
-
-
-class DeveloperInputLineEdit(QLineEdit):
-    """Dev Mode 專用輸入框；失焦時自動交還點擊穿透。"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._focus_lost_callback = None
-
-    def focusOutEvent(self, event):
-        super().focusOutEvent(event)
-        if callable(self._focus_lost_callback):
-            QTimer.singleShot(0, self._focus_lost_callback)
-
-
-class HarnessUiBridge(QObject):
-    def __init__(self, window: "TransparentWindow") -> None:
-        super().__init__(window)
-        self._window = window
-
-    @pyqtSlot()
-    def refreshState(self) -> None:
-        # QWebChannel can invoke this while TransparentWindow is still being
-        # constructed.  Do not let that startup race abort the JS callback.
-        if getattr(self._window, "_adapter", None) is None:
-            return
-        self._window.refresh_agentic_ui()
-
-    @pyqtSlot()
-    def resetRuntime(self) -> None:
-        self._window.request_runtime_reset()
-
-    @pyqtSlot(str)
-    def sendText(self, text: str) -> None:
-        # 文字提交只傳 text;Provider 設定經受控 global runtime API,不由訊息夾帶。
-        self._window.submit_agentic_text(text)
-
-    @pyqtSlot(str)
-    def sendLiveText(self, text: str) -> None:
-        self._window.submit_live_text(text)
-
-    @pyqtSlot(str, bool)
-    def toggleSkill(self, skill_id: str, enabled: bool) -> None:
-        self._window.toggle_skill(skill_id, enabled)
-
-    @pyqtSlot(str, bool)
-    def toggleTool(self, tool_name: str, enabled: bool) -> None:
-        self._window.toggle_tool(tool_name, enabled)
-
-    @pyqtSlot()
-    def toggleStt(self) -> None:
-        self._window.toggle_stt_from_bridge()
-
-    @pyqtSlot(str)
-    def triggerOverlayAction(self, action_name: str) -> None:
-        self._window.trigger_overlay_action_from_bridge(action_name)
-
-    @pyqtSlot(str)
-    def triggerQuickIntent(self, intent_name: str) -> None:
-        self._window.trigger_quick_intent_from_bridge(intent_name)
-
-    @pyqtSlot(bool)
-    @pyqtSlot()
-    def beginWindowDrag(self) -> None:
-        self._window.begin_window_drag()
-
-    @pyqtSlot(str)
-    def addSkill(self, payload_json: str) -> None:
-        self._window.add_skill(payload_json)
-
-    @pyqtSlot(str)
-    def deleteSkill(self, skill_id: str) -> None:
-        self._window.delete_skill(skill_id)
-
-    @pyqtSlot(str)
-    def addToolConfig(self, payload_json: str) -> None:
-        self._window.add_tool_config(payload_json)
-
-    @pyqtSlot(str)
-    def deleteToolConfig(self, tool_name: str) -> None:
-        self._window.delete_tool_config(tool_name)
+from ui.harness_ui_bridge import BRIDGE_CONTRACT, HarnessUiBridge
+from ui.web_page_widgets import DeveloperInputLineEdit, EchoesWebPage
 
 
 class TransparentWindow(QMainWindow):
@@ -245,7 +80,7 @@ class TransparentWindow(QMainWindow):
         self._brain_mode = brain_mode
         self._library = library or CharacterLibrary()
         self._latency_tracker = latency_tracker
-        self._runtime_contract = {"brain_mode": "harness", "harness_runtime_available": True, "live_runtime_available": False, "openclaw_enabled": False}
+        self._runtime_contract = {"brain_mode": "harness", "harness_runtime_available": True, "openclaw_enabled": False}
         self._background_resolver = BackgroundResolver()
         self._voice_status_adapter = VoiceRuntimeStatusAdapter()
         if adapter is None:
@@ -267,9 +102,8 @@ class TransparentWindow(QMainWindow):
         self._character_object_position = self.DEFAULT_CHARACTER_OBJECT_POSITION
         self._background_status = "fallback_placeholder"
         self._background_url: str | None = None
-        self._live_runtime_available = self._runtime_contract["live_runtime_available"]
         self._stt_listening = False
-        self._stt_available = bool(self._runtime_contract["live_runtime_available"])
+        self._stt_available = False
         self._stt_state = "idle"
         self._stt_controller = None
         self._latest_agentic_event: dict[str, object] | None = None
@@ -492,7 +326,6 @@ class TransparentWindow(QMainWindow):
         self,
         *,
         voice_status_adapter: VoiceRuntimeStatusAdapter | None = None,
-        live_runtime_available: bool | None = None,
         runtime_contract: dict[str, object] | None = None,
     ) -> None:
         if voice_status_adapter is not None:
@@ -500,10 +333,7 @@ class TransparentWindow(QMainWindow):
         if runtime_contract is not None:
             self._runtime_contract = dict(runtime_contract)
         else:
-            self._runtime_contract = {"brain_mode": "harness", "harness_runtime_available": True, "live_runtime_available": False, "openclaw_enabled": False}
-        if live_runtime_available is not None:
-            self._runtime_contract["live_runtime_available"] = bool(live_runtime_available)
-        self._live_runtime_available = bool(self._runtime_contract.get("live_runtime_available"))
+            self._runtime_contract = {"brain_mode": "harness", "harness_runtime_available": True, "openclaw_enabled": False}
         self._adapter.configure_runtime_context(
             brain_mode=self._brain_mode,
             background_resolver=self._background_resolver,
@@ -579,6 +409,10 @@ class TransparentWindow(QMainWindow):
         reset_action.triggered.connect(self.reset_runtime_state)
         menu.addAction(reset_action)
 
+        save_action = QAction("儲存進度", self)
+        save_action.triggered.connect(self._save_progress_from_tray)
+        menu.addAction(save_action)
+
         self._tray_stt_toggle_action = QAction("開始收音", self)
         self._tray_stt_toggle_action.triggered.connect(self._handle_stt_button_clicked)
         menu.addAction(self._tray_stt_toggle_action)
@@ -594,6 +428,14 @@ class TransparentWindow(QMainWindow):
     def _request_close_from_tray(self) -> None:
         """Let the web UI honor its persisted Close-confirm preference."""
         self._js_gateway.call("requestClose")
+
+    def _save_progress_from_tray(self) -> None:
+        try:
+            snapshot = self._adapter.create_save_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            self.tray_icon.showMessage("儲存失敗", str(exc), QSystemTrayIcon.Warning)
+        else:
+            self.tray_icon.showMessage("已儲存進度", snapshot.name, QSystemTrayIcon.Information)
 
     def _open_settings(self):
         """以非阻塞方式開啟角色設定視窗，避免鎖住主角色視窗操作。"""
@@ -1054,17 +896,6 @@ class TransparentWindow(QMainWindow):
         self._developer_input.clear()
         self._hide_developer_input()
 
-    def submit_live_text(self, text: str) -> None:
-        cleaned = str(text or "").strip()
-        if not cleaned:
-            self.set_action_status("Please enter text first.", tone="warn", timeout_ms=2200)
-            return
-        if not self._live_runtime_available:
-            self.set_action_status("Live Conversation is unavailable in harness mode.", tone="warn", timeout_ms=3200)
-            return
-        self.developer_query_submitted.emit(cleaned)
-        self.set_action_status("Live Conversation queued.", tone="working", timeout_ms=0)
-
     def _on_developer_query_submitted(self, text: str) -> None:
         self.submit_agentic_text(text)
 
@@ -1122,23 +953,29 @@ class TransparentWindow(QMainWindow):
         self._latest_agentic_event = dict(payload or {})
         webm_key = self._validated_event_motion_key(payload)
         reply_text = str(payload.get("reply") or "").strip()
-        trace_id = f"agentic-{uuid4().hex}"
         source_label = "Skill" if payload.get("matched_skill") else "Talk"
         user_text = str(payload.get("user_text") or "").strip() or (
             f"立即執行：{payload.get('matched_skill')}"
             if payload.get("matched_skill")
             else "你的訊息"
         )
+        trace_id = (
+            self._latency_tracker.begin_interaction("harness", user_text)
+            if self._latency_tracker is not None
+            else f"agentic-{uuid4().hex}"
+        )
         self.begin_conversation_turn(trace_id, source_label, user_text)
         self.set_conversation_assistant(trace_id, reply_text)
         self.finish_conversation_turn(trace_id)
         if webm_key:
-            self.dispatch_action(
+            dispatched = self.dispatch_action(
                 f"[ACTION:{webm_key}] {reply_text}",
                 trace_id=trace_id,
                 allow_tts=bool(reply_text),
                 wait_for_tts_start=bool(reply_text),
             )
+            if not dispatched and reply_text:
+                self.speak_text(reply_text, trace_id=trace_id, has_action=False)
         elif reply_text:
             self.speak_text(reply_text, trace_id=trace_id, has_action=False)
         self.refresh_agentic_ui(

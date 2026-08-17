@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from PyQt5.QtCore import QObject
 
 import ui.character_ui_bridge as bridge_module
-from ui.transparent_window import HarnessUiBridge
+from ui.harness_ui_bridge import HarnessUiBridge
 from ui.character_ui_bridge import CharacterUiBridge
 
 

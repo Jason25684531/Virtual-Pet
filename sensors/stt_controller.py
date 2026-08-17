@@ -14,7 +14,7 @@ from enum import Enum
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
-from sensors.base_stt import BaseSTT, SttError
+from sensors.faster_whisper_stt import SttError
 from sensors.microphone_recorder import MicrophoneError, MicrophoneRecorder
 
 _PUNCTUATION_ONLY_RE = re.compile(r"^[\s\W_]*$", re.UNICODE)
@@ -46,7 +46,7 @@ class SttController(QObject):
     def __init__(
         self,
         recorder: MicrophoneRecorder,
-        provider: BaseSTT,
+        provider,
         min_recording_ms: int,
         sample_rate: int,
         vad: object | None = None,

@@ -3,33 +3,13 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
 import requests
 
 
-class BaseComfyUIClient(ABC):
-    @abstractmethod
-    def upload_image(self, path: str | Path, subfolder: str) -> str: ...
-    @abstractmethod
-    def submit_prompt(self, workflow: dict[str, Any]) -> str: ...
-    @abstractmethod
-    def watch_prompt(self, prompt_id: str, timeout_sec: int) -> dict[str, Any]: ...
-    @abstractmethod
-    def get_history(self, prompt_id: str) -> dict[str, Any]: ...
-    @abstractmethod
-    def has_prompt(self, prompt_id: str) -> bool: ...
-    @abstractmethod
-    def download_output(self, filename: str, subfolder: str = "", output_type: str = "output") -> bytes: ...
-    @abstractmethod
-    def cancel_prompt(self, prompt_id: str) -> None: ...
-    @abstractmethod
-    def health_check(self) -> bool: ...
-
-
-class ComfyUIClient(BaseComfyUIClient):
+class ComfyUIClient:
     def __init__(self, base_url: str, ws_url: str | None = None, timeout_sec: int = 300, session: requests.Session | None = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.ws_url = (ws_url or base_url.replace("http", "ws", 1)).rstrip("/")

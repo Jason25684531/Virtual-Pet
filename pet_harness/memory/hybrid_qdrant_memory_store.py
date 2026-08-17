@@ -3,13 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pet_harness.memory.base_hybrid_index import BaseHybridIndex
 from pet_harness.memory.base_memory_store import BaseMemoryStore, MemoryHit, MemoryStoreStatus
 from pet_harness.memory.memory_models import MemoryItem
 from pet_harness.memory.sparse_encoder import JiebaBm25SparseEncoder
 
 
-class HybridQdrantMemoryStore(BaseMemoryStore, BaseHybridIndex):
+class HybridQdrantMemoryStore(BaseMemoryStore):
     """Per-character hybrid search index; SQLite remains the source of truth."""
 
     MAX_ITEMS = 500

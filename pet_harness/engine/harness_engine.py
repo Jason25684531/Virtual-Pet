@@ -5,6 +5,7 @@ import logging
 import random
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -293,16 +294,27 @@ class PetHarnessEngine:
         # 工具先行:deterministic 命中且帶 required_tool 時,先執行工具再讓 LLM 合成回覆,
         # 讓回覆能引用本輪真實取得的資料,而非上一輪殘留的 tool_result(見
         # fix-core-interaction-experience)。LLM 呼叫次數維持一次。
-        tool_first_event, tool_first_result = self._run_tool_first(user_event, deterministic_skill)
-
         conversation_history = list(reversed(self.store.recent_events(limit=6)))
         retrieval_result = None
+        retrieval_request = None
         if self.memory_retriever is not None:
             from pet_harness.memory.memory_models import RetrievalRequest
             from datetime import UTC, datetime
             from pet_harness.memory.query_rewriter import previous_turn
             prior_user, prior_assistant, age = previous_turn(conversation_history, datetime.now(UTC))
-            retrieval_result = self.memory_retriever.retrieve(RetrievalRequest(self._character_id or "default", user_event.text, prior_user, prior_assistant, age))
+            retrieval_request = RetrievalRequest(self._character_id or "default", user_event.text, prior_user, prior_assistant, age)
+
+        if retrieval_request is None:
+            tool_first_event, tool_first_result = self._run_tool_first(user_event, deterministic_skill)
+        else:
+            # Both results are inputs to the prompt; state updates remain on this thread.
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                tool_future = executor.submit(self._run_tool_first, user_event, deterministic_skill)
+                retrieval_future = executor.submit(self.memory_retriever.retrieve, retrieval_request)
+                tool_first_event, tool_first_result = tool_future.result()
+                retrieval_result = retrieval_future.result()
+
+        if retrieval_result is not None:
             memory_hits = retrieval_result.evidence
         else:
             memory_hits = self.memory_store.recall(user_event.text, top_k=3)

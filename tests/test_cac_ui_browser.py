@@ -211,11 +211,25 @@ def test_layout_keeps_the_mockup_grid_and_navigation_spacing(page):
     page.locator("#menu-load-button").evaluate("button => button.disabled = false")
     page.locator("#menu-load-button").click()
     load_card = page.locator("#screen-load-save .screen-card").bounding_box()
-    assert load_card["width"] == 896
+    assert load_card["width"] == 1320
     columns = page.locator("#save-card-grid").evaluate(
         "element => getComputedStyle(element).gridTemplateColumns"
     )
-    assert len(columns.split()) == 2
+    assert len(columns.split()) == 4
+    page.locator("#save-card-grid").evaluate(
+        """grid => {
+            for (let i = 0; i < 12; i += 1) {
+                const card = document.createElement('button');
+                card.className = 'save-card';
+                grid.append(card);
+            }
+        }"""
+    )
+    assert page.locator("#save-card-grid").evaluate(
+        "grid => grid.scrollHeight > grid.clientHeight"
+    )
+    footer = page.locator("#screen-load-save .screen-footer").bounding_box()
+    assert footer["y"] + footer["height"] <= VIEWPORT["height"]
 
     page.locator("#screen-load-save [data-screen]").click()
     page.locator("#menu-create-button").click()

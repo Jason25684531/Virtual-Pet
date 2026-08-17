@@ -152,6 +152,41 @@ def test_on_agentic_result_skips_empty_reply():
     fake_self.speak_text.assert_not_called()
 
 
+def test_on_agentic_result_speaks_reply_when_motion_dispatch_is_rejected():
+    fake_self = MagicMock()
+    fake_self._validated_event_motion_key.return_value = "music_idle"
+    fake_self.dispatch_action.return_value = False
+
+    TransparentWindow.consume_interaction_result(fake_self, {"reply": "工具完成後的內容", "webm_key": "music_idle"})
+
+    fake_self.speak_text.assert_called_once()
+    assert fake_self.speak_text.call_args.args[0] == "工具完成後的內容"
+
+
+def test_on_agentic_result_starts_a_latency_trace():
+    fake_self = MagicMock()
+    fake_self._validated_event_motion_key.return_value = ""
+    fake_self._latency_tracker.begin_interaction.return_value = "measured-trace"
+
+    TransparentWindow.consume_interaction_result(fake_self, {"reply": "回覆", "user_text": "問題"})
+
+    fake_self._latency_tracker.begin_interaction.assert_called_once_with("harness", "問題")
+    assert fake_self.speak_text.call_args.kwargs["trace_id"] == "measured-trace"
+
+
+def test_harness_reply_does_not_suppress_tts_for_wave_response():
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._play_binding_motion = MagicMock(return_value=True)
+
+        dispatcher.dispatch("[ACTION:wave_response] 實際的模型回覆", trace_id="trace-1")
+
+        assert "trace-1" not in dispatcher._tts_not_expected_traces
+        assert dispatcher._loop_action_service_pending is False
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
 def test_chat_input_lives_in_the_summonable_chat_hud():
     html = (Path(__file__).parents[1] / "ui" / "web_container" / "index.html").read_text(encoding="utf-8")
 

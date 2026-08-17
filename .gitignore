@@ -55,6 +55,7 @@ agentic.md
 soul.md
 data/runtime/*
 data/characters/*/qdrant/
+data/saves/
 
 device.key
 ComfyUI_Json/*

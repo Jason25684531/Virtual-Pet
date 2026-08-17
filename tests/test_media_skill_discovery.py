@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from threading import Event
 
 import pet_harness.character.profile as profile_module
 from pet_harness.agent.provider_adapter import ProviderReply
 from pet_harness.engine.harness_engine import PetHarnessEngine
+from pet_harness.memory.memory_models import RetrievalResult, RetrievalTrace
 from pet_harness.models.provider import ProviderStatus, ProviderType
 from pet_harness.models.skill import Skill
 from pet_harness.runtime.provider_runtime import ProviderRuntime
@@ -126,6 +128,33 @@ def test_required_tool_skill_executes_tool_before_llm_call(tmp_path, monkeypatch
     assert "今日新聞頭條" in (provider.calls[0] or "")
     assert event.tool_request.tool_name == "web_article_tool"
     assert event.metadata["tool_result"]["payload"]["articles"][0]["title"] == "今日新聞頭條"
+
+
+def test_tool_first_and_retrieval_run_in_parallel(tmp_path, monkeypatch):
+    agentic = _write_workspace(tmp_path, monkeypatch)
+    tool_started = Event()
+    retrieval_started = Event()
+
+    class WaitingRetriever:
+        def retrieve(self, _request):
+            retrieval_started.set()
+            assert tool_started.wait(1)
+            return RetrievalResult([], RetrievalTrace.empty("news"))
+
+    engine = PetHarnessEngine(
+        RecordingProvider(),
+        agentic_root=agentic,
+        character_id="Miku",
+        memory_retriever=WaitingRetriever(),
+    )
+
+    def run_tool(_event, _skill):
+        tool_started.set()
+        assert retrieval_started.wait(1)
+        return None, None
+
+    engine._run_tool_first = run_tool
+    engine.handle_event({"text": "news", "source": "test"})
 
 
 def test_adapter_returns_and_persists_normalized_discovery(tmp_path, monkeypatch):
