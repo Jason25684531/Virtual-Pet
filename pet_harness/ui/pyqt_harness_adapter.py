@@ -35,9 +35,8 @@ LAST_XP_KEY = "ui_last_xp_delta"
 TOOL_ENABLED_KEY = "enabled_overrides"
 TOOL_CONFIGS_KEY = "metadata_configs"
 DEFAULT_OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
-# 換模型的位置:先用本地已 pull 的 gemma4:e2b 驗證 Ollama 串接,之後穩定再換 gemma3 等模型。
-# 可用 OLLAMA_MODEL 環境變數覆寫,不需改這裡。
-DEFAULT_OLLAMA_MODEL = "gemma4:e2b"
+# 換模型時改 config.DEFAULT_OLLAMA_MODEL,不需改這裡;可用 OLLAMA_MODEL 環境變數覆寫。
+DEFAULT_OLLAMA_MODEL = config.DEFAULT_OLLAMA_MODEL
 LOGGER = logging.getLogger(__name__)
 
 

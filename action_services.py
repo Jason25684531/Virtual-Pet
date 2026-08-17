@@ -17,14 +17,8 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 import config
 from character_library import CharacterLibrary, PROJECT_ROOT, UI_MUSIC_DIR
-
-try:
-    from langchain_core.messages import HumanMessage, SystemMessage
-    from langchain_openai import ChatOpenAI
-except ModuleNotFoundError:  # pragma: no cover - 依實際環境決定
-    HumanMessage = None  # type: ignore[assignment]
-    SystemMessage = None  # type: ignore[assignment]
-    ChatOpenAI = None  # type: ignore[assignment]
+from pet_harness.app.commands import ACTION_DIRECTIVE_PATTERN
+from pet_harness.models.events import UserEvent
 
 
 FIXED_NEWS_VERSION = "fixed-news-2026-05-06-v1"
@@ -73,10 +67,6 @@ FIXED_INTENT_DEFINITIONS = {
     },
 }
 SUPPORTED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"}
-ACTION_DIRECTIVE_PATTERN = re.compile(
-    r"(?:\[\s*ACTION\s*:\s*(?:[A-Za-z0-9_-]+)\s*\]|(?<!\w)ACTION\s*:\s*[A-Za-z0-9_-]+)",
-    re.IGNORECASE,
-)
 
 
 def _normalize_reply_text(text: str) -> str:
@@ -344,79 +334,36 @@ def _resolve_persona_prompt(character_id: str | None) -> tuple[str, str]:
     return config.get_persona_prompt(persona_key), persona_key
 
 
-def _resolve_model_name(character_id: str | None) -> str:
-    library = CharacterLibrary()
-    manifest = library.get_character(character_id) if character_id else None
-    model_name = (
-        str((manifest or {}).get("openai_model") or "").strip()
-        or str((manifest or {}).get("model_name") or "").strip()
-        or config.OPENAI_MODEL
-    )
-    return model_name or config.OPENAI_MODEL
-
-
-def _build_system_message(content: str):
-    if SystemMessage is None:
-        return {"role": "system", "content": content}
-    return SystemMessage(content=content)
-
-
-def _build_human_message(content: str):
-    if HumanMessage is None:
-        return {"role": "user", "content": content}
-    return HumanMessage(content=content)
-
-
 def generate_fixed_intent_text(
     intent_name: str,
     character_id: str | None,
-    llm_factory=None,
+    provider_runtime=None,
 ) -> str:
     definition = FIXED_INTENT_DEFINITIONS.get(intent_name)
     if definition is None:
         raise RuntimeError(f"未支援的固定意圖: {intent_name}")
-    if not config.OPENAI_API_KEY:
-        raise RuntimeError("缺少 OPENAI_API_KEY，無法第一次生成固定意圖文字。")
-    if ChatOpenAI is None and not callable(llm_factory):
-        raise RuntimeError("缺少 langchain_openai，無法第一次生成固定意圖文字。")
+    if provider_runtime is None:
+        raise RuntimeError("缺少 provider_runtime，無法第一次生成固定意圖文字。")
 
     persona_prompt, _persona_key = _resolve_persona_prompt(character_id)
-    model_name = _resolve_model_name(character_id)
-    llm = (
-        llm_factory(model_name=model_name)
-        if callable(llm_factory)
-        else ChatOpenAI(
-            api_key=config.OPENAI_API_KEY,
-            model=model_name,
-            temperature=float(os.getenv("OPENAI_TEMPERATURE", "0.4")),
-            max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "2")),
-            timeout=(5, 45),
-        )
-    )
-    messages = [
-        _build_system_message(persona_prompt),
-        _build_system_message(
+    prompt_text = "\n\n".join(
+        [
+            persona_prompt,
             "這是一個本地固定快捷回覆生成任務，不是即時對話回覆。"
             "你不得輸出 [ACTION:...]、markdown、清單、emoji、自我介紹或額外說明。"
-            "只輸出最終要顯示與朗讀的繁體中文短句。"
-        ),
-        _build_human_message(
+            "只輸出最終要顯示與朗讀的繁體中文短句。",
             (
                 f"使用者現在對你說：{definition['request_text']}\n"
                 if str(definition.get("request_text") or "").strip()
                 else ""
             )
-            + str(definition["prompt"])
-        ),
-    ]
-    response = llm.invoke(messages)
-    content = getattr(response, "content", response)
-    if isinstance(content, list):
-        content = "".join(
-            str(getattr(part, "text", "") or part.get("text", "") if isinstance(part, dict) else part)
-            for part in content
-        )
-    normalized = _normalize_reply_text(str(content or ""))
+            + str(definition["prompt"]),
+        ]
+    )
+    reply = provider_runtime.generate_reply(UserEvent(text=prompt_text, source="fixed_intent"), prompt_text=prompt_text)
+    if not reply.provider_status.healthy:
+        raise RuntimeError(f"固定意圖文字生成失敗：{reply.provider_status.message}")
+    normalized = _normalize_reply_text(str(reply.reply or ""))
     if not normalized:
         raise RuntimeError("固定意圖文字生成失敗，未取得有效內容。")
     return normalized
@@ -429,6 +376,7 @@ def build_fixed_intent_payload(
     cache_dir: str | Path | None = None,
     synthesizer=None,
     text_generator=None,
+    provider_runtime=None,
 ) -> dict[str, object]:
     definition = FIXED_INTENT_DEFINITIONS.get(intent_name)
     if definition is None:
@@ -438,7 +386,7 @@ def build_fixed_intent_payload(
     generator = (
         text_generator
         if callable(text_generator)
-        else lambda: generate_fixed_intent_text(intent_name, character_id)
+        else lambda: generate_fixed_intent_text(intent_name, character_id, provider_runtime)
     )
     payload = _ensure_cached_audio_payload(
         intent_name=intent_name,
@@ -565,6 +513,7 @@ class FixedIntentReplyWorker(QThread):
         cache_dir: str | Path | None = None,
         synthesizer=None,
         text_generator=None,
+        provider_runtime=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -573,6 +522,7 @@ class FixedIntentReplyWorker(QThread):
         self._cache_dir = Path(cache_dir) if cache_dir else FIXED_INTENT_CACHE_DIR
         self._synthesizer = synthesizer
         self._text_generator = text_generator
+        self._provider_runtime = provider_runtime
 
     def run(self):
         try:
@@ -582,6 +532,7 @@ class FixedIntentReplyWorker(QThread):
                 cache_dir=self._cache_dir,
                 synthesizer=self._synthesizer,
                 text_generator=self._text_generator,
+                provider_runtime=self._provider_runtime,
             )
             label = FIXED_INTENT_LABELS.get(self._intent_name, self._intent_name)
             message = f"{label} 固定回覆已就緒。" if payload.get("cached") else f"{label} 固定回覆已生成。"

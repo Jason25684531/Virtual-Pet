@@ -19,7 +19,6 @@ import config
 from audio_playback import FfplayPcmAudioPlayer, PlaybackStartSuppressed
 
 _VOAI_TTS_URL = "https://connect.voai.ai/TTS/Speech"
-_VOAI_PREWARM_URL = "https://connect.voai.ai/Key/Usage"
 _VOAI_HTTP_SESSION = requests.Session()
 _DEFAULT_STYLE = "預設"
 _DEFAULT_SPEED = 1.2
@@ -58,76 +57,6 @@ def _normalize_transport_mode(value: str | None) -> str:
             f"VOAI_TRANSPORT_MODE={normalized} 已棄用，VoAI 目前固定走文件化 HTTP PCM 主路徑。"
         )
     return _DEFAULT_TRANSPORT_MODE
-
-
-def prewarm_voai_http_session(
-    *,
-    trace_id: str | None = None,
-    requests_get=None,
-    api_key: str | None = None,
-    latency_tracker=None,
-    timeout: tuple[float, float] = (3, 5),
-) -> dict[str, object]:
-    normalized_trace_id = str(trace_id or "").strip()
-    payload: dict[str, object] = {
-        "ok": False,
-        "advisory": True,
-        "provider": "voai",
-        "transport": "http",
-        "trace_id": normalized_trace_id,
-        "endpoint": _VOAI_PREWARM_URL,
-    }
-    api_key_value = str(api_key or _get_api_key()).strip()
-    if not api_key_value:
-        payload.update(
-            {
-                "failure_code": "missing_api_key",
-                "detail": "VoAI HTTP prewarm skipped: missing VOAI_API_KEY.",
-            }
-        )
-        mark_failed = getattr(latency_tracker, "mark_voai_prewarm_failed", None)
-        if callable(mark_failed):
-            mark_failed(normalized_trace_id, str(payload["detail"]))
-        return payload
-
-    mark_started = getattr(latency_tracker, "mark_voai_prewarm_started", None)
-    if callable(mark_started):
-        mark_started(normalized_trace_id)
-
-    response = None
-    try:
-        response = (requests_get or _VOAI_HTTP_SESSION.get)(
-            _VOAI_PREWARM_URL,
-            headers={"x-api-key": api_key_value},
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        payload.update(
-            {
-                "ok": True,
-                "status_code": getattr(response, "status_code", None),
-                "detail": "VoAI HTTP prewarm completed.",
-            }
-        )
-        mark_finished = getattr(latency_tracker, "mark_voai_prewarm_finished", None)
-        if callable(mark_finished):
-            mark_finished(normalized_trace_id, getattr(response, "status_code", None))
-        return payload
-    except requests.RequestException as exc:
-        payload.update(
-            {
-                "failure_code": "request_error",
-                "status_code": getattr(getattr(exc, "response", None), "status_code", None),
-                "detail": f"VoAI HTTP prewarm failed: {exc}",
-            }
-        )
-        mark_failed = getattr(latency_tracker, "mark_voai_prewarm_failed", None)
-        if callable(mark_failed):
-            mark_failed(normalized_trace_id, str(payload["detail"]))
-        return payload
-    finally:
-        if response is not None:
-            response.close()
 
 
 class VoAIStreamingTTSWorker(QThread):

@@ -29,13 +29,6 @@ DEFAULT_ELEVENLABS_VOICE_ID = "zENt0ljwLXypGqHDsdzz"
 DEFAULT_TTS_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_TTS_TIMEOUT = (5, 45)
 
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL).strip() or DEFAULT_OLLAMA_BASE_URL
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL
-OPENAI_API_KEY = (
-    os.getenv("OPENAI_API_KEY", "").strip()
-    or os.getenv("CHATGPT_API_KEY", "").strip()
-)
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", DEFAULT_OPENAI_MODEL).strip() or DEFAULT_OPENAI_MODEL
 ELEVENLABS_VOICE_ID = (
     os.getenv("ELEVENLABS_VOICE_ID", DEFAULT_ELEVENLABS_VOICE_ID).strip()
     or DEFAULT_ELEVENLABS_VOICE_ID
@@ -255,20 +248,6 @@ HOST_ACTION_ALIASES = {
     "default": "idle",
     "none": "idle",
 }
-
-HOST_ACTION_PROMPT = (
-    "若需要觸發 Host action，只能從以下白名單挑一個，且只能輸出一個，"
-    "並且必須放在整段回覆的第一句第一個字，前面不允許有空白、換行、引號或任何其他字元："
-    "[ACTION:report_news]、[ACTION:play_music]、[ACTION:wave_response]、[ACTION:laugh]、"
-    "[ACTION:angry]、[ACTION:awkward]、[ACTION:speechless]、[ACTION:listen]、[ACTION:idle]。"
-    "新聞、頭條、天氣請使用 report_news；音樂、放鬆、播歌請使用 play_music；"
-    "一般聆聽或不確定時使用 listen。禁止自創新的 action 名稱。"
-    "除了最前面的 action 前綴外，後續內容只能是自然語言回覆。"
-    "若有 action，請在 action 後立刻接自然語言第一句，讓系統可以依標點即時切句播放。"
-    "即時互動請優先只回 1 句短句，只有必要時才允許第 2 句。"
-    "不要先寒暄、不要鋪陳，第一句就直接回答，整體保持短而活潑。"
-)
-
 
 def resolve_persona_key(*candidates: str | None) -> str:
     """依序尋找存在於 PERSONA_PROMPTS 的 persona key。"""

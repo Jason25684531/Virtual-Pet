@@ -23,11 +23,11 @@ class ProviderConfigService:
             return ProviderConfig(
                 provider_type=provider_type,
                 base_url=self._environment.get("ECHOES_API_BASE_URL") or self._environment.get("OPENAI_BASE_URL") or self._api_url,
-                model_name=self._environment.get("ECHOES_API_MODEL") or self._environment.get("OPENAI_MODEL") or "gpt-4o-mini",
+                model_name=self._environment.get("ECHOES_API_MODEL") or self._environment.get("OPENAI_MODEL") or config.DEFAULT_OPENAI_MODEL,
                 api_key_env_var=next((key for key in ("ECHOES_API_KEY", "OPENAI_API_KEY", "CHATGPT_API_KEY") if self._environment.get(key) or os.environ.get(key)), "OPENAI_API_KEY"),
                 **common,
             )
-        return ProviderConfig(provider_type=ProviderType.OLLAMA, base_url=self._environment.get("OLLAMA_BASE_URL") or "http://localhost:11434", model_name=self._environment.get("OLLAMA_MODEL") or self._ollama_model, api_key_env_var=None, timeout_seconds=60.0, **common)
+        return ProviderConfig(provider_type=ProviderType.OLLAMA, base_url=self._environment.get("OLLAMA_BASE_URL") or config.DEFAULT_OLLAMA_BASE_URL, model_name=self._environment.get("OLLAMA_MODEL") or self._ollama_model, api_key_env_var=None, timeout_seconds=60.0, **common)
 
     def configure(self, provider: str) -> dict[str, Any]:
         return self._runtime.configure(self.build(provider)).to_dict()

@@ -29,15 +29,12 @@ from audio_worker import AudioStreamWorker
 from character_library import ASSETS_WEBM_DIR
 import config
 from interaction_trace import InteractionLatencyTracker
+from pet_harness.app.commands import ACTION_DIRECTIVE_PATTERN
 
 if TYPE_CHECKING:
     from character_library import CharacterLibrary
     from ui.transparent_window import TransparentWindow
 
-ACTION_DIRECTIVE_PATTERN = re.compile(
-    r"(?:\[\s*ACTION\s*:\s*(?P<bracket>[A-Za-z0-9_-]+)\s*\]|(?<!\w)ACTION\s*:\s*(?P<bare>[A-Za-z0-9_-]+))",
-    re.IGNORECASE,
-)
 REPLY_STATUS_LABEL = "正在回覆"
 #為了兼顧 VOAI 和 ElevenLabs 的 TTS 響應時間，並給予角色動作足夠的播放時間，設定新聞播報的語音觸發延遲為 2.5 秒。這樣可以確保在大多數情況下，角色的新聞播報動作能夠先行展現，提升互動的自然感。
 REPORT_NEWS_AUDIO_TRIGGER_DELAY_SECONDS = 2.5
@@ -94,11 +91,13 @@ class MotionCoordinator(QObject):
         motion_path_resolver=None,
         tts_enabled: bool = True,
         latency_tracker: InteractionLatencyTracker | None = None,
+        provider_runtime=None,
         parent=None,
     ):
         super().__init__(parent)
         self._window = window
         self._library = library
+        self._provider_runtime = provider_runtime
         self._workers: list[object] = []
         self._tts_worker_factory = (
             tts_worker_factory if callable(tts_worker_factory) else AdaptiveTTSFallbackWorker
@@ -275,6 +274,7 @@ class MotionCoordinator(QObject):
             parent=self,
             intent_name=normalized_intent,
             character_id=current_character_id,
+            provider_runtime=self._provider_runtime,
         )
         self._start_worker(
             worker,

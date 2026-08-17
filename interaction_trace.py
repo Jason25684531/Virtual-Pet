@@ -60,19 +60,6 @@ class InteractionLatencyTracker:
         self._log(trace_id, f"收到文字，source={state.source}，text={_preview_text(state.input_text)}")
         return trace_id
 
-    def mark_voai_prewarm_started(self, trace_id: str | None):
-        self._record(trace_id, "voai_prewarm_started", "VoAI HTTP prewarm started", first_only=True)
-
-    def mark_voai_prewarm_finished(self, trace_id: str | None, status_code: int | None = None):
-        detail = "VoAI HTTP prewarm finished"
-        if status_code is not None:
-            detail = f"{detail} (HTTP {status_code})"
-        self._record(trace_id, "voai_prewarm_finished", detail, first_only=True)
-
-    def mark_voai_prewarm_failed(self, trace_id: str | None, detail: str):
-        normalized = str(detail or "VoAI HTTP prewarm failed").strip() or "VoAI HTTP prewarm failed"
-        self._record(trace_id, "voai_prewarm_failed", normalized, first_only=True)
-
     def mark_action_dispatched(self, trace_id: str | None, action_name: str):
         self._record(trace_id, "first_action_dispatched", f"motion 命中 `{action_name}`", first_only=True)
 

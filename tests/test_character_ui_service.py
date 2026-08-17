@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,8 @@ from pet_harness.storage.sqlite_store import SQLiteStore
 from pet_harness.ui.character_ui_service import LAST_PLAYED_AT_KEY, PLAYTIME_SECONDS_KEY, CharacterUiService
 from pet_harness.asset.asset_contract import AssetResponse
 from pet_harness.asset.asset_repository import AssetRepository
+
+_FRESH_CREATED_AT = datetime.now(UTC).isoformat()
 
 _SKILL_FIXTURES = {
     "joke_skill": {"trigger": "joke, funny", "behavior": "laugh", "xp_reward": "5"},
@@ -287,8 +290,8 @@ class TestGetActiveState:
         router.switch_character("Choppr")
         store = SQLiteStore(router.get_active_character().sqlite_path)
         store.initialize()
-        store.set_setting("asset_generation_freeze", {"created_at": "2026-08-14T00:00:00+00:00"})
-        store.set_setting("asset_pending_motion_offer", {"variant": "development", "source_png": "png", "job_id": "job-1", "reason": "level_up", "created_at": "2026-08-14T00:00:00+00:00"})
+        store.set_setting("asset_generation_freeze", {"created_at": _FRESH_CREATED_AT})
+        store.set_setting("asset_pending_motion_offer", {"variant": "development", "source_png": "png", "job_id": "job-1", "reason": "level_up", "created_at": _FRESH_CREATED_AT})
 
         class AssetService:
             def create_variant_motion_request(self, *_args, **_kwargs):
@@ -304,8 +307,8 @@ class TestGetActiveState:
         router.switch_character("Choppr")
         store = SQLiteStore(router.get_active_character().sqlite_path)
         store.initialize()
-        store.set_setting("asset_generation_freeze", {"created_at": "2026-08-14T00:00:00+00:00"})
-        store.set_setting("asset_pending_motion_offer", {"variant": "development", "source_png": "png", "job_id": "job-1", "reason": "level_up", "created_at": "2026-08-14T00:00:00+00:00"})
+        store.set_setting("asset_generation_freeze", {"created_at": _FRESH_CREATED_AT})
+        store.set_setting("asset_pending_motion_offer", {"variant": "development", "source_png": "png", "job_id": "job-1", "reason": "level_up", "created_at": _FRESH_CREATED_AT})
 
         ui_service.confirm_motion_generation("Choppr", False)
 
@@ -348,7 +351,7 @@ class TestGetActiveState:
         router.switch_character("Choppr")
         store = SQLiteStore(router.get_active_character().sqlite_path)
         store.initialize()
-        store.set_setting("asset_pending_motion_offer", {"variant": "development", "source_png": "png", "job_id": "job-1", "reason": "level_up", "created_at": "2026-08-14T00:00:00+00:00"})
+        store.set_setting("asset_pending_motion_offer", {"variant": "development", "source_png": "png", "job_id": "job-1", "reason": "level_up", "created_at": _FRESH_CREATED_AT})
 
         state = ui_service.get_active_state()
 
@@ -371,7 +374,7 @@ class TestGetActiveState:
         router.switch_character("Choppr")
         store = SQLiteStore(router.get_active_character().sqlite_path)
         store.initialize()
-        store.set_setting("asset_pending_motion_offer", {"variant": "event", "source_png": "png", "job_id": "job-1", "reason": "time_interval", "created_at": "2026-08-14T00:00:00+00:00"})
+        store.set_setting("asset_pending_motion_offer", {"variant": "event", "source_png": "png", "job_id": "job-1", "reason": "time_interval", "created_at": _FRESH_CREATED_AT})
         monkeypatch.setattr(character_ui_module.CharacterLibrary, "list_variant_inventory", lambda _self, _id: [
             {"variant": "event", "state": "generating", "thumb": "png", "is_active": False},
         ])
@@ -383,7 +386,7 @@ class TestGetActiveState:
         router.switch_character("Choppr")
         store = SQLiteStore(router.get_active_character().sqlite_path)
         store.initialize()
-        store.set_setting("asset_pending_motion_offer", {"variant": "development", "source_png": "png", "job_id": "job-1", "reason": "level_up", "created_at": "2026-08-14T00:00:00+00:00"})
+        store.set_setting("asset_pending_motion_offer", {"variant": "development", "source_png": "png", "job_id": "job-1", "reason": "level_up", "created_at": _FRESH_CREATED_AT})
 
         captured = {}
 
@@ -404,7 +407,7 @@ class TestGetActiveState:
         router.switch_character("Choppr")
         store = SQLiteStore(router.get_active_character().sqlite_path)
         store.initialize()
-        store.set_setting("asset_pending_motion_offer", {"variant": "development", "source_png": "png", "job_id": "job-1", "reason": "level_up", "created_at": "2026-08-14T00:00:00+00:00"})
+        store.set_setting("asset_pending_motion_offer", {"variant": "development", "source_png": "png", "job_id": "job-1", "reason": "level_up", "created_at": _FRESH_CREATED_AT})
 
         result = ui_service.confirm_motion_generation("Choppr", False)
 

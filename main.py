@@ -163,14 +163,19 @@ def _run_harness_mode(app, stt_provider=None):
     )
     library = CharacterLibrary()
     window = TransparentWindow(
-        brain_mode="harness",
         latency_tracker=latency_tracker,
         library=library,
         adapter=adapter,
         lifecycle_shutdown=coordinator.shutdown,
         action_bus=coordinator.action_bus,
     )
-    motion = MotionCoordinator(window, library, latency_tracker=latency_tracker, parent=window)
+    motion = MotionCoordinator(
+        window,
+        library,
+        latency_tracker=latency_tracker,
+        provider_runtime=coordinator.provider_runtime,
+        parent=window,
+    )
     window.configure_motion(motion)
     coordinator.configure_motion(MotionPortAdapter(motion, window))
     PresentationEventBinder(window, coordinator.event_bus)
@@ -186,8 +191,6 @@ def _run_harness_mode(app, stt_provider=None):
     coordinator.lifecycle.register(executor)
 
     window.configure_runtime_context(
-        runtime_contract=None,
-        live_runtime_available=False,
         voice_status_adapter=VoiceRuntimeStatusAdapter(stt_controller=stt_controller),
     )
     window.show()

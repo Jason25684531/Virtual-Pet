@@ -87,13 +87,12 @@ class PetHarnessEngine:
             self.memory_retriever = ContextualMemoryRetriever(
                 self.memory_store, self.memory_store.embed_dense, self.memory_store.sparse_encoder, rewriter
             )
+        self._memory_extractor = None
         if self.memory_retriever is not None and self._character_id is not None:
-            from pet_harness.memory.memory_extractor import WholeTurnMemoryExtractor
             from pet_harness.memory.memory_item_repository import MemoryItemRepository
-            self._memory_extractor = WholeTurnMemoryExtractor()
             self._memory_repository = MemoryItemRepository(self.store, self._character_id)
         else:
-            self._memory_extractor = self._memory_repository = None
+            self._memory_repository = None
 
         # provider 由 ProviderRuntime 注入;provider_config 僅保留路由偏好,
         # 角色 store 不再持久化任何 provider 設定或狀態。
