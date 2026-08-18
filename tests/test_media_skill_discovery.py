@@ -154,7 +154,11 @@ def test_tool_first_and_retrieval_run_in_parallel(tmp_path, monkeypatch):
         return None, None
 
     engine._run_tool_first = run_tool
-    engine.handle_event({"text": "news", "source": "test"})
+    event = engine.handle_event({"text": "news", "source": "test"})
+
+    trace = event.metadata["agentic"]["pre_llm_trace"]
+    assert trace["execution"] == "parallel"
+    assert trace["pre_llm_ms"] >= trace["expected_parallel_ms"]
 
 
 def test_adapter_returns_and_persists_normalized_discovery(tmp_path, monkeypatch):

@@ -108,13 +108,20 @@ class AdaptiveTTSFallbackWorker(QObject):
             },
         )
         if normalized_provider == "elevenlabs":
-            worker = self._elevenlabs_worker_factory(
-                text=self._text,
-                reply_id=self._reply_id,
-                trace_id=self._trace_id,
-                voice_id=self._fallback_voice_id,
-                parent=self,
-            )
+            worker_kwargs = {
+                "text": self._text,
+                "reply_id": self._reply_id,
+                "trace_id": self._trace_id,
+                "voice_id": self._fallback_voice_id,
+                "parent": self,
+            }
+            try:
+                signature = inspect.signature(self._elevenlabs_worker_factory)
+                if "pcm_stream_sink" in signature.parameters:
+                    worker_kwargs["pcm_stream_sink"] = self._pcm_stream_sink
+            except (TypeError, ValueError):
+                pass
+            worker = self._elevenlabs_worker_factory(**worker_kwargs)
         else:
             worker_kwargs = {
                 "text": self._text,

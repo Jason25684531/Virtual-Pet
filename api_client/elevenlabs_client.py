@@ -37,6 +37,7 @@ class ElevenLabsStreamingTTSWorker(QThread):
         reply_id: str | None = None,
         trace_id: str | None = None,
         voice_id: str | None = None,
+        pcm_stream_sink=None,
         requests_post=None,
         parent=None,
     ):
@@ -45,6 +46,7 @@ class ElevenLabsStreamingTTSWorker(QThread):
         self._reply_id = (reply_id or uuid4().hex).strip()
         self._trace_id = (trace_id or "").strip()
         self._voice_id = (voice_id or "").strip()
+        self._pcm_stream_sink = pcm_stream_sink
         self._requests_post = requests_post or requests.post
 
     def run(self):
@@ -62,7 +64,7 @@ class ElevenLabsStreamingTTSWorker(QThread):
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
         headers = {
             "xi-api-key": api_key,
-            "Accept": "audio/mpeg",
+            "Accept": "audio/pcm" if self._pcm_stream_sink is not None else "audio/mpeg",
             "Content-Type": "application/json",
         }
         payload = {
@@ -81,13 +83,15 @@ class ElevenLabsStreamingTTSWorker(QThread):
 
         response = None
         bytes_forwarded = 0
-        audio_buffer = io.BytesIO()
+        audio_buffer = io.BytesIO() if self._pcm_stream_sink is None else None
+        pcm_segment_started = False
+        pcm_segment_finished = False
         try:
             response = self._requests_post(
                 url,
                 headers=headers,
                 params={
-                    "output_format": os.getenv("ELEVENLABS_OUTPUT_FORMAT", "mp3_22050_32"),
+                    "output_format": "pcm_24000" if self._pcm_stream_sink is not None else os.getenv("ELEVENLABS_OUTPUT_FORMAT", "mp3_22050_32"),
                     "optimize_streaming_latency": os.getenv("ELEVENLABS_OPTIMIZE_STREAMING_LATENCY", "3"),
                 },
                 json=payload,
@@ -114,14 +118,27 @@ class ElevenLabsStreamingTTSWorker(QThread):
                         },
                     )
                 bytes_forwarded += len(chunk)
-                audio_buffer.write(chunk)
+                if self._pcm_stream_sink is not None:
+                    self._pcm_stream_sink.enqueue_pcm_chunk(
+                        chunk,
+                        self._reply_id,
+                        self._trace_id,
+                        sample_rate=24000,
+                    )
+                    pcm_segment_started = True
+                else:
+                    audio_buffer.write(chunk)
 
             if bytes_forwarded <= 0:
                 self.finished_signal.emit(False, "ElevenLabs 串流未收到可播放音訊資料。", None)
                 return
 
-            audio_buffer.seek(0)
-            self.audio_ready_signal.emit(audio_buffer, self._reply_id, self._trace_id)
+            if self._pcm_stream_sink is not None:
+                self._pcm_stream_sink.finish_pcm_segment(self._reply_id, self._trace_id)
+                pcm_segment_finished = True
+            else:
+                audio_buffer.seek(0)
+                self.audio_ready_signal.emit(audio_buffer, self._reply_id, self._trace_id)
 
             result_payload = {
                 "reply_id": self._reply_id,
@@ -129,6 +146,7 @@ class ElevenLabsStreamingTTSWorker(QThread):
                 "text": speech_text,
                 "bytes_forwarded": bytes_forwarded,
                 "queued_playback": True,
+                "format": "pcm" if self._pcm_stream_sink is not None else "mp3",
             }
             self.finished_signal.emit(True, "TTS 音訊取得完成，已送入播放佇列。", result_payload)
         except requests.RequestException as exc:
@@ -136,5 +154,7 @@ class ElevenLabsStreamingTTSWorker(QThread):
         except Exception as exc:  # pragma: no cover - 依外部音訊環境而定
             self.finished_signal.emit(False, f"TTS 音訊取得失敗: {exc}", None)
         finally:
+            if self._pcm_stream_sink is not None and pcm_segment_started and not pcm_segment_finished:
+                self._pcm_stream_sink.finish_pcm_segment(self._reply_id, self._trace_id)
             if response is not None:
                 response.close()

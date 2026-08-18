@@ -43,13 +43,11 @@ class WebArticleTool:
                 if articles:
                     break
             self._cache[key] = (now, articles)
-        taipei = timezone(timedelta(hours=8))
-        today = now.astimezone(taipei).date()
         normalized: dict[str, Article] = {}
         for article in articles:
             if not all((article.id, article.title, article.url, article.published_at, article.category is not None, article.summary is not None)):
                 continue
-            if article.published_at.astimezone(taipei).date() == today:
+            if article.published_at:
                 # ponytail: 以 article.id(RSS guid,或抓取器填入的完整 URL)去重;
                 # GNN 文章識別碼在 query string(?sn=...),去除 query 會把當日全部
                 # 文章誤併成一篇。

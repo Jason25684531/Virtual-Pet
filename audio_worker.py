@@ -253,19 +253,26 @@ class AudioStreamWorker(QObject):
         """將一段音訊放入播放佇列。可在任意 Thread 呼叫。"""
         self._queue.put((audio_bytes, reply_id, str(trace_id)))
 
-    def enqueue_pcm_chunk(self, chunk: bytes, reply_id: str, trace_id: str = "") -> None:
+    def enqueue_pcm_chunk(
+        self,
+        chunk: bytes,
+        reply_id: str,
+        trace_id: str = "",
+        sample_rate: int | None = None,
+    ) -> None:
         normalized_trace_id = str(trace_id or "").strip()
         if not normalized_trace_id:
             raise ValueError("PCM session playback requires a non-empty trace_id")
         with self._pcm_lock:
             session = self._pcm_sessions.get(normalized_trace_id)
             if session is None:
+                session_sample_rate = int(sample_rate or self._pcm_sample_rate)
                 session = _PcmTraceSession(
                     self,
                     normalized_trace_id,
                     reply_id,
-                    self._pcm_player_factory(self._pcm_sample_rate, self._pcm_channels),
-                    self._pcm_bytes_per_second,
+                    self._pcm_player_factory(session_sample_rate, self._pcm_channels),
+                    max(1, session_sample_rate * self._pcm_channels * 2),
                 )
                 self._pcm_sessions[normalized_trace_id] = session
         session.enqueue_chunk(reply_id, chunk)

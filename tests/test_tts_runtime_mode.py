@@ -124,6 +124,40 @@ class TestAdaptiveTTSFallbackWorker:
         assert worker._provider_chain == ["voai", "elevenlabs"]
 
 
+def test_elevenlabs_pcm_chunks_are_handed_to_the_pcm_sink(monkeypatch):
+    from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
+
+    class Response:
+        headers = {"content-type": "audio/pcm"}
+        def raise_for_status(self): pass
+        def iter_content(self, chunk_size): return iter([b"one", b"two"])
+        def close(self): pass
+
+    class Sink:
+        def __init__(self): self.chunks = []; self.finished = []
+        def enqueue_pcm_chunk(self, chunk, reply_id, trace_id, sample_rate=None):
+            self.chunks.append((chunk, reply_id, trace_id, sample_rate))
+        def finish_pcm_segment(self, reply_id, trace_id): self.finished.append((reply_id, trace_id))
+
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "key")
+    sink = Sink()
+    request = {}
+    def post(*args, **kwargs):
+        request.update(kwargs)
+        return Response()
+
+    worker = ElevenLabsStreamingTTSWorker(
+        "hello", reply_id="reply", trace_id="trace", voice_id="voice",
+        pcm_stream_sink=sink, requests_post=post,
+    )
+    worker.run()
+
+    assert sink.chunks == [(b"one", "reply", "trace", 24000), (b"two", "reply", "trace", 24000)]
+    assert sink.finished == [("reply", "trace")]
+    assert request["headers"]["Accept"] == "audio/pcm"
+    assert request["params"]["output_format"] == "pcm_24000"
+
+
 class TestVoAIFastFailClassification:
     """VoAI 失敗時必須標記 fast_fail，才能 cascade 到 ElevenLabs（api provider）。"""
 

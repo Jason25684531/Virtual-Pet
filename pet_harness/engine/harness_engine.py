@@ -8,6 +8,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from character_library import CharacterLibrary
@@ -35,6 +36,11 @@ from pet_harness.xp.reward_manager import RewardManager
 from pet_harness.xp.xp_manager import XPManager
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _measure_call(callable_, *args):
+    started_at = perf_counter()
+    return callable_(*args), round((perf_counter() - started_at) * 1000)
 CHARACTER_SKILL_ENABLED_KEY = "character_skill_enabled"
 MEDIA_SKILL_MIGRATION_KEY = "media_skill_migration_v1"
 LEGACY_MEDIA_SKILLS = {"music_bgm": "youtube_music_playback", "game_news": "bahamut_daily_news"}
@@ -304,15 +310,28 @@ class PetHarnessEngine:
             prior_user, prior_assistant, age = previous_turn(conversation_history, datetime.now(UTC))
             retrieval_request = RetrievalRequest(self._character_id or "default", user_event.text, prior_user, prior_assistant, age)
 
+        pre_llm_started_at = perf_counter()
+        retrieval_ms = None
         if retrieval_request is None:
+            tool_started_at = perf_counter()
             tool_first_event, tool_first_result = self._run_tool_first(user_event, deterministic_skill)
+            tool_ms = round((perf_counter() - tool_started_at) * 1000)
         else:
             # Both results are inputs to the prompt; state updates remain on this thread.
             with ThreadPoolExecutor(max_workers=2) as executor:
-                tool_future = executor.submit(self._run_tool_first, user_event, deterministic_skill)
-                retrieval_future = executor.submit(self.memory_retriever.retrieve, retrieval_request)
-                tool_first_event, tool_first_result = tool_future.result()
-                retrieval_result = retrieval_future.result()
+                tool_future = executor.submit(_measure_call, self._run_tool_first, user_event, deterministic_skill)
+                retrieval_future = executor.submit(_measure_call, self.memory_retriever.retrieve, retrieval_request)
+                (tool_first_event, tool_first_result), tool_ms = tool_future.result()
+                retrieval_result, retrieval_ms = retrieval_future.result()
+        pre_llm_ms = round((perf_counter() - pre_llm_started_at) * 1000)
+        pre_llm_trace = {
+            "execution": "parallel" if retrieval_request is not None else "tool_only",
+            "tool_ms": tool_ms,
+            "retrieval_ms": retrieval_ms,
+            "pre_llm_ms": pre_llm_ms,
+            "expected_parallel_ms": max(tool_ms, retrieval_ms or 0),
+        }
+        LOGGER.info("[PRE-LLM] %s", pre_llm_trace)
 
         if retrieval_result is not None:
             memory_hits = retrieval_result.evidence
@@ -359,6 +378,7 @@ class PetHarnessEngine:
                     "memory_status_reason": memory_status.reason,
                     "memory_hit_count": len(memory_hits),
                     "retrieval_trace": retrieval_result.trace.to_dict() if retrieval_result else None,
+                    "pre_llm_trace": pre_llm_trace,
                 },
                 "tool_result": tool_result_payload,
                 "asset_result": asset_result,
