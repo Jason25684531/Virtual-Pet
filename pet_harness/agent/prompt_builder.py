@@ -129,7 +129,12 @@ class PromptBuilder:
     def _memory_hits_text(hits: list[MemoryHit] | None) -> str:
         if not hits:
             return "none"
-        return "\n".join(f"- {hit.text[:200]}" for hit in hits)
+        lines = []
+        for hit in hits:
+            key = getattr(hit, "memory_key", "") or ""
+            attribute = key.split(".")[1] if len(key.split(".")) > 1 else "記憶"
+            lines.append(f"- [{attribute}] {hit.text[:200]}")
+        return "\n".join(lines)
 
     @staticmethod
     def _tool_result_text(result: ToolResult | None) -> str:

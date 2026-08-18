@@ -29,6 +29,13 @@ class MemoryItem:
 
 
 @dataclass(frozen=True)
+class RetrievalCandidate:
+    item: MemoryItem
+    score: float
+    fusion: str
+
+
+@dataclass(frozen=True)
 class RetrievalRequest:
     character_id: str
     current_turn_text: str
@@ -44,9 +51,13 @@ class RetrievalTrace:
     follow_up_reason: str | None
     rewrite_tier: int
     standalone_query: str
-    dense_hit_count: int = 0
-    sparse_hit_count: int = 0
     fused_count: int = 0
+    dense_attempted: bool = False
+    sparse_attempted: bool = False
+    top_score: float | None = None
+    top_score_kind: str | None = None
+    relevance_gate_enabled: bool = False
+    dense_min_score: float = 0.0
     policy_dropped: dict[str, int] = field(default_factory=dict)
     sparse_available: bool = False
     latency_ms: dict[str, float] = field(default_factory=dict)
@@ -61,9 +72,13 @@ class RetrievalTrace:
             "follow_up_reason": self.follow_up_reason,
             "rewrite_tier": self.rewrite_tier,
             "standalone_query": self.standalone_query,
-            "dense_hit_count": self.dense_hit_count,
-            "sparse_hit_count": self.sparse_hit_count,
             "fused_count": self.fused_count,
+            "dense_attempted": self.dense_attempted,
+            "sparse_attempted": self.sparse_attempted,
+            "top_score": self.top_score,
+            "top_score_kind": self.top_score_kind,
+            "relevance_gate_enabled": self.relevance_gate_enabled,
+            "dense_min_score": self.dense_min_score,
             "policy_dropped": self.policy_dropped,
             "sparse_available": self.sparse_available,
             "latency_ms": self.latency_ms,

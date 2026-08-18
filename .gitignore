@@ -70,3 +70,4 @@ artifacts/*
 CONTEXT-UI.md
 
 tests/ref_pic/*
+outputs/retrieval_eval/latest.json

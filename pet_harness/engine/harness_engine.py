@@ -530,7 +530,7 @@ class PetHarnessEngine:
         prompt = (
             "Extract only user-stated facts, or explicit assistant promises, as a JSON array. "
             "Each item must contain memory_key, memory_type (semantic or episodic), and text. "
-            "memory_key must be one of 使用者.事件, 使用者.喜好, 使用者.最愛水果, 使用者.狀態, 使用者.計劃, 角色.承諾. "
+            "memory_key must use 使用者/角色 plus an allowed attribute; 喜好、狀態、計劃 should add one stable topic/entity subject as a third segment (for example 使用者.喜好.拉麵), while legacy two-segment keys remain valid. Never use a value, polarity, or action as the subject. "
             "A promise must answer『你之前答應要做什麼？』. "
             "Examples to extract: 使用者事實『我喜歡蘋果』; true promise『下次我幫你查攻略』. "
             "Do not extract conditional offers『如果需要幫忙請告訴我』, wishes『希望你的牙齒能健康』, "

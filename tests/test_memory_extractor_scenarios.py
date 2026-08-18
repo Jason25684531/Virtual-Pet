@@ -56,9 +56,23 @@ def test_extractor_keeps_explicit_promises_but_drops_second_person_echoes():
     echo = LlmMemoryExtractor(lambda *_: '[{"memory_key":"使用者.喜好","memory_type":"semantic","text":"你喜歡蘋果"}]').extract(
         "e2", "我喜歡蘋果", "你喜歡蘋果"
     )
-    assert [(item.memory_key, item.text) for item in echo] == [("使用者.喜好", "我喜歡蘋果")]
+    assert [(item.memory_key, item.text) for item in echo] == [("使用者.喜好.蘋果", "我喜歡蘋果")]
 
 
 def test_memory_key_uses_only_the_allowed_traditional_attributes():
     assert not is_valid_memory_key("使用者.偏好")
     assert not is_valid_memory_key("角色.计划")
+
+
+def test_preference_subject_is_atomic_across_positive_and_negative_phrasing():
+    extractor = WholeTurnMemoryExtractor()
+    assert extractor.extract("e1", "我喜歡吃拉麵", "")[0].memory_key == "使用者.喜好.拉麵"
+    assert extractor.extract("e2", "我現在不喜歡拉麵了", "")[0].memory_key == "使用者.喜好.拉麵"
+
+
+def test_long_subjects_use_distinct_bounded_identity():
+    extractor = WholeTurnMemoryExtractor()
+    first = extractor.extract("e1", "我喜歡超級長長長長長長長長長長長長長長長長長長甲", "")[0].memory_key
+    second = extractor.extract("e2", "我喜歡超級長長長長長長長長長長長長長長長長長長乙", "")[0].memory_key
+    assert first != second
+    assert len(first.rsplit(".", 1)[1]) <= 20

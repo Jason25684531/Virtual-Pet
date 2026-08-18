@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Callable
 
-from pet_harness.memory.memory_models import RetrievalRequest, RetrievalResult, RetrievalTrace
+from pet_harness.memory.memory_models import RetrievalCandidate, RetrievalRequest, RetrievalResult, RetrievalTrace
 from pet_harness.memory.query_rewriter import FollowUpDetector
 from pet_harness.memory.result_policy import ResultPolicy
 
@@ -31,7 +31,8 @@ class ContextualMemoryRetriever:
             if rewritten:
                 query, tier = rewritten, 0
             else:
-                query = " ".join(part for part in (request.previous_user_text, request.previous_assistant_text, query) if part)
+                assistant = request.previous_assistant_text if (request.previous_assistant_text or "").rstrip().endswith(("?", "？")) else None
+                query = " ".join(part for part in (request.previous_user_text, assistant, query) if part)
                 tier = 1
         try:
             dense_started = time.perf_counter()
@@ -44,18 +45,23 @@ class ContextualMemoryRetriever:
                 sparse = self.sparse_encoder.encode(query)
                 latency["sparse"] = (time.perf_counter() - sparse_started) * 1000
             fusion_started = time.perf_counter()
-            items = self.index.search(dense, sparse, request.top_k)
+            candidates = self.index.search(dense, sparse, request.top_k)
             latency["fusion"] = (time.perf_counter() - fusion_started) * 1000
+            items = [candidate.item if isinstance(candidate, RetrievalCandidate) else candidate for candidate in candidates]
             policy_started = time.perf_counter()
             evidence, dropped = self.policy.apply(items, request.top_k)
             latency["policy"] = (time.perf_counter() - policy_started) * 1000
             latency["total"] = (time.perf_counter() - started) * 1000
-            counts = getattr(self.index, "last_search_counts", {})
+            top = candidates[0] if candidates else None
+            top_score = float(top.score) if isinstance(top, RetrievalCandidate) else None
+            top_kind = top.fusion if isinstance(top, RetrievalCandidate) else ("rrf" if available else "cosine")
+            threshold = __import__("config").MEMORY_DENSE_MIN_SCORE
             trace = RetrievalTrace(
                 bool(reason), reason, tier, query,
-                dense_hit_count=counts.get("dense", len(items)),
-                sparse_hit_count=counts.get("sparse", 0),
-                fused_count=counts.get("fused", len(items)),
+                fused_count=len(candidates), dense_attempted=True, sparse_attempted=available,
+                top_score=top_score,
+                top_score_kind=top_kind,
+                relevance_gate_enabled=threshold > 0, dense_min_score=threshold,
                 policy_dropped=dropped, sparse_available=available, latency_ms=latency,
             )
             return RetrievalResult(evidence, trace)

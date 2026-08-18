@@ -9,6 +9,7 @@ class MemoryHit:
     event_id: str
     text: str
     score: float
+    memory_key: str | None = None
 
 
 @dataclass(frozen=True)

@@ -2,45 +2,44 @@ from __future__ import annotations
 
 import argparse
 import json
-import statistics
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pet_harness.memory.contextual_memory_retriever import ContextualMemoryRetriever
-from pet_harness.memory.hybrid_qdrant_memory_store import HybridQdrantMemoryStore
-from pet_harness.memory.memory_models import RetrievalRequest
-
-
-def metrics(rankings, cases, durations):
-    if len(rankings) != len(cases) or len(durations) != len(cases):
-        raise ValueError("evaluation output does not match the case count")
-    found = [any(any(fact in hit for hit in ranking) for fact in case["expected_facts"]) if case["expected_facts"] else not ranking for ranking, case in zip(rankings, cases)]
-    reciprocal = [next((1 / (i + 1) for i, hit in enumerate(ranking) if any(fact in hit for fact in case["expected_facts"])), 0) for ranking, case in zip(rankings, cases)]
-    ordered = sorted(durations)
-    ndcg = [next((1 / __import__("math").log2(i + 2) for i, hit in enumerate(ranking) if any(fact in hit for fact in case["expected_facts"])), 0) for ranking, case in zip(rankings, cases)]
-    return {"recall_at_5": sum(found) / len(cases), "mrr": sum(reciprocal) / len(cases), "ndcg_at_5": sum(ndcg) / len(cases), "empty_retrieval_rate": sum(not x for x in rankings) / len(cases), "p50_ms": statistics.median(durations), "p95_ms": ordered[round(.95 * (len(ordered) - 1))]}
+from scripts.eval_harness import run_evaluation, run_threshold_sweep
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval-set", default="tests/data/retrieval_eval_set.json")
+    parser.add_argument("--real-encoder", action="store_true")
+    parser.add_argument("--sweep", action="store_true")
     args = parser.parse_args()
     cases = json.loads(Path(args.eval_set).read_text(encoding="utf-8"))
-    hybrid = HybridQdrantMemoryStore(character_id="miku", path="data/characters/miku/qdrant")
-    retriever = ContextualMemoryRetriever(hybrid, hybrid.embed_dense, hybrid.sparse_encoder)
-    rankings, durations, cross_character_leakage, wrong_assistant_evidence = [], [], 0, 0
-    for case in cases:
-        started = time.perf_counter()
-        result = retriever.retrieve(RetrievalRequest("miku", case["current_turn"], case.get("previous_user"), case.get("previous_assistant")))
-        durations.append((time.perf_counter() - started) * 1000)
-        rankings.append([item.text for item in result.evidence])
-        cross_character_leakage += sum(item.character_id != "miku" for item in result.evidence)
-        wrong_assistant_evidence += sum(bool(case.get("previous_assistant")) and item.text == case["previous_assistant"] for item in result.evidence)
-    print(json.dumps({"hybrid": {"store_status": hybrid.status().state, **metrics(rankings, cases, durations), "cross_character_leakage": cross_character_leakage, "wrong_assistant_evidence": wrong_assistant_evidence}}, ensure_ascii=False))
-    return 0
+    report = run_evaluation(cases, real_encoder=args.real_encoder)
+    if args.real_encoder and args.sweep:
+        calibration = run_threshold_sweep(cases, [round(i / 20, 2) for i in range(19)])
+        report["baseline"] = calibration.get("rows", [{}])[0] if calibration.get("rows") else {}
+        report["threshold_sweep"] = calibration.get("rows", [])
+        report["selection"] = calibration.get("selection", {})
+        report["real_model_calibration"] = calibration.get("calibration", report).get("real_model_calibration", report.get("real_model_calibration"))
+        selected = report["selection"].get("selected_threshold", 0.0)
+        if report["threshold_sweep"] and report["selection"].get("selected") and report["valid_relevant_cases"] >= 10 and report["valid_no_memory_cases"] >= 5:
+            report["final"] = run_evaluation(cases, real_encoder=True)
+        else:
+            report["final"] = report
+    output = Path("outputs/retrieval_eval/latest.json")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print("Evaluation Summary")
+    for key in ("cases", "valid_relevant_cases", "valid_no_memory_cases", "recall_at_3", "mrr_at_3", "no_memory_rejection_rate", "production_qdrant_calls_per_query", "latency_ms", "real_model_calibration", "selection"):
+        if key in report:
+            print(f"{key}: {report[key]}")
+    print("Dense cosine calibration:", json.dumps(report["dense_scores"], ensure_ascii=False))
+    for failure in report["case_results"]:
+        print("FAILED", json.dumps(failure, ensure_ascii=False))
+    return 2 if report["configuration_failure_count"] else 0
 
 
 if __name__ == "__main__":

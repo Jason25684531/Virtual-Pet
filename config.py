@@ -130,6 +130,7 @@ def _read_float_env(name: str, default: float) -> float:
 
 SEMANTIC_ROUTING_ENABLED = _read_bool_env("SEMANTIC_ROUTING_ENABLED", True)
 MEMORY_LLM_REWRITE_ENABLED = _read_bool_env("MEMORY_LLM_REWRITE_ENABLED", False)
+MEMORY_DENSE_MIN_SCORE = _read_float_env("MEMORY_DENSE_MIN_SCORE", 0.55)
 SEMANTIC_ROUTING_SHADOW_MODE = _read_bool_env("SEMANTIC_ROUTING_SHADOW_MODE", True)
 SEMANTIC_ROUTING_MODEL = os.getenv("SEMANTIC_ROUTING_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2").strip()
 SEMANTIC_ROUTING_COLLECTION = os.getenv("SEMANTIC_ROUTING_COLLECTION", "skills").strip() or "skills"

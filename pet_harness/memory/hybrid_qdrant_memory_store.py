@@ -4,14 +4,12 @@ from pathlib import Path
 from typing import Any
 
 from pet_harness.memory.base_memory_store import BaseMemoryStore, MemoryHit, MemoryStoreStatus
-from pet_harness.memory.memory_models import MemoryItem
+from pet_harness.memory.memory_models import MemoryItem, RetrievalCandidate
 from pet_harness.memory.sparse_encoder import JiebaBm25SparseEncoder
 
 
 class HybridQdrantMemoryStore(BaseMemoryStore):
     """Per-character hybrid search index; SQLite remains the source of truth."""
-
-    MAX_ITEMS = 500
 
     def __init__(
         self,
@@ -27,7 +25,6 @@ class HybridQdrantMemoryStore(BaseMemoryStore):
         self._client = client
         self._dense_encoder = dense_encoder
         self.sparse_encoder = sparse_encoder or JiebaBm25SparseEncoder()
-        self.last_search_counts = {"dense": 0, "sparse": 0, "fused": 0}
         try:
             self._ensure_ready(path)
             self._status = MemoryStoreStatus("ready")
@@ -61,8 +58,8 @@ class HybridQdrantMemoryStore(BaseMemoryStore):
         if self._status.state != "ready" or not query.strip():
             return []
         dense = self.embed_dense(query)
-        items = self.search(dense, self.sparse_encoder.encode(query), top_k)
-        return [MemoryHit(item.source_event_id or "", item.text, 0.0) for item in items]
+        candidates = self.search(dense, self.sparse_encoder.encode(query), top_k)
+        return [MemoryHit(candidate.item.source_event_id or "", candidate.item.text, candidate.score, candidate.item.memory_key) for candidate in candidates]
 
     def embed_dense(self, text: str) -> list[float]:
         return list(next(self._dense_encoder.embed([text])))
@@ -80,21 +77,7 @@ class HybridQdrantMemoryStore(BaseMemoryStore):
                 vectors["sparse"] = models.SparseVector(indices=list(sparse), values=list(sparse.values()))
             points.append(models.PointStruct(id=item.memory_id, vector=vectors, payload=self._payload(item)))
         self._client.upsert(collection_name=self.collection, points=points, wait=True)
-        self._enforce_limit()
         return [item.memory_id for item in items]
-
-    def _enforce_limit(self) -> None:
-        count = getattr(self._client, "count", None)
-        scroll = getattr(self._client, "scroll", None)
-        delete = getattr(self._client, "delete", None)
-        if not all(callable(operation) for operation in (count, scroll, delete)):
-            return
-        overflow = count(collection_name=self.collection).count - self.MAX_ITEMS
-        if overflow <= 0:
-            return
-        points, _ = scroll(collection_name=self.collection, limit=overflow, with_payload=False, with_vectors=False)
-        if points:
-            delete(collection_name=self.collection, points_selector=[point.id for point in points])
 
     @staticmethod
     def _payload(item: MemoryItem) -> dict[str, Any]:
@@ -112,32 +95,25 @@ class HybridQdrantMemoryStore(BaseMemoryStore):
             "schema_version": item.schema_version,
         }
 
-    def search(self, dense: list[float], sparse: dict[int, float] | None, top_k: int) -> list[MemoryItem]:
+    def search(self, dense: list[float], sparse: dict[int, float] | None, top_k: int) -> list[RetrievalCandidate]:
         if self._status.state != "ready":
             return []
         from qdrant_client import models
 
         active = models.Filter(must=[models.FieldCondition(key="status", match=models.MatchValue(value="active"))])
+        import config
+        threshold = config.MEMORY_DENSE_MIN_SCORE or None
         if not sparse:
-            response = self._client.query_points(
-                collection_name=self.collection, query=dense, using="dense", query_filter=active,
-                limit=top_k, with_payload=True,
-            )
-            points = response.points
-            self.last_search_counts = {"dense": len(points), "sparse": 0, "fused": len(points)}
-            return [self._item(point.payload) for point in points]
-        dense_points = self._client.query_points(
-            collection_name=self.collection, query=dense, using="dense", query_filter=active, limit=20, with_payload=False,
-        ).points
+            kwargs = dict(collection_name=self.collection, query=dense, using="dense", query_filter=active, limit=top_k, with_payload=True)
+            if threshold is not None:
+                kwargs["score_threshold"] = threshold
+            points = self._client.query_points(**kwargs).points
+            return [RetrievalCandidate(self._item(point.payload), float(point.score), "dense_only") for point in points]
         sparse_vector = models.SparseVector(indices=list(sparse), values=list(sparse.values()))
-        sparse_points = self._client.query_points(
-            collection_name=self.collection, query=sparse_vector, using="sparse", query_filter=active, limit=20, with_payload=False,
-        ).points
-        prefetch = [models.Prefetch(query=dense, using="dense", limit=20, filter=active)]
-        prefetch.append(models.Prefetch(
-                query=sparse_vector,
-                using="sparse", limit=20, filter=active,
-        ))
+        dense_prefetch = dict(query=dense, using="dense", limit=20, filter=active)
+        if threshold is not None:
+            dense_prefetch["score_threshold"] = threshold
+        prefetch = [models.Prefetch(**dense_prefetch), models.Prefetch(query=sparse_vector, using="sparse", limit=20, filter=active)]
         response = self._client.query_points(
             collection_name=self.collection,
             prefetch=prefetch,
@@ -145,9 +121,7 @@ class HybridQdrantMemoryStore(BaseMemoryStore):
             limit=top_k,
             with_payload=True,
         )
-        points = response.points
-        self.last_search_counts = {"dense": len(dense_points), "sparse": len(sparse_points), "fused": len(points)}
-        return [self._item(point.payload) for point in points]
+        return [RetrievalCandidate(self._item(point.payload), float(point.score), "rrf") for point in response.points]
 
     @staticmethod
     def _item(payload: dict[str, Any]) -> MemoryItem:
