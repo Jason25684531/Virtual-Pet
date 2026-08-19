@@ -48,7 +48,7 @@ class ComfyUIClient:
             for item in queue.get(name, [])
         )
 
-    def watch_prompt(self, prompt_id: str, timeout_sec: int) -> dict[str, Any]:
+    def watch_prompt(self, prompt_id: str, timeout_sec: int, on_progress=None) -> dict[str, Any]:
         deadline = time.monotonic() + timeout_sec
         try:
             import websocket
@@ -56,6 +56,11 @@ class ComfyUIClient:
             try:
                 while time.monotonic() < deadline:
                     payload = json.loads(ws.recv())
+                    if payload.get("type") == "progress":
+                        data = payload.get("data") or {}
+                        if data.get("prompt_id") in (None, prompt_id) and on_progress:
+                            on_progress(data.get("value"), data.get("max"))
+                        continue
                     if payload.get("type") == "execution_error" and payload.get("data", {}).get("prompt_id") == prompt_id:
                         raise RuntimeError(str(payload.get("data")))
                     if payload.get("type") == "executing" and payload.get("data", {}).get("prompt_id") == prompt_id and payload.get("data", {}).get("node") is None:
@@ -65,7 +70,9 @@ class ComfyUIClient:
         except RuntimeError:
             raise
         except Exception:
-            pass  # WebSocket is an optimization; history polling is authoritative.
+            if on_progress:
+                on_progress(None, None)
+            # WebSocket is an optimization; history polling is authoritative.
         while time.monotonic() < deadline:
             history = self.get_history(prompt_id)
             if history.get("outputs"):

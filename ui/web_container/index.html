@@ -63,6 +63,12 @@
     <section id="hud-scene" class="hud-panel" aria-label="Scene" hidden><header class="hud-header"><div><h1>Scene</h1><p>場景</p></div><button class="icon-button" type="button" data-close-hud aria-label="Close">×</button></header><div id="scene-slot-grid" class="slot-grid"></div><div class="slot-legend"><span>□ 已生成</span><span>◌ 生成中</span><span>┄ 空格待生成</span></div><button id="scene-follow-button" class="ghost-button" type="button">↺ 跟隨造型</button><button id="scene-import-button" class="import-button" type="button">＋ Import folder / file</button><button id="scene-apply-button" class="apply-button" type="button" disabled>Apply</button></section>
   </div>
 
+  <aside id="render-progress-overlay" class="render-progress-overlay" hidden aria-live="polite">
+    <div class="render-progress-overlay__head"><b>Render progress</b><span id="render-progress-status">-</span></div>
+    <div id="render-progress-copy">等待算圖</div>
+    <div class="render-progress-track"><span id="render-progress-bar"></span></div>
+  </aside>
+
   <div id="modal-layer" hidden>
     <section id="modal-name-character" class="modal" role="dialog" aria-modal="true" aria-label="Name character" hidden><h1>Name your character</h1><p>確認名稱後建立角色。</p><input id="name-character-input" type="text" value="New Companion"><footer><button class="ghost-button" type="button" data-close-modal>Cancel</button><button id="name-character-confirm" class="primary-button" type="button">Confirm</button></footer></section>
     <section id="modal-discard-confirm" class="modal" role="dialog" aria-modal="true" aria-label="Discard generated content" hidden><div class="modal-warning">!</div><h1>回上一步將刪除已生成內容</h1><p>重新生成或返回編輯會清除目前已完成的 13 組動作模板，此操作無法復原。</p><footer><button class="ghost-button" type="button" data-close-modal>Cancel</button><button id="discard-confirm-button" class="danger-button" type="button">Discard &amp; back</button></footer></section>

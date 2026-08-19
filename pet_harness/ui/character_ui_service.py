@@ -144,6 +144,30 @@ class CharacterUiService:
                 item["state"] = "awaiting_confirm"
         return items
 
+    def list_render_jobs(self, character_id: str) -> list[dict[str, object]]:
+        profile, _ = self._router.load_profile(character_id)
+        store = SQLiteStore(profile.sqlite_path)
+        store.initialize()
+        result = []
+        for job in store.list_asset_jobs(character_id):
+            maximum = job.get("progress_max")
+            value = job.get("progress_value")
+            percent = round(int(value) / int(maximum) * 100, 1) if maximum and value is not None else None
+            result.append({
+                "character_id": character_id,
+                "job_id": job["job_id"],
+                "variant": job["variant"],
+                "workflow_type": job["workflow_type"],
+                "stage": job.get("stage") or job["status"],
+                "progress_percent": percent,
+                "status": job["status"],
+                "error_message": job.get("error_message"),
+            })
+        return result
+
+    def select_style_generation(self, character_id: str, variant: str, asset_id: str) -> dict[str, object]:
+        return CharacterLibrary().select_style_generation(character_id, variant, asset_id)
+
     def _active_pending_motion_offer(self, store: SQLiteStore) -> dict[str, Any] | None:
         offer = store.get_setting("asset_pending_motion_offer")
         if not offer:

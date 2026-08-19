@@ -136,7 +136,10 @@ CREATE TABLE IF NOT EXISTS asset_jobs (
     metadata_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     started_at TEXT,
-    completed_at TEXT
+    completed_at TEXT,
+    stage TEXT NOT NULL DEFAULT 'queued',
+    progress_value INTEGER,
+    progress_max INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_asset_jobs_status ON asset_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_asset_jobs_parent ON asset_jobs(parent_job_id);
@@ -155,6 +158,7 @@ CREATE TABLE IF NOT EXISTS character_assets (
     mime_type TEXT NOT NULL,
     sha256 TEXT NOT NULL,
     version INTEGER NOT NULL,
+    generation_index INTEGER,
     active INTEGER NOT NULL DEFAULT 1,
     source_job_id TEXT,
     created_at TEXT NOT NULL

@@ -39,6 +39,9 @@ class AssetJob:
     created_at: str = field(default_factory=utc_now)
     started_at: str | None = None
     completed_at: str | None = None
+    stage: str = "queued"
+    progress_value: int | None = None
+    progress_max: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -62,3 +65,4 @@ class GeneratedAsset:
     level: int | None = None
     event_id: str | None = None
     created_at: str = field(default_factory=utc_now)
+    generation_index: int | None = None

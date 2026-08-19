@@ -136,6 +136,23 @@ class CharacterUiBridge(QObject):
         except Exception as exc:  # noqa: BLE001
             return self._error(exc)
 
+    @pyqtSlot(str, result=str)
+    def listRenderJobs(self, character_id: str) -> str:
+        try:
+            return self._ok(self._service.list_render_jobs(character_id))
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
+    @pyqtSlot(str, str, str, result=str)
+    def selectStyleGeneration(self, character_id: str, variant: str, asset_id: str) -> str:
+        try:
+            result = self._service.select_style_generation(character_id, variant, asset_id)
+            if character_id == self._service.get_active_state().get("character_id"):
+                self._window.apply_character(character_id)
+            return self._ok(result)
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc)
+
     @pyqtSlot(str, str, result=str)
     def applyStyle(self, character_id: str, variant: str) -> str:
         try:

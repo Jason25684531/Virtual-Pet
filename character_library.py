@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import secrets
+import shutil
 from datetime import datetime
 from pathlib import Path
+
+from pet_harness.storage.sqlite_store import SQLiteStore
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -119,6 +121,7 @@ class CharacterLibrary:
             "motions_dir": self._to_relative(motions_dir),
             "motions": {},
             "active_variant": "og",
+            "selected_generations": {},
             "positive_prompt": "",
             "negative_prompt": "",
         }
@@ -149,6 +152,7 @@ class CharacterLibrary:
             "motions_dir": self._to_relative(motions_dir),
             "motions": {},
             "active_variant": "og",
+            "selected_generations": {},
             "background_image": "",
             "background_mode": "follow",
             "voice_gender": voice_gender,
@@ -227,21 +231,34 @@ class CharacterLibrary:
         manifest = self.get_character(character_id)
         if not manifest:
             return None
-
-        motions_dir = manifest.get("motions_dir")
-        if motions_dir:
-            candidate = PROJECT_ROOT / str(motions_dir) / str(manifest.get("active_variant") or "og") / f"{motion_key}.webm"
-            if candidate.is_file():
-                return str(candidate)
-        relative_path = manifest.get("motions", {}).get(motion_key)
-        if relative_path:
-            absolute_path = PROJECT_ROOT / relative_path
-            if absolute_path.is_file():
-                return str(absolute_path)
-        if motions_dir:
-            candidate = PROJECT_ROOT / str(motions_dir) / "og" / f"{motion_key}.webm"
-            if candidate.is_file():
-                return str(candidate)
+        variant = str(manifest.get("active_variant") or "og")
+        generation = self._selected_wearable_generation(character_id, variant)
+        if generation is not None:
+            candidate = self._generation_motion_path(character_id, variant, generation, motion_key)
+            if candidate:
+                return candidate
+        if generation is None:
+            motions_dir = manifest.get("motions_dir")
+            relative_path = manifest.get("motions", {}).get(motion_key)
+            if relative_path:
+                absolute_path = PROJECT_ROOT / relative_path
+                if absolute_path.is_file():
+                    return str(absolute_path)
+            if motions_dir:
+                candidate = PROJECT_ROOT / str(motions_dir) / f"{motion_key}.webm"
+                if candidate.is_file():
+                    return str(candidate)
+        # A missing key never searches another revision. OG is the only
+        # cross-variant fallback allowed by the contract.
+        og_generation = self._selected_wearable_generation(character_id, "og")
+        if variant != "og" and og_generation is not None:
+            candidate = self._generation_motion_path(character_id, "og", og_generation, motion_key)
+            if candidate:
+                return candidate
+        if variant != "og":
+            og_flat = self._manifest_path(character_id).parent / "motions" / "og" / f"{motion_key}.webm"
+            if og_flat.is_file():
+                return str(og_flat)
         return None
 
     def list_variant_inventory(self, character_id: str) -> list[dict[str, object]]:
@@ -261,17 +278,131 @@ class CharacterLibrary:
         active_variant = str(manifest.get("active_variant") or "og")
         items = []
         for variant in sorted(variants):
+            self._ensure_flat_import(character_id, variant)
+            revisions = self._revision_inventory(character_id, variant)
+            wearable = [item for item in revisions if item["wearable"]]
             images = sorted((images_root / variant).glob("*.png"), key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
-            items.append({
+            item = {
                 "variant": variant,
-                "state": "ready" if (motions_root / variant / "idle.webm").is_file() else "generating" if images else "empty",
+                "state": "ready" if wearable else "generating" if images else "empty",
                 "thumb": self._to_relative(images[0]) if images else "",
                 "is_active": variant == active_variant,
-            })
+            }
+            if revisions:
+                selected = self._selected_wearable_generation(character_id, variant)
+                item.update({"revisions": wearable, "selected_generation": selected, "revision_count": len(wearable)})
+            items.append(item)
         return items
 
     def variant_background_path(self, character_id: str, variant: str) -> str | None:
+        generation = self._selected_wearable_generation(character_id, variant)
+        if generation is not None:
+            path = self._generation_background_path(character_id, variant, generation)
+            if path:
+                return path
+        if generation is None:
+            rows = self._asset_store(character_id).list_character_assets(
+                character_id, active_only=False, variant=variant, asset_type="character_background_png"
+            )
+            if rows:
+                path = Path(str(rows[-1]["file_path"]))
+                if not path.is_absolute():
+                    path = PROJECT_ROOT / path
+                if path.is_file():
+                    return str(path)
         path = self._manifest_path(character_id).parent / "images" / "bg" / f"{variant}.png"
+        return str(path) if path.is_file() else None
+
+    def select_style_generation(self, character_id: str, variant: str, asset_id: str) -> dict:
+        manifest = self.get_character(character_id)
+        if not manifest:
+            raise FileNotFoundError(f"character not found: {character_id}")
+        revisions = [item for item in self._revision_inventory(character_id, variant) if item["wearable"]]
+        selected = next((item for item in revisions if item.get("asset_id") == asset_id), None)
+        if selected is None:
+            raise ValueError(f"style generation is not wearable: {asset_id}")
+        pointers = manifest.setdefault("selected_generations", {})
+        pointers[variant] = {"asset_id": selected["asset_id"], "generation": selected["generation"]}
+        manifest["updated_at"] = _now_iso()
+        self._save_manifest(character_id, manifest)
+        return {"character_id": character_id, "variant": variant, "selected_generation": selected["generation"], "asset_id": selected["asset_id"]}
+
+    def auto_select_wearable_generation(self, character_id: str, variant: str) -> dict | None:
+        revisions = [item for item in self._revision_inventory(character_id, variant) if item["wearable"]]
+        if not revisions:
+            return None
+        manifest = self.get_character(character_id)
+        pointer = (manifest or {}).get("selected_generations", {}).get(variant)
+        current = next((item for item in revisions if pointer and item["generation"] == pointer.get("generation") and item["asset_id"] == pointer.get("asset_id")), None)
+        selected = current or revisions[-1]
+        if current is None:
+            self.select_style_generation(character_id, variant, str(selected["asset_id"]))
+        return selected
+
+    def _asset_store(self, character_id: str) -> SQLiteStore:
+        primary = PROJECT_ROOT / "data" / "characters" / character_id / "state.db"
+        fallback = PROJECT_ROOT / "state.db"
+        store = SQLiteStore(primary if primary.exists() or not fallback.exists() else fallback)
+        store.initialize()
+        return store
+
+    def _ensure_flat_import(self, character_id: str, variant: str) -> None:
+        self._asset_store(character_id).ensure_flat_revision_registered(
+            character_id, variant, self._manifest_path(character_id).parent
+        )
+
+    def _revision_inventory(self, character_id: str, variant: str) -> list[dict[str, object]]:
+        self._ensure_flat_import(character_id, variant)
+        rows = self._asset_store(character_id).list_character_assets(character_id, active_only=False, variant=variant)
+        grouped: dict[int, list[dict[str, object]]] = {}
+        for row in rows:
+            if row.get("generation_index") is None:
+                continue
+            grouped.setdefault(int(row["generation_index"]), []).append(row)
+        result = []
+        for generation, assets in sorted(grouped.items()):
+            idle = next((row for row in assets if row.get("asset_type") == "motion_webm" and row.get("motion_key") == "idle"), None)
+            idle_path = Path(str(idle["file_path"])) if idle else self._generation_motion_file(character_id, variant, generation, "idle")
+            if not idle_path.is_absolute():
+                idle_path = PROJECT_ROOT / idle_path
+            wearable = idle_path.is_file()
+            png = next((row for row in assets if row.get("asset_type") == "character_variant_png"), None)
+            primary = png or idle or assets[0]
+            result.append({
+                "asset_id": str(primary["asset_id"]), "generation": generation,
+                "wearable": wearable, "file_path": str(primary["file_path"]),
+            })
+        return result
+
+    def _selected_wearable_generation(self, character_id: str, variant: str) -> int | None:
+        revisions = [item for item in self._revision_inventory(character_id, variant) if item["wearable"]]
+        if not revisions:
+            return None
+        manifest = self.get_character(character_id) or {}
+        pointer = (manifest.get("selected_generations") or {}).get(variant) or {}
+        selected = next((item for item in revisions if item["generation"] == pointer.get("generation") and item["asset_id"] == pointer.get("asset_id")), None)
+        if selected:
+            return int(selected["generation"])
+        return int(revisions[-1]["generation"])
+
+    def _has_revision_history(self, character_id: str, variant: str) -> bool:
+        return bool(self._asset_store(character_id).list_character_assets(character_id, active_only=False, variant=variant))
+
+    def _generation_motion_file(self, character_id: str, variant: str, generation: int, motion_key: str) -> Path:
+        root = self._manifest_path(character_id).parent / "motions" / variant
+        revision = root / f"g{generation:02d}" / f"{motion_key}.webm"
+        if revision.is_file() or generation != 1:
+            return revision
+        return root / f"{motion_key}.webm"
+
+    def _generation_motion_path(self, character_id: str, variant: str, generation: int, motion_key: str) -> str | None:
+        path = self._generation_motion_file(character_id, variant, generation, motion_key)
+        return str(path) if path.is_file() else None
+
+    def _generation_background_path(self, character_id: str, variant: str, generation: int) -> str | None:
+        root = self._manifest_path(character_id).parent / "images" / "bg"
+        revision = root / f"{variant}-g{generation:02d}.png"
+        path = revision if revision.is_file() or generation != 1 else root / f"{variant}.png"
         return str(path) if path.is_file() else None
 
     def get_idle_motion_candidates(self, character_id: str | None) -> list[dict[str, object]]:
@@ -451,6 +582,10 @@ class CharacterLibrary:
         manifest = self.get_character(character_id)
         if not manifest:
             return None
+        if manifest.get("background_mode", "follow") != "manual":
+            path = self.variant_background_path(character_id, str(manifest.get("active_variant") or "og"))
+            if path:
+                return path
         relative_path = manifest.get("background_image")
         if not relative_path:
             return None

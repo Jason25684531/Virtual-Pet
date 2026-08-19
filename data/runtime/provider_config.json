@@ -1,7 +1,7 @@
 {
   "provider_type": "ollama",
   "base_url": "http://localhost:11434",
-  "model_name": "gemma4:12b",
+  "model_name": "gemma4:e2b",
   "api_key_env_var": null,
   "timeout_seconds": 60.0,
   "routing_fallback_enabled": false,

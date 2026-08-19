@@ -24,6 +24,13 @@ class AssetOrchestrator:
 
     def create_motion_set(self, character_id: str, source_path: str, trigger_id: str, variant: str = "og", trigger_reason: str = "") -> tuple[AssetJob, list[AssetJob]]:
         extra = {"trigger_reason": trigger_reason} if trigger_reason else {}
+        generation = self.repository.store.generation_for_file(source_path)
+        if generation is None:
+            generation = self.repository.store.allocate_generation(
+                character_id, variant, Path(source_path).parents[2] if Path(source_path).is_absolute() else None
+            )
+        if generation is not None:
+            extra["generation_index"] = generation
         parent = self.repository.create_job(AssetJob(character_id, "motion_set", variant, self._key(character_id, "motion_set", variant, trigger_id), timeout_sec=self.video_timeout_sec, max_retries=self.max_retries, metadata={"source_path": source_path, **extra}))
         children = []
         # idle 排最前:桌寵最先需要的是待機動態,其餘六隻在背景補(單隻約 9 分鐘)。
@@ -55,10 +62,18 @@ class AssetOrchestrator:
             version += 1
         return self.repository.create_job(AssetJob(character_id, "character_validation", "og", self._key("character_validation", upload_path, character_name, trigger_id), timeout_sec=self.timeout_sec, max_retries=self.max_retries, metadata={"source_path": upload_path, "character_name": character_name, "seed": secrets.randbits(63)}))
 
-    def create_background_job(self, character_id: str, source_path: str, room_path: str, trigger_id: str, variant: str = "og") -> AssetJob:
+    def create_background_job(self, character_id: str, source_path: str, room_path: str, trigger_id: str, variant: str = "og", generation_index: int | None = None) -> AssetJob:
         if self.background is None:
             raise RuntimeError("background workflow is not configured")
-        return self.repository.create_job(AssetJob(character_id, "background_png", variant, self._key(character_id, "background_png", variant, trigger_id), timeout_sec=self.timeout_sec, max_retries=self.max_retries, metadata={"source_path": source_path, "room_path": room_path, "variant": variant}))
+        metadata = {"source_path": source_path, "room_path": room_path, "variant": variant}
+        if generation_index is None:
+            generation_index = self.repository.store.generation_for_file(source_path)
+        if generation_index is None:
+            parent = self.repository.find(self._key(character_id, "motion_set", variant, trigger_id))
+            generation_index = parent.metadata.get("generation_index") if parent else None
+        if generation_index is not None:
+            metadata["generation_index"] = generation_index
+        return self.repository.create_job(AssetJob(character_id, "background_png", variant, self._key(character_id, "background_png", variant, trigger_id), timeout_sec=self.timeout_sec, max_retries=self.max_retries, metadata=metadata))
 
     def aggregate_parent(self, parent_id: str) -> None:
         children = self.repository.children(parent_id)

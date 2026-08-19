@@ -89,6 +89,18 @@ def test_user_can_create_a_companion_then_switch_between_one_hud_at_a_time(page)
     assert not page.locator("#modal-close-confirm").is_visible()
 
 
+def test_render_progress_overlay_sits_below_xp_badge(page):
+    page.evaluate("""
+        document.querySelector('#stage-root').hidden = false;
+        document.querySelector('#hud-level-badge').hidden = false;
+        document.querySelector('#render-progress-overlay').hidden = false;
+    """)
+    badge = page.locator("#hud-level-badge").bounding_box()
+    overlay = page.locator("#render-progress-overlay").bounding_box()
+
+    assert overlay["y"] >= badge["y"] + badge["height"]
+
+
 def test_growth_offer_stays_open_when_generation_was_not_queued(page):
     page.evaluate("window.__growthAccepted = false")
     page.locator("#modal-layer").evaluate("element => element.hidden = false")

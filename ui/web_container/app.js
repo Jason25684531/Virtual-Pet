@@ -680,7 +680,47 @@
     function startHudPolling() {
         if (hudPollTimer) return;
         hudPollTimer = window.setInterval(refreshCharacterHud, 5000);
+        renderProgressTimer = window.setInterval(function () {
+            if (activeStyleCharacterId) refreshRenderProgress(activeStyleCharacterId);
+        }, 1000);
         refreshCharacterHud();
+    }
+
+    function renderProgress(job) {
+        var overlay = document.getElementById('render-progress-overlay');
+        var copy = document.getElementById('render-progress-copy');
+        var status = document.getElementById('render-progress-status');
+        var bar = document.getElementById('render-progress-bar');
+        if (!overlay) return;
+        if (!job) {
+            overlay.hidden = true;
+            return;
+        }
+        overlay.hidden = false;
+        overlay.classList.toggle('is-failed', job.status === 'failed' || job.status === 'timed_out');
+        overlay.classList.toggle('is-complete', job.status === 'completed');
+        setText(status, job.status === 'completed' ? 'Completed' : job.status === 'failed' || job.status === 'timed_out' ? 'Failed' : job.stage || job.status);
+        setText(copy, (job.character_id || activeStyleCharacterId) + ' · ' + (job.variant || '-') + ' · ' + (job.stage || job.status) + (job.error_message ? ' · ' + job.error_message : ''));
+        var determinate = job.progress_percent != null;
+        var track = overlay.querySelector('.render-progress-track');
+        if (track) track.classList.toggle('is-indeterminate', !determinate && job.status !== 'completed' && job.status !== 'failed' && job.status !== 'timed_out');
+        if (bar) bar.style.width = (determinate ? Math.max(0, Math.min(100, Number(job.progress_percent))) : job.status === 'completed' ? 100 : 0) + '%';
+        if (job.status === 'completed') {
+            window.clearTimeout(renderProgressCloseTimer);
+            renderProgressCloseTimer = window.setTimeout(function () { overlay.hidden = true; }, 1800);
+        }
+    }
+
+    function refreshRenderProgress(characterId) {
+        if (!characterBridge || typeof characterBridge.listRenderJobs !== 'function') return Promise.resolve();
+        var requestedCharacter = characterId;
+        return callCharacterBridge('listRenderJobs', requestedCharacter).then(function (jobs) {
+            if (requestedCharacter !== activeStyleCharacterId) return;
+            var relevant = (jobs || []).filter(function (job) { return job.character_id === requestedCharacter; });
+            var active = relevant.filter(function (job) { return ['queued', 'uploading', 'submitted', 'running'].indexOf(job.status) >= 0; })[0];
+            var terminal = relevant[0];
+            renderProgress(active || (terminal && ['completed', 'failed', 'timed_out'].indexOf(terminal.status) >= 0 ? terminal : null));
+        }).catch(function () {});
     }
 
     // ── App Screens 狀態機（UC01-1 / UC02-1 / UC03-1）────────────
@@ -805,6 +845,8 @@
     var pendingCreation = null;
     var activeStyleCharacterId = '';
     var styleRefreshSequence = 0;
+    var renderProgressTimer = null;
+    var renderProgressCloseTimer = null;
 
     function refreshStyleSlots(characterId) {
         if (!characterId) return Promise.resolve();
@@ -813,7 +855,7 @@
         return callCharacterBridge('listStyleVariants', characterId).then(function (items) {
             if (sequence !== styleRefreshSequence || characterId !== activeStyleCharacterId) return;
             styleSlots = (items || []).map(function (item) {
-                return { slot_id: item.variant, state: item.state, label: item.variant, thumb: normalizeProjectAssetSource(item.thumb) };
+                return { slot_id: item.variant, state: item.state, label: item.variant, thumb: normalizeProjectAssetSource(item.thumb), revisions: item.revisions || [], selectedGeneration: item.selected_generation };
             });
             if (!styleSlots.some(function (slot) { return slot.slot_id === selectedSlots.style && slot.state === 'ready'; })) {
                 selectedSlots.style = null;
@@ -845,7 +887,13 @@
         container.innerHTML = slots.map(function (slot) {
             var selected = selectedSlots[selectionType] === slot.slot_id;
             var stateLabel = { generating: 'Generating', awaiting_confirm: 'Awaiting confirm', empty: 'Empty' }[slot.state] || '';
-            return '<button type="button" class="asset-slot slot--' + slot.state + (selected ? ' is-selected' : '') + '" data-slot-type="' + selectionType + '" data-slot-id="' + escapeHtml(slot.slot_id) + '"' + (slot.state === 'ready' ? '' : ' disabled') + '>' + (slot.thumb ? '<img class="asset-slot__thumb" src="' + escapeHtml(slot.thumb) + '" alt="">' : '') + '<b>' + escapeHtml(slot.label) + '</b><small>' + stateLabel + '</small></button>';
+            var card = '<button type="button" class="asset-slot slot--' + slot.state + (selected ? ' is-selected' : '') + '" data-slot-type="' + selectionType + '" data-slot-id="' + escapeHtml(slot.slot_id) + '"' + (slot.state === 'ready' ? '' : ' disabled') + '>' + (slot.thumb ? '<img class="asset-slot__thumb" src="' + escapeHtml(slot.thumb) + '" alt="">' : '') + '<b>' + escapeHtml(slot.label) + '</b><small>' + stateLabel + '</small></button>';
+            if (selectionType === 'style' && slot.revisions && slot.revisions.length) {
+                var index = slot.revisions.map(function (item) { return Number(item.generation); }).indexOf(Number(slot.selectedGeneration));
+                if (index < 0) index = slot.revisions.length - 1;
+                card = '<div class="asset-slot-history">' + card + '<div class="revision-nav"><button type="button" data-revision-direction="previous" data-revision-variant="' + escapeHtml(slot.slot_id) + '"' + (index <= 0 ? ' disabled' : '') + '>‹</button><span>' + (index + 1) + ' / ' + slot.revisions.length + '</span><button type="button" data-revision-direction="next" data-revision-variant="' + escapeHtml(slot.slot_id) + '"' + (index >= slot.revisions.length - 1 ? ' disabled' : '') + '>›</button></div></div>';
+            }
+            return card;
         }).join('');
         var apply = document.getElementById(selectionType + '-apply-button');
         if (apply) apply.disabled = !selectedSlots[selectionType];
@@ -862,6 +910,18 @@
         renderSlots('scene-slot-grid', sceneSlots.scenes);
         document.querySelectorAll('.slot-grid').forEach(function (grid) {
             grid.addEventListener('click', function (event) {
+                var revisionButton = event.target.closest('[data-revision-direction]');
+                if (revisionButton) {
+                    var revisionSlot = styleSlots.filter(function (item) { return item.slot_id === revisionButton.dataset.revisionVariant; })[0];
+                    var revisions = revisionSlot && revisionSlot.revisions || [];
+                    var current = revisions.map(function (item) { return Number(item.generation); }).indexOf(Number(revisionSlot && revisionSlot.selectedGeneration));
+                    var next = current + (revisionButton.dataset.revisionDirection === 'next' ? 1 : -1);
+                    if (!revisionSlot || next < 0 || next >= revisions.length) return;
+                    callCharacterBridge('selectStyleGeneration', activeStyleCharacterId, revisionSlot.slot_id, revisions[next].asset_id).then(function () {
+                        return refreshStyleSlots(activeStyleCharacterId);
+                    });
+                    return;
+                }
                 var slot = event.target.closest('[data-slot-id]');
                 if (!slot || slot.disabled) return;
                 selectedSlots[slot.dataset.slotType] = slot.dataset.slotId;
@@ -1768,6 +1828,7 @@
             renderCharacterHud(mergedState, latestRuntimeState && latestRuntimeState.xp ? latestRuntimeState.xp.last_delta : 0);
             if (mergedState.character_id) activeStyleCharacterId = mergedState.character_id;
             var styleRefresh = activeStyleCharacterId ? refreshStyleSlots(activeStyleCharacterId) : Promise.resolve();
+            if (activeStyleCharacterId) refreshRenderProgress(activeStyleCharacterId);
             styleRefresh.then(function () { maybeOpenAssetOfferModal(mergedState); });
         }).catch(function (err) {
             console.warn('[ECHOES UI] getActiveState failed:', err.message);

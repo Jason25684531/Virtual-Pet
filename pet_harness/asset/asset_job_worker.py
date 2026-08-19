@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import threading
 from pathlib import Path
 
@@ -62,7 +63,9 @@ class AssetJobWorker:
             if job.workflow_type == "character_validation":
                 self._run_validation(job)
                 return
+            self._set_stage(job, "uploading")
             image = self.client.upload_image(job.metadata["source_path"], f"{job.character_id}/{job.job_id}")
+            self._ensure_generation(job)
             if job.workflow_type == "motion_clip":
                 workflow = self.orchestrator.video.patch_video(image=image, selector=1, motion_slot=int(job.metadata["motion_slot"]), seed=int(job.metadata["seed"]), prefix=f"vp/{job.character_id}/{job.job_id}/{job.motion_key}")
                 node_id, suffix, asset_type = "770", ".webm", "motion_webm"
@@ -74,8 +77,10 @@ class AssetJobWorker:
                 workflow = self.orchestrator.image.patch_image(image=image, variant=job.variant, seed=int(job.metadata["seed"]), prefix=f"vp/{job.character_id}/{job.job_id}", generation_context=str(job.metadata.get("generation_context", "")), event_prompt=str(job.metadata.get("event_prompt", "")))
                 node_id, suffix, asset_type = {"og": ("475", ".png", "character_variant_png"), "development": ("467", ".png", "character_variant_png"), "event": ("492", ".png", "character_variant_png")}[job.variant]
             prompt_id = self.client.submit_prompt(workflow)
-            self.repository.update(job.job_id, JobStatus.RUNNING, comfy_prompt_id=prompt_id)
-            output = ComfyUIClient.output(self.client.watch_prompt(prompt_id, job.timeout_sec), node_id)
+            self.repository.update(job.job_id, JobStatus.RUNNING, comfy_prompt_id=prompt_id, stage="submitted")
+            self._set_stage(job, "rendering")
+            output = ComfyUIClient.output(self._watch_prompt(job, prompt_id), node_id)
+            self._set_stage(job, "downloading")
             self._finalize(job, output, suffix, asset_type)
         except TimeoutError as error:
             self.repository.update(job.job_id, JobStatus.TIMED_OUT, error_code="timeout", error_message=str(error))
@@ -119,16 +124,19 @@ class AssetJobWorker:
         self.repository.update(job.job_id, JobStatus.COMPLETED, completed_at=utc_now())
 
     def _save(self, job, content: bytes, suffix: str, asset_type: str) -> None:
+        self._set_stage(job, "saving")
         path = self._asset_path(job, suffix)
         path.parent.mkdir(parents=True, exist_ok=True)
         temp = path.with_suffix(path.suffix + ".tmp")
         temp.write_bytes(content)
         temp.replace(path)
-        self.repository.save_asset(GeneratedAsset(job.character_id, asset_type, job.variant, path.as_posix(), path.name, "video/webm" if suffix == ".webm" else "image/png", hashlib.sha256(content).hexdigest(), job.job_id, motion_key=job.motion_key, reward_id=job.metadata.get("reward_id"), event_id=job.metadata.get("event_id")))
+        self.repository.save_asset(GeneratedAsset(job.character_id, asset_type, job.variant, path.as_posix(), path.name, "video/webm" if suffix == ".webm" else "image/png", hashlib.sha256(content).hexdigest(), job.job_id, motion_key=job.motion_key, reward_id=job.metadata.get("reward_id"), event_id=job.metadata.get("event_id"), generation_index=int(job.metadata["generation_index"])))
         if job.motion_key:
             self.library.register_generated_assets(job.character_id, {job.motion_key: str(path)})
         if job.workflow_type == "background_png" and str(self.library.get_character(job.character_id).get("active_variant") or "og") == job.variant and self.library.get_background_mode(job.character_id) == "follow":
             self.library.set_background(job.character_id, str(path))
+        if job.motion_key == "idle":
+            self.library.auto_select_wearable_generation(job.character_id, job.variant)
 
     def _finalize(self, job, output, suffix: str, asset_type: str) -> None:
         content = self.client.download_output(output["filename"], output.get("subfolder", ""), output.get("type", "output"))
@@ -144,7 +152,7 @@ class AssetJobWorker:
         # 使用者看過預覽同意後才由 confirm_motion_generation 排 motion_set。
         source = str(self._asset_path(job, ".png"))
         if self.orchestrator.background is not None:
-            self.orchestrator.create_background_job(job.character_id, source, "assets/backgrounds/default_room.jpg", job.job_id, variant=job.variant)
+            self.orchestrator.create_background_job(job.character_id, source, "assets/backgrounds/default_room.jpg", job.job_id, variant=job.variant, generation_index=int(job.metadata["generation_index"]))
         self.repository.store.set_setting("asset_pending_motion_offer", {
             "variant": job.variant,
             "source_png": source,
@@ -161,15 +169,53 @@ class AssetJobWorker:
             return "16", ".png", "character_background_png"
         return {"og": ("475", ".png", "character_variant_png"), "development": ("467", ".png", "character_variant_png"), "event": ("492", ".png", "character_variant_png")}[job.variant]
 
-    @staticmethod
-    def _asset_path(job, suffix: str) -> Path:
+    def _asset_path(self, job, suffix: str) -> Path:
         root = library_module.PROJECT_ROOT / "assets" / "characters" / job.character_id
+        generation = self._ensure_generation(job)
         if job.workflow_type == "motion_clip":
-            return root / "motions" / job.variant / f"{job.motion_key}{suffix}"
+            return root / "motions" / job.variant / f"g{generation:02d}" / f"{job.motion_key}{suffix}"
         elif job.workflow_type == "background_png":
-            return root / "images" / "bg" / f"{job.variant}{suffix}"
+            return root / "images" / "bg" / f"{job.variant}-g{generation:02d}{suffix}"
         name = job.metadata.get("event_id") or job.metadata.get("reward_id") or job.job_id
         return root / "images" / job.variant / f"{name}{suffix}"
+
+    def _ensure_generation(self, job) -> int:
+        value = job.metadata.get("generation_index")
+        if value is not None:
+            return int(value)
+        parent = self.repository.get(job.parent_job_id) if job.parent_job_id else None
+        if parent and parent.metadata.get("generation_index") is not None:
+            value = int(parent.metadata["generation_index"])
+        else:
+            root = library_module.PROJECT_ROOT / "assets" / "characters" / job.character_id
+            value = self.repository.store.allocate_generation(job.character_id, job.variant, root)
+            if parent:
+                parent.metadata["generation_index"] = value
+                self.repository.update(parent.job_id, parent.status, metadata=parent.metadata)
+        job.metadata["generation_index"] = value
+        self.repository.update(job.job_id, self._current_status(job), metadata=job.metadata)
+        return int(value)
+
+    def _set_stage(self, job, stage: str, value: int | None = None, maximum: int | None = None) -> None:
+        self.repository.update(job.job_id, self._current_status(job), stage=stage, progress_value=value, progress_max=maximum)
+
+    def _current_status(self, job):
+        current = self.repository.get(job.job_id)
+        return current.status if current else job.status
+
+    def _watch_prompt(self, job, prompt_id: str):
+        def progress(value: int | None, maximum: int | None) -> None:
+            previous = getattr(job, "_last_progress", None)
+            now = __import__("time").monotonic()
+            percent = (int(value) / int(maximum) * 100) if value is not None and maximum else None
+            if previous and now - previous[0] < 1 and (percent is None or previous[1] is None or abs(percent - previous[1]) < 5):
+                return
+            job._last_progress = (now, percent)
+            self._set_stage(job, "rendering", int(value) if value is not None else None, int(maximum) if maximum else None)
+
+        if "on_progress" in inspect.signature(self.client.watch_prompt).parameters:
+            return self.client.watch_prompt(prompt_id, job.timeout_sec, on_progress=progress)
+        return self.client.watch_prompt(prompt_id, job.timeout_sec)
 
     def recover(self) -> None:
         if not self._run_lock.acquire(blocking=False):

@@ -5,15 +5,16 @@ from pathlib import Path
 import pytest
 
 import character_library as library_module
-import pet_harness.ui.character_ui_service as character_ui_module
 import pet_harness.character.profile as profile_module
+import pet_harness.ui.character_ui_service as character_ui_module
+from pet_harness.asset.asset_contract import AssetResponse
+from pet_harness.asset.asset_models import AssetJob, JobStatus
+from pet_harness.asset.asset_repository import AssetRepository
 from pet_harness.character.exceptions import CharacterNotFoundError, NoActiveCharacterError
 from pet_harness.character.registry import CharacterRegistry
 from pet_harness.character.router import CharacterRouter
 from pet_harness.storage.sqlite_store import SQLiteStore
 from pet_harness.ui.character_ui_service import LAST_PLAYED_AT_KEY, PLAYTIME_SECONDS_KEY, CharacterUiService
-from pet_harness.asset.asset_contract import AssetResponse
-from pet_harness.asset.asset_repository import AssetRepository
 
 _FRESH_CREATED_AT = datetime.now(UTC).isoformat()
 
@@ -368,6 +369,23 @@ class TestGetActiveState:
 
         assert state["pending_motion_offer"] is None
         assert store.get_setting("asset_pending_motion_offer") is None
+
+    def test_render_job_sequence_is_persistent_and_character_scoped(self, service):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        job = AssetRepository(store).create_job(AssetJob("Choppr", "motion_clip", "development", "render-sequence"))
+
+        assert ui_service.list_render_jobs("Choppr")[0]["progress_percent"] is None
+        AssetRepository(store).update(job.job_id, JobStatus.RUNNING, stage="rendering", progress_value=15, progress_max=20)
+        rendering = ui_service.list_render_jobs("Choppr")[0]
+        assert rendering["character_id"] == "Choppr"
+        assert rendering["stage"] == "rendering"
+        assert rendering["progress_percent"] == 75.0
+        AssetRepository(store).update(job.job_id, JobStatus.COMPLETED, stage="saving")
+        assert ui_service.list_render_jobs("Choppr")[0]["status"] == "completed"
+        assert ui_service.list_render_jobs("miku") == []
 
     def test_style_variant_awaiting_confirm_when_motion_offer_pending(self, service, monkeypatch):
         ui_service, router, _registry = service
