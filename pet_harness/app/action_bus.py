@@ -13,6 +13,14 @@ class ActionBus:
     def register(self, handler: ActionHandler) -> None:
         self._handlers.append(handler)
 
+    def cancel_conversation(self) -> bool:
+        cancelled = False
+        for handler in self._handlers:
+            cancel = getattr(handler, "cancel_active", None)
+            if callable(cancel):
+                cancelled = bool(cancel()) or cancelled
+        return cancelled
+
     def execute(self, command: ActionCommand) -> ActionResult:
         handler = next((item for item in self._handlers if item.can_handle(command)), None)
         if handler is None:

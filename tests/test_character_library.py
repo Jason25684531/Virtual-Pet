@@ -103,6 +103,24 @@ def test_motion_resolution_prefers_active_then_flat_manifest_then_og(tmp_path, m
     assert library.get_motion_path("miku", "idle").endswith("motions\\og\\idle.webm")
 
 
+def test_generation_miss_falls_back_to_manifest_motion_path(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+    character_dir = tmp_path / "assets" / "characters" / "omni"
+    motion_dir = character_dir / "motions" / "og"
+    motion_dir.mkdir(parents=True)
+    motion = motion_dir / "Laughing.webm"
+    motion.write_bytes(b"webm")
+    (character_dir / "manifest.json").write_text(json.dumps({
+        "id": "omni", "motions_dir": "assets/characters/omni/motions/og",
+        "motions": {"laugh": "assets/characters/omni/motions/og/Laughing.webm"},
+        "active_variant": "og",
+    }), encoding="utf-8")
+    monkeypatch.setattr(library, "_selected_wearable_generation", lambda *_args: "revision-1")
+    monkeypatch.setattr(library, "_generation_motion_path", lambda *_args: None)
+
+    assert library.get_motion_path("omni", "laugh") == str(motion)
+
+
 def test_new_character_defaults_to_follow_background_mode(tmp_path, monkeypatch):
     library = _library(tmp_path, monkeypatch)
     source = tmp_path / "source.png"

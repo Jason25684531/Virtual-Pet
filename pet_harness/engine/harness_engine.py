@@ -9,11 +9,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Callable, Iterator
 
 from character_library import CharacterLibrary
 from pet_harness.agent.prompt_builder import PromptBuilder
-from pet_harness.agent.provider_adapter import LLMProviderAdapter
+from pet_harness.agent.provider_adapter import LLMProviderAdapter, ProviderReply
 from pet_harness.agent.result_parser import ResultParser
 from pet_harness.asset.factory import build_asset_service
 from pet_harness.behavior.behavior_manager import BehaviorManager
@@ -22,6 +22,7 @@ from pet_harness.memory.base_memory_store import BaseMemoryStore, NullMemoryStor
 from pet_harness.models.events import PetEvent, ToolRequestEvent, UserEvent
 from pet_harness.models.agent_result import AgentResult
 from pet_harness.models.provider import ProviderConfig
+from pet_harness.models.provider import ProviderStatus
 from pet_harness.models.skill import Skill
 from pet_harness.skills.skill_loader import SkillLoader
 from pet_harness.skills.skill_router import SkillRouter
@@ -36,6 +37,134 @@ from pet_harness.xp.reward_manager import RewardManager
 from pet_harness.xp.xp_manager import XPManager
 
 LOGGER = logging.getLogger(__name__)
+
+
+class _SentenceSplitter:
+    """Buffer streamed text until a sentence boundary, stripping only first-turn actions."""
+
+    _ACTION = re.compile(r"^\s*\[ACTION:([A-Za-z0-9_-]+)\]\s*", re.IGNORECASE)
+    _END = set(".!?。！？\n")
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._first = True
+        self.actions: list[str] = []
+
+    def feed(self, fragment: str) -> list[str]:
+        self._buffer += str(fragment or "")
+        return self._drain(False)
+
+    def flush(self) -> list[str]:
+        return self._drain(True)
+
+    def _drain(self, final: bool) -> list[str]:
+        sentences: list[str] = []
+        start = 0
+        for index, char in enumerate(self._buffer):
+            if char not in self._END:
+                continue
+            if char == "." and index + 1 < len(self._buffer) and self._buffer[index + 1].isdigit():
+                continue
+            sentences.append(self._buffer[start:index + 1].strip())
+            start = index + 1
+        if start:
+            self._buffer = self._buffer[start:]
+        if final and self._buffer.strip():
+            sentences.append(self._buffer.strip())
+            self._buffer = ""
+        result: list[str] = []
+        for sentence in sentences:
+            if not sentence:
+                continue
+            if self._first:
+                match = self._ACTION.match(sentence)
+                if match:
+                    self.actions.append(match.group(1).lower())
+                    sentence = sentence[match.end():].strip()
+                self._first = False
+            if sentence:
+                result.append(sentence)
+        return result
+
+
+class _StreamingReplyExtractor:
+    """Yield only the reply string from JSON or preserve plain-text streams."""
+
+    _REPLY_FIELD = re.compile(r'"reply"\s*:\s*"', re.DOTALL)
+    _ACTION_PREFIX = re.compile(r"^\s*\[\s*ACTION\s*:", re.IGNORECASE)
+    _ESCAPES = {"\"": '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+
+    def __init__(self) -> None:
+        self._mode = "unknown"
+        self._pending = ""
+        self._in_reply = False
+        self._escaped = False
+        self._unicode_digits: str | None = None
+        self._done = False
+
+    def feed(self, fragment: str) -> str:
+        if not fragment or self._done:
+            return ""
+        if self._mode == "plain":
+            return str(fragment)
+        self._pending += str(fragment)
+        if self._mode == "unknown":
+            stripped = self._pending.lstrip()
+            if not stripped:
+                return ""
+            if self._ACTION_PREFIX.match(stripped) or not stripped.startswith(("{", "```")):
+                self._mode = "plain"
+                text, self._pending = self._pending, ""
+                return text
+            self._mode = "json"
+        if not self._in_reply:
+            match = self._REPLY_FIELD.search(self._pending)
+            if not match:
+                return ""
+            self._pending = self._pending[match.end():]
+            self._in_reply = True
+        return self._consume_reply()
+
+    def flush(self) -> str:
+        if self._mode == "unknown":
+            text, self._pending = self._pending, ""
+            return text
+        if self._mode == "plain" or self._done:
+            return ""
+        if not self._in_reply:
+            return ""
+        return self._consume_reply()
+
+    def _consume_reply(self) -> str:
+        output: list[str] = []
+        text, self._pending = self._pending, ""
+        for index, char in enumerate(text):
+            if self._unicode_digits is not None:
+                if char in "0123456789abcdefABCDEF":
+                    self._unicode_digits += char
+                    if len(self._unicode_digits) == 4:
+                        output.append(chr(int(self._unicode_digits, 16)))
+                        self._unicode_digits = None
+                    continue
+                output.append("\\u" + self._unicode_digits + char)
+                self._unicode_digits = None
+                continue
+            if self._escaped:
+                self._escaped = False
+                if char == "u":
+                    self._unicode_digits = ""
+                else:
+                    output.append(self._ESCAPES.get(char, char))
+                continue
+            if char == "\\":
+                self._escaped = True
+            elif char == '"':
+                self._done = True
+                self._in_reply = False
+                break
+            else:
+                output.append(char)
+        return "".join(output)
 
 
 def _measure_call(callable_, *args):
@@ -63,6 +192,7 @@ class PetHarnessEngine:
         provider_config: ProviderConfig | None = None,
         character_id: str | None = None,
         character_profile: CharacterProfile | None = None,
+        profile_loader: Callable[[], CharacterProfile] | None = None,
         memory_store: BaseMemoryStore | None = None,
         memory_retriever=None,
         semantic_index_enabled: bool = False,
@@ -75,7 +205,7 @@ class PetHarnessEngine:
 
         self._character_id = character_id
         self._profile: CharacterProfile | None = character_profile
-        self._profile_is_external = character_profile is not None
+        self._profile_loader = profile_loader
         effective_db_path = db_path
         if self._profile is not None:
             self._character_id = self._profile.character_id
@@ -138,7 +268,7 @@ class PetHarnessEngine:
         self._tool_lifecycle = ToolExecutionLifecycle(self.safety_guard, self.tool_registry, self.store, self.skills, self.media_session_context)
         self.asset_service = build_asset_service(self.store, self._character_id, self.character_library)
         self.growth_trigger = None
-        if self._profile_is_external and self._character_id:
+        if self._profile_loader is not None and self._character_id:
             from pet_harness.asset.growth_trigger import GrowthTriggerService
             self.growth_trigger = GrowthTriggerService(
                 self.store,
@@ -148,6 +278,7 @@ class PetHarnessEngine:
                 config.EVENT_INTERVAL_MINUTES,
             )
         self.last_prompt: str | None = None
+        self._spoken_chunks: list[str] = []
         self.last_provider_raw_result: str | None = None
         self.last_agent_result: AgentResult | None = None
         self.last_tool_result: ToolResult | None = None
@@ -165,6 +296,14 @@ class PetHarnessEngine:
     @property
     def character_profile(self) -> CharacterProfile | None:
         return self._profile
+
+    def mark_spoken_chunk(self, text: str) -> None:
+        normalized = str(text or "").strip()
+        if normalized:
+            self._spoken_chunks.append(normalized)
+
+    def spoken_reply(self) -> str:
+        return " ".join(self._spoken_chunks).strip()
 
     def refresh_skill_catalog(self) -> list[Skill]:
         loader = SkillLoader(self.agentic_root / "skills")
@@ -194,11 +333,19 @@ class PetHarnessEngine:
         下一次互動都會套用;載入失敗時保留前一份 profile,不中斷互動。"""
         if self._character_id is None:
             return
-        if self._profile_is_external:
-            return
         try:
-            self._profile = CharacterProfile.load(self._character_id)
+            self._profile = (
+                self._profile_loader()
+                if self._profile_loader is not None
+                else CharacterProfile.load(self._character_id)
+            )
             self.refresh_skill_catalog()
+            resolved = self.filter_skills_for_character(self.available_skills)
+            self.skills = resolved.resolved_skills
+            self.skip_diagnostics = resolved.skip_diagnostics
+            self.store.sync_skills(self.skills)
+            self.rebuild_router()
+            self._tool_lifecycle.skills = {skill.name: skill for skill in self.skills}
         except Exception:  # noqa: BLE001 - 角色資料暫時不可讀時維持舊 profile
             LOGGER.warning("profile reload failed for %s; keeping previous profile", self._character_id)
 
@@ -291,8 +438,16 @@ class PetHarnessEngine:
             log("[SKILL MIGRATION] character=%s added=%s removed_stale=%s", self._character_id, added, stale)
         self.store.set_setting(MEDIA_SKILL_MIGRATION_KEY, True)
 
-    def handle_event(self, event: UserEvent | dict[str, Any]) -> PetEvent:
+    def handle_event(
+        self,
+        event: UserEvent | dict[str, Any],
+        *,
+        stream_callback: Callable[[str], None] | None = None,
+        action_callback: Callable[[str], None] | None = None,
+        cancel: threading.Event | None = None,
+    ) -> PetEvent:
         user_event = event if isinstance(event, UserEvent) else UserEvent.from_dict(event)
+        self._spoken_chunks = []
         state_before = self.store.state_snapshot()
         active_capabilities = self._active_capabilities()
         deterministic_skill = self._route_deterministic(user_event, active_capabilities)
@@ -340,9 +495,35 @@ class PetHarnessEngine:
         memory_status = self.memory_store.status()
 
         prompt_result = self._build_prompt(user_event, state_before, deterministic_skill, tool_first_result, conversation_history, memory_hits, retrieval_result)
-        provider_reply, agent_result = self._invoke_provider(user_event, deterministic_skill, prompt_result.prompt)
+        provider_reply, agent_result = self._invoke_provider(
+            user_event,
+            deterministic_skill,
+            prompt_result.prompt,
+            stream_callback=stream_callback,
+            action_callback=action_callback,
+            cancel=cancel,
+        )
+        stream_cancelled = bool(provider_reply.metadata.get("cancelled")) or bool(cancel is not None and cancel.is_set())
+        if stream_cancelled:
+            spoken_reply = self.spoken_reply()
+            if not spoken_reply:
+                return PetEvent(
+                    source_event_id=user_event.event_id,
+                    reply="",
+                    matched_skill=None,
+                    behavior_id="idle",
+                    webm_key="idle",
+                    xp_delta=0,
+                    reward_events=[],
+                    tool_request=None,
+                    provider_status=provider_reply.provider_status.to_dict(),
+                    saved_to_db=False,
+                    metadata={"stale_turn": True, "spoken_chunks": 0},
+                )
+            agent_result.reply = spoken_reply
+            provider_reply.reply = spoken_reply
         matched_skill, skill_source = self._parse_and_route(user_event, agent_result, active_capabilities)
-        resolved_action, behavior_event = self._resolve_behavior(matched_skill)
+        resolved_action, behavior_event = self._resolve_behavior(matched_skill, agent_result.action_tag)
         tool_event, tool_result_payload, tool_xp_bonus = self._run_tool_fallback(
             user_event, matched_skill, agent_result, tool_first_event, tool_first_result
         )
@@ -366,6 +547,7 @@ class PetHarnessEngine:
             metadata={
                 "behavior": behavior_event.to_dict(),
                 "agentic": {
+                    "streaming": bool(provider_reply.metadata.get("streaming")),
                     "provider_type": agent_result.provider_type,
                     "parser_status": agent_result.parser_status,
                     "fallback_used": agent_result.fallback_used,
@@ -429,8 +611,65 @@ class PetHarnessEngine:
         tool_event, result, _payload, _bonus = self._execute_tool_candidate(event, candidate, skill.name)
         return tool_event, result
 
-    def _invoke_provider(self, event: UserEvent, skill: Skill | None, prompt: str):
+    def _invoke_provider(
+        self,
+        event: UserEvent,
+        skill: Skill | None,
+        prompt: str,
+        *,
+        stream_callback: Callable[[str], None] | None = None,
+        action_callback: Callable[[str], None] | None = None,
+        cancel: threading.Event | None = None,
+    ):
         self.last_prompt = prompt
+        stream_method = getattr(self.provider, "generate_reply_stream", None)
+        if stream_callback is not None and callable(stream_method):
+            cancel = cancel or threading.Event()
+            fragments: list[str] = []
+            splitter = _SentenceSplitter()
+            reply_extractor = _StreamingReplyExtractor()
+            stream = stream_method(
+                event,
+                matched_skill=skill,
+                prompt_text=prompt,
+                cancel=cancel,
+            )
+            if stream is None:
+                return self._invoke_provider(event, skill, prompt)
+            for fragment in stream:
+                if cancel.is_set():
+                    break
+                raw_fragment = str(fragment)
+                fragments.append(raw_fragment)
+                display_fragment = reply_extractor.feed(raw_fragment)
+                for sentence in splitter.feed(display_fragment):
+                    if action_callback and splitter.actions:
+                        action_callback(splitter.actions.pop(0))
+                    stream_callback(sentence)
+            if not cancel.is_set():
+                display_fragment = reply_extractor.flush()
+                for sentence in splitter.feed(display_fragment) + splitter.flush():
+                    if action_callback and splitter.actions:
+                        action_callback(splitter.actions.pop(0))
+                    stream_callback(sentence)
+            raw_text = "".join(fragments)
+            status_getter = getattr(self.provider, "get_status", None)
+            status = status_getter() if callable(status_getter) else ProviderStatus(healthy=True, message="streaming provider ready")
+            provider_reply = ProviderReply(
+                reply=raw_text,
+                provider_status=status,
+                raw_text=raw_text,
+                prompt_text=prompt,
+                metadata={"streaming": True, "cancelled": cancel.is_set()},
+            )
+            self.last_provider_raw_result = raw_text
+            agent_result = self.result_parser.parse(
+                raw_text or provider_reply.reply,
+                provider_type=provider_reply.provider_status.provider_type,
+                fallback_reply=provider_reply.reply,
+            )
+            self.last_agent_result = agent_result
+            return provider_reply, agent_result
         provider_reply = self.provider.generate_reply(event, matched_skill=skill, prompt_text=prompt)
         self.last_provider_raw_result = provider_reply.raw_text or provider_reply.reply
         agent_result = self.result_parser.parse(
@@ -456,11 +695,11 @@ class PetHarnessEngine:
         LOGGER.info("[SKILL ROUTE] text_length=%s matched=%s source=%s", len(event.text), getattr(skill, "name", None), source)
         return skill, source
 
-    def _resolve_behavior(self, skill: Skill | None):
+    def _resolve_behavior(self, skill: Skill | None, suggested_action_tag: str | None = None):
         resolved_action = None
         action_tags = self.character_library.list_action_tags(self._character_id)
         if action_tags:
-            action_tag = random.choice(action_tags)
+            action_tag = suggested_action_tag if suggested_action_tag in action_tags else random.choice(action_tags)
             resolved_action = self.character_library.resolve_action_tag(self._character_id, action_tag)
             if resolved_action is None:
                 LOGGER.warning("Ignoring unavailable action tag for character %s: %s", self._character_id, action_tag)

@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import threading
+from threading import Event
 from pathlib import Path
 from typing import Any
 
@@ -101,6 +102,13 @@ class ProviderRuntime:
             matched_skill=matched_skill,
             prompt_text=prompt_text,
         )
+
+    def generate_reply_stream(self, event, matched_skill=None, prompt_text=None, cancel: Event | None = None):
+        provider = self.get_provider()
+        method = getattr(provider, "generate_reply_stream", None)
+        if not callable(method):
+            return None
+        return method(event, matched_skill=matched_skill, prompt_text=prompt_text, cancel=cancel)
 
     def get_status(self) -> ProviderStatus:
         with self._lock:

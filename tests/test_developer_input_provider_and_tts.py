@@ -143,6 +143,46 @@ def test_on_agentic_result_speaks_nonempty_reply():
     fake_self.speak_text.assert_not_called()
 
 
+def test_on_streaming_result_does_not_enqueue_final_reply_again():
+    fake_self = MagicMock()
+    fake_self._validated_event_motion_key.return_value = ""
+
+    TransparentWindow.consume_interaction_result(
+        fake_self,
+        {
+            "reply": "First sentence. Second sentence.",
+            "webm_key": "",
+            "raw_event": {
+                "metadata": {"agentic": {"streaming": True}},
+            },
+        },
+    )
+
+    fake_self.speak_text.assert_not_called()
+    fake_self.dispatch_action.assert_not_called()
+
+
+def test_streaming_result_dispatches_final_action_without_repeating_tts():
+    fake_self = MagicMock()
+    fake_self._validated_event_motion_key.return_value = "laugh"
+
+    TransparentWindow.consume_interaction_result(
+        fake_self,
+        {
+            "reply": "已逐句播放的回覆。",
+            "action_tag": "laugh",
+            "webm_key": "laugh",
+            "metadata": {"agentic": {"streaming": True}},
+        },
+    )
+
+    fake_self.dispatch_action.assert_called_once()
+    args, kwargs = fake_self.dispatch_action.call_args
+    assert args == ("[ACTION:laugh]",)
+    assert kwargs["allow_tts"] is False
+    fake_self.speak_text.assert_not_called()
+
+
 def test_on_agentic_result_skips_empty_reply():
     fake_self = MagicMock()
     fake_self._validated_event_motion_key.return_value = ""

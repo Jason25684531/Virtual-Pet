@@ -29,7 +29,9 @@ class PresentationEventBinder:
         events.subscribe("EVT_RUNTIME_ERROR", self._on_error)
 
     def _on_conversation(self, event: AppEvent) -> None:
-        self._window._on_action_bus_conversation(dict(event.payload))
+        payload = dict(event.payload)
+        payload["trace_id"] = event.trace_id
+        self._window._on_action_bus_conversation(payload)
 
     def _on_error(self, event: AppEvent) -> None:
         self._window._on_action_bus_error(str(event.payload.get("message") or "Interaction failed."), event.payload.get("character_id"))

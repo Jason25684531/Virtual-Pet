@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import character_library as library_module
+from character_library import CharacterLibrary
 import pet_harness.character.profile as profile_module
 import pet_harness.ui.character_ui_service as character_ui_module
 from pet_harness.asset.asset_contract import AssetResponse
@@ -13,8 +14,11 @@ from pet_harness.asset.asset_repository import AssetRepository
 from pet_harness.character.exceptions import CharacterNotFoundError, NoActiveCharacterError
 from pet_harness.character.registry import CharacterRegistry
 from pet_harness.character.router import CharacterRouter
+from pet_harness.character.customization_service import CharacterCustomizationService
+from pet_harness.runtime.provider_runtime import ProviderRuntime
 from pet_harness.storage.sqlite_store import SQLiteStore
 from pet_harness.ui.character_ui_service import LAST_PLAYED_AT_KEY, PLAYTIME_SECONDS_KEY, CharacterUiService
+from tests.conftest import FakeProvider
 
 _FRESH_CREATED_AT = datetime.now(UTC).isoformat()
 
@@ -188,6 +192,39 @@ class TestSwitchAndDelete:
         assert service.delete_character("char-lei-jie") == {"character_id": "char-lei-jie", "deleted": True}
         assert not character_dir.exists()
         assert not data_dir.exists()
+
+    def test_library_persona_reload_uses_same_engine_on_next_turn(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(profile_module, "_PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(library_module, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(library_module, "CHARACTER_LIBRARY_DIR", tmp_path / "assets" / "characters")
+        monkeypatch.setattr(library_module, "LEGACY_CHARACTER_LIBRARY_DIR", tmp_path / "assets" / "webm" / "characters")
+        monkeypatch.setattr(library_module, "UI_MUSIC_DIR", tmp_path / "ui" / "assets" / "music")
+
+        source = tmp_path / "og.png"
+        source.write_bytes(b"og")
+        CharacterLibrary().create_validated_character("char-foo", str(source), "Foo")
+        (tmp_path / ".agentic" / "skills").mkdir(parents=True)
+        registry = CharacterRegistry(
+            assets_dir=str(tmp_path / "assets" / "webm" / "characters"),
+            data_dir=str(tmp_path / "data" / "characters"),
+        )
+        router = CharacterRouter(
+            registry=registry,
+            agentic_root=str(tmp_path / ".agentic"),
+            provider_runtime=ProviderRuntime(provider=FakeProvider()),
+        )
+        service = CharacterCustomizationService(registry=registry, router=router, project_root=tmp_path)
+        router.switch_character("char-foo")
+        engine = router.get_active_engine()
+
+        service.save_persona("char-foo", "persona A")
+        engine.handle_event({"text": "first turn"})
+        service.save_persona("char-foo", "persona B")
+        engine.handle_event({"text": "second turn"})
+
+        assert router.get_active_engine() is engine
+        assert "persona B" in engine.last_prompt
 
     def test_switch_character_writes_last_played_at(self, service):
         ui_service, router, _registry = service

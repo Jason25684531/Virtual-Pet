@@ -312,6 +312,16 @@ class AudioStreamWorker(QObject):
             except queue.Empty:
                 break
 
+    def interrupt_all(self) -> None:
+        with self._pcm_lock:
+            sessions = list(self._pcm_sessions.values())
+        for session in sessions:
+            session.interrupt()
+        self.clear_queue()
+        stop = getattr(self._player, "stop", None)
+        if callable(stop):
+            stop()
+
     def suppress_trace(self, trace_id: str | None) -> None:
         normalized = str(trace_id or "").strip()
         if not normalized:

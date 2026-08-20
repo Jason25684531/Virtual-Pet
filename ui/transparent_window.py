@@ -96,6 +96,7 @@ class TransparentWindow(QMainWindow):
         self._settings_dialog = None
         self._conversation_pending = False
         self._conversation_character_id: str | None = None
+        self._conversation_trace_id: str | None = None
         self._character_x_offset = self.DEFAULT_CHARACTER_X_OFFSET
         self._character_y_offset = self.DEFAULT_CHARACTER_Y_OFFSET
         self._character_scale = self.DEFAULT_CHARACTER_SCALE
@@ -107,6 +108,7 @@ class TransparentWindow(QMainWindow):
         self._stt_state = "idle"
         self._stt_controller = None
         self._latest_agentic_event: dict[str, object] | None = None
+        self._spoken_chunks: dict[str, list[str]] = {}
         self._playtime_character_id: str | None = None
         self._playtime_started_at: float | None = None
         self._playtime_timer = QTimer(self)
@@ -670,6 +672,16 @@ class TransparentWindow(QMainWindow):
             raise RuntimeError("TransparentWindow requires an action bus")
         self._action_bus.execute(ActionCommand("speak", message, trace_id, "ui", metadata={"has_action": has_action}))
 
+    def record_spoken_chunk(self, trace_id: str, text: str) -> None:
+        normalized_trace_id = str(trace_id or "").strip()
+        if not normalized_trace_id or not str(text or "").strip():
+            return
+        self._spoken_chunks.setdefault(normalized_trace_id, []).append(str(text).strip())
+        engine = getattr(self._adapter, "engine", None)
+        mark = getattr(engine, "mark_spoken_chunk", None)
+        if callable(mark):
+            mark(str(text).strip())
+
     def begin_conversation_turn(self, trace_id: str, source_label: str, user_text: str):
         self._run_javascript("beginConversationTurn", trace_id, source_label, user_text)
 
@@ -729,6 +741,7 @@ class TransparentWindow(QMainWindow):
         if self._stt_state == "listening":
             self.stt_stop_requested.emit()
             return
+        TransparentWindow._interrupt_active_conversation(self)
         self.stt_start_requested.emit()
 
     def toggle_stt_from_bridge(self) -> None:
@@ -905,23 +918,48 @@ class TransparentWindow(QMainWindow):
             self.set_action_status("Please enter text first.", tone="warn", timeout_ms=2200)
             return
         if self._conversation_pending:
-            self.set_action_status("Interaction already running.", tone="warn", timeout_ms=2200)
-            return
+            TransparentWindow._interrupt_active_conversation(self)
         from pet_harness.app.commands import ActionCommand
-        character_id = self.get_current_character_id()
+        get_current_character_id = getattr(self, "get_current_character_id", lambda: None)
+        character_id = get_current_character_id()
         if not character_id:
             self.set_action_status("No active character.", tone="warn", timeout_ms=2200)
             return
+        trace_id = f"turn-{uuid4().hex}"
         self._conversation_pending = True
         self._conversation_character_id = character_id
+        self._conversation_trace_id = trace_id
         self._set_agentic_busy(True)
         self.set_action_status("Processing interaction...", tone="working", timeout_ms=0)
-        result = self._action_bus.execute(ActionCommand("conversation", cleaned, source="ui", character_id=character_id))
+        result = self._action_bus.execute(ActionCommand("conversation", cleaned, trace_id=trace_id, source="ui", character_id=character_id))
         if result.status != "ok":
             self._conversation_pending = False
             self._conversation_character_id = None
+            self._conversation_trace_id = None
             self._set_agentic_busy(False)
             self.set_action_status(result.reason or "Interaction rejected.", tone="warn", timeout_ms=2200)
+
+    def _interrupt_active_conversation(self) -> None:
+        """Cancel the active turn before starting another input source."""
+        action_bus = getattr(self, "_action_bus", None)
+        cancel = getattr(action_bus, "cancel_conversation", None)
+        if callable(cancel):
+            cancel()
+        coordinator = getattr(self, "_motion_coordinator", None)
+        interrupt_all = getattr(coordinator, "interrupt_all", None)
+        if callable(interrupt_all):
+            interrupt_all()
+        else:
+            previous_trace_id = getattr(self, "_conversation_trace_id", None)
+            if coordinator is not None and previous_trace_id:
+                coordinator.interrupt_trace(previous_trace_id)
+        for method_name in ("stop_motion_loop", "restore_idle_video"):
+            method = getattr(self, method_name, None)
+            if callable(method):
+                method()
+        self._conversation_pending = False
+        self._conversation_character_id = None
+        self._conversation_trace_id = None
 
     def _on_action_bus_conversation(self, payload: dict) -> None:
         if not self._is_current_conversation_character(payload.get("character_id")):
@@ -946,6 +984,7 @@ class TransparentWindow(QMainWindow):
             return
         self._conversation_pending = False
         self._conversation_character_id = None
+        self._conversation_trace_id = None
         self._set_agentic_busy(False)
 
     def consume_interaction_result(self, payload: dict, message: str = "Interaction complete.") -> None:
@@ -959,7 +998,7 @@ class TransparentWindow(QMainWindow):
             if payload.get("matched_skill")
             else "你的訊息"
         )
-        trace_id = (
+        trace_id = str(payload.get("trace_id") or "").strip() or (
             self._latency_tracker.begin_interaction("harness", user_text)
             if self._latency_tracker is not None
             else f"agentic-{uuid4().hex}"
@@ -967,7 +1006,15 @@ class TransparentWindow(QMainWindow):
         self.begin_conversation_turn(trace_id, source_label, user_text)
         self.set_conversation_assistant(trace_id, reply_text)
         self.finish_conversation_turn(trace_id)
-        if webm_key:
+        metadata = payload.get("metadata") or (payload.get("raw_event") or {}).get("metadata") or {}
+        streaming = bool(metadata.get("agentic", {}).get("streaming"))
+        if streaming and webm_key:
+            self.dispatch_action(
+                f"[ACTION:{webm_key}]",
+                trace_id=trace_id,
+                allow_tts=False,
+            )
+        elif webm_key:
             dispatched = self.dispatch_action(
                 f"[ACTION:{webm_key}] {reply_text}",
                 trace_id=trace_id,
@@ -976,7 +1023,7 @@ class TransparentWindow(QMainWindow):
             )
             if not dispatched and reply_text:
                 self.speak_text(reply_text, trace_id=trace_id, has_action=False)
-        elif reply_text:
+        elif reply_text and not streaming:
             self.speak_text(reply_text, trace_id=trace_id, has_action=False)
         self.refresh_agentic_ui(
             event_payload=payload,

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -99,6 +100,8 @@ class PyQtHarnessAdapter:
         _default_contract = {"brain_mode": "harness", "harness_runtime_available": True, "openclaw_enabled": False}
         self._runtime_contract = dict(runtime_contract or _default_contract)
         self._last_skill_discovery_log: tuple[int, int, int] | None = None
+        self._stream_chunk_callback = None
+        self._stream_action_callback = None
         self._refresh_runtime()
         self._log_active_character_diagnostics()
         self._resume_upload_asset_jobs()
@@ -186,25 +189,41 @@ class PyQtHarnessAdapter:
             raise ValueError("no active character")
         return self.prepare_turn(text, "pyqt_ui", profile.character_id)()
 
-    def prepare_turn(self, text: str, source: str, character_id: str) -> PreparedTurn:
+    def configure_streaming(self, chunk_callback=None, action_callback=None) -> None:
+        self._stream_chunk_callback = chunk_callback
+        self._stream_action_callback = action_callback
+
+    def prepare_turn(self, text: str, source: str, character_id: str, trace_id: str | None = None) -> PreparedTurn:
         cleaned = str(text or "").strip()
         if not cleaned:
             raise ValueError("text input cannot be empty")
         engine = self.router.acquire_engine(character_id)
+        cancel_event = threading.Event()
 
         def run() -> dict[str, Any]:
             self._refresh_runtime(engine)
             if engine.router.match(cleaned, engine._active_capabilities()) is None:
                 engine.refresh_semantic_index()
             previous_progress = engine.store.get_user_progress()
-            event = engine.handle_event({"text": cleaned, "source": source})
+            stream_callback = None
+            action_callback = None
+            if callable(self._stream_chunk_callback):
+                stream_callback = lambda chunk: self._stream_chunk_callback(chunk, trace_id)
+            if callable(self._stream_action_callback):
+                action_callback = lambda action: self._stream_action_callback(action, trace_id)
+            event = engine.handle_event(
+                {"text": cleaned, "source": source},
+                stream_callback=stream_callback,
+                action_callback=action_callback,
+                cancel=cancel_event,
+            )
             engine.store.set_setting(LAST_XP_KEY, event.xp_delta)
             payload = self._serialize_pet_event(event, previous_progress=previous_progress, store=engine.store)
             payload["user_text"] = cleaned
             payload["character_id"] = character_id
             return payload
 
-        return PreparedTurn(run, lambda: self.router.release_engine(engine))
+        return PreparedTurn(run, lambda: self.router.release_engine(engine), cancel_event.set)
 
     def get_current_state(self) -> dict[str, Any]:
         # ponytail: 讀取路徑不重建 runtime;handle_text_input 已在同一輪互動的

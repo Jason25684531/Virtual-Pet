@@ -34,4 +34,4 @@ def test_binder_only_observes_presentation_events():
     bus.publish(AppEvent("EVT_CONVERSATION_TURN", "t", {"reply": "hi"}))
     bus.publish(AppEvent("EVT_RUNTIME_ERROR", "t", {"message": "boom"}))
 
-    assert window.calls == [("conversation", {"reply": "hi"}), ("error", "boom")]
+    assert window.calls == [("conversation", {"reply": "hi", "trace_id": "t"}), ("error", "boom")]

@@ -141,6 +141,20 @@ class TestPetEventMirrorsBehaviorEvent:
         assert skill_event.matched_skill == "mood_skill"
         assert skill_event.action_tag in {"laugh", "angry"}
 
+    def test_provider_action_tag_is_used_when_the_character_supports_it(self, harness_env, monkeypatch):
+        engine = self._build_engine(harness_env)
+        monkeypatch.setattr(engine.character_library, "list_action_tags", lambda _character_id: ["laugh", "angry"])
+        monkeypatch.setattr(
+            engine.character_library,
+            "resolve_action_tag",
+            lambda _character_id, tag: {"action_tag": tag, "motion_key": tag, "path": f"{tag}.webm"},
+        )
+
+        resolved, behavior = engine._resolve_behavior(None, "laugh")
+
+        assert resolved["action_tag"] == "laugh"
+        assert behavior.webm_key == "laugh"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

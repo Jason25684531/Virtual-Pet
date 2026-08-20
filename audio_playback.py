@@ -55,6 +55,13 @@ class PygameInMemoryAudioPlayer:
             while self._mixer.music.get_busy():
                 time.sleep(self._poll_interval)
 
+    def stop(self) -> None:
+        if self._mixer is not None:
+            try:
+                self._mixer.music.stop()
+            except Exception:
+                pass
+
     def _ensure_initialized(self):
         get_init = getattr(self._mixer, "get_init", None)
         if callable(get_init) and get_init():

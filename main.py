@@ -177,6 +177,7 @@ def _run_harness_mode(app, stt_provider=None):
         parent=window,
     )
     window.configure_motion(motion)
+    adapter.configure_streaming(motion.enqueue_stream_chunk, motion.enqueue_stream_action)
     coordinator.configure_motion(MotionPortAdapter(motion, window))
     PresentationEventBinder(window, coordinator.event_bus)
     executor = QtBackgroundExecutor(window)

@@ -237,17 +237,16 @@ class CharacterLibrary:
             candidate = self._generation_motion_path(character_id, variant, generation, motion_key)
             if candidate:
                 return candidate
-        if generation is None:
-            motions_dir = manifest.get("motions_dir")
-            relative_path = manifest.get("motions", {}).get(motion_key)
-            if relative_path:
-                absolute_path = PROJECT_ROOT / relative_path
-                if absolute_path.is_file():
-                    return str(absolute_path)
-            if motions_dir:
-                candidate = PROJECT_ROOT / str(motions_dir) / f"{motion_key}.webm"
-                if candidate.is_file():
-                    return str(candidate)
+        motions_dir = manifest.get("motions_dir")
+        relative_path = manifest.get("motions", {}).get(motion_key)
+        if relative_path:
+            absolute_path = PROJECT_ROOT / relative_path
+            if absolute_path.is_file():
+                return str(absolute_path)
+        if generation is None and motions_dir:
+            candidate = PROJECT_ROOT / str(motions_dir) / f"{motion_key}.webm"
+            if candidate.is_file():
+                return str(candidate)
         # A missing key never searches another revision. OG is the only
         # cross-variant fallback allowed by the contract.
         og_generation = self._selected_wearable_generation(character_id, "og")

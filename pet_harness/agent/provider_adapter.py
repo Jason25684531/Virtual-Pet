@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from threading import Event
+from typing import Any, Iterator, Protocol
 
 from pet_harness.models.events import UserEvent
 from pet_harness.models.provider import ProviderStatus
@@ -27,3 +28,12 @@ class LLMProviderAdapter(Protocol):
         prompt_text: str | None = None,
     ) -> ProviderReply:
         """Generate a reply for the harness without exposing provider details."""
+
+    def generate_reply_stream(
+        self,
+        event: UserEvent,
+        matched_skill: Skill | None = None,
+        prompt_text: str | None = None,
+        cancel: Event | None = None,
+    ) -> Iterator[str] | None:
+        """Optionally yield raw reply fragments; adapters may omit this method."""

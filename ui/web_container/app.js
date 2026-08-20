@@ -5,6 +5,7 @@
 
     // ── DOM 參照（僅保留有效元素）────────────────────────────
     var stageRoot = document.getElementById('stage-root');
+    var renderActivityBadge = document.getElementById('render-activity-badge');
     var stageBackground = document.getElementById('stage-background');
     var video = document.getElementById('pet-video');
     var panelVideo = document.getElementById('panel-video');
@@ -686,28 +687,21 @@
         refreshCharacterHud();
     }
 
-    function renderProgress(job) {
-        var overlay = document.getElementById('render-progress-overlay');
-        var copy = document.getElementById('render-progress-copy');
-        var status = document.getElementById('render-progress-status');
-        var bar = document.getElementById('render-progress-bar');
-        if (!overlay) return;
+    function renderActivity(job) {
+        if (!renderActivityBadge) return;
+        window.clearTimeout(renderProgressCloseTimer);
         if (!job) {
-            overlay.hidden = true;
+            renderActivityBadge.hidden = true;
+            renderActivityBadge.classList.remove('is-active', 'is-failed');
             return;
         }
-        overlay.hidden = false;
-        overlay.classList.toggle('is-failed', job.status === 'failed' || job.status === 'timed_out');
-        overlay.classList.toggle('is-complete', job.status === 'completed');
-        setText(status, job.status === 'completed' ? 'Completed' : job.status === 'failed' || job.status === 'timed_out' ? 'Failed' : job.stage || job.status);
-        setText(copy, (job.character_id || activeStyleCharacterId) + ' · ' + (job.variant || '-') + ' · ' + (job.stage || job.status) + (job.error_message ? ' · ' + job.error_message : ''));
-        var determinate = job.progress_percent != null;
-        var track = overlay.querySelector('.render-progress-track');
-        if (track) track.classList.toggle('is-indeterminate', !determinate && job.status !== 'completed' && job.status !== 'failed' && job.status !== 'timed_out');
-        if (bar) bar.style.width = (determinate ? Math.max(0, Math.min(100, Number(job.progress_percent))) : job.status === 'completed' ? 100 : 0) + '%';
-        if (job.status === 'completed') {
-            window.clearTimeout(renderProgressCloseTimer);
-            renderProgressCloseTimer = window.setTimeout(function () { overlay.hidden = true; }, 1800);
+        var failed = job.status === 'failed' || job.status === 'timed_out';
+        renderActivityBadge.hidden = false;
+        renderActivityBadge.classList.toggle('is-active', !failed);
+        renderActivityBadge.classList.toggle('is-failed', failed);
+        renderActivityBadge.setAttribute('aria-label', failed ? 'Render failed' : 'Render in progress');
+        if (failed) {
+            renderProgressCloseTimer = window.setTimeout(function () { renderActivity(null); }, 2000);
         }
     }
 
@@ -719,7 +713,7 @@
             var relevant = (jobs || []).filter(function (job) { return job.character_id === requestedCharacter; });
             var active = relevant.filter(function (job) { return ['queued', 'uploading', 'submitted', 'running'].indexOf(job.status) >= 0; })[0];
             var terminal = relevant[0];
-            renderProgress(active || (terminal && ['completed', 'failed', 'timed_out'].indexOf(terminal.status) >= 0 ? terminal : null));
+            renderActivity(active || (terminal && ['failed', 'timed_out'].indexOf(terminal.status) >= 0 ? terminal : null));
         }).catch(function () {});
     }
 
@@ -952,8 +946,6 @@
                 setStatus('Scene set to follow style.', 'idle', 2400);
             }).catch(function (err) { setStatus('Scene apply failed: ' + err.message, 'error', 3200); });
         });
-        var importer = document.getElementById('scene-import-button');
-        if (importer) importer.addEventListener('click', function () { setStatus('Import 功能待 bridge 提供檔案選擇器。', 'idle', 2400); });
     }
 
     // ── UC02-1 Preset 聚光燈輪播 ───────────────────────────────

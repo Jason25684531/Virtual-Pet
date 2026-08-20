@@ -171,7 +171,7 @@ class CharacterCustomizationService:
     def _refresh_if_active(self, character_id: str) -> None:
         active = self._router.get_active_character()
         if active is not None and active.character_id == character_id:
-            self._router.switch_character(character_id)
+            self._router.reload_active_profile()
 
     def _build_view(self, profile: CharacterProfile) -> dict[str, Any]:
         builtin_skills = self._load_builtin_skills()

@@ -51,6 +51,7 @@ class TtsPlaybackMixin:
 
         reply_id = uuid4().hex
         self._pending_tts_chunks.put((reply_id, speech_text, trace_id))
+        self._reply_texts[reply_id] = speech_text
         if normalized_trace_id:
             self._trace_pending_tts_counts[normalized_trace_id] = (
                 self._trace_pending_tts_counts.get(normalized_trace_id, 0) + 1
@@ -133,6 +134,7 @@ class TtsPlaybackMixin:
         def handle_audio_ready(audio_bytes, r_id: str, t_id: str):
             if t_id and t_id in self._suppressed_traces:
                 return
+            self._record_spoken_reply(r_id, t_id)
             self._audio_worker.enqueue(audio_bytes, r_id, t_id)
 
         def handle_result(success: bool, result_message: str, payload: object, current_reply_id=reply_id):
@@ -302,6 +304,17 @@ class TtsPlaybackMixin:
             self._latency_tracker.mark_tts_finished(normalized_trace_id, reply_id, True, message)
         print(f"[ECHOES] 提示: 語音播放完成。{message}")
 
+    def _record_spoken_reply(self, reply_id: str, trace_id: str | None) -> None:
+        if reply_id in self._spoken_reply_ids:
+            return
+        spoken_text = self._reply_texts.get(reply_id)
+        if not spoken_text:
+            return
+        self._spoken_reply_ids.add(reply_id)
+        record = getattr(self._window, "record_spoken_chunk", None)
+        if callable(record):
+            record(str(trace_id or "").strip(), spoken_text)
+
     def _on_driver_started(self, reply_id: str, trace_id: str | None):
         if not reply_id:
             return
@@ -311,6 +324,7 @@ class TtsPlaybackMixin:
             return
         self._driver_started_pairs.add(event_key)
         self._driver_started_replies.add(reply_id)
+        self._record_spoken_reply(reply_id, normalized_trace_id)
         if self._latency_tracker is not None:
             self._latency_tracker.mark_driver_started(normalized_trace_id, reply_id)
         if normalized_trace_id in self._suppressed_traces:
@@ -327,6 +341,8 @@ class TtsPlaybackMixin:
         self._driver_started_pairs.clear()
         self._queued_playback_results.clear()
         self._trace_tts_providers.clear()
+        self._reply_texts.clear()
+        self._spoken_reply_ids.clear()
         self._trace_pending_tts_counts.clear()
         self._completed_tts_traces.clear()
         self._deferred_dispatches.clear()
@@ -464,6 +480,8 @@ class TtsPlaybackMixin:
         self._driver_started_pairs.clear()
         self._queued_playback_results.clear()
         self._trace_tts_providers.clear()
+        self._reply_texts.clear()
+        self._spoken_reply_ids.clear()
         self._trace_pending_tts_counts.clear()
         self._completed_tts_traces.clear()
         self._deferred_dispatches.clear()

@@ -16,37 +16,66 @@ class ConversationHandler(ActionHandler):
         self._executor = executor
         self._events = events
         self._busy = False
+        self._active_command: ActionCommand | None = None
+        self._active_prepared = None
 
     def can_handle(self, command: ActionCommand) -> bool:
         return command.action == "conversation"
 
     def handle(self, command: ActionCommand) -> ActionResult:
-        if self._busy:
+        if self._busy and not command.metadata.get("barge_in"):
             return ActionResult("rejected", "busy")
+        if self._busy:
+            self.cancel_active()
         if not command.text.strip():
             return ActionResult("rejected", "empty_text")
         if not command.character_id:
             return ActionResult("rejected", "missing_character_id")
         self._busy = True
+        self._active_command = command
         prepared = None
         try:
-            prepared = self._conversation.prepare_turn(command.text, command.source, command.character_id)
+            if command.trace_id is None:
+                prepared = self._conversation.prepare_turn(command.text, command.source, command.character_id)
+            else:
+                try:
+                    prepared = self._conversation.prepare_turn(command.text, command.source, command.character_id, command.trace_id)
+                except TypeError:
+                    prepared = self._conversation.prepare_turn(command.text, command.source, command.character_id)
+            self._active_prepared = prepared
             self._executor.submit(prepared, lambda ok, message, payload: self._completed(command, ok, message, payload))
         except Exception:
             self._busy = False
+            self._active_command = None
+            self._active_prepared = None
             if prepared is not None:
                 prepared.release()
             raise
         return ActionResult("ok", payload={"accepted": True})
 
     def _completed(self, command: ActionCommand, ok: bool, message: str, payload: Any) -> None:
+        if command is not self._active_command:
+            return
         self._busy = False
+        self._active_command = None
+        self._active_prepared = None
         if not ok:
             self._events.publish(AppEvent("EVT_RUNTIME_ERROR", command.trace_id, {"message": message, "character_id": command.character_id}))
             return
         result = dict(payload or {})
         result["character_id"] = command.character_id
         self._events.publish(AppEvent("EVT_CONVERSATION_TURN", command.trace_id, result))
+
+    def cancel_active(self) -> bool:
+        if not self._busy:
+            return False
+        prepared = self._active_prepared
+        if prepared is not None:
+            prepared.cancel()
+        self._busy = False
+        self._active_command = None
+        self._active_prepared = None
+        return True
 
 
 class EventActionHandler(ActionHandler):

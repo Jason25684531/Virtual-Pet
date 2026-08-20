@@ -11,9 +11,10 @@ class BackgroundExecutor(ABC):
 class PreparedTurn:
     """A queued turn that releases its captured engine lease exactly once."""
 
-    def __init__(self, run: Callable[[], dict[str, Any]], release: Callable[[], None]) -> None:
+    def __init__(self, run: Callable[[], dict[str, Any]], release: Callable[[], None], cancel: Callable[[], None] | None = None) -> None:
         self._run = run
         self._release = release
+        self._cancel = cancel or (lambda: None)
         self._released = False
         self._lock = Lock()
 
@@ -30,3 +31,5 @@ class PreparedTurn:
             self._released = True
         self._release()
 
+    def cancel(self) -> None:
+        self._cancel()

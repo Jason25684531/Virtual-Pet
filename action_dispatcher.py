@@ -14,7 +14,7 @@ from uuid import uuid4
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from PyQt5.QtCore import QCoreApplication, QObject, QTimer
+from PyQt5.QtCore import QCoreApplication, QObject, QTimer, pyqtSignal
 
 from action_services import (
     FixedIntentReplyWorker,
@@ -80,6 +80,9 @@ class DeferredDispatch:
 class MotionCoordinator(TtsPlaybackMixin, QObject):
     """Presentation 的動畫、TTS 與播放收尾狀態機。"""
 
+    stream_chunk_signal = pyqtSignal(str, str)
+    stream_action_signal = pyqtSignal(str, str)
+
     def __init__(
         self,
         window: "TransparentWindow",
@@ -96,6 +99,8 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         parent=None,
     ):
         super().__init__(parent)
+        self.stream_chunk_signal.connect(self._enqueue_stream_chunk)
+        self.stream_action_signal.connect(self._dispatch_stream_action)
         self._window = window
         self._library = library
         self._provider_runtime = provider_runtime
@@ -127,6 +132,8 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._driver_started_pairs: set[tuple[str, str]] = set()
         self._queued_playback_results: dict[str, tuple[str | None, str]] = {}
         self._trace_tts_providers: dict[str, str] = {}
+        self._reply_texts: dict[str, str] = {}
+        self._spoken_reply_ids: set[str] = set()
         self._trace_pending_tts_counts: dict[str, int] = {}
         self._completed_tts_traces: set[str] = set()
         self._deferred_dispatches: deque[DeferredDispatch] = deque()
@@ -250,6 +257,20 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             or self._audio_worker.is_busy()
         )
 
+    def enqueue_stream_chunk(self, text: str, trace_id: str | None = None) -> None:
+        self.stream_chunk_signal.emit(str(text or ""), str(trace_id or ""))
+
+    def enqueue_stream_action(self, action: str, trace_id: str | None = None) -> None:
+        self.stream_action_signal.emit(str(action or ""), str(trace_id or ""))
+
+    def _enqueue_stream_chunk(self, text: str, trace_id: str) -> None:
+        if text.strip():
+            self.speak_text(text, trace_id=trace_id, has_action=False)
+
+    def _dispatch_stream_action(self, action: str, trace_id: str) -> None:
+        if action.strip():
+            self.dispatch(f"[ACTION:{action}]", trace_id=trace_id, allow_tts=False)
+
     @property
     def has_active_motion(self) -> bool:
         return self._current_loop_action_key is not None or bool(self._pending_actions)
@@ -361,7 +382,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             print(f"[ECHOES] 警告: action `{action_name}` 尚未綁定。")
             self._window.restore_idle_video()
             return False
-        harness_reply = bool(normalized_trace_id and display_message)
+        harness_reply = bool(normalized_trace_id and (display_message or not allow_tts))
         if harness_reply and binding.skip_tts_sync:
             # The harness has already run the tool and supplied the reply.  Do not
             # replace it with this binding's legacy service audio or suppress TTS.
@@ -385,7 +406,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         print(f"[ECHOES] Action tag 命中: {action_name} -> motion `{binding.motion_key}`")
         if self._latency_tracker is not None:
             self._latency_tracker.mark_action_dispatched(trace_id, action_name)
-        use_pending_sync = bool(trace_id)
+        use_pending_sync = bool(trace_id) and allow_tts
         intentional_tts_suppression = False
         if use_pending_sync:
             self._start_pending_action(
@@ -464,6 +485,62 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
     def speak_text(self, message: str, trace_id: str | None = None, has_action: bool = False):
         tone = self._resolve_message_tone(message, has_action)
         self._synthesize_tts(message, tone=tone, trace_id=trace_id)
+
+    def interrupt_trace(self, trace_id: str | None) -> None:
+        normalized = str(trace_id or "").strip()
+        if not normalized:
+            return
+        self._suppressed_traces.add(normalized)
+        self._audio_worker.suppress_trace(normalized)
+        self._clear_pending_action(normalized)
+        kept = []
+        while not self._pending_tts_chunks.empty():
+            try:
+                item = self._pending_tts_chunks.get_nowait()
+            except queue.Empty:
+                break
+            if str(item[2] or "").strip() != normalized:
+                kept.append(item)
+        for item in kept:
+            self._pending_tts_chunks.put(item)
+        worker = self._active_tts_worker
+        if worker is not None and hasattr(worker, "quit"):
+            worker.quit()
+        if self._active_action_trace_id == normalized:
+            self._active_action_trace_id = None
+            self._current_loop_action_key = None
+            self._current_loop_binding = None
+            self._loop_action_tts_queued = False
+            if hasattr(self._window, "stop_motion_loop"):
+                self._window.stop_motion_loop()
+            self._window.restore_idle_video()
+
+    def interrupt_all(self) -> None:
+        trace_ids = (
+            set(self._pending_actions)
+            | set(self._trace_pending_tts_counts)
+            | set(self._completed_tts_traces)
+            | ({self._active_action_trace_id} if self._active_action_trace_id else set())
+        )
+        for trace_id in trace_ids:
+            self.interrupt_trace(trace_id)
+        self._audio_worker.interrupt_all()
+        self._deferred_dispatches.clear()
+        self._current_loop_action_key = None
+        self._current_loop_binding = None
+        self._loop_action_tts_queued = False
+        self._active_action_trace_id = None
+        if self._loop_cleanup_timer is not None:
+            self._loop_cleanup_timer.stop()
+            self._loop_cleanup_timer = None
+        for timer_name in ("_news_audio_delay_timer", "_wave_greeting_delay_timer"):
+            timer = getattr(self, timer_name)
+            if timer is not None:
+                timer.stop()
+                setattr(self, timer_name, None)
+        if hasattr(self._window, "stop_motion_loop"):
+            self._window.stop_motion_loop()
+        self._window.restore_idle_video()
 
     @staticmethod
     def _resolve_message_tone(message: str, has_action: bool) -> str:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+import json
+from threading import Event
+from typing import Any, Callable, Iterator
 
 import requests
 
@@ -60,6 +62,43 @@ class OllamaProvider:
             prompt_text=prompt,
         )
 
+    def generate_reply_stream(
+        self,
+        event: UserEvent,
+        matched_skill: Skill | None = None,
+        prompt_text: str | None = None,
+        cancel: Event | None = None,
+    ) -> Iterator[str]:
+        base_url = self.config.base_url or "http://localhost:11434"
+        prompt = prompt_text or event.text
+        response = self.request_fn(
+            "POST",
+            f"{base_url}/api/generate",
+            timeout=self.config.timeout_seconds,
+            json={"model": self.config.model_name, "prompt": prompt, "stream": True},
+            stream=True,
+        )
+        if getattr(response, "status_code", 500) >= 400:
+            raise RuntimeError(f"Ollama returned status {response.status_code}.")
+        try:
+            for line in response.iter_lines():
+                if cancel is not None and cancel.is_set():
+                    break
+                if not line:
+                    continue
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                payload = json.loads(line)
+                fragment = str(payload.get("response") or "")
+                if fragment:
+                    yield fragment
+                if payload.get("done"):
+                    break
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+
     def _unavailable_reply(self, prompt_text: str, error_category: str, message: str) -> ProviderReply:
         metadata = {"error_category": error_category, "requested_provider": ProviderType.OLLAMA.value}
         return ProviderReply(
@@ -117,5 +156,5 @@ class OllamaProvider:
             "metadata": metadata,
         }
 
-    def _default_request(self, method: str, url: str, timeout: float, json: Any | None = None):
-        return requests.request(method, url, timeout=timeout, json=json)
+    def _default_request(self, method: str, url: str, timeout: float, json: Any | None = None, stream: bool = False):
+        return requests.request(method, url, timeout=timeout, json=json, stream=stream)

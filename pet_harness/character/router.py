@@ -79,6 +79,7 @@ class CharacterRouter:
                 provider=self._provider_runtime,
                 character_id=character_id,
                 character_profile=profile if is_library_character else None,
+                profile_loader=(lambda: self.load_profile(character_id)[0]) if is_library_character else None,
                 agentic_root=self._agentic_root,
                 memory_store=memory_store,
                 semantic_index_enabled=self._semantic_index_enabled,
@@ -117,6 +118,7 @@ class CharacterRouter:
                 )
             except PersonalValidationError:
                 library_personal = None
+            skill_refs = list(library_personal.skill_refs) if library_personal and library_personal.skill_refs else _DEFAULT_LIBRARY_SKILLS
             return CharacterProfile(
                 character_id=resolved_id,
                 name=str(manifest.get("name") or character_id),
@@ -127,7 +129,7 @@ class CharacterRouter:
                 voice_id_env_key=str(manifest.get("voice_id_env_key") or ""),
                 layout=dict(manifest.get("layout") or {}),
                 persona_description="",
-                skill_config=list(_DEFAULT_LIBRARY_SKILLS),
+                skill_config=skill_refs,
                 personal=library_personal,
             ), True
 
@@ -178,6 +180,29 @@ class CharacterRouter:
 
     def get_active_character(self) -> CharacterProfile | None:
         return self._active_profile
+
+    def reload_active_profile(self) -> None:
+        """Reload the active profile without replacing its engine."""
+        with self._lock:
+            engine = self._active_engine
+            if engine is None:
+                return
+            engine.reload_profile()
+            profile = engine.character_profile
+            if profile is None:
+                return
+            self._active_profile = profile
+            self._active_snapshot = ActiveCharacterSnapshot(
+                character_id=profile.character_id,
+                name=profile.name,
+                profile=profile,
+                motions=dict(profile.motions),
+                idle_pool=tuple(profile.idle_pool),
+                background_image=profile.background_image,
+                layout=dict(profile.layout),
+                voice_id_env_key=profile.voice_id_env_key,
+                skill_refs=tuple(skill.name for skill in engine.skills),
+            )
 
     def get_active_engine(self) -> PetHarnessEngine | None:
         return self._active_engine

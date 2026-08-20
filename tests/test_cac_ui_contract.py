@@ -19,7 +19,7 @@ def test_cac_ui_exposes_only_the_new_public_layers():
         "debug-panel", "screen-main-menu", "screen-create-character", "screen-load-save",
         "screen-loading", "hud-chat", "hud-agent", "hud-style", "hud-scene",
         "modal-name-character", "modal-discard-confirm", "modal-delete-confirm",
-        "modal-close-confirm", "modal-reward-popup", "companion-nav", "hud-level-badge",
+        "modal-close-confirm", "modal-reward-popup", "companion-nav", "hud-level-badge", "render-activity-badge",
     ):
         assert f'id="{element_id}"' in html
 
