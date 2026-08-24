@@ -120,6 +120,38 @@ def test_create_voice_turn_without_vad_endpoint_leaves_it_null_for_manual_stop()
     claim_voice_turn()  # drain queue so it doesn't leak into other tests
 
 
+def test_log_current_before_set_context_does_not_raise():
+    """Regression: a real run crashed AudioStreamWorker's PCM playback with
+    "TurnTimeline.report() missing 5 required keyword-only arguments" — audio_play_started
+    fired (streaming overlap: TTS starts while the LLM is still generating) before
+    handle_event() reached set_context() at turn end, so self.context was still {}."""
+    timeline = TurnTimeline.create("turn-log-current", "vad", vad_endpoint=True)
+
+    assert timeline.log_current() is None
+
+    timeline.set_context(character_id="miku", route_kind="conversation", skill_name=None, streaming=True, slow_tool=False)
+    result = timeline.log_current()
+    assert result is not None
+    assert result["character_id"] == "miku"
+
+
+def test_manual_stop_voice_turn_is_not_flagged_incomplete_for_missing_vad_endpoint():
+    """Manual/device/max stop reasons never trigger vad_endpoint (see stt_controller.py);
+    that's expected behavior, not a wiring gap — a real production log flagged this as a
+    false-positive timeline_complete=False before this fix."""
+    timeline = create_voice_turn(
+        "voice-test-3", vad_endpoint_ts=None, stt_started_ts=1.0, stt_done_ts=1.2, warmup_completed_at=None,
+    )
+    for checkpoint in ("route_done", "pre_llm_done", "llm_request_started", "llm_first_token", "llm_done", "turn_complete"):
+        timeline.mark(checkpoint)
+
+    report = timeline.report(character_id="miku", route_kind="conversation", skill_name=None, streaming=False, slow_tool=False)
+
+    assert report["timeline_complete"] is True
+    assert report["missing_checkpoints"] == []
+    claim_voice_turn()
+
+
 class _Index:
     def __init__(self):
         self.queries = []

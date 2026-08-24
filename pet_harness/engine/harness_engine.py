@@ -567,6 +567,7 @@ class PetHarnessEngine:
         memory_status = self.memory_store.status()
 
         prompt_result = self._build_prompt(user_event, state_before, deterministic_skill, tool_first_result, conversation_history, memory_hits, retrieval_result, ack_emitted=timeline.ack_emitted)
+        LOGGER.info("[PROMPT SIZE] turn_id=%s chars=%s", timeline.turn_id, prompt_result.section_sizes)
         provider_reply, agent_result = self._invoke_provider(
             user_event,
             deterministic_skill,
@@ -680,6 +681,12 @@ class PetHarnessEngine:
 
         def complete(ok: bool, message: str, result) -> None:
             timeline.mark("tool_done")
+            # ack-only's one [TURN LATENCY] line fires at turn_complete, before this async
+            # tool finishes — tool_ms is always None there. Re-log now that tool_done is
+            # set, so tool_completion_ms actually surfaces per tool-result-synthesis's
+            # "Slow Tool Metrics Separation" requirement (context is already set by the
+            # synchronous turn_complete path above, so this is never a no-op here).
+            timeline.log_current()
             if not ok or getattr(result, "status", "failed") not in {"success", "completed"}:
                 LOGGER.warning("[SLOW TOOL FAILED] turn_id=%s character_id=%s tool=%s detail=%s", timeline.turn_id, self._character_id, candidate.tool_name, message or getattr(result, "error", None))
                 callback = self._slow_tool_failure_callback
@@ -784,67 +791,73 @@ class PetHarnessEngine:
         stream_method = getattr(self.provider, "generate_reply_stream", None)
         if stream_callback is not None and callable(stream_method):
             cancel = cancel or threading.Event()
-            fragments: list[str] = []
-            splitter = _SentenceSplitter()
-            reply_extractor = _StreamingReplyExtractor()
             stream = stream_method(
                 event,
                 matched_skill=skill,
                 prompt_text=prompt,
                 cancel=cancel,
             )
-            if stream is None:
-                return self._invoke_provider(event, skill, prompt)
-            first_fragment_seen = False
-            for fragment in stream:
-                if cancel.is_set():
-                    break
-                raw_fragment = str(fragment)
+            # stream_method may exist (e.g. ProviderRuntime always exposes it) yet still
+            # return None when the underlying provider doesn't actually support streaming
+            # (see LLMProviderAdapter protocol). Fall through to the blocking path below
+            # instead of recursing: a bare recursive call here used to drop timeline/
+            # stream_callback/cancel, silently breaking latency instrumentation and
+            # barge-in cancellation, and would infinite-loop against a wrapper that
+            # always exposes a callable generate_reply_stream.
+            if stream is not None:
+                fragments: list[str] = []
+                splitter = _SentenceSplitter()
+                reply_extractor = _StreamingReplyExtractor()
+                first_fragment_seen = False
+                for fragment in stream:
+                    if cancel.is_set():
+                        break
+                    raw_fragment = str(fragment)
+                    if timeline is not None:
+                        timeline.mark("llm_first_token")
+                    if not first_fragment_seen:
+                        first_fragment_seen = True
+                        if timeline is not None:
+                            LOGGER.info(
+                                "[LLM STREAM] turn_id=%s streaming=True first_fragment_ms=%s",
+                                timeline.turn_id, timeline.ms("llm_request_started", "llm_first_token"),
+                            )
+                    fragments.append(raw_fragment)
+                    display_fragment = reply_extractor.feed(raw_fragment)
+                    for sentence in splitter.feed(display_fragment):
+                        if action_callback and splitter.actions:
+                            action_callback(splitter.actions.pop(0))
+                        stream_callback(sentence)
+                        if timeline is not None:
+                            timeline.mark("first_speech_chunk_emitted")
+                if not cancel.is_set():
+                    display_fragment = reply_extractor.flush()
+                    for sentence in splitter.feed(display_fragment) + splitter.flush():
+                        if action_callback and splitter.actions:
+                            action_callback(splitter.actions.pop(0))
+                        stream_callback(sentence)
+                        if timeline is not None:
+                            timeline.mark("first_speech_chunk_emitted")
+                raw_text = "".join(fragments)
+                status_getter = getattr(self.provider, "get_status", None)
+                status = status_getter() if callable(status_getter) else ProviderStatus(healthy=True, message="streaming provider ready")
+                provider_reply = ProviderReply(
+                    reply=raw_text,
+                    provider_status=status,
+                    raw_text=raw_text,
+                    prompt_text=prompt,
+                    metadata={"streaming": True, "cancelled": cancel.is_set()},
+                )
+                self.last_provider_raw_result = raw_text
+                agent_result = self.result_parser.parse(
+                    raw_text or provider_reply.reply,
+                    provider_type=provider_reply.provider_status.provider_type,
+                    fallback_reply=provider_reply.reply,
+                )
+                self.last_agent_result = agent_result
                 if timeline is not None:
-                    timeline.mark("llm_first_token")
-                if not first_fragment_seen:
-                    first_fragment_seen = True
-                    if timeline is not None:
-                        LOGGER.info(
-                            "[LLM STREAM] turn_id=%s streaming=True first_fragment_ms=%s",
-                            timeline.turn_id, timeline.ms("llm_request_started", "llm_first_token"),
-                        )
-                fragments.append(raw_fragment)
-                display_fragment = reply_extractor.feed(raw_fragment)
-                for sentence in splitter.feed(display_fragment):
-                    if action_callback and splitter.actions:
-                        action_callback(splitter.actions.pop(0))
-                    stream_callback(sentence)
-                    if timeline is not None:
-                        timeline.mark("first_speech_chunk_emitted")
-            if not cancel.is_set():
-                display_fragment = reply_extractor.flush()
-                for sentence in splitter.feed(display_fragment) + splitter.flush():
-                    if action_callback and splitter.actions:
-                        action_callback(splitter.actions.pop(0))
-                    stream_callback(sentence)
-                    if timeline is not None:
-                        timeline.mark("first_speech_chunk_emitted")
-            raw_text = "".join(fragments)
-            status_getter = getattr(self.provider, "get_status", None)
-            status = status_getter() if callable(status_getter) else ProviderStatus(healthy=True, message="streaming provider ready")
-            provider_reply = ProviderReply(
-                reply=raw_text,
-                provider_status=status,
-                raw_text=raw_text,
-                prompt_text=prompt,
-                metadata={"streaming": True, "cancelled": cancel.is_set()},
-            )
-            self.last_provider_raw_result = raw_text
-            agent_result = self.result_parser.parse(
-                raw_text or provider_reply.reply,
-                provider_type=provider_reply.provider_status.provider_type,
-                fallback_reply=provider_reply.reply,
-            )
-            self.last_agent_result = agent_result
-            if timeline is not None:
-                timeline.mark("llm_done")
-            return provider_reply, agent_result
+                    timeline.mark("llm_done")
+                return provider_reply, agent_result
         provider_reply = self.provider.generate_reply(event, matched_skill=skill, prompt_text=prompt)
         self.last_provider_raw_result = provider_reply.raw_text or provider_reply.reply
         agent_result = self.result_parser.parse(

@@ -13,6 +13,9 @@ from pet_harness.tools.tool_models import ToolResult
 class PromptBuildResult:
     prompt: str
     warnings: list[str] = field(default_factory=list)
+    # ponytail: char counts, not token counts — avoids pulling in a tokenizer dependency
+    # just for a size diagnostic (see reduce-turn-latency design D7 Case A).
+    section_sizes: dict[str, int] = field(default_factory=dict)
 
 
 class PromptBuilder:
@@ -46,6 +49,10 @@ class PromptBuilder:
         ]
         matched_text = matched_skill.name if matched_skill else "none"
         valid_action_tags = [str(tag).strip() for tag in (action_tags or []) if str(tag).strip()]
+        skills_text = "\n".join(skill_lines) if skill_lines else "- none"
+        history_text = self._conversation_history_text(conversation_history)
+        memory_text = self._memory_hits_text(retrieval_result.evidence if retrieval_result else memory_hits)
+        tool_result_text = self._tool_result_text(tool_result)
         #Prompt Setting  可以在這裡做設置
         prompt = "\n".join(
             [
@@ -64,7 +71,7 @@ class PromptBuilder:
                 "are past interaction logs, not your current identity.",
                 "",
                 "## Available Skills",
-                "\n".join(skill_lines) if skill_lines else "- none",
+                skills_text,
                 "",
                 f"## Deterministic Matched Skill\n{matched_text}",
                 "",
@@ -83,16 +90,16 @@ class PromptBuilder:
                 "the user's information when it appears here. In the current user message, I/my refers "
                 "to the user and you/your refers to ECHOES. Do not use user facts to answer questions "
                 "about ECHOES's own plans, identity, preferences, or state.",
-                self._conversation_history_text(conversation_history),
+                history_text,
                 "",
                 "## Retrieval Evidence",
-                self._memory_hits_text(retrieval_result.evidence if retrieval_result else memory_hits),
+                memory_text,
                 "",
                 "## User Text",
                 event.text,
                 "",
                 "## Tool Result",
-                self._tool_result_text(tool_result),
+                tool_result_text,
                 "",
                 "## Interaction State",
                 "A deterministic acknowledgement was already spoken; do not repeat or paraphrase it."
@@ -106,7 +113,12 @@ class PromptBuilder:
                 "Write reply in 繁體中文（台灣用語）.",
             ]
         )
-        return PromptBuildResult(prompt=prompt, warnings=warnings)
+        section_sizes = {
+            "soul": len(soul_text), "agentic": len(agentic_text), "persona": len(persona or ""),
+            "skills": len(skills_text), "history": len(history_text), "memory": len(memory_text),
+            "tool_result": len(tool_result_text), "user_text": len(event.text), "total": len(prompt),
+        }
+        return PromptBuildResult(prompt=prompt, warnings=warnings, section_sizes=section_sizes)
 
     @staticmethod
     def _pet_state_text(state_snapshot: dict) -> str:

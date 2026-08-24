@@ -93,6 +93,124 @@ def test_ack_only_skill_skips_llm_and_emits_one_ack(tmp_path, monkeypatch):
     assert event.metadata["agentic"]["ack_emitted"] is True
 
 
+class _DeferredExecutor:
+    """Queues (job, on_done) without running them — lets a test simulate the async
+    executor completing strictly after handle_event() has already returned, matching
+    real production timing (set_context() only runs on the synchronous return path)."""
+
+    def __init__(self):
+        self.jobs = []
+
+    def submit(self, job, on_done):
+        self.jobs.append((job, on_done))
+
+    def run_pending(self):
+        jobs, self.jobs = self.jobs, []
+        for job, on_done in jobs:
+            on_done(True, "", job())
+
+
+def test_ack_only_logs_latency_once_the_async_tool_completes_with_tool_ms_populated(tmp_path, monkeypatch, caplog):
+    """Regression: a real run crashed AudioStreamWorker's PCM playback with
+    "TurnTimeline.report() missing 5 required keyword-only arguments" because log_current()
+    used to hard-require context that isn't set until turn_complete. Separately, ack-only
+    never actually logged [TURN LATENCY] at all (only report(), never log()) — this adds a
+    log_current() call once the async tool's tool_done fires, which is also the only point
+    tool_ms is known for a slow-tool turn."""
+    import logging
+
+    agentic = _write_workspace(tmp_path, monkeypatch)
+    skill_path = agentic / "skills" / "youtube_music_playback.md"
+    skill_path.write_text(skill_path.read_text(encoding="utf-8") + "slow_tool: true\npost_tool_response_policy: ack_only\nack_template: 我來幫你找《{song}》。\n", encoding="utf-8")
+    provider = RecordingProvider()
+    engine = PetHarnessEngine(provider, agentic_root=agentic, character_id="Miku")
+    registry = ToolRegistry()
+    definition = registry.get("youtube_music_tool")
+    registry.register_definition(definition, lambda request: ToolResult("youtube_music_tool", "success", request_id=request.request_id))
+    engine.refresh_tool_registry(registry)
+    executor = _DeferredExecutor()
+    engine.configure_background_executor(executor)
+
+    with caplog.at_level(logging.INFO, logger="pet_harness.latency"):
+        event = engine.handle_event({"text": "播放晴天", "source": "test"}, stream_callback=lambda _c: None)
+        assert not [r for r in caplog.records if r.message.startswith("[TURN LATENCY]")]  # nothing yet — tool still pending
+        executor.run_pending()
+
+    latency_logs = [r for r in caplog.records if r.message.startswith("[TURN LATENCY]")]
+    assert len(latency_logs) == 1
+    assert "'tool_ms': None" not in latency_logs[0].message
+    assert event.metadata["latency"]["turn_id"] in latency_logs[0].message
+
+
+def test_ack_only_ack_is_marked_before_tool_completes(tmp_path, monkeypatch):
+    """Ordering contract from design D3: ack_first_audio < tool_done — the ack checkpoint
+    must be set before the tool's completion checkpoint, proving the two run without the
+    tool blocking the acknowledgement."""
+    agentic = _write_workspace(tmp_path, monkeypatch)
+    skill_path = agentic / "skills" / "youtube_music_playback.md"
+    skill_path.write_text(skill_path.read_text(encoding="utf-8") + "slow_tool: true\npost_tool_response_policy: ack_only\nack_template: 我來幫你找《{song}》。\n", encoding="utf-8")
+    provider = RecordingProvider()
+    engine = PetHarnessEngine(provider, agentic_root=agentic, character_id="Miku")
+    registry = ToolRegistry()
+    definition = registry.get("youtube_music_tool")
+    registry.register_definition(definition, lambda request: ToolResult("youtube_music_tool", "success", request_id=request.request_id))
+    engine.refresh_tool_registry(registry)
+
+    event = engine.handle_event({"text": "播放晴天", "source": "test"}, stream_callback=lambda _c: None)
+
+    latency = event.metadata["latency"]
+    assert latency["timeline_complete"] is True
+    from pet_harness.latency import get_turn
+    timeline = get_turn(event.metadata["latency"]["turn_id"])
+    assert timeline.checkpoints["first_speech_chunk_emitted"] <= timeline.checkpoints["tool_done"]
+
+
+def test_ack_only_tool_failure_sends_honest_failure_message_not_silent(tmp_path, monkeypatch):
+    """A background tool failure after the ack must surface an honest message via the
+    configured failure callback, not fail silently."""
+    agentic = _write_workspace(tmp_path, monkeypatch)
+    skill_path = agentic / "skills" / "youtube_music_playback.md"
+    skill_path.write_text(skill_path.read_text(encoding="utf-8") + "slow_tool: true\npost_tool_response_policy: ack_only\nack_template: 我來幫你找《{song}》。\n", encoding="utf-8")
+    provider = RecordingProvider()
+    engine = PetHarnessEngine(provider, agentic_root=agentic, character_id="Miku")
+    registry = ToolRegistry()
+    definition = registry.get("youtube_music_tool")
+    registry.register_definition(definition, lambda request: ToolResult("youtube_music_tool", "failed", request_id=request.request_id, error="not found"))
+    engine.refresh_tool_registry(registry)
+    failures: list[tuple[str, str]] = []
+    engine.configure_slow_tool_failure_callback(lambda turn_id, text: failures.append((turn_id, text)))
+
+    event = engine.handle_event({"text": "播放晴天", "source": "test"}, stream_callback=lambda _c: None)
+
+    assert len(failures) == 1
+    turn_id, message = failures[0]
+    assert turn_id == event.metadata["latency"]["turn_id"]
+    assert "沒有成功" in message
+    assert "播放成功" not in message
+
+
+def test_llm_synthesis_skill_speaks_ack_first_then_calls_llm_once_with_no_repeat_instruction(tmp_path, monkeypatch):
+    """post_tool_response_policy: llm_synthesis is the other dispatch branch — untested
+    before this. Unlike ack_only it calls the LLM exactly once, and the prompt must carry
+    the ack_emitted contract so the LLM doesn't repeat the acknowledgement."""
+    agentic = _write_workspace(tmp_path, monkeypatch)
+    skill_path = agentic / "skills" / "youtube_music_playback.md"
+    skill_path.write_text(skill_path.read_text(encoding="utf-8") + "slow_tool: true\npost_tool_response_policy: llm_synthesis\nack_template: 我來幫你找《{song}》。\n", encoding="utf-8")
+    provider = RecordingProvider()
+    engine = PetHarnessEngine(provider, agentic_root=agentic, character_id="Miku")
+    registry = ToolRegistry()
+    definition = registry.get("youtube_music_tool")
+    registry.register_definition(definition, lambda request: ToolResult("youtube_music_tool", "success", request_id=request.request_id))
+    engine.refresh_tool_registry(registry)
+    chunks = []
+
+    engine.handle_event({"text": "播放晴天", "source": "test"}, stream_callback=chunks.append)
+
+    assert len(provider.calls) == 1
+    assert "already spoken" in provider.calls[0]
+    assert chunks[0] == "我來幫你找《播放晴天》。"
+
+
 def test_music_intent_is_deterministic_but_video_is_not():
     music = Skill("youtube_music_playback", "music", ["播歌"], "music_idle", 8, capability="music", priority=100)
     router = SkillRouter([music])

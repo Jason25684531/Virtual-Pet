@@ -75,7 +75,10 @@ class TurnTimeline:
         checkpoints on a text turn, LLM checkpoints on an ack-only turn)."""
         expected: list[str] = ["route_done", "turn_complete"]
         if self.origin == "vad":
-            expected += ["vad_endpoint", "stt_started", "stt_done"]
+            # vad_endpoint is NOT required even on a voice turn: manual/device/max
+            # stop reasons never trigger it (see sensors/stt_controller.py), and that
+            # is expected behavior, not a wiring gap.
+            expected += ["stt_started", "stt_done"]
         if slow_tool:
             expected += ["tool_started", "tool_done"]
         else:
@@ -119,7 +122,15 @@ class TurnTimeline:
     def set_context(self, **kwargs: Any) -> None:
         self.context = kwargs
 
-    def log_current(self) -> dict[str, Any]:
+    def log_current(self) -> dict[str, Any] | None:
+        # ponytail: for a streaming turn, audio_play_started can fire while the LLM is
+        # still generating — i.e. before handle_event() reaches set_context() at turn end.
+        # report() needs character_id/route_kind/skill_name/streaming/slow_tool, none of
+        # which are knowable yet at that point (matched_skill isn't resolved until after
+        # the LLM reply is parsed). Skip silently; the authoritative [TURN LATENCY] entry
+        # still fires once handle_event() finishes and calls set_context().
+        if not self.context:
+            return None
         return self.log(**self.context)
 
 

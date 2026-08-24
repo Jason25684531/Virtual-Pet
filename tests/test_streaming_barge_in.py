@@ -104,6 +104,15 @@ class _JsonStreamingProvider(_StreamingProvider):
             yield fragment
 
 
+class _StreamUnavailableProvider(FakeProvider):
+    """Simulates ProviderRuntime: generate_reply_stream is always present (per the
+    LLMProviderAdapter protocol's optional-return contract) but returns None when the
+    wrapped provider (e.g. APIProvider/GPT-4o) doesn't actually support streaming."""
+
+    def generate_reply_stream(self, event, matched_skill=None, prompt_text=None, cancel=None):
+        return None
+
+
 class _CancelingProvider(FakeProvider):
     def __init__(self):
         super().__init__()
@@ -251,6 +260,30 @@ def test_engine_streams_only_json_reply_to_tts_callbacks(streaming_env):
 
     assert chunks == ["First sentence.", "Second sentence."]
     assert event.reply == "First sentence. Second sentence."
+
+
+def test_engine_falls_back_to_blocking_reply_without_dropping_timeline_when_stream_returns_none(streaming_env):
+    """Regression: the fallback used to recurse via `self._invoke_provider(event, skill, prompt)`,
+    a bare positional call that dropped timeline/stream_callback/action_callback/cancel — silently
+    breaking llm_ttft/llm_done instrumentation and barge-in cancellation the moment a provider's
+    generate_reply_stream legitimately returns None (e.g. ProviderRuntime wrapping GPT-4o's
+    non-streaming APIProvider). This never triggered against Ollama, whose real stream never
+    returns None, so it stayed invisible until a non-streaming provider was configured."""
+    tmp_path, agentic_root = streaming_env
+    engine = PetHarnessEngine(
+        provider=_StreamUnavailableProvider(),
+        agentic_root=agentic_root,
+        snapshot_path=tmp_path / "debug" / "no-stream-event.json",
+        character_id="Choppr",
+    )
+    chunks = []
+    event = engine.handle_event({"text": "hello"}, stream_callback=chunks.append)
+
+    assert event.reply.startswith("[fake]")
+    latency = event.metadata["latency"]
+    assert latency["llm_ttft_ms"] is not None
+    assert latency["timeline_complete"] is True
+    assert latency["missing_checkpoints"] == []
 
 
 def test_engine_marks_llm_first_token_on_the_raw_provider_fragment_and_logs_streaming_diagnostic(streaming_env, caplog):
