@@ -216,6 +216,44 @@ def test_vad_endpoint_stops_and_submits_through_the_manual_stop_path():
     assert transcripts == ["你好 hello"]
 
 
+def test_vad_endpoint_emits_voice_turn_timing_with_true_flag_before_transcript():
+    """This module must stay free of any pet_harness import (module-dependency-boundaries);
+    it hands off raw perf_counter() floats instead of building a timeline itself."""
+    recorder = _FakeRecorder(chunks=[np.ones(512, dtype=np.float32)])
+    vad = _FakeVad([True])
+    controller, recorder, provider = _make_controller(recorder=recorder, vad=vad)
+    timings: list[tuple] = []
+    controller.voice_turn_timing.connect(lambda *args: timings.append(args), Qt.DirectConnection)
+
+    controller.start_session()
+    assert _wait_for(lambda: controller.state == "idle")
+    _join_session(controller)
+
+    assert len(timings) == 1
+    is_vad_endpoint, vad_ts, stt_started_ts, stt_done_ts = timings[0]
+    assert is_vad_endpoint is True
+    assert vad_ts > 0.0
+    assert vad_ts <= stt_started_ts <= stt_done_ts
+
+
+def test_manual_stop_emits_voice_turn_timing_with_false_flag():
+    recorder = _FakeRecorder(chunks=[np.ones(512, dtype=np.float32)])
+    controller, recorder, provider = _make_controller(recorder=recorder, vad=None)
+    timings: list[tuple] = []
+    controller.voice_turn_timing.connect(lambda *args: timings.append(args), Qt.DirectConnection)
+
+    controller.start_session()
+    assert _wait_for(lambda: controller.state == "recording")
+    controller.stop_session()
+    assert _wait_for(lambda: controller.state == "idle")
+    _join_session(controller)
+
+    assert len(timings) == 1
+    is_vad_endpoint, vad_ts, _stt_started_ts, _stt_done_ts = timings[0]
+    assert is_vad_endpoint is False
+    assert vad_ts == 0.0
+
+
 def test_vad_failure_keeps_recording_available_for_manual_stop():
     recorder = _FakeRecorder(chunks=[np.ones(512, dtype=np.float32)])
     vad = _FakeVad(feed_error=RuntimeError("inference failed"))

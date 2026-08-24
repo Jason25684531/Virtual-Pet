@@ -25,6 +25,7 @@ import time
 from PyQt5.QtCore import QObject, pyqtSignal
 
 from audio_playback import FfplayPcmAudioPlayer, PlaybackStartSuppressed, PygameInMemoryAudioPlayer
+from pet_harness.latency import get_turn
 
 _SENTINEL = None
 _PCM_STREAM_SENTINEL = object()
@@ -123,6 +124,10 @@ class _PcmTraceSession:
             self._started_at = time.monotonic()
             self._schedule_pending_segments_locked()
         self._owner.driver_started.emit(self._session_reply_id, self._trace_id)
+        timeline = get_turn(self._trace_id)
+        if timeline is not None:
+            timeline.mark("audio_play_started")
+            timeline.log_current()
         self._owner.playback_started.emit(self._session_reply_id, self._trace_id)
         return True
 
@@ -263,6 +268,9 @@ class AudioStreamWorker(QObject):
         normalized_trace_id = str(trace_id or "").strip()
         if not normalized_trace_id:
             raise ValueError("PCM session playback requires a non-empty trace_id")
+        timeline = get_turn(normalized_trace_id)
+        if timeline is not None:
+            timeline.mark("tts_first_pcm")
         with self._pcm_lock:
             session = self._pcm_sessions.get(normalized_trace_id)
             if session is None:
@@ -395,6 +403,10 @@ class AudioStreamWorker(QObject):
                     if trace_id and trace_id in self._suppressed_traces:
                         return False
                     self.driver_started.emit(reply_id, trace_id)
+                    timeline = get_turn(trace_id)
+                    if timeline is not None:
+                        timeline.mark("audio_play_started")
+                        timeline.log_current()
                     self.playback_started.emit(reply_id, trace_id)
                     return True
 

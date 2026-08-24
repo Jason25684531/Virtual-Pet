@@ -73,6 +73,26 @@ def test_loader_normalizes_policy_priority_and_capability(tmp_path, monkeypatch)
     assert loaded["bahamut_daily_news"].capability == "news"
 
 
+def test_ack_only_skill_skips_llm_and_emits_one_ack(tmp_path, monkeypatch):
+    agentic = _write_workspace(tmp_path, monkeypatch)
+    skill_path = agentic / "skills" / "youtube_music_playback.md"
+    skill_path.write_text(skill_path.read_text(encoding="utf-8") + "slow_tool: true\npost_tool_response_policy: ack_only\nack_template: 我來幫你找《{song}》。\n", encoding="utf-8")
+    provider = RecordingProvider()
+    engine = PetHarnessEngine(provider, agentic_root=agentic, character_id="Miku")
+    registry = ToolRegistry()
+    definition = registry.get("youtube_music_tool")
+    registry.register_definition(definition, lambda request: ToolResult("youtube_music_tool", "success", request_id=request.request_id))
+    engine.refresh_tool_registry(registry)
+    chunks = []
+
+    event = engine.handle_event({"text": "播放晴天", "source": "test"}, stream_callback=chunks.append)
+
+    assert provider.calls == []
+    assert chunks == [event.reply]
+    assert event.metadata["agentic"]["llm_calls"] == 0
+    assert event.metadata["agentic"]["ack_emitted"] is True
+
+
 def test_music_intent_is_deterministic_but_video_is_not():
     music = Skill("youtube_music_playback", "music", ["播歌"], "music_idle", 8, capability="music", priority=100)
     router = SkillRouter([music])

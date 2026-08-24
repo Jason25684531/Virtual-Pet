@@ -25,7 +25,9 @@ from pet_harness.app.secret_masking import SecretMasker, load_project_env
 from pet_harness.app.provider_config_service import ProviderConfigService
 from pet_harness.app.ports import PreparedTurn
 from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
+from pet_harness.latency import claim_voice_turn, create_turn, create_voice_turn, get_turn, rekey_turn
 from ui.background_resolver import BackgroundResolver
+from uuid import uuid4
 
 
 SAFE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -102,6 +104,7 @@ class PyQtHarnessAdapter:
         self._last_skill_discovery_log: tuple[int, int, int] | None = None
         self._stream_chunk_callback = None
         self._stream_action_callback = None
+        self._background_executor = None
         self._refresh_runtime()
         self._log_active_character_diagnostics()
         self._resume_upload_asset_jobs()
@@ -193,12 +196,53 @@ class PyQtHarnessAdapter:
         self._stream_chunk_callback = chunk_callback
         self._stream_action_callback = action_callback
 
+    def register_voice_turn_timing(self, is_vad_endpoint: bool, vad_endpoint_ts: float, stt_started_ts: float, stt_done_ts: float) -> None:
+        """Owns the pet_harness.latency object creation for voice turns; sensors/stt_controller.py
+        only emits raw perf_counter() floats so sensors/ stays free of any pet_harness import."""
+        engine = self.router.get_active_engine()
+        warmup_completed_at = engine.memory_warmup_completed_at if engine is not None else None
+        create_voice_turn(
+            f"voice-{uuid4().hex}",
+            vad_endpoint_ts=vad_endpoint_ts if is_vad_endpoint else None,
+            stt_started_ts=stt_started_ts,
+            stt_done_ts=stt_done_ts,
+            warmup_completed_at=warmup_completed_at,
+        )
+
+    def configure_background_executor(self, executor) -> None:
+        self._background_executor = executor
+        engine = self.router.get_active_engine()
+        if engine is None:
+            return
+        engine.configure_background_executor(executor)
+        engine.configure_slow_tool_failure_callback(
+            lambda turn_id, text: self._stream_chunk_callback(text, turn_id)
+            if callable(self._stream_chunk_callback) else None
+        )
+        executor.submit(engine.warmup_memory, lambda ok, message, _payload: LOGGER.warning("[MEMORY WARMUP] executor error=%s", message) if not ok else None)
+
     def prepare_turn(self, text: str, source: str, character_id: str, trace_id: str | None = None) -> PreparedTurn:
         cleaned = str(text or "").strip()
         if not cleaned:
             raise ValueError("text input cannot be empty")
         engine = self.router.acquire_engine(character_id)
+        if self._background_executor is not None:
+            engine.configure_background_executor(self._background_executor)
+            engine.configure_slow_tool_failure_callback(
+                lambda turn_id, text: self._stream_chunk_callback(text, turn_id)
+                if callable(self._stream_chunk_callback) else None
+            )
         cancel_event = threading.Event()
+        voice_timeline = claim_voice_turn()
+        turn_id = trace_id or (voice_timeline.turn_id if voice_timeline is not None else f"text-{time.perf_counter_ns()}")
+        if voice_timeline is not None and voice_timeline.turn_id != turn_id:
+            rekey_turn(voice_timeline, turn_id)
+        timeline = get_turn(turn_id) or create_turn(turn_id, "text")
+        # Compare against this turn's own start time (not "now"), so a warmup that
+        # finishes mid-STT/engine-processing is still correctly reported as not
+        # complete at the moment the turn actually began. Safe to recompute even
+        # for a voice-originated timeline: it's anchored to the same vad_endpoint.
+        timeline.resolve_warmup(engine.memory_warmup_completed_at)
 
         def run() -> dict[str, Any]:
             self._refresh_runtime(engine)
@@ -208,11 +252,11 @@ class PyQtHarnessAdapter:
             stream_callback = None
             action_callback = None
             if callable(self._stream_chunk_callback):
-                stream_callback = lambda chunk: self._stream_chunk_callback(chunk, trace_id)
+                stream_callback = lambda chunk: self._stream_chunk_callback(chunk, turn_id)
             if callable(self._stream_action_callback):
-                action_callback = lambda action: self._stream_action_callback(action, trace_id)
+                action_callback = lambda action: self._stream_action_callback(action, turn_id)
             event = engine.handle_event(
-                {"text": cleaned, "source": source},
+                {"text": cleaned, "source": source, "metadata": {"turn_id": turn_id}},
                 stream_callback=stream_callback,
                 action_callback=action_callback,
                 cancel=cancel_event,
@@ -221,6 +265,7 @@ class PyQtHarnessAdapter:
             payload = self._serialize_pet_event(event, previous_progress=previous_progress, store=engine.store)
             payload["user_text"] = cleaned
             payload["character_id"] = character_id
+            payload["trace_id"] = turn_id
             return payload
 
         return PreparedTurn(run, lambda: self.router.release_engine(engine), cancel_event.set)

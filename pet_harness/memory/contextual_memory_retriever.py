@@ -68,3 +68,7 @@ class ContextualMemoryRetriever:
         except Exception:
             latency["total"] = (time.perf_counter() - started) * 1000
             return RetrievalResult([], RetrievalTrace(bool(reason), reason, 3, query, sparse_available=False, latency_ms=latency))
+
+    def warmup(self, character_id: str) -> RetrievalResult:
+        """Exercise the real read path without inserting synthetic memory."""
+        return self.retrieve(RetrievalRequest(character_id, "記憶預熱"))

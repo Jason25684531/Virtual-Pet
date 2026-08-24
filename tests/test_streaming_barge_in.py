@@ -253,6 +253,29 @@ def test_engine_streams_only_json_reply_to_tts_callbacks(streaming_env):
     assert event.reply == "First sentence. Second sentence."
 
 
+def test_engine_marks_llm_first_token_on_the_raw_provider_fragment_and_logs_streaming_diagnostic(streaming_env, caplog):
+    """llm_first_token must fire on the provider's first raw fragment (real streaming
+    diagnostics), not on the first fully-split sentence or the completed response."""
+    import logging
+
+    tmp_path, agentic_root = streaming_env
+    engine = PetHarnessEngine(
+        provider=_StreamingProvider(),
+        agentic_root=agentic_root,
+        snapshot_path=tmp_path / "debug" / "ttft-event.json",
+        character_id="Choppr",
+    )
+    with caplog.at_level(logging.INFO, logger="pet_harness.engine.harness_engine"):
+        event = engine.handle_event({"text": "hello"}, stream_callback=lambda _c: None)
+
+    latency = event.metadata["latency"]
+    assert latency["llm_ttft_ms"] is not None
+    assert latency["timeline_complete"] is True
+    stream_logs = [r for r in caplog.records if r.message.startswith("[LLM STREAM]")]
+    assert len(stream_logs) == 1
+    assert "streaming=True" in stream_logs[0].message
+
+
 class _DeferredExecutor:
     def __init__(self):
         self.jobs = []

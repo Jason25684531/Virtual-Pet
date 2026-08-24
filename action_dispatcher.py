@@ -24,12 +24,12 @@ from action_services import (
     resolve_fixed_intent_source_label,
 )
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
-from text_utils import sanitize_tts_text
 from audio_worker import AudioStreamWorker
 from character_library import ASSETS_WEBM_DIR
 import config
 from interaction_trace import InteractionLatencyTracker
 from pet_harness.app.commands import ACTION_DIRECTIVE_PATTERN
+from pet_harness.latency import get_turn
 from tts_playback import TtsPlaybackMixin
 
 if TYPE_CHECKING:
@@ -265,6 +265,9 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
 
     def _enqueue_stream_chunk(self, text: str, trace_id: str) -> None:
         if text.strip():
+            timeline = get_turn(trace_id)
+            if timeline is not None:
+                timeline.mark("tts_request_started")
             self.speak_text(text, trace_id=trace_id, has_action=False)
 
     def _dispatch_stream_action(self, action: str, trace_id: str) -> None:
@@ -1000,7 +1003,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         message: str,
         payload: object,
     ):
-        del motion_found
         self._loop_action_service_pending = False
         if success:
             if isinstance(payload, dict) and payload.get("path"):

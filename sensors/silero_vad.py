@@ -30,7 +30,7 @@ class SileroVad:
     def __init__(
         self,
         *,
-        silence_ms: int = 800,
+        silence_ms: int = 500,
         threshold: float = 0.5,
         cache_dir: Path | None = None,
         downloader: Callable[[str, Path], object] | None = None,

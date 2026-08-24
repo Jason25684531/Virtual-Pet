@@ -4,6 +4,7 @@ Application entrypoint for the ECHOES desktop host runtime.
 
 from __future__ import annotations
 
+import os
 import signal
 import sys
 import threading
@@ -86,10 +87,12 @@ def _build_stt_controller(window, provider=None):
             silence_ms=config.STT_VAD_SILENCE_MS,
             threshold=config.STT_VAD_THRESHOLD,
         )
+        silence_source = "env" if os.getenv("STT_VAD_SILENCE_MS") is not None else "default"
         print(
             f"[STT] VAD enabled: silence_ms={config.STT_VAD_SILENCE_MS} "
             f"threshold={config.STT_VAD_THRESHOLD}"
         )
+        print(f"[VAD CONFIG] silence_ms={config.STT_VAD_SILENCE_MS} source={silence_source}")
 
     if provider is None:
         from sensors.faster_whisper_stt import FasterWhisperSTT
@@ -182,8 +185,11 @@ def _run_harness_mode(app, stt_provider=None):
     PresentationEventBinder(window, coordinator.event_bus)
     executor = QtBackgroundExecutor(window)
     coordinator.configure_conversation(adapter, executor)
+    adapter.configure_background_executor(executor)
 
     stt_controller = _build_stt_controller(window, provider=stt_provider)
+    if stt_controller is not None:
+        stt_controller.voice_turn_timing.connect(adapter.register_voice_turn_timing)
     coordinator.lifecycle.register(CallbackRuntime("adapter", lambda _wait_ms: adapter.shutdown()))
     coordinator.lifecycle.register(CallbackRuntime("motion", motion.shutdown))
     if stt_controller is not None:

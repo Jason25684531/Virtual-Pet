@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import importlib
 
-import config
 import dotenv
+
+import config
 
 
 def _reload_config():
@@ -42,7 +43,7 @@ def test_stt_vad_defaults_to_disabled_with_documented_thresholds(monkeypatch):
     reloaded = _reload_config()
     try:
         assert reloaded.STT_VAD_ENABLED is False
-        assert reloaded.STT_VAD_SILENCE_MS == 800
+        assert reloaded.STT_VAD_SILENCE_MS == 500
         assert reloaded.STT_VAD_THRESHOLD == 0.5
     finally:
         _reload_config()
@@ -94,7 +95,7 @@ def test_stt_vad_invalid_numeric_env_falls_back_to_defaults(monkeypatch):
     monkeypatch.setenv("STT_VAD_THRESHOLD", "not-a-number")
     reloaded = _reload_config()
     try:
-        assert reloaded.STT_VAD_SILENCE_MS == 800
+        assert reloaded.STT_VAD_SILENCE_MS == 500
         assert reloaded.STT_VAD_THRESHOLD == 0.5
     finally:
         _reload_config()

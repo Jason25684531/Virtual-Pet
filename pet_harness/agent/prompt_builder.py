@@ -31,6 +31,7 @@ class PromptBuilder:
         conversation_history: list[dict] | None = None,
         memory_hits: list[MemoryHit] | None = None,
         retrieval_result=None,
+        ack_emitted: bool = False,
     ) -> PromptBuildResult:
         warnings: list[str] = []
         soul_text = self._read_optional(self.agentic_root / "soul.md", "Soul context unavailable.", warnings)
@@ -92,6 +93,10 @@ class PromptBuilder:
                 "",
                 "## Tool Result",
                 self._tool_result_text(tool_result),
+                "",
+                "## Interaction State",
+                "A deterministic acknowledgement was already spoken; do not repeat or paraphrase it."
+                if ack_emitted else "No acknowledgement has been spoken.",
                 "",
                 "## Output Contract",
                 'Return JSON only with keys: "reply", "matched_skill", "action_tag", "confidence", "tool_request", and either "notes" or "reasoning_summary".',

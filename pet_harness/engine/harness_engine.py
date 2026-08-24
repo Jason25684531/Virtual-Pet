@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
 
 from character_library import CharacterLibrary
 from pet_harness.agent.prompt_builder import PromptBuilder
@@ -35,6 +35,7 @@ from pet_harness.engine.media_session_context import MediaSessionContext
 from pet_harness.engine.tool_execution_lifecycle import ToolExecutionLifecycle
 from pet_harness.xp.reward_manager import RewardManager
 from pet_harness.xp.xp_manager import XPManager
+from pet_harness.latency import TurnTimeline, create_turn, get_turn
 
 LOGGER = logging.getLogger(__name__)
 
@@ -284,6 +285,51 @@ class PetHarnessEngine:
         self.last_tool_result: ToolResult | None = None
         self.last_asset_result: dict[str, Any] | None = None
         self._shutdown = False
+        self._background_executor = None
+        self._slow_tool_failure_callback = None
+        self._memory_warmup_complete = False
+        self._memory_warmup_completed_at: float | None = None
+
+    def configure_background_executor(self, executor) -> None:
+        """Reuse the application executor for side-effect tools; no ad-hoc threads."""
+        self._background_executor = executor
+
+    def configure_slow_tool_failure_callback(self, callback) -> None:
+        self._slow_tool_failure_callback = callback
+
+    @property
+    def memory_warmup_complete(self) -> bool:
+        return self._memory_warmup_complete
+
+    @property
+    def memory_warmup_completed_at(self) -> float | None:
+        """perf_counter() timestamp of warmup completion, or None if not (yet) complete.
+        Compared against a turn's own start time (not "now") to detect the race between
+        warmup finishing and the first turn beginning; see TurnTimeline.resolve_warmup."""
+        return self._memory_warmup_completed_at
+
+    def warmup_memory(self) -> None:
+        if self.memory_retriever is None:
+            self._memory_warmup_complete = True
+            self._memory_warmup_completed_at = perf_counter()
+            return
+        started = perf_counter()
+        LOGGER.info("[MEMORY WARMUP] started character_id=%s", self._character_id)
+        success = False
+        try:
+            warmup = getattr(self.memory_retriever, "warmup", None)
+            if callable(warmup):
+                warmup(self._character_id or "default")
+            else:
+                from pet_harness.memory.memory_models import RetrievalRequest
+                self.memory_retriever.retrieve(RetrievalRequest(self._character_id or "default", "記憶預熱"))
+            success = True
+        except Exception:
+            LOGGER.exception("[MEMORY WARMUP] failed character_id=%s", self._character_id)
+        finally:
+            self._memory_warmup_complete = success
+            self._memory_warmup_completed_at = perf_counter() if success else None
+            LOGGER.info("[MEMORY WARMUP] done warmup_ms=%s success=%s", round((perf_counter() - started) * 1000), success)
 
     def shutdown(self) -> None:
         if self._shutdown:
@@ -447,10 +493,23 @@ class PetHarnessEngine:
         cancel: threading.Event | None = None,
     ) -> PetEvent:
         user_event = event if isinstance(event, UserEvent) else UserEvent.from_dict(event)
+        timeline = get_turn(user_event.metadata.get("turn_id"))
+        if timeline is None:
+            # Direct/CLI callers have no adapter; keep observability fail-open.
+            timeline = create_turn(user_event.event_id, "engine")
+        timeline.mark("route_done")
         self._spoken_chunks = []
         state_before = self.store.state_snapshot()
         active_capabilities = self._active_capabilities()
         deterministic_skill = self._route_deterministic(user_event, active_capabilities)
+
+        if self._is_ack_only_skill(deterministic_skill):
+            return self._handle_ack_only_turn(user_event, deterministic_skill, timeline, stream_callback)
+        if self._is_llm_synthesis_skill(deterministic_skill):
+            timeline.ack_emitted = True
+            timeline.mark("first_speech_chunk_emitted")
+            if callable(stream_callback):
+                stream_callback(self._ack_text(deterministic_skill, {"query": user_event.text}))
 
         # 工具先行:deterministic 命中且帶 required_tool 時,先執行工具再讓 LLM 合成回覆,
         # 讓回覆能引用本輪真實取得的資料,而非上一輪殘留的 tool_result(見
@@ -469,16 +528,29 @@ class PetHarnessEngine:
         retrieval_ms = None
         if retrieval_request is None:
             tool_started_at = perf_counter()
+            if deterministic_skill and deterministic_skill.required_tool:
+                timeline.mark("tool_started")
             tool_first_event, tool_first_result = self._run_tool_first(user_event, deterministic_skill)
+            if tool_first_event is not None:
+                timeline.mark("tool_done")
             tool_ms = round((perf_counter() - tool_started_at) * 1000)
         else:
             # Both results are inputs to the prompt; state updates remain on this thread.
             with ThreadPoolExecutor(max_workers=2) as executor:
-                tool_future = executor.submit(_measure_call, self._run_tool_first, user_event, deterministic_skill)
+                def run_tool_first():
+                    if deterministic_skill and deterministic_skill.required_tool:
+                        timeline.mark("tool_started")
+                    return _measure_call(self._run_tool_first, user_event, deterministic_skill)
+
+                tool_future = executor.submit(run_tool_first)
                 retrieval_future = executor.submit(_measure_call, self.memory_retriever.retrieve, retrieval_request)
                 (tool_first_event, tool_first_result), tool_ms = tool_future.result()
                 retrieval_result, retrieval_ms = retrieval_future.result()
+            if tool_first_event is not None:
+                timeline.mark("tool_done")
+            timeline.mark("retrieval_done")
         pre_llm_ms = round((perf_counter() - pre_llm_started_at) * 1000)
+        timeline.mark("pre_llm_done")
         pre_llm_trace = {
             "execution": "parallel" if retrieval_request is not None else "tool_only",
             "tool_ms": tool_ms,
@@ -494,7 +566,7 @@ class PetHarnessEngine:
             memory_hits = self.memory_store.recall(user_event.text, top_k=3)
         memory_status = self.memory_store.status()
 
-        prompt_result = self._build_prompt(user_event, state_before, deterministic_skill, tool_first_result, conversation_history, memory_hits, retrieval_result)
+        prompt_result = self._build_prompt(user_event, state_before, deterministic_skill, tool_first_result, conversation_history, memory_hits, retrieval_result, ack_emitted=timeline.ack_emitted)
         provider_reply, agent_result = self._invoke_provider(
             user_event,
             deterministic_skill,
@@ -502,6 +574,7 @@ class PetHarnessEngine:
             stream_callback=stream_callback,
             action_callback=action_callback,
             cancel=cancel,
+            timeline=timeline,
         )
         stream_cancelled = bool(provider_reply.metadata.get("cancelled")) or bool(cancel is not None and cancel.is_set())
         if stream_cancelled:
@@ -567,6 +640,16 @@ class PetHarnessEngine:
             },
         )
 
+        timeline.mark("turn_complete")
+        timeline.set_context(
+            character_id=self._character_id,
+            route_kind="deterministic" if deterministic_skill else "conversation",
+            skill_name=matched_skill.name if matched_skill else None,
+            streaming=bool(provider_reply.metadata.get("streaming")),
+            slow_tool=False,
+        )
+        pet_event.metadata["latency"] = timeline.report(**timeline.context)
+
         self._persist_and_snapshot(user_event, pet_event)
         LOGGER.info(
             "[CONVERSATION] character=%s user=%r assistant=%r",
@@ -575,6 +658,77 @@ class PetHarnessEngine:
             pet_event.reply,
         )
         return pet_event
+
+    @staticmethod
+    def _is_ack_only_skill(skill: Skill | None) -> bool:
+        return bool(skill and skill.slow_tool and skill.post_tool_response_policy == "ack_only")
+
+    @staticmethod
+    def _is_llm_synthesis_skill(skill: Skill | None) -> bool:
+        return bool(skill and skill.slow_tool and skill.post_tool_response_policy == "llm_synthesis")
+
+    def _handle_ack_only_turn(self, event: UserEvent, skill: Skill, timeline: TurnTimeline, stream_callback) -> PetEvent:
+        candidate = self._build_tool_request_candidate(event, skill)
+        if candidate is None:
+            raise RuntimeError("ack_only skill requires a tool candidate")
+        candidate.metadata.update({"turn_id": timeline.turn_id, "character_id": self._character_id})
+        tool_event = ToolRequestEvent(
+            tool_name=candidate.tool_name, source_skill=skill.name,
+            metadata={"source": candidate.source, "arguments": candidate.arguments, "turn_id": timeline.turn_id, "character_id": self._character_id},
+        )
+        timeline.mark("tool_started")
+
+        def complete(ok: bool, message: str, result) -> None:
+            timeline.mark("tool_done")
+            if not ok or getattr(result, "status", "failed") not in {"success", "completed"}:
+                LOGGER.warning("[SLOW TOOL FAILED] turn_id=%s character_id=%s tool=%s detail=%s", timeline.turn_id, self._character_id, candidate.tool_name, message or getattr(result, "error", None))
+                callback = self._slow_tool_failure_callback
+                if callable(callback):
+                    callback(timeline.turn_id, "抱歉，剛才沒有成功找到這首歌。")
+            else:
+                LOGGER.info("[SLOW TOOL COMPLETE] turn_id=%s character_id=%s tool=%s", timeline.turn_id, self._character_id, candidate.tool_name)
+
+        ack = self._ack_text(skill, candidate.arguments)
+        timeline.ack_emitted = True
+        timeline.mark("first_speech_chunk_emitted")
+        if callable(stream_callback):
+            stream_callback(ack)
+        executor = self._background_executor
+        if executor is None:
+            # Non-UI tests and CLI have no application lifecycle; preserve legacy synchronous behavior.
+            try:
+                result = self._run_tool_request(candidate)
+                complete(True, "", result)
+            except Exception as exc:  # pragma: no cover - lifecycle executor covers production
+                complete(False, str(exc), None)
+        else:
+            executor.submit(lambda: self._run_tool_request(candidate), complete)
+        resolved_action, behavior_event = self._resolve_behavior(skill)
+        status_getter = getattr(self.provider, "get_status", None)
+        status = status_getter() if callable(status_getter) else ProviderStatus(healthy=True, message="ack-only")
+        pet_event = PetEvent(
+            source_event_id=event.event_id, reply=ack, matched_skill=skill.name,
+            behavior_id=behavior_event.behavior_id, webm_key=behavior_event.webm_key, xp_delta=0,
+            reward_events=[], tool_request=tool_event, provider_status=status.to_dict(), saved_to_db=False,
+            action_tag=resolved_action["action_tag"] if resolved_action else None, motion_source=behavior_event.reason,
+            metadata={"agentic": {"streaming": True, "llm_calls": 0, "ack_emitted": True}, "tool_result": None},
+        )
+        timeline.mark("turn_complete")
+        timeline.set_context(
+            character_id=self._character_id, route_kind="deterministic", skill_name=skill.name, streaming=True, slow_tool=True,
+        )
+        pet_event.metadata["latency"] = timeline.report(**timeline.context)
+        self._persist_and_snapshot(event, pet_event)
+        return pet_event
+
+    @staticmethod
+    def _ack_text(skill: Skill, arguments: dict[str, Any]) -> str:
+        template = skill.ack_template or "我來幫你處理。"
+        song = str(arguments.get("query") or "這首歌").strip()
+        try:
+            return template.format(song=song)
+        except (KeyError, ValueError):
+            return "我來幫你處理。"
 
     def _route_deterministic(self, event: UserEvent, capabilities: set[str]) -> Skill | None:
         return self.router.match(event.text, capabilities)
@@ -588,6 +742,7 @@ class PetHarnessEngine:
         history: list[dict[str, Any]],
         memory_hits: list[Any],
         retrieval_result=None,
+        ack_emitted: bool = False,
     ):
         return self.prompt_builder.build(
             event=event,
@@ -600,6 +755,7 @@ class PetHarnessEngine:
             conversation_history=history,
             memory_hits=memory_hits,
             retrieval_result=retrieval_result,
+            ack_emitted=ack_emitted,
         )
 
     def _run_tool_first(self, event: UserEvent, skill: Skill | None) -> tuple[ToolRequestEvent | None, ToolResult | None]:
@@ -620,8 +776,11 @@ class PetHarnessEngine:
         stream_callback: Callable[[str], None] | None = None,
         action_callback: Callable[[str], None] | None = None,
         cancel: threading.Event | None = None,
+        timeline: TurnTimeline | None = None,
     ):
         self.last_prompt = prompt
+        if timeline is not None:
+            timeline.mark("llm_request_started")
         stream_method = getattr(self.provider, "generate_reply_stream", None)
         if stream_callback is not None and callable(stream_method):
             cancel = cancel or threading.Event()
@@ -636,22 +795,36 @@ class PetHarnessEngine:
             )
             if stream is None:
                 return self._invoke_provider(event, skill, prompt)
+            first_fragment_seen = False
             for fragment in stream:
                 if cancel.is_set():
                     break
                 raw_fragment = str(fragment)
+                if timeline is not None:
+                    timeline.mark("llm_first_token")
+                if not first_fragment_seen:
+                    first_fragment_seen = True
+                    if timeline is not None:
+                        LOGGER.info(
+                            "[LLM STREAM] turn_id=%s streaming=True first_fragment_ms=%s",
+                            timeline.turn_id, timeline.ms("llm_request_started", "llm_first_token"),
+                        )
                 fragments.append(raw_fragment)
                 display_fragment = reply_extractor.feed(raw_fragment)
                 for sentence in splitter.feed(display_fragment):
                     if action_callback and splitter.actions:
                         action_callback(splitter.actions.pop(0))
                     stream_callback(sentence)
+                    if timeline is not None:
+                        timeline.mark("first_speech_chunk_emitted")
             if not cancel.is_set():
                 display_fragment = reply_extractor.flush()
                 for sentence in splitter.feed(display_fragment) + splitter.flush():
                     if action_callback and splitter.actions:
                         action_callback(splitter.actions.pop(0))
                     stream_callback(sentence)
+                    if timeline is not None:
+                        timeline.mark("first_speech_chunk_emitted")
             raw_text = "".join(fragments)
             status_getter = getattr(self.provider, "get_status", None)
             status = status_getter() if callable(status_getter) else ProviderStatus(healthy=True, message="streaming provider ready")
@@ -669,6 +842,8 @@ class PetHarnessEngine:
                 fallback_reply=provider_reply.reply,
             )
             self.last_agent_result = agent_result
+            if timeline is not None:
+                timeline.mark("llm_done")
             return provider_reply, agent_result
         provider_reply = self.provider.generate_reply(event, matched_skill=skill, prompt_text=prompt)
         self.last_provider_raw_result = provider_reply.raw_text or provider_reply.reply
@@ -678,6 +853,9 @@ class PetHarnessEngine:
             fallback_reply=provider_reply.reply,
         )
         self.last_agent_result = agent_result
+        if timeline is not None:
+            timeline.mark("llm_first_token")
+            timeline.mark("llm_done")
         return provider_reply, agent_result
 
     def _parse_and_route(self, event: UserEvent, result: AgentResult, capabilities: set[str]):

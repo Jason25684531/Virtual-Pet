@@ -21,6 +21,9 @@ class Skill:
     tool_policy: dict[str, Any] = field(default_factory=dict)
     priority: int = 0
     capability: str = "general"
+    slow_tool: bool = False
+    ack_template: str | None = None
+    post_tool_response_policy: str | None = None
 
     def validate(self) -> None:
         missing = []
@@ -48,6 +51,8 @@ class Skill:
             forbidden = {"selector", "xpath", "javascript", "js"}
             if any(forbidden.intersection(map(str.lower, value.keys())) for value in _walk_dicts(self.tool_policy)):
                 raise ValueError("tool policy contains forbidden browser controls")
+        if self.post_tool_response_policy not in {None, "ack_only", "llm_synthesis"}:
+            raise ValueError("post_tool_response_policy must be ack_only or llm_synthesis")
 
     @classmethod
     def from_metadata(cls, metadata: dict[str, str], file_path: Path | None = None) -> "Skill":
@@ -84,6 +89,9 @@ class Skill:
             tool_policy=tool_policy,
             priority=priority,
             capability=capability or "general",
+            slow_tool=metadata.get("slow_tool", "").strip().lower() in {"1", "true", "yes"},
+            ack_template=metadata.get("ack_template", "").strip() or None,
+            post_tool_response_policy=metadata.get("post_tool_response_policy", "").strip() or None,
         )
         skill.validate()
         return skill

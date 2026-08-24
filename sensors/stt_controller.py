@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import threading
 from enum import Enum
+from time import perf_counter
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
@@ -39,6 +40,11 @@ class SttController(QObject):
 
     state_changed = pyqtSignal(str)
     transcript_ready = pyqtSignal(str)
+    # Raw perf_counter() floats for the turn latency timeline: is_vad_endpoint,
+    # vad_endpoint_ts (unused/0.0 when not vad-triggered), stt_started_ts, stt_done_ts.
+    # Kept as plain floats, not a timeline object, so this module stays dependency-free
+    # per module-dependency-boundaries; the receiving adapter owns the timeline object.
+    voice_turn_timing = pyqtSignal(bool, float, float, float)
     session_discarded = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     availability_changed = pyqtSignal(bool)
@@ -203,6 +209,7 @@ class SttController(QObject):
         # 若延遲敏感度提高再改事件驅動。
         # VAD 只在此 worker 推論，絕不可放進 PortAudio callback 以免阻塞收音。
         stop_reason = "manual"
+        vad_endpoint_ts: float | None = None
         while not stop_event.wait(timeout=0.05):
             if self._recorder.device_failed.is_set():
                 stop_reason = "device"
@@ -215,6 +222,9 @@ class SttController(QObject):
                     chunks, vad_cursor = self._recorder.read_new_chunks(vad_cursor)
                     if len(chunks) and session_vad.feed_audio(chunks):
                         stop_reason = "vad"
+                        # Capture at the moment VAD actually declares the endpoint,
+                        # not after the recorder-stop/buffer-read cleanup below.
+                        vad_endpoint_ts = perf_counter()
                         break
                 except Exception as exc:  # noqa: BLE001
                     print(f"[STT] session {session_id} VAD failed; continuing manually: {exc}")
@@ -239,6 +249,7 @@ class SttController(QObject):
         if not self._set_state_for_session(session_id, RecordingState.TRANSCRIBING):
             return
 
+        stt_started_ts = perf_counter()
         try:
             result = self._provider.transcribe(audio, self._sample_rate)
         except SttError as exc:
@@ -246,6 +257,7 @@ class SttController(QObject):
             self._fail_session(session_id, "辨識失敗，請再試一次。")
             return
 
+        stt_done_ts = perf_counter()
         print(
             f"[STT] language={result.language} p={result.language_probability:.2f} "
             f"duration={result.audio_duration_seconds:.1f}s"
@@ -256,6 +268,7 @@ class SttController(QObject):
             self._discard_session(session_id, "沒有偵測到有效內容，請再試一次。")
             return
 
+        self.voice_turn_timing.emit(stop_reason == "vad", vad_endpoint_ts or 0.0, stt_started_ts, stt_done_ts)
         self._submit(session_id, text)
 
     # ------------------------------------------------------------------

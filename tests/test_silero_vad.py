@@ -54,7 +54,7 @@ def test_silence_never_reports_a_speech_endpoint(tmp_path):
     assert all(not vad.feed_audio(np.zeros(512, dtype=np.float32)) for _ in range(30))
 
 
-def test_default_silence_requires_800ms_before_an_endpoint(tmp_path):
+def test_default_silence_requires_500ms_before_an_endpoint(tmp_path):
     model_bytes = b"test-model"
     vad = SileroVad(
         cache_dir=tmp_path,
@@ -64,7 +64,7 @@ def test_default_silence_requires_800ms_before_an_endpoint(tmp_path):
     )
 
     assert vad.setup() is True
-    detections = [vad.feed_audio(np.zeros(512, dtype=np.float32)) for _ in range(33)]
+    detections = [vad.feed_audio(np.zeros(512, dtype=np.float32)) for _ in range(24)]
 
     assert detections[-1] is True
 

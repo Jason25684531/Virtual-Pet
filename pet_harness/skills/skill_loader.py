@@ -50,6 +50,9 @@ class SkillLoader:
                 "tool_policy_json",
                 "priority",
                 "capability",
+                "slow_tool",
+                "ack_template",
+                "post_tool_response_policy",
             }:
                 metadata[normalized] = value.strip()
         return metadata

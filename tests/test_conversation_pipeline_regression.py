@@ -20,6 +20,7 @@ def test_text_turn_keeps_the_ui_payload_contract(harness_env):
         "reply", "matched_skill", "tool", "xp_delta", "reward_summary",
         "asset_summary", "behavior_id", "webm_key", "provider_status",
         "saved_to_db", "warnings", "raw_event", "xp_display", "user_text", "character_id",
+        "trace_id",  # turn_id surfaced so the UI can correlate stream/TTS chunks back to this turn's timeline
     }
     assert payload["user_text"] == "tell me a joke"
     assert payload["matched_skill"] == "joke_skill"
