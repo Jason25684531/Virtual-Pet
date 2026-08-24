@@ -261,6 +261,7 @@ class PetHarnessEngine:
         self.reward_manager = RewardManager(self.store, self.agentic_root / "rewards" / "reward_rules.json")
         self.behavior_manager = BehaviorManager(self.store, self.agentic_root / "behavior" / "behavior_map.json")
         self.character_library = CharacterLibrary()
+        self._last_action_tag: str | None = None
         self.prompt_builder = PromptBuilder(self.agentic_root)
         self.result_parser = ResultParser()
         self.tool_registry = ToolRegistry()
@@ -757,7 +758,14 @@ class PetHarnessEngine:
             state_snapshot=state,
             matched_skill=deterministic_skill,
             persona=self._profile.effective_persona if self._profile else None,
-            action_tags=self.character_library.list_action_tags(self._character_id),
+            action_tags=(
+                [
+                    tag
+                    for tag in self.character_library.list_action_tags(self._character_id)
+                    if tag != self._last_action_tag
+                ]
+                or self.character_library.list_action_tags(self._character_id)
+            ),
             tool_result=tool_result,
             conversation_history=history,
             memory_hits=memory_hits,
@@ -890,10 +898,13 @@ class PetHarnessEngine:
         resolved_action = None
         action_tags = self.character_library.list_action_tags(self._character_id)
         if action_tags:
-            action_tag = suggested_action_tag if suggested_action_tag in action_tags else random.choice(action_tags)
+            candidates = [tag for tag in action_tags if tag != self._last_action_tag] or action_tags
+            action_tag = suggested_action_tag if suggested_action_tag in candidates else random.choice(candidates)
             resolved_action = self.character_library.resolve_action_tag(self._character_id, action_tag)
             if resolved_action is None:
                 LOGGER.warning("Ignoring unavailable action tag for character %s: %s", self._character_id, action_tag)
+            else:
+                self._last_action_tag = action_tag
         behavior = self.behavior_manager.resolve(skill, action_motion_key=resolved_action["motion_key"] if resolved_action else None)
         return resolved_action, behavior
 

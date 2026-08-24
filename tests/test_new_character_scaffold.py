@@ -65,3 +65,33 @@ def test_scaffold_rejects_invalid_and_duplicate_ids(tmp_path, monkeypatch):
         assert exc.code == 2
     else:
         raise AssertionError("duplicate id was accepted")
+
+
+def test_check_validates_idle_motion_without_writing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    namespace = runpy.run_path(str(Path(__file__).parents[1] / "scripts" / "new_character.py"))
+    main = namespace["main"]
+
+    assert main(["char-ok", "Okay"]) == 0
+    root = tmp_path / "assets" / "characters" / "char-ok"
+    (root / "motions" / "og" / "idle.webm").write_bytes(b"webm")
+
+    assert main(["--check", "char-ok"]) == 0
+    assert main(["--check", "missing"]) == 1
+    assert not (tmp_path / "assets" / "characters" / "missing").exists()
+
+
+def test_make_preset_marks_an_existing_scaffold(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    namespace = runpy.run_path(str(Path(__file__).parents[1] / "scripts" / "new_character.py"))
+    main = namespace["main"]
+    assert main(["char-ok", "Okay"]) == 0
+
+    assert main(["--make-preset", "char-ok"]) == 0
+
+    manifest = json.loads((tmp_path / "assets" / "characters" / "char-ok" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["is_preset"] is True
+
+    assert main(["--remove-preset", "char-ok"]) == 0
+    manifest = json.loads((tmp_path / "assets" / "characters" / "char-ok" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["is_preset"] is False

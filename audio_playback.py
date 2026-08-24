@@ -5,12 +5,15 @@ Provider-neutral audio playback helpers for ECHOES.
 from __future__ import annotations
 
 import io
+import logging
 import os
 import shutil
 import subprocess
 import threading
 import time
 from collections.abc import Iterable
+
+LOGGER = logging.getLogger(__name__)
 
 try:
     import pygame
@@ -42,11 +45,11 @@ class PygameInMemoryAudioPlayer:
             try:
                 self._mixer.music.stop()
             except Exception:
-                pass
+                LOGGER.debug("pygame stop during cleanup failed", exc_info=True)
             try:
                 self._mixer.music.unload()
             except Exception:
-                pass
+                LOGGER.debug("pygame unload during cleanup failed", exc_info=True)
 
             self._mixer.music.load(audio_buffer, "mp3")
             if callable(before_start) and before_start() is False:
@@ -60,7 +63,7 @@ class PygameInMemoryAudioPlayer:
             try:
                 self._mixer.music.stop()
             except Exception:
-                pass
+                LOGGER.debug("pygame stop during cleanup failed", exc_info=True)
 
     def _ensure_initialized(self):
         get_init = getattr(self._mixer, "get_init", None)

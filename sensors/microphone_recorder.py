@@ -8,9 +8,12 @@
 from __future__ import annotations
 
 import threading
+import logging
 
 import numpy as np
 import sounddevice as sd
+
+LOGGER = logging.getLogger(__name__)
 
 
 class MicrophoneError(Exception):
@@ -48,7 +51,7 @@ class MicrophoneRecorder:
             raise MicrophoneError(str(exc)) from exc
         self._stream = stream
         self._active = True
-        print(f"[MicrophoneRecorder] 已開啟輸入裝置：{self._describe_default_input_device()}")
+        LOGGER.info("[MicrophoneRecorder] 已開啟輸入裝置：%s", self._describe_default_input_device())
 
     @staticmethod
     def _describe_default_input_device() -> str:
@@ -66,7 +69,7 @@ class MicrophoneRecorder:
             # 不細分 overflow/disconnect;若日常使用發現誤判過多再細分。
             with self._lock:
                 self._active = False
-            print(f"[MicrophoneRecorder] 裝置狀態異常，停止收音：{status}")
+            LOGGER.warning("[MicrophoneRecorder] 裝置狀態異常，停止收音：%s", status)
             self.device_failed.set()
             raise sd.CallbackStop()
         with self._lock:
@@ -81,7 +84,7 @@ class MicrophoneRecorder:
             self._total_samples += len(chunk)
             reached_max = self._total_samples >= self._max_samples
         if reached_max:
-            print("[MicrophoneRecorder] 已達最大錄音長度，自動停止收音")
+            LOGGER.info("[MicrophoneRecorder] 已達最大錄音長度，自動停止收音")
             self.max_reached.set()
             raise sd.CallbackStop()
 

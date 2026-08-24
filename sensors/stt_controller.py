@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import threading
+import logging
 from enum import Enum
 from time import perf_counter
 
@@ -19,6 +20,7 @@ from sensors.faster_whisper_stt import SttError
 from sensors.microphone_recorder import MicrophoneError, MicrophoneRecorder
 
 _PUNCTUATION_ONLY_RE = re.compile(r"^[\s\W_]*$", re.UNICODE)
+LOGGER = logging.getLogger(__name__)
 
 
 class RecordingState(str, Enum):
@@ -157,22 +159,22 @@ class SttController(QObject):
     # ------------------------------------------------------------------
 
     def _preload(self) -> None:
-        print("[STT] 開始背景載入模型...")
+        LOGGER.info("[STT] 開始背景載入模型...")
         try:
             self._provider.setup()
         except Exception as exc:  # noqa: BLE001
             self._last_error = str(exc)
-            print(f"[STT] 模型載入失敗，STT 停用：{exc}")
+            LOGGER.warning("[STT] 模型載入失敗，STT 停用：%s", exc)
             self.availability_changed.emit(False)
             return
-        print("[STT] 模型載入完成，STT 可用。")
+        LOGGER.info("[STT] 模型載入完成，STT 可用。")
         self.availability_changed.emit(True)
 
     def _run_session(self, session_id: int, stop_event: threading.Event) -> None:
         try:
             self._execute_session(session_id, stop_event)
         except Exception as exc:  # noqa: BLE001
-            print(f"[SttController] session {session_id} 發生未預期例外: {exc}")
+            LOGGER.exception("[STT] session %s 發生未預期例外", session_id)
             try:
                 self._recorder.stop()
             except Exception:  # noqa: BLE001
@@ -184,25 +186,25 @@ class SttController(QObject):
             self._recorder.start()
         except MicrophoneError as exc:
             self._last_error = str(exc)
-            print(f"[STT] session {session_id} 麥克風開啟失敗：{exc}")
+            LOGGER.warning("[STT] session %s 麥克風開啟失敗：%s", session_id, exc)
             self._fail_session(session_id, "無法使用麥克風。")
             return
 
         if not self._set_state_for_session(session_id, RecordingState.RECORDING):
             self._recorder.stop()
             return
-        print(f"[STT] session {session_id} 開始收音...")
+        LOGGER.info("[STT] session %s 開始收音...", session_id)
 
         vad_cursor = 0
         session_vad = self._vad
         if session_vad is None:
-            print(f"[STT] session {session_id} VAD disabled")
+            LOGGER.info("[STT] session %s VAD disabled", session_id)
         else:
             try:
-                print(f"[STT] session {session_id} VAD ready={session_vad.is_ready()}")
+                LOGGER.info("[STT] session %s VAD ready=%s", session_id, session_vad.is_ready())
                 session_vad.reset()
             except Exception as exc:  # noqa: BLE001
-                print(f"[STT] session {session_id} VAD reset failed; continuing manually: {exc}")
+                LOGGER.warning("[STT] session %s VAD reset failed; continuing manually: %s", session_id, exc)
                 session_vad = None
 
         # ponytail: 50ms 輪詢 stop/裝置失效/上限旗標，不用多 Event 等待器；
@@ -227,7 +229,7 @@ class SttController(QObject):
                         vad_endpoint_ts = perf_counter()
                         break
                 except Exception as exc:  # noqa: BLE001
-                    print(f"[STT] session {session_id} VAD failed; continuing manually: {exc}")
+                    LOGGER.warning("[STT] session %s VAD failed; continuing manually: %s", session_id, exc)
                     session_vad = None
 
         if not self._set_state_for_session(session_id, RecordingState.STOPPING):
@@ -237,10 +239,7 @@ class SttController(QObject):
 
         audio = self._recorder.get_audio()
         duration_ms = (len(audio) / self._sample_rate) * 1000.0 if self._sample_rate else 0.0
-        print(
-            f"[STT] session {session_id} 停止收音（reason={stop_reason}）：共 {len(audio)} 筆樣本 "
-            f"(~{duration_ms:.0f}ms，device_failed={self._recorder.device_failed.is_set()})"
-        )
+        LOGGER.info("[STT] session %s 停止收音 reason=%s samples=%s duration=%.0fms device_failed=%s", session_id, stop_reason, len(audio), duration_ms, self._recorder.device_failed.is_set())
 
         if len(audio) == 0 or duration_ms < self._min_recording_ms:
             self._discard_session(session_id, "錄音太短，請再試一次。")
@@ -258,10 +257,7 @@ class SttController(QObject):
             return
 
         stt_done_ts = perf_counter()
-        print(
-            f"[STT] language={result.language} p={result.language_probability:.2f} "
-            f"duration={result.audio_duration_seconds:.1f}s"
-        )
+        LOGGER.info("[STT] language=%s p=%.2f duration=%.1fs stt=%.2fs", result.language, result.language_probability, result.audio_duration_seconds, stt_done_ts - stt_started_ts)
 
         text = result.text.strip()
         if _is_effectively_empty(text):
@@ -287,7 +283,7 @@ class SttController(QObject):
         return True
 
     def _discard_session(self, session_id: int, reason: str) -> None:
-        print(f"[STT] session {session_id} 捨棄：{reason}")
+        LOGGER.info("[STT] session %s 捨棄：%s", session_id, reason)
         with self._state_lock:
             if self._shutting_down or session_id != self._session_id:
                 return
@@ -295,7 +291,7 @@ class SttController(QObject):
         self._return_to_idle(session_id)
 
     def _fail_session(self, session_id: int, message: str) -> None:
-        print(f"[STT] session {session_id} 失敗：{message}（detail={self._last_error!r}）")
+        LOGGER.warning("[STT] session %s 失敗：%s（detail=%r）", session_id, message, self._last_error)
         with self._state_lock:
             if self._shutting_down or session_id != self._session_id:
                 return

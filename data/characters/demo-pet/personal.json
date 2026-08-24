@@ -1,0 +1,8 @@
+{
+  "schema_version": 2,
+  "display_name": "Demo Pet",
+  "persona": null,
+  "skill_refs": [],
+  "local_skill_refs": [],
+  "skill_overrides": {}
+}

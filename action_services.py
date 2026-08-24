@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import random
 import re
@@ -19,6 +20,8 @@ import config
 from character_library import CharacterLibrary, PROJECT_ROOT, UI_MUSIC_DIR
 from pet_harness.app.commands import ACTION_DIRECTIVE_PATTERN
 from pet_harness.models.events import UserEvent
+
+LOGGER = logging.getLogger(__name__)
 
 
 FIXED_NEWS_VERSION = "fixed-news-2026-05-06-v1"
@@ -313,6 +316,7 @@ def _ensure_cached_audio_payload(
         temp_audio_path.replace(audio_path)
         temp_meta_path.replace(metadata_path)
     except Exception:
+        LOGGER.warning("failed to atomically write cached audio", exc_info=True)
         temp_audio_path.unlink(missing_ok=True)
         temp_meta_path.unlink(missing_ok=True)
         raise

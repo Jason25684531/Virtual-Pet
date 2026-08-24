@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import queue
 from uuid import uuid4
 
@@ -11,6 +12,8 @@ from PyQt5.QtCore import QTimer
 import config
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
 from text_utils import sanitize_tts_text
+
+LOGGER = logging.getLogger(__name__)
 
 
 class TtsPlaybackMixin:
@@ -46,7 +49,7 @@ class TtsPlaybackMixin:
             return
 
         if not callable(self._tts_worker_factory):
-            print("[ECHOES] 警告: TTS worker factory 無效，已回退到 AdaptiveTTSFallbackWorker。")
+            LOGGER.warning("[ECHOES] TTS worker factory 無效，已回退到 AdaptiveTTSFallbackWorker。")
             self._tts_worker_factory = AdaptiveTTSFallbackWorker
 
         reply_id = uuid4().hex
@@ -302,7 +305,7 @@ class TtsPlaybackMixin:
         normalized_trace_id = str(trace_id or "").strip()
         if self._latency_tracker is not None:
             self._latency_tracker.mark_tts_finished(normalized_trace_id, reply_id, True, message)
-        print(f"[ECHOES] 提示: 語音播放完成。{message}")
+        LOGGER.info("[ECHOES] 語音播放完成。%s", message)
 
     def _record_spoken_reply(self, reply_id: str, trace_id: str | None) -> None:
         if reply_id in self._spoken_reply_ids:
@@ -360,7 +363,7 @@ class TtsPlaybackMixin:
             try:
                 active_worker.quit()
             except Exception:
-                pass
+                LOGGER.debug("TTS worker quit failed", exc_info=True)
         self._active_tts_worker = None
         self._current_loop_action_key = None
         self._current_loop_binding = None
@@ -413,7 +416,7 @@ class TtsPlaybackMixin:
                 skipped_by_design=skipped_by_design,
             )
         if not success and not skipped_by_design:
-            print(f"[ECHOES] 提示: 串流 TTS 未播放，保留文字回覆。{message}")
+            LOGGER.warning("[ECHOES] 串流 TTS 未播放，保留文字回覆。%s", message)
             pending_state = self._pending_actions.get(normalized_trace_id)
             if (
                 pending_state is not None
@@ -424,7 +427,7 @@ class TtsPlaybackMixin:
                 self._window.restore_idle_video()
             self._maybe_close_trace_audio_session(normalized_trace_id)
             return
-        print(f"[ECHOES] 提示: 語音播放完成。{message}")
+        LOGGER.info("[ECHOES] 語音播放完成。%s", message)
         self._maybe_close_trace_audio_session(normalized_trace_id)
 
     def _apply_fallback_timeout_grace(self, trace_id: str | None):
@@ -506,7 +509,7 @@ class TtsPlaybackMixin:
                 if hasattr(worker, "quit"):
                     worker.quit()
             except Exception:
-                pass
+                LOGGER.debug("TTS worker quit failed during shutdown", exc_info=True)
 
             is_running = getattr(worker, "isRunning", None)
             wait = getattr(worker, "wait", None)
@@ -517,7 +520,7 @@ class TtsPlaybackMixin:
                         terminate()
                         wait(1000)
                     except Exception:
-                        pass
+                        LOGGER.warning("TTS worker terminate failed", exc_info=True)
 
         self._active_tts_worker = None
         self._current_loop_binding = None

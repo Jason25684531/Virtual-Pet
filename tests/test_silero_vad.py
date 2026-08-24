@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 
 import numpy as np
 
@@ -90,7 +91,8 @@ def test_frames_include_silero_context_from_the_previous_frame(tmp_path):
     np.testing.assert_array_equal(session.inputs[1]["input"][0, :64], first_frame[-64:])
 
 
-def test_speech_followed_by_silence_reports_one_endpoint_and_logs_transitions(tmp_path, capsys):
+def test_speech_followed_by_silence_reports_one_endpoint_and_logs_transitions(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="sensors.silero_vad")
     vad = _ready_vad(tmp_path, [0.8] * 8 + [0.1] * 25)
 
     assert vad.setup() is True
@@ -98,7 +100,7 @@ def test_speech_followed_by_silence_reports_one_endpoint_and_logs_transitions(tm
 
     assert detections.count(True) == 1
     assert detections[-1] is True
-    logs = capsys.readouterr().out
+    logs = caplog.text
     assert "[VAD] model ready" in logs
     assert "[VAD] Speech Start detected" in logs
     assert "[VAD] Speech Endpoint detected" in logs
@@ -135,7 +137,7 @@ def test_missing_model_fails_open(tmp_path):
     assert vad.is_ready() is False
 
 
-def test_inference_failure_disables_vad_without_raising(tmp_path, capsys):
+def test_inference_failure_disables_vad_without_raising(tmp_path, caplog):
     model_bytes = b"test-model"
     vad = SileroVad(
         cache_dir=tmp_path,
@@ -148,7 +150,7 @@ def test_inference_failure_disables_vad_without_raising(tmp_path, capsys):
     assert vad.feed_audio(np.zeros(512, dtype=np.float32)) is False
     assert vad.feed_audio(np.zeros(512, dtype=np.float32)) is False
     assert vad.is_ready() is False
-    assert capsys.readouterr().out.count("[VAD] disabled") == 1
+    assert caplog.text.count("[VAD] disabled") == 1
 
 
 def test_shutdown_is_idempotent(tmp_path):

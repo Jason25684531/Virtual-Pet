@@ -18,6 +18,7 @@ Thread-Safety 設計要點：
 from __future__ import annotations
 
 import io
+import logging
 import queue
 import threading
 import time
@@ -29,6 +30,7 @@ from pet_harness.latency import get_turn
 
 _SENTINEL = None
 _PCM_STREAM_SENTINEL = object()
+LOGGER = logging.getLogger(__name__)
 
 
 class _PcmTraceSession:
@@ -169,7 +171,7 @@ class _PcmTraceSession:
         except PlaybackStartSuppressed:
             pass
         except Exception as exc:  # pragma: no cover
-            print(f"[AudioStreamWorker] PCM session 播放失敗 trace={self._trace_id}: {exc}")
+            LOGGER.exception("[ECHOES] PCM session 播放失敗 trace=%s", self._trace_id)
         finally:
             with self._lock:
                 if self._aborted:
@@ -415,7 +417,7 @@ class AudioStreamWorker(QObject):
             except PlaybackStartSuppressed:
                 pass
             except Exception as exc:  # pragma: no cover
-                print(f"[AudioStreamWorker] 播放失敗 reply_id={reply_id}: {exc}")
+                LOGGER.exception("[ECHOES] 播放失敗 reply_id=%s", reply_id)
             finally:
                 with self._playing_lock:
                     self._current_reply_id = None

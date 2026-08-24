@@ -130,6 +130,7 @@ class CharacterRouter:
                 layout=dict(manifest.get("layout") or {}),
                 persona_description="",
                 skill_config=skill_refs,
+                is_preset=bool(manifest.get("is_preset", False)),
                 personal=library_personal,
             ), True
 

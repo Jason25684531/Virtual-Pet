@@ -579,6 +579,21 @@ COMFYUI_SMOKE=1 .venv/Scripts/python -m pytest tests/test_comfyui_smoke.py
 
 `manifest.json` 的 `motions` 建議至少包含:`idle`、`report_news`、`play_music`、`wave_response`、`laugh`、`angry`、`awkward`、`speechless`、`listen`。缺少時系統安全退回 idle;變體缺檔時 fallback 至 og。
 
+### 手動新增角色
+
+```bash
+python scripts/new_character.py my-pet "My Pet"
+```
+
+把角色圖片放進 `assets/characters/my-pet/images/og/`，並至少放入
+`assets/characters/my-pet/motions/og/idle.webm`。完成後不寫入檢查：
+
+```bash
+python scripts/new_character.py --check my-pet
+```
+
+檢查通過後重啟應用程式；角色清單會自動掃描 manifest 並載入資產。
+
 可選的角色 framing 設定:
 
 ```json

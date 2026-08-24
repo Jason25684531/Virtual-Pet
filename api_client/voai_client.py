@@ -9,7 +9,9 @@ ECHOES — VoAI TTS 整合。
 from __future__ import annotations
 
 import io
+import logging
 import os
+from time import perf_counter
 from uuid import uuid4
 
 import requests
@@ -27,6 +29,7 @@ _DEFAULT_BREATH_PAUSE = 0.0
 _PCM_SAMPLE_RATE = 32000
 _DEFAULT_TRANSPORT_MODE = "http"
 _WARNED_DEPRECATED_TRANSPORT_MODES: set[str] = set()
+LOGGER = logging.getLogger(__name__)
 
 
 def _get_api_key() -> str:
@@ -52,7 +55,7 @@ def _normalize_transport_mode(value: str | None) -> str:
     normalized = str(value or "").strip().lower()
     if normalized and normalized != "http" and normalized not in _WARNED_DEPRECATED_TRANSPORT_MODES:
         _WARNED_DEPRECATED_TRANSPORT_MODES.add(normalized)
-        print(
+        LOGGER.warning(
             "[ECHOES] 提示: "
             f"VOAI_TRANSPORT_MODE={normalized} 已棄用，VoAI 目前固定走文件化 HTTP PCM 主路徑。"
         )
@@ -133,7 +136,7 @@ class VoAIStreamingTTSWorker(QThread):
             if isinstance(result_payload, dict) and result_payload.get("fast_fail") and self._adaptive_fallback_enabled:
                 self.finished_signal.emit(False, fallback_reason, result_payload)
                 return
-            print(f"[ECHOES] 提示: VoAI PCM 串流不可用，改用 MP3 fallback。{fallback_reason}")
+            LOGGER.warning("[ECHOES] VoAI PCM 串流不可用，改用 MP3 fallback。%s", fallback_reason)
 
         self._run_mp3_fallback(api_key, payload)
 
@@ -200,6 +203,8 @@ class VoAIStreamingTTSWorker(QThread):
 
         response = None
         bytes_forwarded = 0
+        request_started = perf_counter()
+        playback_started: float | None = None
         try:
             response = self._requests_post(
                 _VOAI_TTS_URL,
@@ -219,6 +224,7 @@ class VoAIStreamingTTSWorker(QThread):
                     if not chunk:
                         continue
                     if bytes_forwarded <= 0:
+                        LOGGER.info("[ECHOES] TTS request-to-first-PCM=%.2fs", perf_counter() - request_started)
                         self.progress_signal.emit(
                             "stream_started",
                             {
@@ -256,8 +262,10 @@ class VoAIStreamingTTSWorker(QThread):
                 return True, sink_reason, None
 
             def before_start():
+                nonlocal playback_started
                 if callable(self._playback_guard) and self._playback_guard(self._trace_id, self._reply_id) is False:
                     return False
+                playback_started = perf_counter()
                 payload = {
                     "reply_id": self._reply_id,
                     "trace_id": self._trace_id,
@@ -271,6 +279,8 @@ class VoAIStreamingTTSWorker(QThread):
             played_bytes = int(player.play_chunks(iter_chunks(), before_start=before_start) or 0)
             if bytes_forwarded <= 0 and played_bytes <= 0:
                 return False, "VoAI PCM 回傳空音訊。", None
+            if playback_started is not None:
+                LOGGER.info("[ECHOES] playback-to-complete=%.2fs", perf_counter() - playback_started)
 
             self.finished_signal.emit(
                 True,

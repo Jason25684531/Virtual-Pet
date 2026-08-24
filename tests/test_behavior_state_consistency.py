@@ -155,6 +155,48 @@ class TestPetEventMirrorsBehaviorEvent:
         assert resolved["action_tag"] == "laugh"
         assert behavior.webm_key == "laugh"
 
+    def test_rejects_the_previous_provider_action_tag(self, harness_env, monkeypatch):
+        engine = self._build_engine(harness_env)
+        monkeypatch.setattr(engine.character_library, "list_action_tags", lambda _character_id: ["laugh", "angry"])
+        monkeypatch.setattr(
+            engine.character_library,
+            "resolve_action_tag",
+            lambda _character_id, tag: {"action_tag": tag, "motion_key": tag, "path": f"{tag}.webm"},
+        )
+        engine._last_action_tag = "laugh"
+
+        resolved, _ = engine._resolve_behavior(None, "laugh")
+
+        assert resolved["action_tag"] == "angry"
+
+    def test_random_action_excludes_the_previous_tag(self, harness_env, monkeypatch):
+        engine = self._build_engine(harness_env)
+        monkeypatch.setattr(engine.character_library, "list_action_tags", lambda _character_id: ["laugh", "angry"])
+        monkeypatch.setattr(
+            engine.character_library,
+            "resolve_action_tag",
+            lambda _character_id, tag: {"action_tag": tag, "motion_key": tag, "path": f"{tag}.webm"},
+        )
+        engine._last_action_tag = "laugh"
+
+        resolved, _ = engine._resolve_behavior(None)
+
+        assert resolved["action_tag"] == "angry"
+
+    def test_single_action_tag_may_repeat(self, harness_env, monkeypatch):
+        engine = self._build_engine(harness_env)
+        monkeypatch.setattr(engine.character_library, "list_action_tags", lambda _character_id: ["laugh"])
+        monkeypatch.setattr(
+            engine.character_library,
+            "resolve_action_tag",
+            lambda _character_id, tag: {"action_tag": tag, "motion_key": tag, "path": f"{tag}.webm"},
+        )
+        engine._last_action_tag = "laugh"
+
+        resolved, _ = engine._resolve_behavior(None, "laugh")
+
+        assert resolved["action_tag"] == "laugh"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

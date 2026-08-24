@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 from collections.abc import Callable
 from pathlib import Path
 from urllib.request import urlretrieve
 
 import numpy as np
+
+LOGGER = logging.getLogger(__name__)
 
 
 MODEL_URL = (
@@ -63,7 +66,7 @@ class SileroVad:
                 self._session = self._create_session(model_path)
                 self._ready = True
                 self.reset()
-                print(f"[VAD] model ready (cache={model_path})")
+                LOGGER.info("[VAD] model ready (cache=%s)", model_path)
                 return True
             except Exception as exc:  # noqa: BLE001 - VAD must fail open
                 self._disable(exc)
@@ -119,7 +122,7 @@ class SileroVad:
                 if self._speech_frames * self.FRAME_DURATION_MS >= self.SPEECH_START_MS:
                     self._speech_started = True
                     self._silence_frames = 0
-                    print(f"[VAD] Speech Start detected (probability={probability:.2f})")
+                    LOGGER.info("[VAD] Speech Start detected (probability=%.2f)", probability)
             else:
                 self._speech_frames = 0
             return False
@@ -128,7 +131,7 @@ class SileroVad:
             self._silence_frames += 1
             endpoint_detected = self._silence_frames * self.FRAME_DURATION_MS >= self._silence_ms
             if endpoint_detected:
-                print(f"[VAD] Speech Endpoint detected (silence_ms={self._silence_ms})")
+                LOGGER.info("[VAD] Speech Endpoint detected (silence_ms=%s)", self._silence_ms)
             return endpoint_detected
 
         self._silence_frames = 0
@@ -195,5 +198,5 @@ class SileroVad:
         self._session = None
         self._failure_reason = str(exc)
         if not self._failure_logged:
-            print(f"[VAD] disabled; falling back to manual stop: {exc}")
+            LOGGER.warning("[VAD] disabled; falling back to manual stop: %s", exc)
             self._failure_logged = True
