@@ -146,6 +146,6 @@ class FfplayPcmAudioPlayer:
                 try:
                     process.stdin.close()
                 except Exception:
-                    pass
+                    LOGGER.debug("ffplay stdin close failed", exc_info=True)
             process.wait()
         return bytes_written

@@ -435,7 +435,8 @@ class VoAIStreamingTTSWorker(QThread):
             try:
                 body = exc.response.text[:200] if exc.response is not None else ""
             except Exception:
-                pass
+                # Best effort only: HTTP error reporting must not mask the original failure.
+                LOGGER.debug("could not read VoAI error body", exc_info=True)
             reason_code, detail, definitive = _classify_fast_fail(exc)
             if definitive and self._adaptive_fallback_enabled:
                 self.finished_signal.emit(

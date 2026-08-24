@@ -52,7 +52,8 @@ def _register_windows_cuda_dll_directories() -> None:
             if os.path.isdir(bin_dir):
                 bin_dirs.append(bin_dir)
         except Exception:  # noqa: BLE001
-            pass
+            # Optional CUDA wheel absent; setup() emits the actionable failure later.
+            continue
     if bin_dirs:
         os.environ["PATH"] = os.pathsep.join(bin_dirs) + os.pathsep + os.environ.get("PATH", "")
 

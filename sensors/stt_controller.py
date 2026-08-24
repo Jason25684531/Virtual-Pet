@@ -143,16 +143,16 @@ class SttController(QObject):
         try:
             self._recorder.shutdown()
         except Exception:  # noqa: BLE001
-            pass
+            LOGGER.warning("[STT] recorder shutdown failed", exc_info=True)
         try:
             self._provider.shutdown()
         except Exception:  # noqa: BLE001
-            pass
+            LOGGER.warning("[STT] provider shutdown failed", exc_info=True)
         if self._vad is not None:
             try:
                 self._vad.shutdown()
             except Exception:  # noqa: BLE001
-                pass
+                LOGGER.warning("[STT] VAD shutdown failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # Background work
@@ -178,7 +178,7 @@ class SttController(QObject):
             try:
                 self._recorder.stop()
             except Exception:  # noqa: BLE001
-                pass
+                LOGGER.warning("[STT] recorder cleanup failed", exc_info=True)
             self._fail_session(session_id, "辨識發生未預期錯誤。")
 
     def _execute_session(self, session_id: int, stop_event: threading.Event) -> None:

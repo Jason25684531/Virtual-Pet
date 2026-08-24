@@ -31,7 +31,7 @@ from pet_harness.character.profile import CharacterProfile
 from ui.background_resolver import BackgroundResolver
 from ui.character_ui_bridge import CharacterUiBridge
 from ui.js_gateway import JsGateway
-from ui.harness_ui_bridge import BRIDGE_CONTRACT, HarnessUiBridge
+from ui.harness_ui_bridge import HarnessUiBridge
 from ui.web_page_widgets import DeveloperInputLineEdit, EchoesWebPage
 
 
@@ -1294,6 +1294,7 @@ class TransparentWindow(QMainWindow):
             if ctypes.wintypes.MSG.from_address(int(message)).message == wm_nchittest:
                 return True, 1  # HTCLIENT
         except Exception:  # noqa: BLE001
+            # Native hit-test is optional; use Qt's default handling when unavailable.
             pass
         return super().nativeEvent(event_type, message)
 

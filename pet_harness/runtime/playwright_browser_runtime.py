@@ -83,7 +83,8 @@ class PlaywrightBrowserRuntime(BaseBrowserRuntime):
                 if value:
                     value.close() if value is self._context else value.stop()
             except Exception:  # noqa: BLE001 - already-disconnected context
-                pass
+                # Intentional best-effort cleanup after a user-closed browser context.
+                continue
         self._context = self._playwright = None
         self._sessions = BrowserSessionManager()
 

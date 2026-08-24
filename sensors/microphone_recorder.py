@@ -95,7 +95,7 @@ class MicrophoneRecorder:
                 stream.stop()
                 stream.close()
             except Exception:  # noqa: BLE001
-                pass
+                LOGGER.warning("[MicrophoneRecorder] stream cleanup failed", exc_info=True)
         self._active = False
 
     def get_audio(self) -> np.ndarray:
