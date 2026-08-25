@@ -241,7 +241,12 @@ class CharacterUiBridge(QObject):
     @pyqtSlot(str, str, result=str)
     def savePersona(self, character_id: str, persona: str) -> str:
         try:
-            return self._ok(self._service.save_persona(character_id, persona or None))
+            result = self._service.save_persona(character_id, persona or None)
+            if self._adapter is not None:
+                # 熱重載 active engine 的 profile,讓 persona 修改立即生效,
+                # 不需要切換角色才套用(save_persona 只落盤,不會自己通知 engine)。
+                self._adapter.refresh_runtime()
+            return self._ok(result)
         except Exception as exc:  # noqa: BLE001
             return self._error(exc)
 

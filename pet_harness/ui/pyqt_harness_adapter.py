@@ -520,6 +520,11 @@ class PyQtHarnessAdapter:
             return {"tool_name": tool_name, "deleted": False, "disabled": True}
         raise ValueError(f"unknown tool_name: {tool_name}")
 
+    def refresh_runtime(self) -> None:
+        """公開入口：讓 UI bridge 在磁碟修改(如 savePersona)後觸發熱重載，
+        不需要碰觸 adapter 的私有狀態。"""
+        self._refresh_runtime()
+
     def _refresh_runtime(self, engine: PetHarnessEngine | None = None) -> None:
         # 先熱重載 profile+personal,再重建 skills/router:persona、alias、local skill
         # 的任何修改(面板或手動編輯)都在下一次互動生效,不依賴 switch_character。

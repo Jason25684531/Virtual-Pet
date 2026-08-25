@@ -14,6 +14,7 @@ def _reload_config():
 
 
 def test_stt_defaults_when_unset(monkeypatch):
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *_args, **_kwargs: False)
     for name in (
         "STT_ENABLED", "STT_MODEL", "STT_DEVICE", "STT_COMPUTE_TYPE",
         "STT_MODEL_PATH", "STT_LANGUAGE", "STT_BEAM_SIZE", "STT_SAMPLE_RATE",

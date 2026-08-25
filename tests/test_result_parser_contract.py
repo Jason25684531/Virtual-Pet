@@ -4,6 +4,7 @@ tool_request 結構驗證與 optional 欄位正規化。任何不可信 Provider
 
 from __future__ import annotations
 
+import json
 import logging
 
 import pytest
@@ -112,6 +113,32 @@ class TestOptionalFieldNormalization:
         result = _parse('{"reply": "hi", "notes": ["a", "b"]}')
         assert result.metadata["notes"] is None
         assert any(d["field"] == "notes" for d in result.metadata["diagnostics"])
+
+
+class TestReplyNormalization:
+    def test_reply_as_list_joins_into_single_string(self):
+        result = _parse('{"reply": ["第一句", "第二句", "第三句"]}')
+        assert result.reply == "第一句 第二句 第三句"
+        assert any(d["field"] == "reply" for d in result.metadata["diagnostics"])
+
+    def test_reply_as_plain_string_is_unchanged(self):
+        result = _parse('{"reply": "hi"}')
+        assert result.reply == "hi"
+        assert result.metadata["diagnostics"] == []
+
+    def test_reply_double_encoded_json_is_unwrapped(self):
+        raw = json.dumps({"reply": json.dumps({"reply": "日本女子搖滾樂團宣布活動"})})
+        result = _parse(raw)
+        assert result.reply == "日本女子搖滾樂團宣布活動"
+        assert any(
+            d["field"] == "reply" and d["reason"] == "double_encoded_json_unwrapped"
+            for d in result.metadata["diagnostics"]
+        )
+
+    def test_reply_wrapped_in_braces_but_not_valid_json_is_kept_as_is(self):
+        result = _parse('{"reply": "{很開心}"}')
+        assert result.reply == "{很開心}"
+        assert result.metadata["diagnostics"] == []
 
 
 class TestFallbackResultCompleteness:

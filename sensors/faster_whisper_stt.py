@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass
 
 import numpy as np
+from opencc import OpenCC
 
 
 class SttError(Exception):
@@ -77,6 +78,9 @@ class FasterWhisperSTT:
         self._model = None
         self._lock = threading.Lock()
         self._last_error = ""
+        # faster-whisper 的 "zh" 只代表語言判斷,輸出常混雜簡體字;
+        # s2twp 轉繁體並套用台灣慣用詞,轉換成本可忽略。
+        self._to_traditional = OpenCC("s2twp").convert
 
     def setup(self) -> None:
         with self._lock:
@@ -118,10 +122,13 @@ class FasterWhisperSTT:
         except Exception as exc:  # noqa: BLE001
             self._last_error = str(exc)
             raise SttTranscriptionError(str(exc)) from exc
+        language = str(info.language or "")
+        if language == "zh" and text:
+            text = self._to_traditional(text)
         inference_duration_seconds = time.monotonic() - started_at
         return TranscriptionResult(
             text=text,
-            language=str(info.language or ""),
+            language=language,
             language_probability=float(info.language_probability or 0.0),
             audio_duration_seconds=float(info.duration or 0.0),
             inference_duration_seconds=inference_duration_seconds,

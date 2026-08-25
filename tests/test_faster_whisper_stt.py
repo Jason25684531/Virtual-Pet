@@ -118,6 +118,33 @@ def test_transcribe_consumes_generator_and_merges_text(monkeypatch):
     assert fake_model.transcribe_calls[0]["language"] is None  # auto detection 預設
 
 
+def test_transcribe_converts_simplified_chinese_to_traditional(monkeypatch):
+    fake_model = _FakeWhisperModel("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper")
+    fake_model.segments_to_return = [_FakeSegment("这是简体字测试")]
+    fake_model.info_to_return = _FakeInfo(language="zh")
+    _make_fake_module(monkeypatch, fake_model)
+
+    provider = FasterWhisperSTT("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper")
+    provider.setup()
+    result = provider.transcribe(np.zeros(1600, dtype=np.float32), 16000)
+
+    assert result.text == "這是簡體字測試"
+
+
+def test_transcribe_does_not_convert_non_chinese_text(monkeypatch):
+    fake_model = _FakeWhisperModel("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper")
+    fake_model.segments_to_return = [_FakeSegment("hello world")]
+    fake_model.info_to_return = _FakeInfo(language="en")
+    _make_fake_module(monkeypatch, fake_model)
+
+    provider = FasterWhisperSTT("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper")
+    provider.setup()
+    result = provider.transcribe(np.zeros(1600, dtype=np.float32), 16000)
+
+    assert result.text == "hello world"
+    assert result.language == "en"
+
+
 def test_transcribe_trims_only_whitespace_without_rewriting(monkeypatch):
     fake_model = _FakeWhisperModel("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper")
     fake_model.segments_to_return = [_FakeSegment("  hello world  ")]

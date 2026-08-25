@@ -147,11 +147,15 @@ class ResultParser:
         if diag:
             diagnostics.append(diag)
 
+        reply, diag = self._normalize_reply(payload.get("reply"))
+        if diag:
+            diagnostics.append(diag)
+
         if diagnostics:
             self._log_field_diagnostics(raw_text, diagnostics)
 
         return AgentResult(
-            reply=str(payload.get("reply") or self.default_reply),
+            reply=reply,
             matched_skill=matched_skill,
             behavior_hint=behavior_hint,
             action_tag=action_tag,
@@ -168,6 +172,47 @@ class ResultParser:
                 "diagnostics": diagnostics,
             },
         )
+
+    def _normalize_reply(self, value: object) -> tuple[str, dict[str, str] | None]:
+        """reply contract: 一律回傳單一字串,且不得殘留 JSON 包裝。小型本地模型偶爾會:
+        (a) 把多項摘要(如新聞列表)誤輸出成 JSON array 而非合併字串 —— str(list) 會產生
+        "['a', 'b']" 這種不可朗讀的 repr,且串流 TTS 的 reply extractor 只認字串開頭,
+        array 會讓整輪 TTS 完全不觸發(見使用者回報:新聞搜尋後沒有語音);
+        (b) 把 reply 的值再包一層自己的 JSON(如 reply 值本身是 '{"reply": "..."}' 字串)
+        —— 雙重編碼,不解開就會把整個字典原文當成回覆文字唸出來(見使用者回報:字典與
+        reply 沒有被 split 掉)。"""
+        value, was_unwrapped = self._unwrap_double_encoded_reply(value)
+        if isinstance(value, str) and value.strip():
+            return value, ({"field": "reply", "reason": "double_encoded_json_unwrapped"} if was_unwrapped else None)
+        if isinstance(value, list) and value:
+            joined = " ".join(str(item).strip() for item in value if str(item).strip())
+            if joined:
+                return joined, {"field": "reply", "reason": "list_joined"}
+        if value in (None, ""):
+            return self.default_reply, None
+        return self.default_reply, {"field": "reply", "reason": f"unsupported_type:{type(value).__name__}"}
+
+    @staticmethod
+    def _unwrap_double_encoded_reply(value: object, max_depth: int = 2) -> tuple[object, bool]:
+        """reply 的值若本身又是一個合法 JSON 物件且含 "reply" 鍵,視為雙重編碼,
+        遞迴解開最多 max_depth 層取內層值;非此形狀(一般文字、純數字、隨意帶大括號
+        的句子)一律原樣返回,json.loads 失敗就立即停止,不誤傷正常回覆。"""
+        unwrapped = False
+        for _ in range(max_depth):
+            if not isinstance(value, str):
+                break
+            stripped = value.strip()
+            if not (stripped.startswith("{") and stripped.endswith("}")):
+                break
+            try:
+                nested = json.loads(stripped)
+            except json.JSONDecodeError:
+                break
+            if not isinstance(nested, dict) or "reply" not in nested:
+                break
+            value = nested.get("reply")
+            unwrapped = True
+        return value, unwrapped
 
     @staticmethod
     def _normalize_confidence(value: object) -> tuple[float, dict[str, str] | None]:

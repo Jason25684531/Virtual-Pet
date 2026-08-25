@@ -81,6 +81,12 @@ def service(tmp_path, monkeypatch):
     _write_character(tmp_path, "Choppr", ["joke_skill", "mood_skill"], is_preset=True)
     _write_character(tmp_path, "miku", ["music_skill"], is_preset=True)
     monkeypatch.setattr(profile_module, "_PROJECT_ROOT", tmp_path)
+    # CharacterUiService.list_characters() 會用 CharacterLibrary() 補進 library 角色;
+    # 沒有這幾行,library 會掃到真實 repo 的 assets/characters/,汙染 preset/角色清單斷言。
+    monkeypatch.setattr(library_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(library_module, "CHARACTER_LIBRARY_DIR", tmp_path / "assets" / "characters")
+    monkeypatch.setattr(library_module, "LEGACY_CHARACTER_LIBRARY_DIR", tmp_path / "assets" / "webm" / "characters")
+    monkeypatch.setattr(library_module, "UI_MUSIC_DIR", tmp_path / "ui" / "assets" / "music")
     monkeypatch.chdir(tmp_path)
 
     agentic_root = tmp_path / ".agentic"
