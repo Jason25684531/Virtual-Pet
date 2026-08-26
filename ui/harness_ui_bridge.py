@@ -2,7 +2,7 @@ from PyQt5.QtCore import QObject, pyqtSlot
 
 
 BRIDGE_CONTRACT = {
-    "python_to_js": ["appendConversationAssistant", "beginConversationTurn", "changeVideo", "clearConversationTurns", "clearPanelVideo", "clearRoomBackground", "finishConversationTurn", "hydrateAgenticUI", "moveCharacter", "playPanelVideo", "playRoomAudio", "playTemporaryVideo", "restoreIdleMotion", "setActionStatus", "setAgenticBusy", "setCharacterObjectPosition", "setConversationAssistant", "setConversationQueueDepth", "setIdleMotionCandidates", "setIdleVideo", "setPanelVideoMuted", "setRoomBackground", "setRoomCharacter", "setRuntimeMode", "startMotionLoop", "stopMotionLoop", "stopRoomAudio"],
+    "python_to_js": ["appendConversationAssistant", "beginConversationTurn", "changeVideo", "clearConversationTurns", "clearPanelVideo", "clearRoomBackground", "finishConversationTurn", "hydrateAgenticUI", "moveCharacter", "playPanelVideo", "playRoomAudio", "playTemporaryVideo", "restoreIdleMotion", "setActionStatus", "setAgenticBusy", "setCharacterObjectPosition", "setConversationAssistant", "setConversationQueueDepth", "setIdleMotionCandidates", "setIdleVideo", "setMainMenuPreview", "setPanelVideoMuted", "setRoomBackground", "setRoomCharacter", "setRuntimeMode", "startMotionLoop", "stopMotionLoop", "stopRoomAudio"],
     "js_to_python": ["addSkill", "addToolConfig", "deleteSkill", "deleteToolConfig", "refreshState", "resetRuntime", "sendText", "toggleStt", "triggerOverlayAction", "triggerQuickIntent", "toggleSkill", "toggleTool", "beginWindowDrag"],
     "character_bridge": ["listCharacters", "listPresets", "createFromPreset", "pickCharacterImage", "createFromUpload", "getValidationStatus", "switchCharacter", "deleteCharacter", "getActiveState", "triggerSkill"],
 }

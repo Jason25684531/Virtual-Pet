@@ -179,11 +179,14 @@ class TtsPlaybackMixin:
         self._audio_worker.close_trace_session(normalized_trace_id)
 
     def _finish_loop_action_if_tts_idle(self):
+        active_trace_id = str(self._active_action_trace_id or "").strip()
         if not (self._loop_action_tts_queued
                 and self._current_loop_action_key is not None
                 and self._pending_tts_chunks.empty()
                 and self._active_tts_worker is None
-                and not self._audio_worker.is_busy()):
+                and not self._audio_worker.is_busy()
+                and self._trace_pending_tts_counts.get(active_trace_id, 0) == 0
+                and active_trace_id not in self._streaming_traces):
             return
         if self._wait_for_room_audio_ended or self._loop_action_service_pending:
             return
@@ -348,6 +351,7 @@ class TtsPlaybackMixin:
         self._spoken_reply_ids.clear()
         self._trace_pending_tts_counts.clear()
         self._completed_tts_traces.clear()
+        self._streaming_traces.clear()
         self._deferred_dispatches.clear()
         while not self._pending_tts_chunks.empty():
             try:
@@ -471,9 +475,6 @@ class TtsPlaybackMixin:
         if self._news_audio_delay_timer is not None:
             self._news_audio_delay_timer.stop()
             self._news_audio_delay_timer = None
-        if self._wave_greeting_delay_timer is not None:
-            self._wave_greeting_delay_timer.stop()
-            self._wave_greeting_delay_timer = None
         for trace_id in list(self._pending_actions):
             self._clear_pending_action(trace_id)
         self._pending_actions.clear()
@@ -487,6 +488,7 @@ class TtsPlaybackMixin:
         self._spoken_reply_ids.clear()
         self._trace_pending_tts_counts.clear()
         self._completed_tts_traces.clear()
+        self._streaming_traces.clear()
         self._deferred_dispatches.clear()
         while not self._pending_tts_chunks.empty():
             try:

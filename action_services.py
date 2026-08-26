@@ -33,9 +33,6 @@ FIXED_NEWS_SCRIPT = "\n".join(
     ]
 )
 NEWS_AUDIO_CACHE_DIR = PROJECT_ROOT / "runtime_cache" / "news_audio"
-WAVE_GREETING_VERSION = "wave-greeting-2026-05-07-v2"
-WAVE_GREETING_SCRIPT = "嗨 你好嗎"
-WAVE_AUDIO_CACHE_DIR = PROJECT_ROOT / "runtime_cache" / "wave_audio"
 FIXED_INTENT_CACHE_DIR = PROJECT_ROOT / "runtime_cache" / "fixed_intents"
 FIXED_INTENT_LABELS = {
     "joke": "Joke",
@@ -459,47 +456,6 @@ class NewsFetchWorker(QThread):
             self.finished_signal.emit(True, message, payload)
         except Exception as exc:
             self.finished_signal.emit(False, f"固定新聞音檔準備失敗: {exc}", None)
-
-    def _voice_config(self) -> dict[str, object]:
-        return config.get_voai_config_for_character(self._character_id)
-
-
-class WaveGreetingWorker(QThread):
-    """生成或讀取揮手 greeting 本地音檔，避免即時 TTS 造成動作被切斷。"""
-
-    finished_signal = pyqtSignal(bool, str, object)
-
-    def __init__(
-        self,
-        character_id: str | None = None,
-        cache_dir: str | Path | None = None,
-        synthesizer=None,
-        parent=None,
-    ):
-        super().__init__(parent)
-        self._character_id = str(character_id or "").strip() or None
-        self._cache_dir = Path(cache_dir) if cache_dir else WAVE_AUDIO_CACHE_DIR
-        self._synthesizer = synthesizer
-
-    def run(self):
-        try:
-            payload = _ensure_cached_audio_payload(
-                intent_name="wave_response",
-                cache_dir=self._cache_dir,
-                audio_prefix="wave",
-                version=WAVE_GREETING_VERSION,
-                cache_identity={"script": WAVE_GREETING_SCRIPT},
-                voice_label=self._character_id or "default",
-                voice_config=self._voice_config(),
-                title=WAVE_GREETING_SCRIPT,
-                text_provider=lambda: WAVE_GREETING_SCRIPT,
-                synthesizer=self._synthesizer,
-                normalize_text=False,
-            )
-            message = "揮手問候音檔已就緒。" if payload.get("cached") else "揮手問候音檔已生成。"
-            self.finished_signal.emit(True, message, payload)
-        except Exception as exc:
-            self.finished_signal.emit(False, f"揮手問候音檔準備失敗: {exc}", None)
 
     def _voice_config(self) -> dict[str, object]:
         return config.get_voai_config_for_character(self._character_id)

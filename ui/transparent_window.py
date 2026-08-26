@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineSettings, QWebEngineView
 
-from character_library import ASSETS_WEBM_DIR, CharacterLibrary, MOTION_MAP
+from character_library import ASSETS_WEBM_DIR, PROJECT_ROOT, CharacterLibrary, MOTION_MAP
 from interaction_trace import InteractionLatencyTracker
 
 from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
@@ -41,6 +41,9 @@ class TransparentWindow(QMainWindow):
     stt_start_requested = pyqtSignal()
     stt_stop_requested = pyqtSignal()
     RAW_JAVASCRIPT_MARKER = "__raw_javascript__"
+    # 更換主選單的角色與背景
+    MAIN_MENU_BACKGROUND = "assets/webm/characters/Choppr/BG_Final.png"
+    MAIN_MENU_CHARACTER_MOTION = "assets/webm/characters/Choppr/motions/Idle.webm"
 
     DEV_INPUT_WIDTH = 560
     DEV_INPUT_HEIGHT = 44
@@ -321,6 +324,7 @@ class TransparentWindow(QMainWindow):
             return
         self._js_gateway.mark_ready()
         self._run_javascript("setRuntimeMode", self._brain_mode)
+        self._set_main_menu_preview()
         QTimer.singleShot(120, self._restore_current_character)
         QTimer.singleShot(160, self.refresh_agentic_ui)
 
@@ -871,7 +875,18 @@ class TransparentWindow(QMainWindow):
             return self.trigger_enabled_skill_for_behavior("play_music")
         if event.key() == Qt.Key_4:
             return self.trigger_enabled_skill_for_behavior("report_news")
+        if event.key() == Qt.Key_F:
+            self._trigger_festival_event_shortcut()
+            return True
         return False
+
+    def _trigger_festival_event_shortcut(self) -> None:
+        try:
+            result = self._character_bridge.trigger_festival_event()
+            message = "節慶事件已由 F 快捷鍵觸發。" if result["triggered"] else "節慶事件尚未建立：已有待確認事件或生成工作。"
+            self.refresh_agentic_ui(message=message, tone="idle" if result["triggered"] else "warn", timeoutMs=3600)
+        except Exception as exc:  # noqa: BLE001
+            self.refresh_agentic_ui(message=f"節慶事件觸發失敗：{exc}", tone="warn", timeoutMs=4200)
 
     def toggle_developer_input(self):
         if self._developer_input.isVisible():
@@ -917,7 +932,8 @@ class TransparentWindow(QMainWindow):
         if not cleaned:
             self.set_action_status("Please enter text first.", tone="warn", timeout_ms=2200)
             return
-        if self._conversation_pending:
+        coordinator = getattr(self, "_motion_coordinator", None)
+        if self._conversation_pending or bool(getattr(coordinator, "has_active_motion", False)) or bool(getattr(coordinator, "is_tts_busy", False)):
             TransparentWindow._interrupt_active_conversation(self)
         from pet_harness.app.commands import ActionCommand
         get_current_character_id = getattr(self, "get_current_character_id", lambda: None)
@@ -929,6 +945,9 @@ class TransparentWindow(QMainWindow):
         self._conversation_pending = True
         self._conversation_character_id = character_id
         self._conversation_trace_id = trace_id
+        start_streaming_trace = getattr(coordinator, "start_streaming_trace", None)
+        if callable(start_streaming_trace):
+            start_streaming_trace(trace_id)
         self._set_agentic_busy(True)
         self.set_action_status("Processing interaction...", tone="working", timeout_ms=0)
         result = self._action_bus.execute(ActionCommand("conversation", cleaned, trace_id=trace_id, source="ui", character_id=character_id))
@@ -966,6 +985,10 @@ class TransparentWindow(QMainWindow):
             self._finish_conversation_for(payload.get("character_id"))
             return
         self.consume_interaction_result(payload, message="Interaction complete.")
+        coordinator = getattr(self, "_motion_coordinator", None)
+        finish_streaming_trace = getattr(coordinator, "finish_streaming_trace", None)
+        if callable(finish_streaming_trace):
+            QTimer.singleShot(0, lambda current_trace_id=str(payload.get("trace_id") or ""): finish_streaming_trace(current_trace_id))
         self._finish_conversation_for(payload.get("character_id"))
 
     def _on_action_bus_error(self, message: str, character_id: str | None = None) -> None:
@@ -1009,11 +1032,15 @@ class TransparentWindow(QMainWindow):
         metadata = payload.get("metadata") or (payload.get("raw_event") or {}).get("metadata") or {}
         streaming = bool(metadata.get("agentic", {}).get("streaming"))
         if streaming and webm_key:
-            self.dispatch_action(
-                f"[ACTION:{webm_key}]",
-                trace_id=trace_id,
-                allow_tts=False,
-            )
+            coordinator = getattr(self, "_motion_coordinator", None)
+            has_motion = getattr(coordinator, "has_motion_for_trace", None)
+            if not callable(has_motion) or has_motion(trace_id) is not True:
+                self.dispatch_action(
+                    f"[ACTION:{webm_key}]",
+                    trace_id=trace_id,
+                    allow_tts=True,
+                    wait_for_tts_start=True,
+                )
         elif webm_key:
             dispatched = self.dispatch_action(
                 f"[ACTION:{webm_key}] {reply_text}",
@@ -1025,11 +1052,17 @@ class TransparentWindow(QMainWindow):
                 self.speak_text(reply_text, trace_id=trace_id, has_action=False)
         elif reply_text and not streaming:
             self.speak_text(reply_text, trace_id=trace_id, has_action=False)
-        self.refresh_agentic_ui(
-            event_payload=payload,
-            message=message,
-            tone="idle",
-            timeoutMs=2400,
+        self.refresh_agentic_ui(event_payload=payload, message=message, tone="idle", timeoutMs=2400)
+
+    def _set_main_menu_preview(self) -> None:
+        background = PROJECT_ROOT / self.MAIN_MENU_BACKGROUND
+        character = PROJECT_ROOT / self.MAIN_MENU_CHARACTER_MOTION
+        if not background.is_file() or not character.is_file():
+            return
+        self._run_javascript(
+            "setMainMenuPreview",
+            QUrl.fromLocalFile(str(background)).toString(QUrl.FullyEncoded),
+            QUrl.fromLocalFile(str(character)).toString(QUrl.FullyEncoded),
         )
 
     def _validated_event_motion_key(self, payload: dict) -> str:

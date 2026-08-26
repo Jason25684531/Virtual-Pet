@@ -59,6 +59,7 @@
     var screenMainMenu = document.getElementById('screen-main-menu');
     var screenPresetSelect = document.getElementById('screen-create-character');
     var screenLoadSave = document.getElementById('screen-load-save');
+    var presetPortrait = document.querySelector('.preset-portrait');
     var menuCreateButton = document.getElementById('menu-create-button');
     var menuLoadButton = document.getElementById('menu-load-button');
     var menuQuitButton = document.getElementById('menu-quit-button');
@@ -956,6 +957,7 @@
         setText(presetCarouselIndex, (total ? presetIndex + 1 : 0) + ' / ' + total);
         setText(presetName, current ? current.name : '尚無預設角色');
         setText(presetPersona, current ? (current.persona_description || '') : '[ 個性 / 簡介 ]');
+        if (presetPortrait) presetPortrait.style.backgroundImage = current && current.background_image ? 'url("' + normalizeProjectAssetSource(current.background_image) + '")' : '';
         if (presetSelectButton) presetSelectButton.disabled = !current;
 
         if (presetThumbList) {
@@ -1606,11 +1608,11 @@
         var loopGeneration = motionLoopGeneration;
         motionLoopSource = source;
         motionLoopActive = true;
-        // 以原生 loop 保持同一段 WebM；Python 只有在同輪 TTS 結束後才會停止它。
-        setSource(source, true);
+        // QWebEngine 對部分 WebM 不可靠地觸發原生 loop，改由 ended 事件明確重播。
+        setSource(source, false);
         motionLoopTimer = setInterval(function () {
             if (loopGeneration !== motionLoopGeneration) return;
-            if (motionLoopActive && motionLoopSource && (video.ended || video.paused)) {
+            if (motionLoopActive && motionLoopSource && video.ended) {
                 window.playTemporaryVideo(motionLoopSource);
             }
         }, intervalMs || 1000);
@@ -1831,13 +1833,22 @@
     function maybeOpenAssetOfferModal(mergedState) {
         if (uiRoute.modal) return;
         if (mergedState.pending_motion_offer) {
+            setOfferText('motion-offer', mergedState.pending_motion_offer, '動作生成');
             var slot = styleSlots.filter(function (item) { return item.slot_id === mergedState.pending_motion_offer.variant; })[0];
             var preview = document.getElementById('motion-offer-preview');
             if (preview) preview.src = slot ? slot.thumb : '';
             openModal('modal-motion-offer');
         } else if (mergedState.pending_offer) {
+            setOfferText('growth-offer', mergedState.pending_offer, '造型生成');
             openModal('modal-growth-offer');
         }
+    }
+
+    function setOfferText(prefix, offer, action) {
+        var reason = offer && offer.reason;
+        var trigger = reason === 'level_up' ? '角色升級事件' : reason === 'shortcut_f' ? 'F 快捷鍵觸發的節慶事件' : reason === 'time_interval' ? '定時節慶事件' : '角色事件';
+        document.getElementById(prefix + '-title').textContent = action + '：' + trigger;
+        document.getElementById(prefix + '-description').textContent = '本次' + action + '依據「' + trigger + '」建立。確認後才會開始生成。';
     }
 
     function pickPrimarySkillForBehavior(items, behavior) {
@@ -1885,6 +1896,21 @@
         );
         var eventData = payload.event || (payload.state && payload.state.latest_event);
         renderLatestAgentEvent(eventData, payload.xp_delta);
+        if (payload.state) maybeOpenAssetOfferModal(payload.state);
+    };
+
+    window.setMainMenuPreview = function (backgroundSource, characterSource) {
+        var character = document.getElementById('menu-preview-character');
+        if (backgroundSource) {
+            var backgroundImage = 'url("' + normalizeProjectAssetSource(backgroundSource) + '")';
+            [screenMainMenu, screenPresetSelect, screenLoadSave].forEach(function (screen) {
+                if (screen) screen.style.backgroundImage = backgroundImage;
+            });
+        }
+        if (character && characterSource) {
+            character.src = normalizeProjectAssetSource(characterSource);
+            character.play().catch(function () {});
+        }
     };
 
     function sendAgentCommandText() {

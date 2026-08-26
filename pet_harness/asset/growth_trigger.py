@@ -58,6 +58,13 @@ class GrowthTriggerService:
             self._store.set_setting("asset_last_event_variant_at", datetime.now(UTC).isoformat())
         return offer
 
+    def trigger_festival_event(self, source_event_id: str) -> GrowthOffer | None:
+        """由快捷鍵主動建立節慶 event offer，不受定時門檻限制。"""
+        offer = self._offer("event", "shortcut_f", source_event_id)
+        if offer is not None:
+            self._store.set_setting("asset_last_event_variant_at", datetime.now(UTC).isoformat())
+        return offer
+
     def build_generation_context(self) -> str:
         now = datetime.now(UTC).isoformat()
         with self._store.connect() as conn:

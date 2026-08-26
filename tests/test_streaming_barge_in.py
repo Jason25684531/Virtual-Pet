@@ -187,32 +187,42 @@ def test_interrupt_all_suppresses_completed_tts_trace_and_restores_idle():
         dispatcher.shutdown(wait_ms=100)
 
 
-def test_interrupt_all_stops_delayed_legacy_actions():
+def test_interrupt_all_stops_delayed_news_action():
     dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
     try:
         news_timer = MagicMock()
-        wave_timer = MagicMock()
         dispatcher._news_audio_delay_timer = news_timer
-        dispatcher._wave_greeting_delay_timer = wave_timer
 
         dispatcher.interrupt_all()
 
         news_timer.stop.assert_called_once()
-        wave_timer.stop.assert_called_once()
         assert dispatcher._news_audio_delay_timer is None
-        assert dispatcher._wave_greeting_delay_timer is None
     finally:
         dispatcher.shutdown(wait_ms=100)
 
 
-def test_streaming_wave_action_does_not_start_the_fixed_greeting_worker():
+def test_streaming_wave_action_is_motion_only():
     dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
     try:
-        dispatcher._handle_wave_response = MagicMock()
+        dispatcher._handle_motion_only = MagicMock()
 
         dispatcher.dispatch("[ACTION:wave_response]", trace_id="trace-1", allow_tts=False)
 
-        dispatcher._handle_wave_response.assert_not_called()
+        dispatcher._handle_motion_only.assert_called_once()
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_stream_action_waits_for_its_tts_before_starting_the_motion_loop():
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher.dispatch = MagicMock()
+
+        dispatcher._dispatch_stream_action("laugh", "trace-1")
+
+        dispatcher.dispatch.assert_called_once_with(
+            "[ACTION:laugh]", trace_id="trace-1", allow_tts=True, wait_for_tts_start=True
+        )
     finally:
         dispatcher.shutdown(wait_ms=100)
 

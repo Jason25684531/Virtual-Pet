@@ -32,18 +32,17 @@ def test_loop_cleanup_restores_idle_and_drains_one_deferred_dispatch():
         coordinator.shutdown(wait_ms=100)
 
 
-def test_room_audio_completion_waits_for_main_video_before_cleanup():
+def test_room_audio_completion_finishes_motion_only_wave_action():
     coordinator = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
     try:
         coordinator._current_loop_action_key = "wave_response"
         coordinator._current_loop_binding = coordinator._bindings["wave_response"]
         coordinator._wait_for_room_audio_ended = True
-        coordinator._schedule_loop_cleanup = MagicMock()
+        coordinator._finish_loop_action = MagicMock()
 
         coordinator._on_room_audio_ended()
 
         assert coordinator._wait_for_room_audio_ended is False
-        assert coordinator._wait_for_main_video_ended is True
-        coordinator._schedule_loop_cleanup.assert_called_once_with(12000, wait_for_main_video_end=True)
+        coordinator._finish_loop_action.assert_called_once()
     finally:
         coordinator.shutdown(wait_ms=100)

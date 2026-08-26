@@ -68,6 +68,15 @@ def test_empty_memory_does_not_block_event_trigger(tmp_path):
     assert store.get_setting("asset_pending_offer")["variant"] == "event"
 
 
+def test_festival_shortcut_trigger_creates_event_offer_without_waiting(tmp_path):
+    store = SQLiteStore(tmp_path / "state.db")
+    store.initialize()
+    growth = GrowthTriggerService(store, FakeAssetService(), "char-1", xp_per_level=6, event_interval_minutes=3)
+
+    assert growth.trigger_festival_event("shortcut-f-1") == GrowthOffer("event", "shortcut_f", "shortcut-f-1")
+    assert store.get_setting("asset_pending_offer")["reason"] == "shortcut_f"
+
+
 def test_empty_memory_still_blocks_development_trigger(tmp_path):
     store = SQLiteStore(tmp_path / "state.db")
     store.initialize()

@@ -8,7 +8,7 @@ from action_dispatcher import MotionCoordinator
 EXPECTED_BINDINGS = {
     "report_news": ("report_news", "room_audio", True, True),
     "play_music": ("play_music", "panel_video", True, True),
-    "wave_response": ("wave_response", "main_video", True, True),
+    "wave_response": ("wave_response", "default", False, False),
     "laugh": ("laugh", "default", False, False),
     "angry": ("angry", "default", False, False),
     "awkward": ("awkward", "default", False, False),

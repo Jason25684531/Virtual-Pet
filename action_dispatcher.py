@@ -20,7 +20,6 @@ from action_services import (
     FixedIntentReplyWorker,
     MusicSelectionWorker,
     NewsFetchWorker,
-    WaveGreetingWorker,
     resolve_fixed_intent_source_label,
 )
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
@@ -40,8 +39,6 @@ REPLY_STATUS_LABEL = "正在回覆"
 #為了兼顧 VOAI 和 ElevenLabs 的 TTS 響應時間，並給予角色動作足夠的播放時間，設定新聞播報的語音觸發延遲為 2.5 秒。這樣可以確保在大多數情況下，角色的新聞播報動作能夠先行展現，提升互動的自然感。
 REPORT_NEWS_AUDIO_TRIGGER_DELAY_SECONDS = 2.5
 REPORT_NEWS_DELAY_CHARACTER_ID = "miku"
-# 為了兼顧 VOAI 和 ElevenLabs 的 TTS 響應時間，並給予角色動作足夠的播放時間，設定揮手回應的語音觸發延遲為 2 秒。這樣可以確保在大多數情況下，角色的揮手動作能夠先行展現，提升互動的自然感。
-WAVE_GREETING_AUDIO_TRIGGER_DELAY_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -90,7 +87,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         tts_worker_factory=AdaptiveTTSFallbackWorker,
         news_worker_factory=NewsFetchWorker,
         music_worker_factory=MusicSelectionWorker,
-        wave_worker_factory=WaveGreetingWorker,
         fixed_intent_worker_factory=FixedIntentReplyWorker,
         motion_path_resolver=None,
         tts_enabled: bool = True,
@@ -114,9 +110,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._music_worker_factory = (
             music_worker_factory if callable(music_worker_factory) else MusicSelectionWorker
         )
-        self._wave_worker_factory = (
-            wave_worker_factory if callable(wave_worker_factory) else WaveGreetingWorker
-        )
         self._fixed_intent_worker_factory = (
             fixed_intent_worker_factory if callable(fixed_intent_worker_factory) else FixedIntentReplyWorker
         )
@@ -136,6 +129,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._spoken_reply_ids: set[str] = set()
         self._trace_pending_tts_counts: dict[str, int] = {}
         self._completed_tts_traces: set[str] = set()
+        self._streaming_traces: set[str] = set()
         self._deferred_dispatches: deque[DeferredDispatch] = deque()
         self._active_action_trace_id: str | None = None
         self._action_sync_timeout_ms = max(500, int(getattr(config, "ACTION_SYNC_TIMEOUT_MS", 6000))) #VOAI Timeout 約 5-6 秒，ElevenLabs Timeout 約 3-4 秒，綜合考量後設定為 6 秒以兼顧兩者並留有緩衝
@@ -146,8 +140,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._loop_cleanup_timer: QTimer | None = None
         self._news_audio_delay_timer: QTimer | None = None
         self._news_audio_trigger_delay_ms = max(0, int(REPORT_NEWS_AUDIO_TRIGGER_DELAY_SECONDS * 1000))
-        self._wave_greeting_delay_timer: QTimer | None = None
-        self._wave_greeting_audio_delay_ms = max(0, int(WAVE_GREETING_AUDIO_TRIGGER_DELAY_SECONDS * 1000))
         self._panel_video_ended: bool = False
         self._panel_video_started: bool = False
         self._wait_for_main_video_ended: bool = False
@@ -187,11 +179,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
                 name="wave_response",
                 motion_key="wave_response",
                 status_label="正在回應揮手",
-                handler_name="_handle_wave_response",
-                skip_tts_sync=True,
-                finish_event="main_video",
-                non_repeatable=True,
-                blocks_following_dispatch=True,
+                handler_name="_handle_motion_only",
             ),
             "laugh": ActionBinding(
                 name="laugh",
@@ -263,6 +251,18 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
     def enqueue_stream_action(self, action: str, trace_id: str | None = None) -> None:
         self.stream_action_signal.emit(str(action or ""), str(trace_id or ""))
 
+    def start_streaming_trace(self, trace_id: str | None) -> None:
+        normalized_trace_id = str(trace_id or "").strip()
+        if normalized_trace_id:
+            self._streaming_traces.add(normalized_trace_id)
+
+    def finish_streaming_trace(self, trace_id: str | None) -> None:
+        normalized_trace_id = str(trace_id or "").strip()
+        if not normalized_trace_id:
+            return
+        self._streaming_traces.discard(normalized_trace_id)
+        self._finish_loop_action_if_tts_idle()
+
     def _enqueue_stream_chunk(self, text: str, trace_id: str) -> None:
         if text.strip():
             timeline = get_turn(trace_id)
@@ -272,11 +272,20 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
 
     def _dispatch_stream_action(self, action: str, trace_id: str) -> None:
         if action.strip():
-            self.dispatch(f"[ACTION:{action}]", trace_id=trace_id, allow_tts=False)
+            self.dispatch(
+                f"[ACTION:{action}]", trace_id=trace_id, allow_tts=True, wait_for_tts_start=True
+            )
 
     @property
     def has_active_motion(self) -> bool:
         return self._current_loop_action_key is not None or bool(self._pending_actions)
+
+    def has_motion_for_trace(self, trace_id: str | None) -> bool:
+        normalized_trace_id = str(trace_id or "").strip()
+        return bool(normalized_trace_id) and (
+            normalized_trace_id in self._pending_actions
+            or normalized_trace_id == self._active_action_trace_id
+        )
 
     @property
     def audio_worker(self) -> AudioStreamWorker:
@@ -494,6 +503,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         if not normalized:
             return
         self._suppressed_traces.add(normalized)
+        self._streaming_traces.discard(normalized)
         self._audio_worker.suppress_trace(normalized)
         self._clear_pending_action(normalized)
         kept = []
@@ -523,6 +533,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             set(self._pending_actions)
             | set(self._trace_pending_tts_counts)
             | set(self._completed_tts_traces)
+            | set(self._streaming_traces)
             | ({self._active_action_trace_id} if self._active_action_trace_id else set())
         )
         for trace_id in trace_ids:
@@ -536,7 +547,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         if self._loop_cleanup_timer is not None:
             self._loop_cleanup_timer.stop()
             self._loop_cleanup_timer = None
-        for timer_name in ("_news_audio_delay_timer", "_wave_greeting_delay_timer"):
+        for timer_name in ("_news_audio_delay_timer",):
             timer = getattr(self, timer_name)
             if timer is not None:
                 timer.stop()
@@ -628,38 +639,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         worker = self._music_worker_factory(parent=self)
         self._start_worker(worker, lambda success, message, payload: self._on_music_finished(binding, motion_found, success, message, payload))
 
-    def _handle_wave_response(self, binding: ActionBinding, motion_found: bool):
-        self._loop_action_service_pending = True
-        if self._wave_greeting_audio_delay_ms <= 0 or QCoreApplication.instance() is None:
-            self._start_wave_response_worker(binding, motion_found)
-            return
-        if self._wave_greeting_delay_timer is not None:
-            self._wave_greeting_delay_timer.stop()
-        timer = QTimer(self)
-        timer.setSingleShot(True)
-        timer.timeout.connect(lambda: self._start_wave_response_worker(binding, motion_found))
-        timer.start(self._wave_greeting_audio_delay_ms)
-        self._wave_greeting_delay_timer = timer
-
-    def _start_wave_response_worker(self, binding: ActionBinding, motion_found: bool):
-        self._wave_greeting_delay_timer = None
-        current_character_id = self._current_character_id()
-        worker = self._create_service_worker(
-            self._wave_worker_factory,
-            parent=self,
-            character_id=current_character_id,
-        )
-        self._start_worker(
-            worker,
-            lambda success, message, payload: self._on_wave_finished(
-                binding,
-                motion_found,
-                success,
-                message,
-                payload,
-            ),
-        )
-
     def _schedule_report_news_audio_playback(
         self,
         binding: ActionBinding,
@@ -730,6 +709,10 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             wait_for_tts_start=wait_for_tts_start,
         )
         self._pending_actions[normalized_trace_id] = state
+        if any(trace == normalized_trace_id for _, trace in self._driver_started_pairs):
+            state.has_tts = True
+            self._activate_pending_action(normalized_trace_id)
+            return
         # 同步模式只在實際 audio driver 起播後播放 WebM，避免 provider 慢時
         # timeout 先播完動作；TTS 失敗則保留文字並維持 idle。
         if wait_for_tts_start or QCoreApplication.instance() is None:
@@ -1050,25 +1033,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             self._window.set_action_status("音樂播放中", tone="music")
             self._schedule_non_tts_loop_cleanup(binding)
 
-    def _on_wave_finished(
-        self,
-        binding: ActionBinding,
-        motion_found: bool,
-        success: bool,
-        message: str,
-        payload: object,
-    ):
-        self._loop_action_service_pending = False
-        if success and isinstance(payload, dict) and payload.get("path"):
-            if self._window.play_music(
-                str(payload.get("path") or ""),
-                str(payload.get("title") or "嗨 你好嗎"),
-                update_status=False,
-            ):
-                self._arm_room_audio_wait(timeout_ms=15000)
-                return
-        self._handle_failure(binding, motion_found, message)
-
     def _on_fixed_intent_finished(
         self,
         binding: ActionBinding,
@@ -1144,9 +1108,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         if self._news_audio_delay_timer is not None:
             self._news_audio_delay_timer.stop()
             self._news_audio_delay_timer = None
-        if self._wave_greeting_delay_timer is not None:
-            self._wave_greeting_delay_timer.stop()
-            self._wave_greeting_delay_timer = None
         self._current_loop_action_key = None
         self._current_loop_binding = None
         self._loop_action_tts_queued = False

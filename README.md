@@ -579,6 +579,17 @@ COMFYUI_SMOKE=1 .venv/Scripts/python -m pytest tests/test_comfyui_smoke.py
 
 `manifest.json` 的 `motions` 建議至少包含:`idle`、`report_news`、`play_music`、`wave_response`、`laugh`、`angry`、`awkward`、`speechless`、`listen`。缺少時系統安全退回 idle;變體缺檔時 fallback 至 og。
 
+### 更換封面角色或底圖
+
+以 `assets/webm/characters/Choppr/manifest.json` 為例，路徑一律相對於專案根目錄：
+
+```json
+"background_image": "assets/webm/characters/Choppr/BG_Final.png",
+"motions": {"idle": "assets/webm/characters/Choppr/motions/Idle.webm"}
+```
+
+後續更換時，將新檔案放入專案內，並只修改這兩個相對路徑；切勿填入 `D:\\...` 這類絕對路徑。更換角色則複製其角色目錄，調整 `id`、`name`、`background_image` 與 `motions.idle` 後重啟程式。
+
 ### 手動新增角色
 
 ```bash

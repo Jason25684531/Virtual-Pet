@@ -8,7 +8,7 @@ import character_library as library_module
 from character_library import CharacterLibrary
 import pet_harness.character.profile as profile_module
 import pet_harness.ui.character_ui_service as character_ui_module
-from pet_harness.asset.asset_contract import AssetResponse
+from pet_harness.asset.asset_contract import AssetResponse, GrowthOffer
 from pet_harness.asset.asset_models import AssetJob, JobStatus
 from pet_harness.asset.asset_repository import AssetRepository
 from pet_harness.character.exceptions import CharacterNotFoundError, NoActiveCharacterError
@@ -112,6 +112,20 @@ class TestListCharacters:
         assert items["miku"]["is_preset"] is True
         assert items["Choppr"]["xp_total"] == 0
         assert items["Choppr"]["level"] == 1
+
+    def test_festival_shortcut_creates_a_pending_event_offer(self, service):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        router.get_active_engine().growth_trigger = type(
+            "FestivalTrigger", (),
+            {"trigger_festival_event": lambda _self, event_id: GrowthOffer("event", "shortcut_f", event_id)},
+        )()
+
+        result = ui_service.trigger_festival_event()
+
+        assert result["triggered"] is True
+        assert result["offer"]["variant"] == "event"
+        assert result["offer"]["reason"] == "shortcut_f"
 
     def test_list_presets_filters_to_preset_only(self, service, tmp_path):
         ui_service, _router, _registry = service

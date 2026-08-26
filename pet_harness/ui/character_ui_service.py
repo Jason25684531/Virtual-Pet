@@ -260,6 +260,20 @@ class CharacterUiService:
             store.set_setting("asset_generation_freeze", {"created_at": utc_now()})
         return {"accepted": accepted, "pending": bool(store.get_setting("asset_pending_offer")), "asset": response.to_dict()}
 
+    def trigger_festival_event(self) -> dict[str, Any]:
+        profile = self._router.get_active_character()
+        engine = self._router.get_active_engine()
+        if profile is None or engine is None:
+            raise NoActiveCharacterError("no active character to trigger a festival event for")
+        if engine.growth_trigger is None:
+            raise RuntimeError("festival event trigger is unavailable")
+        offer = engine.growth_trigger.trigger_festival_event(f"shortcut-f-{time.time_ns()}")
+        return {
+            "triggered": offer is not None,
+            "offer": offer.to_dict() if offer else None,
+            "pending_offer": engine.store.get_setting("asset_pending_offer"),
+        }
+
     @staticmethod
     def _select_festival_prompt(store: SQLiteStore) -> str:
         """三種節慶 prompt 排除前兩輪已用;僅在使用者確認 event offer 時消耗輪替順位。"""

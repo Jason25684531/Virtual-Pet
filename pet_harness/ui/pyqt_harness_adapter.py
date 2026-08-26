@@ -150,9 +150,6 @@ class PyQtHarnessAdapter:
 
     def switch_character(self, character_id: str):
         profile = self.router.switch_character(character_id)
-        engine = self.router.get_active_engine()
-        if engine is not None and engine.growth_trigger is not None:
-            engine.growth_trigger.check_time_trigger(f"startup-{character_id}-{time.time_ns()}")
         self._refresh_runtime()
         return profile
 

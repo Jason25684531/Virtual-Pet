@@ -179,7 +179,8 @@ def test_streaming_result_dispatches_final_action_without_repeating_tts():
     fake_self.dispatch_action.assert_called_once()
     args, kwargs = fake_self.dispatch_action.call_args
     assert args == ("[ACTION:laugh]",)
-    assert kwargs["allow_tts"] is False
+    assert kwargs["allow_tts"] is True
+    assert kwargs["wait_for_tts_start"] is True
     fake_self.speak_text.assert_not_called()
 
 
@@ -274,8 +275,10 @@ def test_persona_editor_lives_in_the_agent_hud():
 def test_motion_loop_does_not_restore_idle_until_host_stops_it():
     app_js = (Path(__file__).parents[1] / "ui" / "web_container" / "app.js").read_text(encoding="utf-8")
 
-    assert 'setSource(source, true);' in app_js
-    assert 'if (motionLoopActive && motionLoopSource)' in app_js
+    start = app_js.index('window.startMotionLoop')
+    loop_block = app_js[start:app_js.index('window.stopMotionLoop = function', start)]
+    assert 'setSource(source, false);' in loop_block
+    assert 'if (motionLoopActive && motionLoopSource && video.ended)' in app_js
 
 
 def test_action_waits_for_audio_driver_when_tts_sync_is_requested():
@@ -293,6 +296,73 @@ def test_action_waits_for_audio_driver_when_tts_sync_is_requested():
         dispatcher._on_driver_started("reply-1", "trace-1")
 
         dispatcher._play_binding_motion.assert_called_once_with(binding)
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_late_streaming_action_starts_for_an_already_playing_tts_trace():
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        binding = dispatcher._bindings["laugh"]
+        dispatcher._driver_started_pairs.add(("reply-1", "trace-1"))
+        dispatcher._play_binding_motion = MagicMock(return_value=True)
+
+        dispatcher._start_pending_action("trace-1", binding, wait_for_tts_start=True)
+
+        assert dispatcher._play_binding_motion.called
+        assert dispatcher._pending_actions["trace-1"].has_tts is True
+        assert dispatcher._loop_action_tts_queued is True
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_action_loop_waits_for_all_tts_segments_of_its_trace():
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._current_loop_action_key = "laugh"
+        dispatcher._current_loop_binding = dispatcher._bindings["laugh"]
+        dispatcher._active_action_trace_id = "trace-1"
+        dispatcher._loop_action_tts_queued = True
+        dispatcher._trace_pending_tts_counts["trace-1"] = 1
+        dispatcher._finish_loop_action = MagicMock()
+
+        dispatcher._finish_loop_action_if_tts_idle()
+
+        dispatcher._finish_loop_action.assert_not_called()
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_action_loop_waits_until_its_streaming_trace_is_closed():
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._current_loop_action_key = "laugh"
+        dispatcher._current_loop_binding = dispatcher._bindings["laugh"]
+        dispatcher._active_action_trace_id = "trace-1"
+        dispatcher._loop_action_tts_queued = True
+        dispatcher._streaming_traces = {"trace-1"}
+        dispatcher._finish_loop_action = MagicMock()
+
+        dispatcher._finish_loop_action_if_tts_idle()
+
+        dispatcher._finish_loop_action.assert_not_called()
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_closing_streaming_trace_finishes_an_idle_action_loop():
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._current_loop_action_key = "laugh"
+        dispatcher._current_loop_binding = dispatcher._bindings["laugh"]
+        dispatcher._active_action_trace_id = "trace-1"
+        dispatcher._loop_action_tts_queued = True
+        dispatcher._streaming_traces = {"trace-1"}
+        dispatcher._finish_loop_action = MagicMock()
+
+        dispatcher.finish_streaming_trace("trace-1")
+
+        dispatcher._finish_loop_action.assert_called_once()
     finally:
         dispatcher.shutdown(wait_ms=100)
 

@@ -169,6 +169,9 @@ class CharacterUiBridge(QObject):
         except Exception as exc:  # noqa: BLE001
             return self._error(exc)
 
+    def trigger_festival_event(self) -> dict[str, Any]:
+        return self._service.trigger_festival_event()
+
     @pyqtSlot(str, bool, result=str)
     def confirmMotionGeneration(self, character_id: str, accept: bool) -> str:
         try:
