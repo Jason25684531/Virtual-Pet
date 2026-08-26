@@ -450,7 +450,10 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
                 print(f"[ECHOES] 警告: TTS 背景啟動失敗，但動作已照常執行。({exc})")
             if intentional_tts_suppression and motion_found and self._current_loop_action_key is not None:
                 self._schedule_non_tts_loop_cleanup(binding)
-        elif motion_found and self._current_loop_action_key is not None:
+        elif motion_found and self._current_loop_action_key is not None and not self._loop_action_tts_queued:
+            # 串流回合的 [ACTION:x] 不帶文字，但同 trace 的 TTS 已在播放；
+            # 此時不得排 3 秒無條件清理，收尾交給 queue_drained →
+            # _finish_loop_action_if_tts_idle，動畫才會輪播到語音播畢。
             self._schedule_non_tts_loop_cleanup(binding)
         return True
 
@@ -552,8 +555,16 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             if timer is not None:
                 timer.stop()
                 setattr(self, timer_name, None)
+        self._panel_video_started = False
+        self._panel_video_ended = False
+        self._wait_for_room_audio_ended = False
+        self._loop_action_service_pending = False
         if hasattr(self._window, "stop_motion_loop"):
             self._window.stop_motion_loop()
+        if hasattr(self._window, "stop_music"):
+            self._window.stop_music()
+        if hasattr(self._window, "clear_panel_video"):
+            self._window.clear_panel_video()
         self._window.restore_idle_video()
 
     @staticmethod

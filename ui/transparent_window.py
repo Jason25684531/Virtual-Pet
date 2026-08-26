@@ -1231,6 +1231,12 @@ class TransparentWindow(QMainWindow):
         self._action_bus.execute(ActionCommand("reset", source="ui"))
 
     def reset_presentation(self):
+        if self._stt_state == "listening":
+            self.stt_stop_requested.emit()
+        self._conversation_pending = False
+        self._conversation_character_id = None
+        self._conversation_trace_id = None
+        self._set_agentic_busy(False)
         self.set_conversation_queue_depth(0)
         self._hide_developer_input()
         self.stop_music()
@@ -1238,6 +1244,7 @@ class TransparentWindow(QMainWindow):
         self.clear_panel_video()
         self.clear_conversation_turns()
         self._run_javascript("resetRoomState")
+        self._run_javascript("resetUiRoute")
         self.restore_idle_video()
         self.set_action_status("已重置，等待下一次互動。", tone="idle", timeout_ms=2400)
 

@@ -176,12 +176,22 @@ def test_interrupt_all_suppresses_completed_tts_trace_and_restores_idle():
     dispatcher = MotionCoordinator(window, MagicMock(), tts_enabled=False)
     try:
         dispatcher._completed_tts_traces.add("trace-1")
+        dispatcher._panel_video_started = True
+        dispatcher._panel_video_ended = True
+        dispatcher._wait_for_room_audio_ended = True
+        dispatcher._loop_action_service_pending = True
         dispatcher._audio_worker.interrupt_all = MagicMock()
 
         dispatcher.interrupt_all()
 
         assert "trace-1" in dispatcher._suppressed_traces
         dispatcher._audio_worker.interrupt_all.assert_called_once()
+        window.stop_music.assert_called_once()
+        window.clear_panel_video.assert_called_once()
+        assert dispatcher._panel_video_started is False
+        assert dispatcher._panel_video_ended is False
+        assert dispatcher._wait_for_room_audio_ended is False
+        assert dispatcher._loop_action_service_pending is False
         window.restore_idle_video.assert_called()
     finally:
         dispatcher.shutdown(wait_ms=100)
@@ -223,6 +233,31 @@ def test_stream_action_waits_for_its_tts_before_starting_the_motion_loop():
         dispatcher.dispatch.assert_called_once_with(
             "[ACTION:laugh]", trace_id="trace-1", allow_tts=True, wait_for_tts_start=True
         )
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_stream_action_with_active_tts_does_not_arm_the_3s_cleanup(tmp_path):
+    """Regression: 串流回合的 [ACTION:x] 不帶文字，dispatch 尾端曾把它當
+    non-TTS 動作排 3 秒無條件 _finish_loop_action，語音還在播動畫就被收掉。
+    同 trace 已有 TTS 活動時不得排該清理，收尾交給 queue_drained。"""
+    webm = tmp_path / "laugh.webm"
+    webm.write_bytes(b"")
+    dispatcher = MotionCoordinator(
+        MagicMock(), MagicMock(), tts_enabled=False,
+        motion_path_resolver=lambda key: str(webm),
+    )
+    try:
+        dispatcher._schedule_non_tts_loop_cleanup = MagicMock()
+        # 模擬串流情境：action tag 抵達前，同 trace 的 TTS 已起播且仍有待播 chunk。
+        dispatcher._driver_started_pairs.add(("reply-1", "trace-1"))
+        dispatcher._trace_pending_tts_counts["trace-1"] = 1
+
+        dispatcher.dispatch("[ACTION:laugh]", trace_id="trace-1", allow_tts=True, wait_for_tts_start=True)
+
+        assert dispatcher._current_loop_action_key == "laugh"
+        assert dispatcher._loop_action_tts_queued is True
+        dispatcher._schedule_non_tts_loop_cleanup.assert_not_called()
     finally:
         dispatcher.shutdown(wait_ms=100)
 

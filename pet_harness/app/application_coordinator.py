@@ -65,7 +65,7 @@ class ApplicationCoordinator:
     def configure_motion(self, motion) -> None:
         if self._motion_configured:
             raise RuntimeError("motion already configured")
-        for handler in (QuickIntentHandler(motion), SpeakHandler(motion), ResetHandler(motion)):
+        for handler in (QuickIntentHandler(motion), SpeakHandler(motion), ResetHandler(motion, self._bus.cancel_conversation)):
             self._bus.register(handler)
         # MotionOnlyHandler is the catch-all and must be registered last.
         self._bus.register(MotionOnlyHandler(motion))

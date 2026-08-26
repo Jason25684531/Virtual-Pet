@@ -40,6 +40,13 @@ def test_second_transcript_cancels_previous_conversation_before_retrying():
 
 def test_starting_new_recording_immediately_interrupts_active_conversation():
     calls = []
+    motion = SimpleNamespace(has_active_motion=True)
+    def interrupt_all():
+        assert motion.has_active_motion is True
+        calls.append("interrupt-all")
+        motion.has_active_motion = False
+
+    motion.interrupt_all = interrupt_all
     window = SimpleNamespace(
         _stt_available=True,
         _stt_state="idle",
@@ -47,7 +54,7 @@ def test_starting_new_recording_immediately_interrupts_active_conversation():
         _conversation_character_id="Choppr",
         _conversation_trace_id="old-trace",
         _action_bus=SimpleNamespace(cancel_conversation=lambda: calls.append("cancel")),
-        _motion_coordinator=SimpleNamespace(interrupt_all=lambda: calls.append("interrupt-all")),
+        _motion_coordinator=motion,
         stop_motion_loop=lambda: calls.append("stop-motion"),
         restore_idle_video=lambda: calls.append("restore-idle"),
         stt_start_requested=SimpleNamespace(emit=lambda: calls.append("start-recording")),

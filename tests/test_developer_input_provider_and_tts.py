@@ -280,7 +280,7 @@ def test_motion_loop_does_not_restore_idle_until_host_stops_it():
     assert 'setSource(source, false);' in loop_block
     assert 'replayMotionLoop(loopGeneration);' in loop_block
     assert 'window.playTemporaryVideo(motionLoopSource);' not in loop_block
-    assert 'if (motionLoopActive && motionLoopSource && video.ended)' in app_js
+    assert 'if (motionLoopActive && motionLoopSource && (video.ended || (video.paused && !video.seeking && video.readyState >= 2)))' in app_js
 
 
 def test_motion_loop_replay_does_not_reload_the_same_source():

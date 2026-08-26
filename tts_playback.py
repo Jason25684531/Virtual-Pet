@@ -361,7 +361,7 @@ class TtsPlaybackMixin:
         if self._loop_cleanup_timer is not None:
             self._loop_cleanup_timer.stop()
             self._loop_cleanup_timer = None
-        self._audio_worker.clear_queue()
+        self._audio_worker.interrupt_all()
         active_worker = self._active_tts_worker
         if active_worker is not None and hasattr(active_worker, "quit"):
             try:

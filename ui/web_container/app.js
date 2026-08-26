@@ -798,6 +798,13 @@
         renderRoute();
     }
 
+    window.resetUiRoute = function () {
+        uiRoute.hud = null;
+        uiRoute.modal = null;
+        modalReturn = null;
+        renderRoute();
+    };
+
     window.requestClose = function () {
         if (localStorage.getItem('echoes.skipCloseConfirm') === '1') {
             callBridge('triggerOverlayAction', 'quit');
@@ -1493,11 +1500,13 @@
     };
 
     window.setIdleVideo = function (source) {
+        window.stopMotionLoop();
         idleSource = source;
         setSource(source, true);
     };
 
     window.playTemporaryVideo = function (source) {
+        window.stopMotionLoop();
         setSource(source, false);
     };
 
@@ -1606,7 +1615,7 @@
         setSource(source, false);
         motionLoopTimer = setInterval(function () {
             if (loopGeneration !== motionLoopGeneration) return;
-            if (motionLoopActive && motionLoopSource && video.ended) {
+            if (motionLoopActive && motionLoopSource && (video.ended || (video.paused && !video.seeking && video.readyState >= 2))) {
                 replayMotionLoop(loopGeneration);
             }
         }, intervalMs || 1000);

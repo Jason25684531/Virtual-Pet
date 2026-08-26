@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from .action_handler import ActionHandler
 from .commands import ActionCommand
@@ -107,9 +107,12 @@ class QuickIntentHandler(EventActionHandler):
 
 
 class ResetHandler(ActionHandler):
-    def __init__(self, motion) -> None: self._motion = motion
+    def __init__(self, motion, cancel_conversation: Callable[[], bool]) -> None:
+        self._motion = motion
+        self._cancel = cancel_conversation
     def can_handle(self, command: ActionCommand) -> bool: return command.action == "reset"
     def handle(self, command: ActionCommand) -> ActionResult:
+        self._cancel()
         self._motion.reset()
         return ActionResult("ok", payload={"accepted": True})
 

@@ -104,3 +104,43 @@ def test_conversation_handler_publishes_completed_turn(harness_env):
     assert result.status == "ok"
     assert turns[0].trace_id == "turn-1"
     assert turns[0].payload["character_id"] == "Choppr"
+
+
+def test_reset_cancels_inflight_conversation_before_resetting_motion(harness_env):
+    _tmp_path, agentic_root = harness_env
+    coordinator = ApplicationCoordinator(
+        provider_runtime=ProviderRuntime(provider=FakeProvider()),
+        agentic_root=agentic_root,
+        default_character_id="Choppr",
+    )
+    order, turns = [], []
+
+    class DeferredExecutor:
+        def __init__(self): self.jobs = []
+        def submit(self, job, on_done): self.jobs.append((job, on_done))
+
+    class Conversation:
+        def prepare_turn(self, text, source, character_id):
+            return PreparedTurn(
+                lambda: {"reply": text},
+                lambda: None,
+                lambda: order.append("cancel"),
+            )
+
+    class Motion:
+        def reset(self): order.append("reset")
+
+    coordinator.event_bus.subscribe("EVT_CONVERSATION_TURN", turns.append)
+    coordinator.configure_motion(Motion())
+    executor = DeferredExecutor()
+    coordinator.configure_conversation(Conversation(), executor)
+
+    assert coordinator.action_bus.execute(ActionCommand(
+        "conversation", "old", trace_id="old-trace", character_id="Choppr"
+    )).status == "ok"
+    assert coordinator.action_bus.execute(ActionCommand("reset", source="ui")).status == "ok"
+
+    executor.jobs[0][1](True, "", {"reply": "stale"})
+
+    assert order == ["cancel", "reset"]
+    assert turns == []
