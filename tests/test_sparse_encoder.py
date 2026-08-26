@@ -2,8 +2,12 @@ import json
 import subprocess
 import sys
 
+import pytest
+
 from pet_harness.memory.base_memory_store import MemoryStoreStatus
 from pet_harness.memory.sparse_encoder import JiebaBm25SparseEncoder
+
+pytestmark = pytest.mark.uses_repo_cwd
 
 
 def test_jieba_bm25_uses_fastembed_indices_and_term_frequency():

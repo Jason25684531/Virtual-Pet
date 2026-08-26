@@ -227,9 +227,8 @@ Virtual-Pet/
 │   │   ├── safety_guard.py         # Tool 執行安全閘門(RiskLevel / ExecutionClass)
 │   │   ├── network_policy.py       # 工具網路存取政策
 │   │   ├── web_article_tool.py     # 巴哈 GNN 今日新聞(RSS → HTTP → Playwright 三層 fallback)
-│   │   ├── article_fetchers.py / rss_tool.py  # 文章擷取實作
+│   │   ├── article_fetchers.py                 # 文章擷取實作
 │   │   ├── youtube_music_tool.py   # YouTube 播放(Playwright 持久化 context)
-│   │   ├── music_search_tool.py / system_monitor_tool.py / timer_tool.py / random_tool.py
 │   │   └── tool_models.py          # ToolRequest / ToolResult dataclass
 │   ├── runtime/
 │   │   ├── provider_runtime.py     # 全域 LLM Provider 設定/健康狀態持有者(可熱切換)

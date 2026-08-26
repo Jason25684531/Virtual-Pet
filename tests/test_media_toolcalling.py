@@ -46,6 +46,19 @@ def test_tool_result_evidence_and_completed_compatibility():
     assert result.error == {"reason": "x", "message": "x", "retryable": False}
 
 
+def test_builtin_registry_only_exposes_production_tools_and_blocks_removed_mocks():
+    registry = ToolRegistry()
+
+    assert [definition.name for definition in registry.list_definitions()] == [
+        "web_article_tool",
+        "youtube_music_tool",
+    ]
+    for tool_name in ("random_tool", "timer_tool", "rss_tool", "music_search_tool", "system_monitor_tool"):
+        result = registry.execute(ToolRequest(tool_name, "test"))
+        assert result.status == "blocked"
+        assert result.error["reason"] == "unknown_tool"
+
+
 def test_skill_loader_skips_invalid_policy(tmp_path: Path):
     (tmp_path / "valid.md").write_text('name: valid\ndescription: x\ntrigger: x\nbehavior: idle\nxp_reward: 1\ntool_policy_json: {"allowed_domains":["example.com"],"allowed_actions":["go"]}', encoding="utf-8")
     (tmp_path / "invalid.md").write_text('name: invalid\ndescription: x\ntrigger: x\nbehavior: idle\nxp_reward: 1\ntool_policy_json: {bad}', encoding="utf-8")

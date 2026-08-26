@@ -762,12 +762,6 @@
         renderRoute();
     }
 
-    function returnToCompanionMain() {
-        uiRoute.screen = null;
-        uiRoute.hud = null;
-        renderRoute();
-    }
-
     function openHud(hudId) {
         if (uiRoute.screen || uiRoute.modal) return;
         uiRoute.hud = hudId;
@@ -1293,15 +1287,6 @@
     }
 
     // ── UC05-1 Companion Dock（Talk / Agent / Style / Scene）────
-
-    function collapseCompanionDock() {
-        closeHud();
-        discardPersonaDraft();
-    }
-
-    function activateCompanionDock(button) {
-        openHud(button.dataset.hud);
-    }
 
     function sendTalkText() {
         if (!talkTextInput) return;

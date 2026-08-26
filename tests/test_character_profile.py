@@ -7,6 +7,8 @@ import pytest
 import pet_harness.character.profile as profile_module
 from pet_harness.character import CharacterProfile, InvalidCharacterIdError
 
+pytestmark = pytest.mark.uses_repo_cwd
+
 
 class TestLoadChoppr:
     def test_load_choppr(self):

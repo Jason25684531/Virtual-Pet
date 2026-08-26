@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from pet_harness.tools import music_search_tool, random_tool, rss_tool, system_monitor_tool, timer_tool, web_article_tool, youtube_music_tool
+from pet_harness.tools import web_article_tool, youtube_music_tool
 from pet_harness.tools.tool_models import ToolDefinition, ToolExecutionClass, ToolRequest, ToolResult, ToolRiskLevel
 
 
@@ -17,31 +17,6 @@ class ToolRegistry:
         self._register_builtin_tools()
 
     def _register_builtin_tools(self) -> None:
-        self._register(
-            ToolDefinition("random_tool", "Mock-safe random helper.", ToolRiskLevel.LOW, ToolExecutionClass.INTERNAL, xp_reward=1),
-            random_tool.execute,
-            aliases=["random"],
-        )
-        self._register(
-            ToolDefinition("timer_tool", "Create reminder metadata.", ToolRiskLevel.LOW, ToolExecutionClass.INTERNAL, xp_reward=1),
-            timer_tool.execute,
-            aliases=["timer"],
-        )
-        self._register(
-            ToolDefinition("rss_tool", "Mock-safe feed summary tool.", ToolRiskLevel.LOW, ToolExecutionClass.INTERNAL, xp_reward=1),
-            rss_tool.execute,
-            aliases=["rss_news", "rss"],
-        )
-        self._register(
-            ToolDefinition("music_search_tool", "Mock-safe music search tool.", ToolRiskLevel.LOW, ToolExecutionClass.INTERNAL, xp_reward=2),
-            music_search_tool.execute,
-            aliases=["music_search"],
-        )
-        self._register(
-            ToolDefinition("system_monitor_tool", "Mock-safe system monitor tool.", ToolRiskLevel.LOW, ToolExecutionClass.INTERNAL, xp_reward=1),
-            system_monitor_tool.execute,
-            aliases=["system_monitor"],
-        )
         self._register(
             ToolDefinition("youtube_music_tool", "Play and control YouTube music.", ToolRiskLevel.MEDIUM, ToolExecutionClass.BROWSER, xp_reward=2),
             youtube_music_tool.execute,

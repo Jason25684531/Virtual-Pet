@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
 from pet_harness.agent.provider_adapter import ProviderReply
 from pet_harness.models.provider import ProviderStatus, ProviderType
 from pet_harness.runtime.provider_runtime import ProviderRuntime
+
+
+@pytest.fixture(autouse=True)
+def isolate_test_cwd(monkeypatch, tmp_path, request) -> None:
+    """Keep relative runtime state inside pytest's temporary directory."""
+    if request.node.get_closest_marker("uses_repo_cwd"):
+        monkeypatch.chdir(Path(__file__).resolve().parents[1])
+    else:
+        monkeypatch.chdir(tmp_path)
 
 
 class FakeProvider:

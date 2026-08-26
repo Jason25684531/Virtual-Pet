@@ -1,7 +1,11 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from scripts.eval_harness import validate_case
+
+pytestmark = pytest.mark.uses_repo_cwd
 
 
 def cases():

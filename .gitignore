@@ -1,73 +1,61 @@
-# 忽略檔案
+# Local Python/runtime environments
 venv/
 .venv/
 .env
 .env.*
 __pycache__/
-openspec/
-.claude/
-.github/
-# .gitignore
-.vscode/
-.codex/
-.cursor/
-.agent/
-.agentic/*
-.agentic/rewards/*
-.serena/
-
-# 日誌檔案 (保留目錄結構)
-logs/*.log
-logs/*.log.*
-!logs/.keep
-
-# 日誌文件
-*.log
-
-# # Ngrok 自動生成配置 (包含臨時 URL)
-# frontend/config.js
-
-FDSA
-AGENTS.md
-CLAUDE.md
-
-AIA_2026_動態生成Only.json
-
-assets/webm
-ui/assets/
-assets/
-assets/characters/
-docs/
+.pytest_cache/
+.ruff_cache/
 runtime_cache/
 
-local_memory.db
-data/*.db
+# Agent/editor metadata
+openspec/
+.agent/
+.agentic/*
+.agents/
+.claude/
+.codex/
+.cursor/
+.serena/
+.vscode/
+.github/
+AGENTS.md
+CLAUDE.md
+agentic.md
+soul.md
+skills-lock.json
+
+# Generated application data
+assets/
+docs/
+ui/assets/
+ui/ref_pic/*
+tests/ref_pic/*
+ui/web_container/Web/
+ComfyUI_Json/*
+PNGSample/*
+artifacts/*
+outputs/retrieval_eval/latest.json
+test.html
+
+# Runtime state and logs
+*.db
+*.log
+*.log.*
+data/runtime/*
+data/characters/miku/*
+data/characters/*/personal.json
+data/characters/*/qdrant/
+data/saves/
 debug/events/*.json
 debug/ui_smoke_*.txt
 debug/stage_verify/
-PNGSample/*
-ui/ref_pic/*
-
-*.db
-.tokensave/*
-data/characters/miku/*
-agentic.md
-soul.md
-data/runtime/*
-data/characters/*/qdrant/
-data/saves/
-
 device.key
-ComfyUI_Json/*
-test.html
-.agents/*
-ui/web_container/Web/*
+.tokensave/*
+
+# Local context snapshots
 CONTEXT.md
-CONTEXT-STT.md
-skills-lock.json
+CONTEXT-*.md
 
-artifacts/*
-CONTEXT-UI.md
-
-tests/ref_pic/*
-outputs/retrieval_eval/latest.json
+# Local-only generated configuration
+AIA_2026_*Only.json

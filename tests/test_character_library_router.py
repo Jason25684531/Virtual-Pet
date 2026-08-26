@@ -1,15 +1,16 @@
 from pathlib import Path
 
 import character_library as library_module
+import pet_harness.character.profile as profile_module
 from character_library import CharacterLibrary
 from pet_harness.character.registry import CharacterRegistry
 from pet_harness.character.router import CharacterRouter
 
 
 def test_router_uses_character_library_character_and_its_state_db(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(library_module, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(library_module, "CHARACTER_LIBRARY_DIR", tmp_path / "assets" / "characters")
+    monkeypatch.setattr(profile_module, "_PROJECT_ROOT", tmp_path)
     source = tmp_path / "og.png"
     source.write_bytes(b"og")
     CharacterLibrary().create_validated_character("char_1234", str(source), "丘比")
@@ -27,9 +28,9 @@ def test_playtime_and_listing_work_for_library_characters(tmp_path, monkeypatch)
     from pet_harness.storage.sqlite_store import SQLiteStore
     from pet_harness.ui.character_ui_service import PLAYTIME_SECONDS_KEY, CharacterUiService
 
-    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(library_module, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(library_module, "CHARACTER_LIBRARY_DIR", tmp_path / "assets" / "characters")
+    monkeypatch.setattr(profile_module, "_PROJECT_ROOT", tmp_path)
     source = tmp_path / "og.png"
     source.write_bytes(b"og")
     CharacterLibrary().create_validated_character("char-ya-zhou-tong-shen", str(source), "亞洲統神")

@@ -3,11 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from pet_harness.models.skill import Skill
 from pet_harness.skills.intent_normalizer import normalize
 from pet_harness.skills.semantic_skill_retriever import SemanticCandidate
 from pet_harness.skills.skill_router import SkillRouter
 from tests.fakes.fake_semantic_retriever import FakeSemanticRetriever
+
+pytestmark = pytest.mark.uses_repo_cwd
 
 
 def test_normalizer_strips_composed_politeness_without_touching_content():

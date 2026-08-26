@@ -86,8 +86,8 @@ class TestToolRequestValidation:
         assert result.tool_request is None
 
     def test_valid_object_tool_request_is_preserved(self):
-        result = _parse('{"reply": "hi", "tool_request": {"tool_name": "timer_tool", "arguments": {}}}')
-        assert result.tool_request == {"tool_name": "timer_tool", "arguments": {}}
+        result = _parse('{"reply": "hi", "tool_request": {"tool_name": "youtube_music_tool", "arguments": {}}}')
+        assert result.tool_request == {"tool_name": "youtube_music_tool", "arguments": {}}
 
 
 class TestOptionalFieldNormalization:

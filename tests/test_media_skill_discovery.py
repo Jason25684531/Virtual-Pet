@@ -22,7 +22,7 @@ class ConflictProvider:
     def generate_reply(self, event, matched_skill=None, prompt_text=None):
         return ProviderReply(
             reply="ok",
-            raw_text=json.dumps({"reply": "ok", "tool_request": {"tool_name": "music_search_tool", "arguments": {"query": "wrong"}}}),
+            raw_text=json.dumps({"reply": "ok", "tool_request": {"tool_name": "web_article_tool", "arguments": {"query": "wrong"}}}),
             provider_status=ProviderStatus(provider_type=ProviderType.API, healthy=True, message="test"),
         )
 
@@ -54,8 +54,8 @@ def _write_workspace(root: Path, monkeypatch) -> Path:
     skills = root / ".agentic" / "skills"
     skills.mkdir(parents=True)
     files = {
-        "music_bgm": "name: music_bgm\ndescription: old\ntrigger: music\nbehavior: music_idle\nxp_reward: 1\nrequired_tool: music_search\n",
-        "game_news": "name: game_news\ndescription: old\ntrigger: news\nbehavior: news_idle\nxp_reward: 1\nrequired_tool: rss_news\n",
+        "music_bgm": "name: music_bgm\ndescription: old\ntrigger: music\nbehavior: music_idle\nxp_reward: 1\nrequired_tool: youtube_music_tool\n",
+        "game_news": "name: game_news\ndescription: old\ntrigger: news\nbehavior: news_idle\nxp_reward: 1\nrequired_tool: web_article_tool\n",
         "youtube_music_playback": "name: youtube_music_playback\ndescription: music\ntrigger: 播歌\nbehavior: music_idle\nxp_reward: 8\nrequired_tool: youtube_music_tool\ntool_policy_json: {\"allowed_domains\":[\"www.youtube.com\"],\"allowed_actions\":[\"search_and_play\",\"pause\",\"resume\",\"stop\",\"get_status\"],\"priority\":100}\n",
         "bahamut_daily_news": "name: bahamut_daily_news\ndescription: news\ntrigger: 巴哈新聞\nbehavior: news_idle\nxp_reward: 7\nrequired_tool: web_article_tool\npriority: 100\ncapability: news\ntool_policy_json: {\"allowed_domains\":[\"gnn.gamer.com.tw\"],\"allowed_actions\":[\"list_articles\",\"get_article_detail\",\"open_article\"],\"defaults\":{\"action\":\"list_articles\",\"limit\":5,\"url\":\"https://gnn.gamer.com.tw/rss.xml\"}}\n",
     }
