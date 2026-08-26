@@ -19,6 +19,42 @@
 - [角色人設 (Personal)](docs/character_personal.md)
 - [Linux 部署指南](docs/linux_deployment.md)
 
+機台/新機轉移請看 **[MIGRATION.md](MIGRATION.md)**(git 有追蹤;因大量關鍵資產被 gitignore,轉移必須整包複製而非 clone)。
+
+---
+
+## 運行模式:外部依賴與降級行為
+
+所有外部依賴都是**可降級**的——缺少任何一項,應用程式仍可啟動,對應功能自動關閉或退回替代實作:
+
+| 功能 | 依賴 | 缺少時的行為 |
+|------|------|--------------|
+| 對話大腦 | Ollama(`localhost:11434`,免金鑰)或 OpenAI-compatible API | 兩者皆不可用時對話回 `EVT_RUNTIME_ERROR`,UI busy 復位,其他功能照常 |
+| 快捷動作語音 | `VOAI_API_KEY`(primary)/ `ELEVENLABS_API_KEY`(fallback) | 動作照播但**靜音** |
+| 語音輸入 STT | NVIDIA CUDA GPU + cuDNN + faster-whisper 模型 | STT 按鈕顯示「不可用」,文字輸入不受影響 |
+| 新聞 / YouTube 工具 | Playwright Chromium + 網路 | 工具回傳可讀錯誤訊息,不影響對話 |
+| 資產生成 | 本機 ComfyUI(`127.0.0.1:8188`) | 自動退回 `MockAssetService` |
+| 對話記憶 | 嵌入式 Qdrant + fastembed | 檢索 fail-open 回空清單,絕不中斷對話 |
+| 語意 skill 路由 | Qdrant + fastembed | 預設 shadow mode,只記錄候選不影響路由 |
+
+### 啟動流程(檔案運行模式)
+
+```text
+run.bat ──▶ .venv\Scripts\python.exe main.py
+             │
+             ▼
+main.py(唯一 composition root)
+  1. 載入 .env(SecretMasker 遮罩)→ config.py 集中設定
+  2. preload onnxruntime / STT 模型(失敗則 STT 標記不可用)
+  3. 組裝 ApplicationCoordinator(ProviderRuntime / ActionBus / EventBus /
+     RuntimeLifecycle / handlers / CharacterRouter+per-character engine)
+  4. PyQtHarnessAdapter(PyQt ↔ engine 橋接)
+  5. TransparentWindow 載入 ui/web_container/index.html(QWebEngineView,
+     六層 2K 舞台;JsGateway 在 webview ready 前自動排隊 Python→JS 呼叫)
+  6. aboutToQuit ──▶ RuntimeLifecycle.shutdown_all() 依註冊反序停止
+     (STT → MotionCoordinator/Audio → adapter/Browser),逾時不阻塞退出
+```
+
 ---
 
 ## 架構概覽
