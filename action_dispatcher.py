@@ -399,7 +399,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             # The harness has already run the tool and supplied the reply.  Do not
             # replace it with this binding's legacy service audio or suppress TTS.
             binding = replace(binding, handler_name="_handle_motion_only", skip_tts_sync=False)
-        if self._is_duplicate_loop_action(binding):
+        if self._is_duplicate_loop_action(binding, normalized_trace_id):
             print(f"[ECHOES] 提示: action `{binding.name}` 已在進行中，略過重複觸發。")
             return True
         effective_display_message = display_message if harness_reply else ("" if binding.name == "report_news" else display_message)
@@ -565,7 +565,21 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             return "error"
         return "working" if has_action else "idle"
 
-    def _is_duplicate_loop_action(self, binding: ActionBinding) -> bool:
+    def _is_duplicate_loop_action(self, binding: ActionBinding, trace_id: str | None = None) -> bool:
+        normalized_trace_id = str(trace_id or "").strip()
+        if normalized_trace_id:
+            # 串流回覆常把同一個 [ACTION:x] 標籤重複夾在多個句子片段裡；同一 trace
+            # 內對同一個動作的重複 dispatch 會重跑 start_motion_loop，導致 WebM
+            # 被硬重載並讓 _loop_action_tts_queued 被中途重設，永遠等不到收尾。
+            if (
+                normalized_trace_id == self._active_action_trace_id
+                and self._current_loop_binding is not None
+                and self._current_loop_binding.name == binding.name
+            ):
+                return True
+            pending_state = self._pending_actions.get(normalized_trace_id)
+            if pending_state is not None and pending_state.binding.name == binding.name:
+                return True
         if not binding.non_repeatable:
             return False
         if self._current_loop_binding is not None and self._current_loop_binding.name == binding.name:
@@ -702,7 +716,13 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._audio_worker.clear_suppressed_trace(normalized_trace_id)
         if hasattr(self._window, "stop_motion_loop"):
             self._window.stop_motion_loop()
-        self._window.restore_idle_video()
+        # 不在此處呼叫 restore_idle_video()：這一刻還不知道新動作最終會不會
+        # 找到 webm，若在這裡先把 <video> 重新導回 idle 來源，緊接著
+        # start_motion_loop() 又立刻把它導回動作來源，QWebEngine(Chromium 83)
+        # 上兩次連續 load() 會讓前一個 play() 被 abort，並讓該 <video>
+        # 之後的 ended/watchdog 偵測失靈，導致動作只播一次就卡住。真正找不到
+        # 動作時，下游（_play_binding_motion / _activate_pending_action /
+        # _handle_motion_only）已經各自呼叫 restore_idle_video()。
         state = PendingActionState(
             trace_id=normalized_trace_id,
             binding=binding,
@@ -752,7 +772,15 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             self._window.restore_idle_video()
             self._clear_pending_action(normalized_trace_id)
             return False
-        if state.has_tts:
+        # 串流回覆時，句子片段可能在 action tag 被 dispatch 之前就已經
+        # 呼叫過 _synthesize_tts()；當時 pending state 還不存在，
+        # state.has_tts 永遠不會被補標記。改以 trace 級別的 TTS 活動
+        # （目前佇列中或已完成過）當作備援依據，避免 loop 永遠等不到收尾。
+        if (
+            state.has_tts
+            or self._trace_pending_tts_counts.get(normalized_trace_id, 0) > 0
+            or normalized_trace_id in self._completed_tts_traces
+        ):
             self._loop_action_tts_queued = True
         if promoted:
             if self._latency_tracker is not None:

@@ -37,3 +37,23 @@ def test_action_binding_table_and_deferred_dispatch_contract():
         assert [item.directive for item in dispatcher._deferred_dispatches] == ["[ACTION:laugh] later"]
     finally:
         dispatcher.shutdown(wait_ms=100)
+
+
+def test_same_trace_repeated_action_tag_is_deduped_not_deferred():
+    """Streamed replies can repeat the same [ACTION:x] tag across sentence chunks.
+
+    Re-dispatching the still-active action for the same trace must not restart
+    start_motion_loop (it would hard-reload the WebM and reset
+    _loop_action_tts_queued), but a different trace's dispatch must proceed.
+    """
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        binding = dispatcher._bindings["awkward"]
+        dispatcher._current_loop_binding = binding
+        dispatcher._active_action_trace_id = "turn-1"
+
+        assert dispatcher._is_duplicate_loop_action(binding, "turn-1") is True
+        assert dispatcher._is_duplicate_loop_action(binding, "turn-2") is False
+        assert dispatcher._is_duplicate_loop_action(binding, None) is False
+    finally:
+        dispatcher.shutdown(wait_ms=100)

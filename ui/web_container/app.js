@@ -1601,6 +1601,15 @@
         panelVideo.style.display = 'none';
     };
 
+    function replayMotionLoop(loopGeneration) {
+        if (loopGeneration !== motionLoopGeneration || !motionLoopActive || !motionLoopSource) return;
+        video.currentTime = 0;
+        video.play().catch(function (err) {
+            if (loopGeneration !== motionLoopGeneration || !motionLoopActive) return;
+            console.warn('[ECHOES] motion loop playback failed:', err.message);
+        });
+    }
+
     window.startMotionLoop = function (source, intervalMs) {
         window.stopMotionLoop();
         if (!source) return;
@@ -1613,7 +1622,7 @@
         motionLoopTimer = setInterval(function () {
             if (loopGeneration !== motionLoopGeneration) return;
             if (motionLoopActive && motionLoopSource && video.ended) {
-                window.playTemporaryVideo(motionLoopSource);
+                replayMotionLoop(loopGeneration);
             }
         }, intervalMs || 1000);
     };
@@ -1671,7 +1680,7 @@
 
     video.addEventListener('ended', function () {
         if (motionLoopActive && motionLoopSource) {
-            window.playTemporaryVideo(motionLoopSource);
+            replayMotionLoop(motionLoopGeneration);
             return;
         }
         if (!video.loop) window.restoreIdleMotion(idleSource);

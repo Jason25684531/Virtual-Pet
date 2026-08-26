@@ -278,7 +278,24 @@ def test_motion_loop_does_not_restore_idle_until_host_stops_it():
     start = app_js.index('window.startMotionLoop')
     loop_block = app_js[start:app_js.index('window.stopMotionLoop = function', start)]
     assert 'setSource(source, false);' in loop_block
+    assert 'replayMotionLoop(loopGeneration);' in loop_block
+    assert 'window.playTemporaryVideo(motionLoopSource);' not in loop_block
     assert 'if (motionLoopActive && motionLoopSource && video.ended)' in app_js
+
+
+def test_motion_loop_replay_does_not_reload_the_same_source():
+    app_js = (Path(__file__).parents[1] / "ui" / "web_container" / "app.js").read_text(encoding="utf-8")
+
+    start = app_js.index('window.startMotionLoop')
+    stop = app_js.index('window.stopMotionLoop = function', start)
+    loop_block = app_js[start:stop]
+    replay_start = app_js.index('function replayMotionLoop')
+    replay_block = app_js[replay_start:app_js.index('window.startMotionLoop', replay_start)]
+
+    assert 'video.src' not in replay_block
+    assert 'video.load()' not in replay_block
+    assert 'loopGeneration !== motionLoopGeneration' in replay_block
+    assert '!motionLoopActive' in replay_block
 
 
 def test_action_waits_for_audio_driver_when_tts_sync_is_requested():
@@ -316,6 +333,25 @@ def test_late_streaming_action_starts_for_an_already_playing_tts_trace():
         dispatcher.shutdown(wait_ms=100)
 
 
+def test_activation_detects_tts_queued_before_the_action_was_dispatched():
+    """Streamed TTS chunks can be enqueued for a trace before its [ACTION:x]
+    tag is dispatched (no PendingActionState exists yet at queue time), so
+    state.has_tts alone must not gate _loop_action_tts_queued or the loop
+    would wait forever for a completion signal that already happened."""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._find_motion_path = MagicMock(return_value="fake/wave_response.webm")
+        binding = dispatcher._bindings["wave_response"]
+        dispatcher._start_pending_action("trace-1", binding, wait_for_tts_start=True)
+        dispatcher._trace_pending_tts_counts["trace-1"] = 1  # queued before activation
+
+        dispatcher._activate_pending_action("trace-1")
+
+        assert dispatcher._loop_action_tts_queued is True
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
 def test_action_loop_waits_for_all_tts_segments_of_its_trace():
     dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
     try:
@@ -346,6 +382,26 @@ def test_action_loop_waits_until_its_streaming_trace_is_closed():
         dispatcher._finish_loop_action_if_tts_idle()
 
         dispatcher._finish_loop_action.assert_not_called()
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_action_loop_waits_while_audio_worker_is_busy():
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._current_loop_action_key = "laugh"
+        dispatcher._current_loop_binding = dispatcher._bindings["laugh"]
+        dispatcher._active_action_trace_id = "trace-1"
+        dispatcher._loop_action_tts_queued = True
+        dispatcher._audio_worker.is_busy = MagicMock(return_value=True)
+        dispatcher._finish_loop_action = MagicMock()
+
+        dispatcher._finish_loop_action_if_tts_idle()
+        dispatcher._finish_loop_action.assert_not_called()
+
+        dispatcher._audio_worker.is_busy.return_value = False
+        dispatcher._finish_loop_action_if_tts_idle()
+        dispatcher._finish_loop_action.assert_called_once()
     finally:
         dispatcher.shutdown(wait_ms=100)
 
