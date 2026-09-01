@@ -23,7 +23,7 @@ load_dotenv(ENV_PATH, override=False)
 
 DEFAULT_PERSONA_KEY = "default"
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
-DEFAULT_OLLAMA_MODEL = "gemma4:e2b"
+DEFAULT_OLLAMA_MODEL = "gemma3:122b"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_ELEVENLABS_VOICE_ID = "zENt0ljwLXypGqHDsdzz"
 DEFAULT_TTS_MODEL_ID = "eleven_flash_v2_5"
@@ -126,6 +126,11 @@ def _read_float_env(name: str, default: float) -> float:
         return float(os.getenv(name, str(default)).strip() or default)
     except ValueError:
         return float(default)
+
+
+POINTWISE_OLLAMA_MODEL = os.getenv("POINTWISE_OLLAMA_MODEL", "gemma3:12b-it-qat").strip() or "gemma3:12b-it-qat"
+POINTWISE_OLLAMA_BASE_URL = os.getenv("POINTWISE_OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip().rstrip("/")
+POINTWISE_OLLAMA_TIMEOUT_SEC = _read_float_env("POINTWISE_OLLAMA_TIMEOUT_SEC", 120.0)
 
 
 SEMANTIC_ROUTING_ENABLED = _read_bool_env("SEMANTIC_ROUTING_ENABLED", True)

@@ -59,3 +59,4 @@ CONTEXT-*.md
 
 # Local-only generated configuration
 AIA_2026_*Only.json
+outputs/*

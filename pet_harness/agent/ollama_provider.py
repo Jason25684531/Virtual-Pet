@@ -26,15 +26,17 @@ class OllamaProvider:
         base_url = self.config.base_url or "http://localhost:11434" # IP Calling
         prompt = prompt_text or event.text
         try:
+            payload = {
+                "model": self.config.model_name,
+                "prompt": prompt,
+                "stream": False,
+            }
+            payload.update({key: self.config.metadata[key] for key in ("format", "options") if key in self.config.metadata})
             response = self.request_fn(
                 "POST",
                 f"{base_url}/api/generate",
                 timeout=self.config.timeout_seconds,
-                json={
-                    "model": self.config.model_name,
-                    "prompt": prompt,
-                    "stream": False,
-                },
+                json=payload,
             )
             if getattr(response, "status_code", 500) >= 400:
                 return self._unavailable_reply(

@@ -6,15 +6,17 @@ from typing import Callable
 from pet_harness.memory.memory_models import RetrievalCandidate, RetrievalRequest, RetrievalResult, RetrievalTrace
 from pet_harness.memory.query_rewriter import FollowUpDetector
 from pet_harness.memory.result_policy import ResultPolicy
+from pet_harness.memory.reranker import Reranker
 
 
 class ContextualMemoryRetriever:
-    def __init__(self, index, dense_encoder: Callable[[str], list[float]], sparse_encoder=None, rewriter=None, policy=None) -> None:
+    def __init__(self, index, dense_encoder: Callable[[str], list[float]], sparse_encoder=None, rewriter=None, policy=None, reranker: Reranker | None = None) -> None:
         self.index = index
         self.dense_encoder = dense_encoder
         self.sparse_encoder = sparse_encoder
         self.rewriter = rewriter
         self.policy = policy or ResultPolicy()
+        self.reranker = reranker
         self.detector = FollowUpDetector()
 
     def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
@@ -47,7 +49,15 @@ class ContextualMemoryRetriever:
             fusion_started = time.perf_counter()
             candidates = self.index.search(dense, sparse, request.top_k)
             latency["fusion"] = (time.perf_counter() - fusion_started) * 1000
+            rerank_status = "not_available"
+            if self.reranker:
+                rerank_started = time.perf_counter()
+                candidates = self.reranker.rerank(query, candidates)
+                latency["rerank"] = (time.perf_counter() - rerank_started) * 1000
+                rerank_status = "available"
             items = [candidate.item if isinstance(candidate, RetrievalCandidate) else candidate for candidate in candidates]
+            rerank_ranks = {item.memory_id: rank for rank, item in enumerate(items, 1)} if self.reranker else {}
+            rerank_scores = {candidate.item.memory_id: float(candidate.score) for candidate in candidates} if self.reranker else {}
             policy_started = time.perf_counter()
             evidence, dropped = self.policy.apply(items, request.top_k)
             latency["policy"] = (time.perf_counter() - policy_started) * 1000
@@ -63,6 +73,9 @@ class ContextualMemoryRetriever:
                 top_score_kind=top_kind,
                 relevance_gate_enabled=threshold > 0, dense_min_score=threshold,
                 policy_dropped=dropped, sparse_available=available, latency_ms=latency,
+                rerank_status=rerank_status,
+                rerank_ranks=rerank_ranks,
+                rerank_scores=rerank_scores,
             )
             return RetrievalResult(evidence, trace)
         except Exception:

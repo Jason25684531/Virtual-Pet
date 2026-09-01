@@ -61,6 +61,9 @@ class RetrievalTrace:
     policy_dropped: dict[str, int] = field(default_factory=dict)
     sparse_available: bool = False
     latency_ms: dict[str, float] = field(default_factory=dict)
+    rerank_status: str = "not_available"
+    rerank_ranks: dict[str, int] = field(default_factory=dict)
+    rerank_scores: dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def empty(cls, query: str, *, rewrite_tier: int = 2) -> "RetrievalTrace":
@@ -82,6 +85,9 @@ class RetrievalTrace:
             "policy_dropped": self.policy_dropped,
             "sparse_available": self.sparse_available,
             "latency_ms": self.latency_ms,
+            "rerank_status": self.rerank_status,
+            "rerank_ranks": self.rerank_ranks,
+            "rerank_scores": self.rerank_scores,
         }
 
 

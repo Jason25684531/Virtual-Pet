@@ -2,9 +2,9 @@ from scripts.eval_harness import DeterministicFakeDenseEncoder, metric_for_keys,
 
 
 def test_recall_and_mrr_rank_1_to_3_and_miss():
-    assert metric_for_keys(["x", "target"], ["target"]) == (1.0, 0.5)
-    assert metric_for_keys(["x", "y", "target"], ["target"]) == (1.0, 1 / 3)
-    assert metric_for_keys(["x", "y", "z"], ["target"]) == (0.0, 0.0)
+    assert metric_for_keys(["target"], ["target"]) == (1.0, 1.0, 1.0, 1.0)
+    assert metric_for_keys(["x", "y", "target"], ["target"]) == (0.0, 1.0, 1 / 3, 1 / 2)
+    assert metric_for_keys(["x", "y", "z"], ["target"]) == (0.0, 0.0, 0.0, 0.0)
 
 
 def test_fake_encoder_is_deterministic_and_vector_based():
