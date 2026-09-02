@@ -941,7 +941,11 @@ class PetHarnessEngine:
         rewards = self.reward_manager.check_unlocks(self.store.get_user_progress()["xp_total"])
         assets = self._handle_reward_assets(source_event_id=event.event_id, reward_events=rewards, behavior_id=behavior_id)
         if self.growth_trigger is not None:
-            growth = self.growth_trigger.on_xp_awarded(self.store.get_user_progress()["xp_total"], event.event_id)
+            growth = (
+                self.growth_trigger.on_interaction(event.event_id)
+                if not config.COMFYUI_ENABLED
+                else self.growth_trigger.on_xp_awarded(self.store.get_user_progress()["xp_total"], event.event_id)
+            )
             if growth is not None:
                 assets = {"pending_offer": growth.to_dict()}
         return xp_delta, rewards, assets

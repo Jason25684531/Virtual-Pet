@@ -29,6 +29,16 @@ skills-lock.json
 assets/
 docs/
 ui/assets/
+!ui/assets/
+ui/assets/*
+!ui/assets/backgrounds/
+ui/assets/backgrounds/*
+!ui/assets/backgrounds/main_menu.jpg
+!ui/assets/buttons/
+ui/assets/buttons/*
+!ui/assets/buttons/create.png
+!ui/assets/buttons/load.png
+!ui/assets/buttons/quit.png
 ui/ref_pic/*
 tests/ref_pic/*
 ui/web_container/Web/

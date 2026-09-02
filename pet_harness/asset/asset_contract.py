@@ -26,6 +26,7 @@ class GrowthOffer:
     variant: str
     reason: str
     source_event_id: str
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, str]:
         return asdict(self)

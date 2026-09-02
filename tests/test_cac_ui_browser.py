@@ -25,7 +25,7 @@ def page():
             window.QWebChannel = function (_, ready) {
               var ok = function (data) { return JSON.stringify({ok: true, data: data}); };
               ready({objects: {
-                harnessBridge: {setDragEnabled: function () {}, beginWindowDrag: function () { window.__drag_calls = (window.__drag_calls || 0) + 1; }, refreshState: function () {}, toggleSkill: function () { window.__skill_toggles = (window.__skill_toggles || 0) + 1; }, sendText: function () {}, toggleStt: function () {}, triggerQuickIntent: function () {}, triggerOverlayAction: function () {}},
+                harnessBridge: {setDragEnabled: function () {}, beginWindowDrag: function () { window.__drag_calls = (window.__drag_calls || 0) + 1; }, refreshState: function () {}, toggleSkill: function () { window.__skill_toggles = (window.__skill_toggles || 0) + 1; }, sendText: function () {}, toggleStt: function () {}, triggerQuickIntent: function () {}, triggerOverlayAction: function (action) { window.__overlay_action = action; }},
                 characterBridge: {
                   listCharacters: function (done) { done(ok([])); },
                   listPresets: function (done) { done(ok([{character_id: 'miku', name: 'Miku', persona_description: 'Virtual singer'}])); },
@@ -163,12 +163,23 @@ def test_motion_offer_decline_closes_modal_and_keeps_the_png(page):
 def test_screens_are_centered_isolate_the_stage_and_offer_a_drag_surface(page):
     menu = page.locator("#screen-main-menu")
     assert menu.bounding_box() == {"x": 0, "y": 0, **VIEWPORT}
-    layout = page.locator("#menu-screen-layout").bounding_box()
-    assert abs(layout["x"] + layout["width"] / 2 - CENTER_X) <= 1
+    assert page.locator("#menu-load-button").is_disabled()
+    assert page.locator("#menu-screen-layout").count() == 0
+    assert page.locator("#screen-main-menu h2").count() == 0
     actions = page.locator("#screen-main-menu .menu-screen__actions").bounding_box()
-    preview = page.locator("#screen-main-menu .menu-screen__preview").bounding_box()
-    assert actions["x"] < preview["x"]
-    assert abs(preview["y"] + preview["height"] / 2 - CENTER_Y) <= 1
+    preview = page.locator("#screen-main-menu .menu-screen__preview-card").bounding_box()
+    assert abs(actions["x"] + actions["width"] / 2 - VIEWPORT["width"] * 0.19) <= 1
+    assert abs(preview["x"] + preview["width"] / 2 - CENTER_X) <= 1
+    assert abs(preview["y"] + preview["height"] / 2 - VIEWPORT["height"] * 0.58) <= 1
+    assert page.locator("#screen-main-menu .menu-screen__actions").evaluate(
+        "element => getComputedStyle(element).position"
+    ) == "absolute"
+    assert page.locator("#screen-main-menu .menu-screen__preview-card").evaluate(
+        "element => getComputedStyle(element).position"
+    ) == "absolute"
+    assert "main_menu.jpg" in page.locator("#screen-main-menu").evaluate(
+        "element => getComputedStyle(element).backgroundImage"
+    )
     corner = f"document.elementFromPoint({VIEWPORT['width'] - 10}, {VIEWPORT['height'] - 10}).id"
     assert page.evaluate(corner) == "screen-main-menu"
 
@@ -181,6 +192,9 @@ def test_screens_are_centered_isolate_the_stage_and_offer_a_drag_surface(page):
     load_card = page.locator("#screen-load-save .screen-card").bounding_box()
     assert abs(load_card["x"] + load_card["width"] / 2 - CENTER_X) <= 1
     assert abs(load_card["y"] + load_card["height"] / 2 - CENTER_Y) <= 1
+    page.locator("#screen-load-save [data-screen]").click()
+    page.locator("#menu-quit-button").click()
+    assert page.evaluate("window.__overlay_action") == "quit"
 
 
 def test_companion_stage_can_drag_without_stealing_character_clicks(page):
@@ -215,11 +229,14 @@ def test_stage_furniture_stays_inside_the_visible_viewport(page):
         assert box["y"] + box["height"] <= VIEWPORT["height"], selector
 
 
-def test_layout_keeps_the_mockup_grid_and_navigation_spacing(page):
-    menu_columns = page.locator("#menu-screen-layout").evaluate(
-        "element => getComputedStyle(element).gridTemplateColumns"
-    )
-    assert menu_columns == "616px 616px"
+def test_layout_uses_absolute_menu_placement_and_navigation_spacing(page):
+    assert page.locator("#menu-screen-layout").count() == 0
+    assert page.locator("#screen-main-menu .menu-screen__actions").evaluate(
+        "element => getComputedStyle(element).position"
+    ) == "absolute"
+    assert page.locator("#screen-main-menu .menu-screen__preview-card").evaluate(
+        "element => getComputedStyle(element).position"
+    ) == "absolute"
 
     page.locator("#menu-load-button").evaluate("button => button.disabled = false")
     page.locator("#menu-load-button").click()

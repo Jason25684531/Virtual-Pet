@@ -50,6 +50,7 @@ CHARACTER_ELEVENLABS_VOICE_ENV_KEYS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+#如果要換Voice ID這裡可以改咬
 BUILTIN_CHARACTER_ELEVENLABS_VOICE_IDS: dict[str, str] = {
     "char-Adol": "fUjY9K2nAIwlALOwSiwc",
     "char-Jack": "1iu1W6qkEusxMp5pZvus",
@@ -184,6 +185,14 @@ COMFYUI_TIMEOUT_SEC = _read_int_env("COMFYUI_TIMEOUT_SEC", 300)
 COMFYUI_VIDEO_TIMEOUT_SEC = _read_int_env("COMFYUI_VIDEO_TIMEOUT_SEC", 900)
 COMFYUI_MAX_RETRIES = _read_int_env("COMFYUI_MAX_RETRIES", 2)
 COMFYUI_ENABLED = _read_bool_env("COMFYUI_ENABLED", False)
+INTERACTION_TRIGGER_THRESHOLDS = (3, 6, 9)
+MOCK_RENDER_DURATION_SEC = _read_float_env("MOCK_RENDER_DURATION_SEC", 8.0)
+PROACTIVE_GREETING_INTERVAL_SEC = _read_float_env("PROACTIVE_GREETING_INTERVAL_SEC", 30.0)
+PROACTIVE_GREETING_PHRASES = (
+    "我在這裡陪你喔！",
+    "今天也一起加油吧！",
+    "想和我聊聊嗎？",
+)
 XP_PER_LEVEL = _read_int_env("XP_PER_LEVEL", 6)
 EVENT_INTERVAL_MINUTES = _read_float_env("EVENT_INTERVAL_MINUTES", 1.0) #時間的設定
 FESTIVAL_EVENT_PROMPTS = ("這個角色戴上聖誕帽", "這個角色手上拿春聯", "這個角色手上拿粽子")

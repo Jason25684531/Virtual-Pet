@@ -58,6 +58,33 @@ class GrowthTriggerService:
             self._store.set_setting("asset_last_event_variant_at", datetime.now(UTC).isoformat())
         return offer
 
+    def on_interaction(self, source_event_id: str) -> GrowthOffer | None:
+        """Mock-only interaction milestones; greeting calls never enter this method."""
+        import config
+
+        count = int(self._store.get_setting("interaction_count", 0) or 0) + 1
+        self._store.set_setting("interaction_count", count)
+        triggered = set(self._store.get_setting("asset_triggered_interaction_thresholds", []) or [])
+        threshold = next(
+            (value for value in config.INTERACTION_TRIGGER_THRESHOLDS
+             if count >= value and value not in triggered),
+            None,
+        )
+        if threshold is None:
+            return None
+
+        preset = {3: "development_a", 6: "development_b"}.get(threshold)
+        metadata = {"threshold": threshold, "preset": preset}
+        if threshold == 9:
+            metadata.update({"output": None, "preset": None})
+        offer = self._offer("development", "interaction_milestone", source_event_id, require_context=False, metadata=metadata)
+        if offer is not None:
+            self._store.set_setting(
+                "asset_triggered_interaction_thresholds",
+                sorted((*triggered, threshold)),
+            )
+        return offer
+
     def trigger_festival_event(self, source_event_id: str) -> GrowthOffer | None:
         """由快捷鍵主動建立節慶 event offer，不受定時門檻限制。"""
         offer = self._offer("event", "shortcut_f", source_event_id)
@@ -65,20 +92,37 @@ class GrowthTriggerService:
             self._store.set_setting("asset_last_event_variant_at", datetime.now(UTC).isoformat())
         return offer
 
+    def reset(self) -> None:
+        for key in (
+            "interaction_count",
+            "asset_triggered_interaction_thresholds",
+            "asset_pending_offer",
+            "asset_last_triggered_level",
+        ):
+            self._store.set_setting(key, None)
+
     def build_generation_context(self) -> str:
         now = datetime.now(UTC).isoformat()
         with self._store.connect() as conn:
             rows = conn.execute("SELECT text FROM memory_items WHERE character_id=? AND status='active' AND (expires_at IS NULL OR expires_at>?) ORDER BY created_at DESC", (self._character_id, now)).fetchall()
         return "\n".join(str(row["text"]) for row in rows)[:2000]
 
-    def _offer(self, variant: str, reason: str, source_event_id: str) -> GrowthOffer | None:
+    def _offer(
+        self,
+        variant: str,
+        reason: str,
+        source_event_id: str,
+        *,
+        require_context: bool = True,
+        metadata: dict | None = None,
+    ) -> GrowthOffer | None:
         if self._store.get_setting("asset_pending_offer"):
             return None
         import config
         if is_generation_frozen(self._store, config.PREVIEW_OFFER_TTL_HOURS):
             return None
-        if variant == "development" and not self.build_generation_context():
+        if require_context and variant == "development" and not self.build_generation_context():
             return None
-        offer = GrowthOffer(variant, reason, source_event_id)
+        offer = GrowthOffer(variant, reason, source_event_id, metadata or {})
         self._store.set_setting("asset_pending_offer", offer.to_dict())
         return offer
