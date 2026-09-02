@@ -39,6 +39,12 @@ class MemoryItemRepository:
         with self.store.connect() as conn: rows = conn.execute("SELECT * FROM memory_items WHERE status='active'").fetchall()
         return [self._item(row) for row in rows]
 
+    def forget(self, memory_key: str) -> list[str]:
+        with self.store.connect() as conn, conn:
+            rows = conn.execute("SELECT memory_id FROM memory_items WHERE memory_key=? AND status='active'", (memory_key,)).fetchall()
+            conn.execute("UPDATE memory_items SET status='forgotten' WHERE memory_key=? AND status='active'", (memory_key,))
+        return [str(row["memory_id"]) for row in rows]
+
     @staticmethod
     def _item(row) -> MemoryItem:
         return MemoryItem(**dict(row))

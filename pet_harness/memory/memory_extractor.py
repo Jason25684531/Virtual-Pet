@@ -8,6 +8,12 @@ import re
 from pet_harness.agent.result_parser import parse_fenced_json
 from pet_harness.memory.memory_models import MemoryCandidate
 
+# ponytail: regex only covers the acceptance PII shapes; replace with PII NER if coverage must expand.
+_SENSITIVE_RE = re.compile(
+    r"(?:09\d{2}[-\s]?\d{3}[-\s]?\d{3}|(?:密碼|password|passwd)\s*[:：]?\s*\S+|(?:地址|住址|address).{0,20}(?:路|街|巷|弄|號))",
+    re.IGNORECASE,
+)
+
 _MEMORY_KEY_RE = re.compile(r"^(使用者|角色)\.([^\.\s]{1,40})(?:\.([^\.\s]{1,20}))?$")
 _ALLOWED_ATTRIBUTES = {
     "使用者": {"事件", "喜好", "最愛水果", "狀態", "計劃"},
@@ -41,6 +47,8 @@ def _is_explicit_promise(text: str) -> bool:
 
 
 def is_eligible_memory_item(memory_key: str, text: str) -> bool:
+    if _SENSITIVE_RE.search(text):
+        return False
     if not is_valid_memory_key(memory_key) or text.lstrip().startswith("你") or "?" in text or "？" in text:
         return False
     return memory_key != "角色.承諾" or _is_explicit_promise(text)
@@ -65,7 +73,8 @@ class WholeTurnMemoryExtractor(BaseMemoryExtractor):
         if "你是誰" in text and reply.strip().startswith("我是"):
             return []
         if _is_explicit_promise(reply):
-            return [MemoryCandidate("角色.承諾", "episodic", reply.strip(), event_id)]
+            candidate = MemoryCandidate("角色.承諾", "episodic", reply.strip(), event_id)
+            return [candidate] if is_eligible_memory_item(candidate.memory_key, candidate.text) else []
         if "?" in text or "？" in text:
             return []
         if "我" not in text:
@@ -77,7 +86,8 @@ class WholeTurnMemoryExtractor(BaseMemoryExtractor):
             subject = normalize_subject(match.group(1)) if match else ""
             if subject:
                 base_key = f"{base_key}.{subject}"
-        return [MemoryCandidate(base_key, memory_type, text, event_id)]
+        candidate = MemoryCandidate(base_key, memory_type, text, event_id)
+        return [candidate] if is_eligible_memory_item(candidate.memory_key, candidate.text) else []
 
 
 class LlmMemoryExtractor(BaseMemoryExtractor):

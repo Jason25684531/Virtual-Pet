@@ -94,3 +94,10 @@ def test_dense_only_gate_uses_one_query_and_threshold(monkeypatch):
     store.search([0.0] * 384, None, 5)
     assert client.query_calls == 1
     assert client.query["score_threshold"] == 0.7
+
+
+def test_delete_removes_vector_points():
+    client = _CappedClient()
+    store = HybridQdrantMemoryStore(character_id="miku", path=":memory:", client=client, dense_encoder=_Dense(), sparse_encoder=_Sparse())
+    store.delete(["m1"])
+    assert client.deleted["points_selector"].points == ["m1"]

@@ -8,7 +8,6 @@ import statistics
 import tempfile
 import time
 import uuid
-import importlib
 from pathlib import Path
 from typing import Any, Callable
 
@@ -105,7 +104,7 @@ def validate_case(case: dict[str, Any]) -> list[str]:
 
 def _item(case_id: str, index: int, value: dict[str, Any], status: str = "active") -> MemoryItem:
     memory_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"retrieval-eval:{case_id}:{index}"))
-    return MemoryItem(memory_id, "eval", "default", value["memory_key"], value.get("memory_type", "semantic"), value["text"], status, f"{case_id}:{index}", "2026-01-01T00:00:00+00:00")
+    return MemoryItem(memory_id, "eval", "default", value["memory_key"], value.get("memory_type", "semantic"), value["text"], status, f"{case_id}:{index}", value.get("created_at", "2026-01-01T00:00:00+00:00"))
 
 
 def _seed(case: dict[str, Any]) -> list[MemoryItem]:
@@ -192,7 +191,16 @@ def _rate(numerator: int, denominator: int, **counts: int) -> dict[str, Any]:
     return {"value": numerator / denominator if denominator else None, **counts}
 
 
-def build_case_trace(case: dict[str, Any], result, dense_points, sparse_points, fusion_points, *, ground_truth_ids: list[str], latency_ms: dict[str, float], pointwise_evaluator: Callable | None = None, answer_generator: Callable | None = None, correctness_evaluator: Callable | None = None, faithfulness_evaluator: Callable | None = None) -> dict[str, Any]:
+def _trace_status(trace, name: str) -> str:
+    value = getattr(trace, name, None)
+    if value:
+        return str(value)
+    if name == "rewrite_status":
+        return "available" if getattr(trace, "rewrite_tier", 2) == 0 else "not_available"
+    return "not_available"
+
+
+def build_case_trace(case: dict[str, Any], result, dense_points, sparse_points, fusion_points, *, ground_truth_ids: list[str], latency_ms: dict[str, float], pointwise_evaluator: Callable | None = None) -> dict[str, Any]:
     rows: dict[str, dict[str, Any]] = {}
     latency = dict(latency_ms)
     pointwise_total = 0.0
@@ -203,11 +211,13 @@ def build_case_trace(case: dict[str, Any], result, dense_points, sparse_points, 
             row[f"{channel}_rank"] = rank
             row[f"{channel}_score"] = float(point.score)
     evidence_ids = {item.memory_id for item in result.evidence}
+    rerank_scores = getattr(result.trace, "rerank_scores", {})
     for row in rows.values():
         for channel in ("dense", "sparse", "fusion"):
             row.setdefault(f"{channel}_rank", None)
             row.setdefault(f"{channel}_score", None)
         row["in_evidence"] = row["point_id"] in evidence_ids
+        row["rerank_score"] = rerank_scores.get(row["memory_id"])
         if row["in_evidence"]:
             expected_relevant = row["memory_id"] in ground_truth_ids
             if pointwise_evaluator:
@@ -222,18 +232,23 @@ def build_case_trace(case: dict[str, Any], result, dense_points, sparse_points, 
     actual = [item.memory_key for item in result.evidence[:3]]
     hit_at_1, hit_at_3, mrr, ndcg = metric_for_keys(actual, case["expected_memory_keys"])
     retrieval_results = sorted(rows.values(), key=lambda row: (row["fusion_rank"] is None, row["fusion_rank"] or row["dense_rank"] or row["sparse_rank"]))
-    ranks = [row["fusion_rank"] for row in retrieval_results if row.get("memory_id") in ground_truth_ids and row["fusion_rank"] <= 5]
-    before = min(ranks) if ranks else None
+    evidence_ranks = [rank for rank, item in enumerate(result.evidence, 1) if item.memory_id in ground_truth_ids]
+    before = min(evidence_ranks) if evidence_ranks else None
     latency["pointwise"] = pointwise_total if pointwise_evaluator else None
     no_memory = not bool(ground_truth_ids)
-    return {"trace_id": case["id"], "query": case["query"], "ground_truth": {"has_memory": not no_memory, "memory_ids": ground_truth_ids}, "retrieval_results": retrieval_results, "retrieval_evaluation": {"has_ground_truth": not no_memory, "ground_truth_memory_ids": ground_truth_ids, "top_k": 5, "hit": bool(ranks), "best_ground_truth_rank": before}, "no_memory_evaluation": {"is_no_memory_query": no_memory, "correct_rejection": not any(row["in_evidence"] for row in retrieval_results) if no_memory else None, "false_positive": any(row["in_evidence"] for row in retrieval_results) if no_memory else None, "accepted_evidence_count": sum(row["in_evidence"] for row in retrieval_results)}, "debug_metrics": {"hit_at_1": hit_at_1, "hit_at_3": hit_at_3, "mrr_at_3": mrr, "ndcg_at_3": ndcg}, "latency_ms": latency}
+    return {"trace_id": case["id"], "sheet_ref": case.get("sheet_ref"), "category": case.get("category"), "query": case["query"], "ground_truth": {"has_memory": not no_memory, "memory_ids": ground_truth_ids}, "retrieval_results": retrieval_results, "retrieval_evaluation": {"has_ground_truth": not no_memory, "ground_truth_memory_ids": ground_truth_ids, "top_k": 5, "hit": bool(evidence_ranks), "best_ground_truth_rank": before}, "no_memory_evaluation": {"is_no_memory_query": no_memory, "correct_rejection": not any(row["in_evidence"] for row in retrieval_results) if no_memory else None, "false_positive": any(row["in_evidence"] for row in retrieval_results) if no_memory else None, "accepted_evidence_count": sum(row["in_evidence"] for row in retrieval_results)}, "debug_metrics": {"hit_at_1": hit_at_1, "hit_at_3": hit_at_3, "mrr_at_3": mrr, "ndcg_at_3": ndcg}, "latency_ms": latency, "rerank_status": _trace_status(result.trace, "rerank_status"), "rewrite_status": _trace_status(result.trace, "rewrite_status")}
 
 
 def summarize_traces(traces: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     relevant = [trace for trace in traces if trace["ground_truth"]["has_memory"]]
-    evidence = [row["pointwise"] for trace in traces for row in trace["retrieval_results"] if row["in_evidence"] and row["pointwise"]["status"] in {"available", "ground_truth"}]
-    no_memory = [trace["no_memory_evaluation"] for trace in traces if trace["no_memory_evaluation"]["is_no_memory_query"]]
-    return {"retrieval_accuracy": _rate(sum(trace["retrieval_evaluation"]["hit"] for trace in relevant), len(relevant), passed=sum(trace["retrieval_evaluation"]["hit"] for trace in relevant), total=len(relevant)), "pointwise_accuracy": _rate(sum(item["correct"] for item in evidence), len(evidence), correct=sum(item["correct"] for item in evidence), total_evidence=len(evidence)), "no_memory_rejection_rate": _rate(sum(item["correct_rejection"] for item in no_memory), len(no_memory), correct_rejections=sum(item["correct_rejection"] for item in no_memory), total_no_memory=len(no_memory))}
+    evidence = [row["pointwise"] for trace in traces for row in trace.get("retrieval_results", []) if row.get("in_evidence") and row.get("pointwise", {}).get("status") in {"available", "ground_truth"}]
+    no_memory = [trace.get("no_memory_evaluation", {}) for trace in traces if trace.get("no_memory_evaluation", {}).get("is_no_memory_query")]
+    metric_names = ("hit_at_1", "hit_at_3", "mrr_at_3", "ndcg_at_3")
+    metrics = {name: sum(trace.get("debug_metrics", {}).get(name, 0.0) for trace in relevant) / len(relevant) if relevant else None for name in metric_names}
+    total_latency = [trace.get("latency_ms", {}).get("total") for trace in traces if trace.get("latency_ms", {}).get("total") is not None]
+    metrics["no_memory_rejection_rate"] = _rate(sum(item["correct_rejection"] for item in no_memory), len(no_memory), correct_rejections=sum(item["correct_rejection"] for item in no_memory), total_no_memory=len(no_memory))["value"]
+    metrics["latency_ms"] = statistics.mean(total_latency) if total_latency else None
+    return {"retrieval_accuracy": _rate(sum(trace["retrieval_evaluation"]["hit"] for trace in relevant), len(relevant), passed=sum(trace["retrieval_evaluation"]["hit"] for trace in relevant), total=len(relevant)), "pointwise_accuracy": _rate(sum(item["correct"] for item in evidence), len(evidence), correct=sum(item["correct"] for item in evidence), total_evidence=len(evidence)), "no_memory_rejection_rate": _rate(sum(item["correct_rejection"] for item in no_memory), len(no_memory), correct_rejections=sum(item["correct_rejection"] for item in no_memory), total_no_memory=len(no_memory)), "summary_metrics": metrics}
 
 
 def select_threshold(rows: list[dict[str, Any]], *, recall_guard: float = 0.05, mrr_guard: float = 0.05) -> dict[str, Any]:
@@ -247,7 +262,7 @@ def select_threshold(rows: list[dict[str, Any]], *, recall_guard: float = 0.05, 
     return {"selected_threshold": selected["threshold"], "reason": "max rejection among quality-preserving thresholds; lowest threshold tie-break", "eligible": eligible, "baseline": baseline, "selected": selected, "recall_guard": recall_guard, "mrr_guard": mrr_guard}
 
 
-def run_evaluation(cases: list[dict[str, Any]], *, real_encoder: bool = False, threshold: float | None = None, collect_traces: bool = False, reranker=None, pointwise_evaluator: Callable | None = None, answer_generator: Callable | None = None, correctness_evaluator: Callable | None = None, faithfulness_evaluator: Callable | None = None) -> dict[str, Any]:
+def run_evaluation(cases: list[dict[str, Any]], *, real_encoder: bool = False, threshold: float | None = None, collect_traces: bool = False, reranker=None, pointwise_evaluator: Callable | None = None) -> dict[str, Any]:
     import config
     fake = DeterministicFakeDenseEncoder()
     try:
@@ -316,7 +331,7 @@ def run_evaluation(cases: list[dict[str, Any]], *, real_encoder: bool = False, t
                     sparse_vector = sparse.encode(query) if sparse.status().state == "ready" else None
                     sparse_points = raw_client.query_points(collection_name=store.collection, query=models.SparseVector(indices=list(sparse_vector), values=list(sparse_vector.values())), using="sparse", query_filter=active, limit=20, with_payload=True).points if sparse_vector else []
                     ground_truth_ids = [item.memory_id for item in items if item.status == "active" and item.memory_key in expected]
-                    traces.append(build_case_trace(case, result, dense_points, sparse_points, client.last_points, ground_truth_ids=ground_truth_ids, latency_ms=result.trace.latency_ms, pointwise_evaluator=pointwise_evaluator, answer_generator=answer_generator, correctness_evaluator=correctness_evaluator, faithfulness_evaluator=faithfulness_evaluator))
+                    traces.append(build_case_trace(case, result, dense_points, sparse_points, client.last_points, ground_truth_ids=ground_truth_ids, latency_ms=result.trace.latency_ms, pointwise_evaluator=pointwise_evaluator))
                 store.shutdown()
     finally:
         config.MEMORY_DENSE_MIN_SCORE = old_threshold

@@ -53,7 +53,12 @@ class AdaptiveTTSFallbackWorker(QObject):
             str(fallback_voice_id or "").strip()
             or config.get_elevenlabs_voice_id_for_character(self._character_id)
         )
-        self._preferred_provider = _normalize_provider_name(preferred_provider) or "voai"
+        # 具專屬 ElevenLabs 聲線的角色以 ElevenLabs 為首選，否則維持 VoAI 優先。
+        self._preferred_provider = _normalize_provider_name(preferred_provider) or (
+            "elevenlabs"
+            if self._character_id in config.BUILTIN_CHARACTER_ELEVENLABS_VOICE_IDS
+            else "voai"
+        )
         self._playback_guard = playback_guard
         self._pcm_stream_sink = pcm_stream_sink
         self._voai_worker_factory = voai_worker_factory or VoAIStreamingTTSWorker
@@ -188,7 +193,11 @@ class AdaptiveTTSFallbackWorker(QObject):
             self._finish(success, message, normalized_payload)
             return
 
-        if provider == "voai" and normalized_payload.get("fast_fail"):
+        if (
+            provider == "voai"
+            and normalized_payload.get("fast_fail")
+            and "elevenlabs" not in self._provider_chain
+        ):
             fallback_reason = normalized_payload.get("fast_fail", "unknown")
             self._fallback_reasons.append(("voai", str(fallback_reason)))
             fallback_payload = dict(normalized_payload)
@@ -204,7 +213,24 @@ class AdaptiveTTSFallbackWorker(QObject):
             self._start_provider("elevenlabs", reason="fast_fail")
             return
 
-        if provider == "elevenlabs" and "voai" in self._provider_chain:
+        if provider == "elevenlabs" and "voai" not in self._provider_chain:
+            # ElevenLabs 首選失敗時回退 VoAI，鏡射 voai→elevenlabs 的既有路徑。
+            fallback_reason = str(message or "elevenlabs_failed")
+            self._fallback_reasons.append(("elevenlabs", fallback_reason))
+            fallback_payload = dict(normalized_payload)
+            fallback_payload.update(
+                {
+                    "from_provider": "elevenlabs",
+                    "to_provider": "voai",
+                    "fallback_reason": fallback_reason,
+                    "fallback_reasons": self._fallback_reasons,
+                }
+            )
+            self.progress_signal.emit("fallback_triggered", fallback_payload)
+            self._start_provider("voai", reason="elevenlabs_failed")
+            return
+
+        if "voai" in self._provider_chain and "elevenlabs" in self._provider_chain:
             normalized_payload.update(
                 {
                     "critical_tts_failure": True,

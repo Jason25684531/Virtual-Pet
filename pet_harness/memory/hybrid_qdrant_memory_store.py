@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import logging
 
 from pet_harness.memory.base_memory_store import BaseMemoryStore, MemoryHit, MemoryStoreStatus
 from pet_harness.memory.memory_models import MemoryItem, RetrievalCandidate
 from pet_harness.memory.sparse_encoder import JiebaBm25SparseEncoder
+
+LOGGER = logging.getLogger(__name__)
 
 
 class HybridQdrantMemoryStore(BaseMemoryStore):
@@ -78,6 +81,19 @@ class HybridQdrantMemoryStore(BaseMemoryStore):
             points.append(models.PointStruct(id=item.memory_id, vector=vectors, payload=self._payload(item)))
         self._client.upsert(collection_name=self.collection, points=points, wait=True)
         return [item.memory_id for item in items]
+
+    def delete(self, memory_ids: list[str]) -> None:
+        if not memory_ids or self._status.state != "ready":
+            return
+        try:
+            from qdrant_client import models
+            self._client.delete(
+                collection_name=self.collection,
+                points_selector=models.PointIdsList(points=memory_ids),
+                wait=True,
+            )
+        except Exception:
+            LOGGER.exception("memory vector deletion failed", extra={"memory_ids": memory_ids})
 
     @staticmethod
     def _payload(item: MemoryItem) -> dict[str, Any]:

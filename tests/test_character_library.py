@@ -33,8 +33,31 @@ def test_action_tags_fall_back_to_non_idle_manifest_motions(tmp_path, monkeypatc
     library = _library(tmp_path, monkeypatch)
     _write_manifest(tmp_path, "char-lei-jie", ["idle", "laugh", "angry", "awkward", "speechless", "listen", "wave_response"])
 
-    assert library.list_action_tags("char-lei-jie") == ["laugh", "angry", "awkward", "speechless", "listen", "wave_response"]
+    assert library.list_action_tags("char-lei-jie") == ["laugh", "annoy", "awkward", "speechless", "listen", "waving"]
     assert library.resolve_action_tag("char-lei-jie", "laugh")["motion_key"] == "laugh"
+    assert library.resolve_action_tag("char-lei-jie", "annoy")["motion_key"] == "angry"
+    assert library.resolve_action_tag("char-lei-jie", "waving")["motion_key"] == "wave_response"
+
+
+def test_legacy_action_tags_still_resolve_to_canonical_actions(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+    _write_manifest(tmp_path, "char-lei-jie", ["idle", "angry", "wave_response"])
+
+    assert library.resolve_action_tag("char-lei-jie", "angry")["action_tag"] == "annoy"
+    assert library.resolve_action_tag("char-lei-jie", "wave_response")["action_tag"] == "waving"
+
+
+def test_native_canonical_manifest_action_wins_over_legacy_alias(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+    _write_manifest(
+        tmp_path,
+        "miku",
+        ["idle", "angry", "annoy"],
+        {"angry": "angry", "annoy": "annoy"},
+    )
+
+    assert library.list_action_tags("miku") == ["annoy"]
+    assert library.resolve_action_tag("miku", "annoy")["motion_key"] == "annoy"
 
 
 def test_explicit_manifest_actions_take_precedence_over_motion_fallback(tmp_path, monkeypatch):

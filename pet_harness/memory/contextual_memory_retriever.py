@@ -57,7 +57,7 @@ class ContextualMemoryRetriever:
                 rerank_status = "available"
             items = [candidate.item if isinstance(candidate, RetrievalCandidate) else candidate for candidate in candidates]
             rerank_ranks = {item.memory_id: rank for rank, item in enumerate(items, 1)} if self.reranker else {}
-            rerank_scores = {candidate.item.memory_id: float(candidate.score) for candidate in candidates} if self.reranker else {}
+            rerank_scores = getattr(self.reranker, "_last_scores", {candidate.item.memory_id: float(candidate.score) for candidate in candidates}) if self.reranker else {}
             policy_started = time.perf_counter()
             evidence, dropped = self.policy.apply(items, request.top_k)
             latency["policy"] = (time.perf_counter() - policy_started) * 1000

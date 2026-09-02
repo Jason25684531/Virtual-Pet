@@ -23,7 +23,7 @@ load_dotenv(ENV_PATH, override=False)
 
 DEFAULT_PERSONA_KEY = "default"
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
-DEFAULT_OLLAMA_MODEL = "gemma3:122b"
+DEFAULT_OLLAMA_MODEL = "gemma3:12b-it-qat"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_ELEVENLABS_VOICE_ID = "zENt0ljwLXypGqHDsdzz"
 DEFAULT_TTS_MODEL_ID = "eleven_flash_v2_5"
@@ -50,6 +50,17 @@ CHARACTER_ELEVENLABS_VOICE_ENV_KEYS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+BUILTIN_CHARACTER_ELEVENLABS_VOICE_IDS: dict[str, str] = {
+    "char-Adol": "fUjY9K2nAIwlALOwSiwc",
+    "char-Jack": "1iu1W6qkEusxMp5pZvus",
+    "char-Kai": "nDJIICjR9zfJExIFeSCN",
+    "char-Nico": "cNYrMw9glwJZXR8RwbuR",
+    "char-Luke": "h5eZa8VFAq0EQ8E81dfL",
+    "char-ROG": "RoUNDCtoHQPMwQQoROwA",
+    "char-Omni": "pekFz6QhW6VUmG0FJ3RV",
+    "char-Zenni": "2Zlm5u8veOiqFWNIOc0K",
+}
+
 
 def _read_first_non_empty_env(*names: str, default: str = "") -> str:
     for name in names:
@@ -59,13 +70,23 @@ def _read_first_non_empty_env(*names: str, default: str = "") -> str:
     return str(default or "").strip()
 
 
+def character_voice_env_key(character_id: str) -> str:
+    """內建角色的 per-character 覆寫鍵：ELEVENLABS_{ID 大寫、- 轉 _}_VOICE_ID。"""
+    return f"ELEVENLABS_{character_id.upper().replace('-', '_')}_VOICE_ID"
+
+
 def _build_character_elevenlabs_voice_ids() -> dict[str, str]:
     resolved: dict[str, str] = {}
     for character_id, env_keys in CHARACTER_ELEVENLABS_VOICE_ENV_KEYS.items():
         resolved[character_id] = _read_first_non_empty_env(
             *env_keys,
             default=DEFAULT_ELEVENLABS_VOICE_ID,
-        ) or DEFAULT_ELEVENLABS_VOICE_ID
+        )
+    for character_id, voice_id in BUILTIN_CHARACTER_ELEVENLABS_VOICE_IDS.items():
+        resolved[character_id] = _read_first_non_empty_env(
+            character_voice_env_key(character_id),
+            default=voice_id,
+        )
     return resolved
 
 
@@ -136,6 +157,9 @@ POINTWISE_OLLAMA_TIMEOUT_SEC = _read_float_env("POINTWISE_OLLAMA_TIMEOUT_SEC", 1
 SEMANTIC_ROUTING_ENABLED = _read_bool_env("SEMANTIC_ROUTING_ENABLED", True)
 MEMORY_LLM_REWRITE_ENABLED = _read_bool_env("MEMORY_LLM_REWRITE_ENABLED", False)
 MEMORY_DENSE_MIN_SCORE = _read_float_env("MEMORY_DENSE_MIN_SCORE", 0.55)
+MEMORY_RERANK_ENABLED = _read_bool_env("MEMORY_RERANK_ENABLED", True)
+MEMORY_RERANK_MODEL = os.getenv("MEMORY_RERANK_MODEL", "jinaai/jina-reranker-v2-base-multilingual").strip() or "jinaai/jina-reranker-v2-base-multilingual"
+MEMORY_RERANK_MIN_SCORE = _read_float_env("MEMORY_RERANK_MIN_SCORE", -2.0)
 SEMANTIC_ROUTING_SHADOW_MODE = _read_bool_env("SEMANTIC_ROUTING_SHADOW_MODE", True)
 SEMANTIC_ROUTING_MODEL = os.getenv("SEMANTIC_ROUTING_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2").strip()
 SEMANTIC_ROUTING_COLLECTION = os.getenv("SEMANTIC_ROUTING_COLLECTION", "skills").strip() or "skills"
@@ -283,7 +307,7 @@ def canonicalize_host_action(action_name: str | None) -> str:
 def get_elevenlabs_voice_id_for_character(character_id: str | None) -> str:
     """回傳角色對應的 ElevenLabs Voice ID。
 
-    優先順序：CHARACTER_VOICE_IDS[character_id] → ELEVENLABS_VOICE_ID（全域預設）。
+    優先順序：per-character env → 內建專屬映射 → voice_gender 回退 → 全域預設。
     """
     cid = str(character_id or "").strip()
     if cid in CHARACTER_VOICE_IDS:

@@ -113,6 +113,33 @@ class TestAdaptiveTTSFallbackWorker:
         assert normalized["resolved_mode"] == "fallback_enabled"
         assert normalized["attempted_providers"] == []
 
+    def test_dedicated_voice_character_prefers_elevenlabs(self):
+        import config
+        from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
+
+        assert "char-Adol" in config.BUILTIN_CHARACTER_ELEVENLABS_VOICE_IDS
+        worker = AdaptiveTTSFallbackWorker(text="test", voice_id="char-Adol")
+        assert worker._preferred_provider == "elevenlabs"
+
+        # 無專屬聲線的角色維持 VoAI 優先；顯式指定時以指定值為準。
+        assert AdaptiveTTSFallbackWorker(text="test", voice_id="char-RO")._preferred_provider == "voai"
+        assert AdaptiveTTSFallbackWorker(
+            text="test", voice_id="char-Adol", preferred_provider="voai"
+        )._preferred_provider == "voai"
+
+    def test_elevenlabs_initial_failure_falls_back_to_voai(self):
+        from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
+
+        worker = AdaptiveTTSFallbackWorker(text="test", voice_id="char-Adol")
+        started = []
+        worker._start_provider = lambda provider, *, reason: started.append((provider, reason))
+        worker._provider_chain = ["elevenlabs"]
+
+        worker._handle_result(False, "quota exceeded", {}, "elevenlabs")
+
+        assert started == [("voai", "elevenlabs_failed")]
+        assert worker._fallback_reasons == [("elevenlabs", "quota exceeded")]
+
     def test_elevenlabs_failure_does_not_retry_a_provider(self):
         from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
 

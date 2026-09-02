@@ -9,6 +9,17 @@ from pet_harness.models.skill import Skill
 from pet_harness.tools.tool_models import ToolResult
 
 
+#六種情緒定義內容
+ACTION_TAG_GUIDANCE = {
+    "laugh": "觸發：明顯好笑、荒謬趣事、驚喜或突破；避免：普通好消息、禮貌附和或輕微開心。",
+    "awkward": "觸發：被稱讚、被調侃、被抓包或 AI 小失誤；避免：資訊不足、拒答或使用者悲傷。",
+    "speechless": "觸發：指涉模糊、證據不足、荒謬邏輯或危險提議；避免：單純不知道但可以直接說明，或一般澄清。",
+    "waving": "觸發：初次見面、重新回來、早安晚安或主動開話題；避免：對話持續中的一般回覆。",
+    "annoy": "觸發：多次重複、持續挑釁或反覆要求不可能事項後；避免：第一次質疑、正常追問或澄清需求。",
+    "listen": "觸發：使用者需要被傾聽、傾訴或表達感受時；避免：需要明確回應或執行任務時。",
+}
+
+
 @dataclass
 class PromptBuildResult:
     prompt: str
@@ -41,6 +52,11 @@ class PromptBuilder:
         agentic_text = self._read_optional(
             self.agentic_root / "agentic.md",
             "Agentic rules unavailable.",
+            warnings,
+        )
+        response_rules_text = self._read_optional(
+            self.agentic_root / "response_rules.md",
+            "Global response rules unavailable.",
             warnings,
         )
         skill_lines = [
@@ -86,7 +102,10 @@ class PromptBuilder:
                 f"## Deterministic Matched Skill\n{matched_text}",
                 "",
                 "## Available Character Action Tags",
-                ", ".join(valid_action_tags) if valid_action_tags else "none",
+                "\n".join(
+                    f"- {tag}: {ACTION_TAG_GUIDANCE[tag]}" if tag in ACTION_TAG_GUIDANCE else f"- {tag}"
+                    for tag in valid_action_tags
+                ) if valid_action_tags else "none",
                 "",
                 "## Current Pet State",
                 self._pet_state_text(state_snapshot),
@@ -115,6 +134,9 @@ class PromptBuilder:
                 "A deterministic acknowledgement was already spoken; do not repeat or paraphrase it."
                 if ack_emitted else "No acknowledgement has been spoken.",
                 "",
+                "## Global Response Rules",
+                response_rules_text,
+                "",
                 "## Output Contract",
                 'Return JSON only with keys: "reply", "matched_skill", "action_tag", "confidence", "tool_request", and either "notes" or "reasoning_summary".',
                 '"reply" must always be a single JSON string, never an array/list of strings — '
@@ -130,7 +152,8 @@ class PromptBuilder:
         section_sizes = {
             "soul": len(soul_text), "agentic": len(agentic_text), "persona": len(persona or ""),
             "skills": len(skills_text), "history": len(history_text), "memory": len(memory_text),
-            "tool_result": len(tool_result_text), "user_text": len(event.text), "total": len(prompt),
+            "tool_result": len(tool_result_text), "user_text": len(event.text),
+            "response_rules": len(response_rules_text), "total": len(prompt),
         }
         return PromptBuildResult(prompt=prompt, warnings=warnings, section_sizes=section_sizes)
 

@@ -38,6 +38,9 @@ ACTION_MOTION_SPECS = [
 ]
 ACTION_MOTION_KEYS = {spec["key"] for spec in ACTION_MOTION_SPECS}
 MOTION_MAP = {spec["key"]: spec for spec in [*MOTION_SPECS, *ACTION_MOTION_SPECS]}
+#情緒對應詞
+CANONICAL_ACTION_ALIASES = {"annoy": "angry", "waving": "wave_response"}
+LEGACY_TO_CANONICAL_ACTION_ALIASES = {legacy: canonical for canonical, legacy in CANONICAL_ACTION_ALIASES.items()}
 
 
 def _now_iso() -> str:
@@ -453,6 +456,7 @@ class CharacterLibrary:
         normalized_tag = str(action_tag or "").strip()
         if not normalized_character_id or not normalized_tag or normalized_tag.lower() == "idle":
             return None
+        normalized_tag = LEGACY_TO_CANONICAL_ACTION_ALIASES.get(normalized_tag, normalized_tag)
         manifest = self.get_character(normalized_character_id)
         if not manifest:
             return None
@@ -472,12 +476,20 @@ class CharacterLibrary:
     @staticmethod
     def _manifest_actions(manifest: dict) -> dict:
         actions = manifest.get("actions")
-        if isinstance(actions, dict):
-            return actions
-        motions = manifest.get("motions")
-        if not isinstance(motions, dict):
-            return {}
-        return {key: key for key in motions if isinstance(key, str) and key.lower() != "idle"}
+        if not isinstance(actions, dict):
+            motions = manifest.get("motions")
+            if not isinstance(motions, dict):
+                return {}
+            actions = {key: key for key in motions if isinstance(key, str) and key.lower() != "idle"}
+        effective = {}
+        for key, motion_key in actions.items():
+            if not isinstance(key, str):
+                continue
+            canonical = LEGACY_TO_CANONICAL_ACTION_ALIASES.get(key, key)
+            if canonical != key and canonical in actions:
+                continue
+            effective[canonical] = motion_key
+        return effective
 
     def is_valid_action_tag(self, character_id: str | None, action_tag: str | None) -> bool:
         return self.resolve_action_tag(character_id, action_tag) is not None

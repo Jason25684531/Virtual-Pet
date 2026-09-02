@@ -1,8 +1,9 @@
 import json
 import math
 
+from scripts.eval_backfill import build_rows
 from scripts.eval_harness import build_ollama_pointwise_evaluator, ndcg_at_k, run_evaluation, summarize_traces
-from scripts.eval_retrieval import quality_report
+from scripts.eval_retrieval import gate_report, quality_report
 
 
 def test_trace_contains_all_channels_and_exact_ndcg(tmp_path):
@@ -15,6 +16,8 @@ def test_trace_contains_all_channels_and_exact_ndcg(tmp_path):
     path.write_text("".join(json.dumps(trace) + "\n" for trace in report["traces"]), encoding="utf-8")
     lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert len(lines) == len(cases)
+    assert lines[0]["rerank_status"] == "not_available"
+    assert lines[0]["rewrite_status"] == "not_available"
     assert {"dense_rank", "dense_score", "sparse_rank", "sparse_score", "fusion_rank", "fusion_score", "in_evidence"} <= lines[0]["retrieval_results"][0].keys()
     assert lines[0]["retrieval_results"][0]["pointwise"] == {"status": "ground_truth", "relevant": True, "expected_relevant": True, "correct": True}
     assert report["production_qdrant_calls_per_query"] == 1.0
@@ -60,3 +63,26 @@ def test_ollama_pointwise_evaluator_parses_structured_score():
 
     result = build_ollama_pointwise_evaluator("gemma3:12b-it-qat", "http://localhost:11434", 1, provider=Provider())("question", "evidence")
     assert result == {"relevant": True, "score": 0.75, "reason": "direct", "model": "gemma3:12b-it-qat"}
+
+
+def test_gate_report_checks_red_line_and_ignores_follow_up_pointwise():
+    def trace(trace_id, *, follow_up=False, rejected=None, correct=True):
+        if rejected is not None:
+            return {"trace_id": trace_id, "sheet_ref": "C1", "category": "no-memory", "ground_truth": {"has_memory": False}, "no_memory_evaluation": {"is_no_memory_query": True, "correct_rejection": rejected}}
+        return {"trace_id": trace_id, "category": "follow-up" if follow_up else "semantic", "ground_truth": {"has_memory": True}, "retrieval_evaluation": {"hit": True}, "retrieval_results": [{"in_evidence": True, "pointwise": {"status": "ground_truth", "correct": correct}}]}
+
+    traces = [trace("hit"), trace("follow", follow_up=True, correct=False), trace("c1", rejected=False)]
+    summary = summarize_traces(traces)
+    report = gate_report(summary, traces)
+    assert report["conditions"]["pointwise"]["total"] == 1
+    assert report["conditions"]["no_memory"]["red_line"]["passed"] is False
+    assert report["passed"] is False
+
+
+def test_backfill_maps_follow_up_and_xfail(tmp_path):
+    traces = [{"trace_id": "a2", "sheet_ref": "A2", "category": "follow-up", "ground_truth": {"has_memory": True}, "retrieval_evaluation": {"hit": True}, "retrieval_results": [{"in_evidence": True, "pointwise": {"correct": False}}]}]
+    xml = tmp_path / "write.xml"
+    xml.write_text('<testsuite><testcase name="test_sheet_c3_sensitive"><skipped type="pytest.xfail" message="敏感資訊過濾未實作">敏感資訊過濾未實作</skipped></testcase></testsuite>', encoding="utf-8")
+    rows, skipped = build_rows(traces, xml)
+    assert skipped == 0
+    assert {row["sheet_ref"]: row["判定"] for row in rows} == {"A2": "合格", "C3": "不合格"}

@@ -219,11 +219,13 @@ class PetHarnessEngine:
         self.store.initialize()
         if self.memory_retriever is None and hasattr(self.memory_store, "index") and hasattr(self.memory_store, "search"):
             from pet_harness.memory.contextual_memory_retriever import ContextualMemoryRetriever
+            from pet_harness.memory.fastembed_reranker import FastembedReranker
             from pet_harness.memory.query_rewriter import LlmQueryRewriter
             import config
             rewriter = LlmQueryRewriter(self._rewrite_query, enabled=config.MEMORY_LLM_REWRITE_ENABLED)
             self.memory_retriever = ContextualMemoryRetriever(
-                self.memory_store, self.memory_store.embed_dense, self.memory_store.sparse_encoder, rewriter
+                self.memory_store, self.memory_store.embed_dense, self.memory_store.sparse_encoder, rewriter,
+                reranker=FastembedReranker() if config.MEMORY_RERANK_ENABLED else None,
             )
         self._memory_extractor = None
         if self.memory_retriever is not None and self._character_id is not None:
@@ -964,6 +966,15 @@ class PetHarnessEngine:
             self._memory_repository.mark_indexed(indexed)
         except Exception:
             LOGGER.exception("memory item indexing failed")
+
+    def forget_memory(self, memory_key: str) -> list[str]:
+        if self._memory_repository is None:
+            return []
+        memory_ids = self._memory_repository.forget(memory_key)
+        delete = getattr(self.memory_store, "delete", None)
+        if callable(delete):
+            delete(memory_ids)
+        return memory_ids
 
     def _extract_memory_json(self, user_text: str, reply: str) -> str:
         prompt = (

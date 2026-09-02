@@ -48,3 +48,14 @@ def test_embedded_qdrant_hybrid_retrieval_end_to_end(tmp_path):
     assert [found.memory_id for found in result.evidence] == [item.memory_id]
     assert result.trace.top_score_kind == "rrf"
     assert client.query_calls == 1
+
+
+def test_deleted_vector_is_not_recalled(tmp_path):
+    sparse = JiebaBm25SparseEncoder()
+    if sparse.status().state != "ready":
+        pytest.skip(f"local BM25 encoder unavailable: {sparse.status().reason}")
+    store = HybridQdrantMemoryStore(character_id="miku", path=tmp_path, dense_encoder=_Dense(), sparse_encoder=sparse)
+    item = MemoryItem("00000000-0000-0000-0000-000000000002", "miku", "default", "使用者.喜好.拉麵", "semantic", "我喜歡拉麵", "active", "e1", "2026-01-01T00:00:00+00:00")
+    store.index([item])
+    store.delete([item.memory_id])
+    assert not ContextualMemoryRetriever(store, store.embed_dense, store.sparse_encoder).retrieve(RetrievalRequest("miku", "喜歡拉麵")).evidence
