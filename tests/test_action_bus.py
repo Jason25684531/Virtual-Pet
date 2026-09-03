@@ -4,6 +4,7 @@ from pet_harness.app.action_handler import ActionHandler
 from pet_harness.app.commands import ActionCommand
 from pet_harness.app.events import AppEvent
 from pet_harness.app.event_bus import SimpleEventBus
+from pet_harness.app.handlers import ResetHandler
 from pet_harness.app.ports import PreparedTurn
 from pet_harness.app.results import ActionResult
 from tests.fakes.fake_background_executor import FakeBackgroundExecutor
@@ -144,3 +145,16 @@ def test_reset_cancels_inflight_conversation_before_resetting_motion(harness_env
 
     assert order == ["cancel", "reset"]
     assert turns == []
+
+
+def test_full_reset_requests_all_character_domain_reset():
+    calls = []
+    handler = ResetHandler(
+        motion=type("Motion", (), {"reset": lambda _self: calls.append("motion")})(),
+        cancel_conversation=lambda: calls.append("cancel"),
+        reset_domain=lambda reset_all=False: calls.append(("domain", reset_all)),
+    )
+
+    assert handler.can_handle(ActionCommand("reset_all"))
+    assert handler.handle(ActionCommand("reset_all")).status == "ok"
+    assert calls == ["cancel", ("domain", True), "motion"]

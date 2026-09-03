@@ -372,6 +372,21 @@ class SQLiteStore:
             for row in rows
         ]
 
+    def update_asset_manifest(self, request_id: str, status: str, **changes: Any) -> None:
+        allowed = {"asset_id", "file_path", "webm_key"}
+        updates = {"status": status, **{key: value for key, value in changes.items() if key in allowed}}
+        with self.connect() as conn:
+            row = conn.execute("SELECT response_json FROM asset_manifest WHERE request_id=? ORDER BY id DESC LIMIT 1", (request_id,)).fetchone()
+            if row is None:
+                return
+            response = json.loads(row["response_json"] or "{}")
+            response.update({"status": status, **changes})
+            assignments = ", ".join(f"{key}=?" for key in updates)
+            conn.execute(
+                f"UPDATE asset_manifest SET {assignments}, response_json=?, updated_at=? WHERE request_id=?",
+                (*updates.values(), json.dumps(response, ensure_ascii=False), utc_now(), request_id),
+            )
+
     def insert_asset_job(self, job: dict[str, Any]) -> None:
         columns = ("job_id", "parent_job_id", "character_id", "workflow_type", "variant", "motion_key", "status", "comfy_prompt_id", "idempotency_key", "retry_count", "max_retries", "timeout_sec", "error_code", "error_message", "metadata_json", "created_at", "started_at", "completed_at", "stage", "progress_value", "progress_max")
         payload = dict(job)
@@ -424,6 +439,14 @@ class SQLiteStore:
         with self.connect() as conn:
             rows = conn.execute("SELECT * FROM asset_jobs WHERE parent_job_id=? ORDER BY created_at", (parent_job_id,)).fetchall()
         return [self._asset_job_row(row) for row in rows]
+
+    def clear_style_jobs(self, character_id: str) -> None:
+        """Forget render jobs that unlock selectable character styles."""
+        with self.connect() as conn:
+            conn.execute(
+                "DELETE FROM asset_jobs WHERE character_id=? AND workflow_type IN ('variant_png', 'motion_set', 'motion_clip')",
+                (character_id,),
+            )
 
     def insert_character_asset(self, asset: dict[str, Any]) -> dict[str, Any]:
         identity = (asset["character_id"], asset["asset_type"], asset["variant"], asset.get("motion_key"), asset.get("reward_id"), asset.get("event_id"))

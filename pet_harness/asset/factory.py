@@ -21,12 +21,12 @@ LOGGER = logging.getLogger(__name__)
 
 def build_asset_service(store: SQLiteStore, character_id: str | None, library: CharacterLibrary) -> AssetService:
     if not config.COMFYUI_ENABLED:
-        LOGGER.warning("ComfyUI disabled by COMFYUI_ENABLED, falling back to MockAssetService — queued jobs will not be processed")
-        return MockAssetService(store)
+        LOGGER.warning("ComfyUI disabled by COMFYUI_ENABLED, falling back to MockAssetService — queued jobs will not be processed by ComfyUI; mock worker active")
+        return MockAssetService(store, character_id=character_id, library=library)
     client = ComfyUIClient(config.COMFYUI_BASE_URL, config.COMFYUI_WS_URL, config.COMFYUI_TIMEOUT_SEC)
     if not client.health_check():
-        LOGGER.warning("ComfyUI health check failed at %s, falling back to MockAssetService — queued jobs will not be processed", config.COMFYUI_BASE_URL)
-        return MockAssetService(store)
+        LOGGER.warning("ComfyUI health check failed at %s, falling back to MockAssetService — queued jobs will not be processed by ComfyUI; mock worker active", config.COMFYUI_BASE_URL)
+        return MockAssetService(store, character_id=character_id, library=library)
     root = Path(__file__).resolve().parents[2]
     orchestrator = AssetOrchestrator(
         AssetRepository(store),

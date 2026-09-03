@@ -1,11 +1,13 @@
 from pathlib import Path
 from typing import Callable
 
+from character_library import CharacterLibrary, PROJECT_ROOT
 from pet_harness.character.registry import CharacterRegistry
 from pet_harness.character.router import CharacterRouter
 from pet_harness.character.profile import CharacterProfile
 from pet_harness.memory.base_memory_store import BaseMemoryStore
 from pet_harness.runtime.provider_runtime import ProviderRuntime, migrate_legacy_provider_config
+from pet_harness.storage.sqlite_store import SQLiteStore
 
 from .action_bus import ActionBus
 from .event_bus import SimpleEventBus
@@ -65,11 +67,52 @@ class ApplicationCoordinator:
     def configure_motion(self, motion) -> None:
         if self._motion_configured:
             raise RuntimeError("motion already configured")
-        for handler in (QuickIntentHandler(motion), SpeakHandler(motion), ResetHandler(motion, self._bus.cancel_conversation)):
+        for handler in (
+            QuickIntentHandler(motion),
+            SpeakHandler(motion),
+            ResetHandler(motion, self._bus.cancel_conversation, self._reset_domain_state),
+        ):
             self._bus.register(handler)
         # MotionOnlyHandler is the catch-all and must be registered last.
         self._bus.register(MotionOnlyHandler(motion))
         self._motion_configured = True
+
+    def _reset_domain_state(self, reset_all: bool = False) -> None:
+        engine = self.character_router.get_active_engine()
+        if engine is not None:
+            growth = getattr(engine, "growth_trigger", None)
+            reset_growth = getattr(growth, "reset", None)
+            if callable(reset_growth):
+                reset_growth()
+            cancel_mock = getattr(getattr(engine, "asset_service", None), "cancel", None)
+            if callable(cancel_mock):
+                cancel_mock()
+
+        if not reset_all:
+            return
+
+        library = CharacterLibrary()
+        for manifest in library.list_characters():
+            character_id = str(manifest.get("id") or "")
+            if not character_id:
+                continue
+            state_path = PROJECT_ROOT / "data" / "characters" / character_id / "state.db"
+            if not state_path.exists():
+                continue
+            library.reset_style_state(character_id)
+            store = SQLiteStore(state_path)
+            store.initialize()
+            for key in (
+                "interaction_count",
+                "asset_triggered_interaction_thresholds",
+                "asset_pending_offer",
+                "asset_pending_motion_offer",
+                "asset_last_triggered_level",
+                "asset_last_event_variant_at",
+                "asset_generation_freeze",
+            ):
+                store.set_setting(key, None)
+            store.clear_style_jobs(character_id)
 
     def configure_conversation(self, conversation, executor) -> None:
         self._bus.register(ConversationHandler(conversation, executor, self._events))

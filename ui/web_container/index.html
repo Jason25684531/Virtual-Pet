@@ -20,7 +20,7 @@
       <button class="companion-nav__item" type="button" data-hud="hud-style" aria-label="Style"><span class="nav-glyph">◇</span><span>Style</span></button>
       <button class="companion-nav__item" type="button" data-hud="hud-scene" aria-label="Scene"><span class="nav-glyph">▦</span><span>Scene</span></button>
     </nav>
-    <button id="stage-save-button" class="stage-menu-button stage-save-button" type="button">儲存進度</button><span id="render-activity-badge" class="render-activity-badge" hidden aria-label="Render activity"></span><button id="stage-menu-button" class="stage-menu-button" type="button" aria-label="返回主選單">‹ Menu</button>
+    <button id="stage-save-button" class="stage-menu-button stage-save-button" type="button">儲存進度</button><div id="render-activity-badge" class="render-activity-badge" hidden aria-live="polite"><span class="render-activity-badge__label">生成中</span><span class="render-activity-badge__value">0%</span><i><b></b></i></div><button id="stage-menu-button" class="stage-menu-button" type="button" aria-label="返回主選單">‹ Menu</button>
   </main>
 
   <div id="app-screens" aria-live="polite">
@@ -34,6 +34,7 @@
     </section>
 
     <section id="screen-create-character" class="app-screen creation-screen" aria-label="Create Character" hidden>
+      <img class="screen-background" src="../ref_pic/Lab_BG.png" alt="">
       <div class="screen-card screen-card--wide">
         <header class="screen-header"><div><h1>Create Character</h1><p>建立角色</p></div><button class="icon-button" type="button" data-screen="screen-main-menu" aria-label="Back">×</button></header>
         <nav class="screen-tabs" aria-label="角色建立方式"><button id="preset-tab-button" class="is-active" type="button">Preset <small>預設 ×7</small></button><button id="customize-tab-button" type="button">Customize <small>客製化</small></button></nav>
@@ -48,6 +49,7 @@
     </section>
 
     <section id="screen-load-save" class="app-screen load-screen window-drag-handle" aria-label="Load Save" hidden>
+      <img class="screen-background" src="../ref_pic/Lab_BG.png" alt="">
       <div class="screen-card screen-card--save"><header class="screen-header"><div><h1>Load Save</h1><p>載入存檔</p></div><button class="icon-button" type="button" data-screen="screen-main-menu" aria-label="Back">×</button></header><div id="save-card-grid" class="save-card-grid"></div><footer class="screen-footer"><button id="save-back-button" class="ghost-button" type="button">Back</button><span></span><button id="save-delete-button" class="danger-button" type="button" disabled>Delete</button><button id="save-continue-button" class="primary-button" type="button" disabled>Continue</button></footer></div>
     </section>
 

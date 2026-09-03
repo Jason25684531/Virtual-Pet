@@ -230,6 +230,17 @@ class CharacterLibrary:
         self._save_manifest(character_id, manifest)
         return manifest
 
+    def reset_style_state(self, character_id: str) -> dict:
+        """Return a character to its original motion set without deleting source assets."""
+        manifest = self.get_character(character_id)
+        if not manifest:
+            raise FileNotFoundError(f"character not found: {character_id}")
+        manifest["active_variant"] = "og"
+        manifest["selected_generations"] = {}
+        manifest["updated_at"] = _now_iso()
+        self._save_manifest(character_id, manifest)
+        return manifest
+
     def get_motion_path(self, character_id: str, motion_key: str) -> str | None:
         manifest = self.get_character(character_id)
         if not manifest:
@@ -244,7 +255,14 @@ class CharacterLibrary:
         relative_path = manifest.get("motions", {}).get(motion_key)
         if relative_path:
             absolute_path = PROJECT_ROOT / relative_path
-            if absolute_path.is_file():
+            try:
+                relative_parts = absolute_path.resolve().relative_to(
+                    self._manifest_path(character_id).parent.resolve()
+                ).parts
+            except ValueError:
+                relative_parts = ()
+            is_variant_motion = len(relative_parts) >= 3 and relative_parts[0] == "motions"
+            if absolute_path.is_file() and (not is_variant_motion or relative_parts[1] == variant):
                 return str(absolute_path)
         if generation is None and motions_dir:
             candidate = PROJECT_ROOT / str(motions_dir) / f"{motion_key}.webm"
@@ -269,7 +287,9 @@ class CharacterLibrary:
             return []
         root = self._manifest_path(character_id).parent
         images_root, motions_root = root / "images", root / "motions"
-        variants = set()
+        # OG is the only style available before a generated variant is unlocked.
+        # Legacy characters keep their idle file directly under ``motions/``.
+        variants = {"og"} if self.get_motion_path(character_id, "idle") else set()
         if images_root.is_dir():
             variants.update(path.name for path in images_root.iterdir() if path.is_dir() and path.name != "bg")
         if motions_root.is_dir():
@@ -286,7 +306,7 @@ class CharacterLibrary:
             images = sorted((images_root / variant).glob("*.png"), key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
             item = {
                 "variant": variant,
-                "state": "ready" if wearable else "generating" if images else "empty",
+                "state": "ready" if wearable or variant == "og" and self.get_motion_path(character_id, "idle") else "generating" if images else "empty",
                 "thumb": self._to_relative(images[0]) if images else "",
                 "is_active": variant == active_variant,
             }
@@ -395,7 +415,8 @@ class CharacterLibrary:
         revision = root / f"g{generation:02d}" / f"{motion_key}.webm"
         if revision.is_file() or generation != 1:
             return revision
-        return root / f"{motion_key}.webm"
+        flat = root / f"{motion_key}.webm"
+        return root / "annoy.webm" if motion_key == "angry" and not flat.is_file() else flat
 
     def _generation_motion_path(self, character_id: str, variant: str, generation: int, motion_key: str) -> str | None:
         path = self._generation_motion_file(character_id, variant, generation, motion_key)

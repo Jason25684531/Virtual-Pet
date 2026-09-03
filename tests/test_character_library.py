@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 
 import character_library as library_module
 from character_library import CharacterLibrary
@@ -124,6 +125,45 @@ def test_motion_resolution_prefers_active_then_flat_manifest_then_og(tmp_path, m
     assert library.get_motion_path("miku", "idle") == str(flat)
     flat.unlink()
     assert library.get_motion_path("miku", "idle").endswith("motions\\og\\idle.webm")
+
+
+def test_prebuilt_variant_directory_wins_over_stale_manifest_motion(tmp_path, monkeypatch):
+    """Adol-style characters keep every usable motion set in a variant directory."""
+    library = _library(tmp_path, monkeypatch)
+    character_dir = tmp_path / "assets" / "characters" / "char-Adol"
+    motions = character_dir / "motions"
+    for variant in ("og", "development_a", "development_b", "event"):
+        (motions / variant).mkdir(parents=True, exist_ok=True)
+        (motions / variant / "idle.webm").write_bytes(variant.encode())
+        (motions / variant / "annoy.webm").write_bytes(variant.encode())
+        (motions / variant / "wave_response.webm").write_bytes(variant.encode())
+    (character_dir / "manifest.json").write_text(json.dumps({
+        "id": "char-Adol", "motions_dir": "assets/characters/char-Adol/motions",
+        # This is a stale flat mapping from the last applied event style.
+        "motions": {"idle": "assets/characters/char-Adol/motions/event/idle.webm"},
+        "active_variant": "og", "selected_generations": {},
+    }), encoding="utf-8")
+
+    for variant in ("og", "development_a", "development_b", "event"):
+        library.set_active_variant("char-Adol", variant)
+        assert Path(library.get_motion_path("char-Adol", "idle")).read_bytes() == variant.encode()
+        assert Path(library.get_motion_path("char-Adol", "angry")).read_bytes() == variant.encode()
+
+
+def test_reset_style_state_returns_to_og_and_forgets_selected_generations(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+    character_dir = tmp_path / "assets" / "characters" / "pet"
+    (character_dir / "motions" / "og").mkdir(parents=True)
+    (character_dir / "motions" / "og" / "idle.webm").write_bytes(b"og")
+    (character_dir / "manifest.json").write_text(json.dumps({
+        "id": "pet", "motions_dir": "assets/characters/pet/motions", "motions": {},
+        "active_variant": "event", "selected_generations": {"event": {"generation": 2}},
+    }), encoding="utf-8")
+
+    manifest = library.reset_style_state("pet")
+
+    assert manifest["active_variant"] == "og"
+    assert manifest["selected_generations"] == {}
 
 
 def test_generation_miss_falls_back_to_manifest_motion_path(tmp_path, monkeypatch):

@@ -13,6 +13,7 @@ import sys
 import time
 from uuid import uuid4
 
+import config
 from PyQt5.QtCore import QEvent, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
 from PyQt5.QtWebChannel import QWebChannel
@@ -33,6 +34,7 @@ from ui.character_ui_bridge import CharacterUiBridge
 from ui.js_gateway import JsGateway
 from ui.harness_ui_bridge import HarnessUiBridge
 from ui.web_page_widgets import DeveloperInputLineEdit, EchoesWebPage
+from ui.proactive_greeter import ProactiveGreeter
 
 
 class TransparentWindow(QMainWindow):
@@ -110,6 +112,10 @@ class TransparentWindow(QMainWindow):
         self._stt_available = False
         self._stt_state = "idle"
         self._stt_controller = None
+        self._proactive_greeting_active = False
+        self._proactive_greeting_release_timer = QTimer(self)
+        self._proactive_greeting_release_timer.setInterval(100)
+        self._proactive_greeting_release_timer.timeout.connect(self._clear_finished_greeting)
         self._latest_agentic_event: dict[str, object] | None = None
         self._spoken_chunks: dict[str, list[str]] = {}
         self._playtime_character_id: str | None = None
@@ -123,6 +129,13 @@ class TransparentWindow(QMainWindow):
         self._js_gateway = JsGateway(lambda: self.web_view.page(), self.RAW_JAVASCRIPT_MARKER)
         self._init_developer_input()
         self._init_tray()
+        self._greeter = ProactiveGreeter(
+            self._speak_proactive_greeting,
+            lambda: self.is_busy,
+            list(config.PROACTIVE_GREETING_PHRASES),
+            config.PROACTIVE_GREETING_INTERVAL_SEC,
+        )
+        self._greeter.start()
 
     def configure_motion(self, coordinator) -> None:
         """Receive the composition-root-owned coordinator and its JS callbacks."""
@@ -411,8 +424,12 @@ class TransparentWindow(QMainWindow):
         stop_music_action.triggered.connect(self.stop_music)
         action_menu.addAction(stop_music_action)
 
-        reset_action = QAction("重置狀態", self)
-        reset_action.triggered.connect(self.reset_runtime_state)
+        clear_chat_action = QAction("清空聊天室", self)
+        clear_chat_action.triggered.connect(self.clear_chat_history)
+        menu.addAction(clear_chat_action)
+
+        reset_action = QAction("完整重置（回到初始狀態）", self)
+        reset_action.triggered.connect(self.reset_to_initial_state)
         menu.addAction(reset_action)
 
         save_action = QAction("儲存進度", self)
@@ -641,7 +658,9 @@ class TransparentWindow(QMainWindow):
     @property
     def is_busy(self) -> bool:
         return (
-            self._stt_listening
+            self._proactive_greeting_active
+            or self._conversation_pending
+            or self._stt_listening
             or (self._motion_coordinator is not None and (
                 self._motion_coordinator.is_tts_busy or self._motion_coordinator.has_active_motion
             ))
@@ -737,6 +756,9 @@ class TransparentWindow(QMainWindow):
         self._apply_stt_button_state()
 
     def _handle_stt_button_clicked(self):
+        if getattr(self, "_proactive_greeting_active", False) is True:
+            self.set_action_status("請等我說完再輸入。", tone="warn", timeout_ms=1800)
+            return
         if not self._stt_available:
             self.set_action_status("語音輸入尚未就緒。", tone="warn", timeout_ms=3200)
             return
@@ -931,6 +953,9 @@ class TransparentWindow(QMainWindow):
         cleaned = str(text or "").strip()
         if not cleaned:
             self.set_action_status("Please enter text first.", tone="warn", timeout_ms=2200)
+            return
+        if getattr(self, "_proactive_greeting_active", False) is True:
+            self.set_action_status("請等我說完再輸入。", tone="warn", timeout_ms=1800)
             return
         coordinator = getattr(self, "_motion_coordinator", None)
         if self._conversation_pending or bool(getattr(coordinator, "has_active_motion", False)) or bool(getattr(coordinator, "is_tts_busy", False)):
@@ -1230,7 +1255,23 @@ class TransparentWindow(QMainWindow):
         from pet_harness.app.commands import ActionCommand
         self._action_bus.execute(ActionCommand("reset", source="ui"))
 
+    def reset_to_initial_state(self):
+        from pet_harness.app.commands import ActionCommand
+        self._action_bus.execute(ActionCommand("reset_all", source="ui"))
+
+    def clear_chat_history(self):
+        """Clear only rendered conversation history; runtime state stays intact."""
+        self.clear_conversation_turns()
+        self.set_action_status("聊天室已清空。", tone="idle", timeout_ms=1800)
+
     def reset_presentation(self):
+        self._proactive_greeting_active = False
+        release_timer = getattr(self, "_proactive_greeting_release_timer", None)
+        if release_timer is not None:
+            release_timer.stop()
+        greeter = getattr(self, "_greeter", None)
+        if greeter is not None:
+            greeter.reset()
         if self._stt_state == "listening":
             self.stt_stop_requested.emit()
         self._conversation_pending = False
@@ -1247,6 +1288,23 @@ class TransparentWindow(QMainWindow):
         self._run_javascript("resetUiRoute")
         self.restore_idle_video()
         self.set_action_status("已重置，等待下一次互動。", tone="idle", timeout_ms=2400)
+
+    def _speak_proactive_greeting(self, message: str) -> None:
+        self._proactive_greeting_active = True
+        trace_id = f"greeting-{uuid4().hex}"
+        self.show_synthetic_conversation_turn("主動打招呼", "", message)
+        if not self.dispatch_action(
+            f"[ACTION:wave_response] {message}", trace_id=trace_id,
+            allow_tts=True, wait_for_tts_start=True,
+        ):
+            self.speak_text(message, trace_id=trace_id)
+        self._proactive_greeting_release_timer.start()
+
+    def _clear_finished_greeting(self) -> None:
+        coordinator = self._motion_coordinator
+        if coordinator is None or not coordinator.is_tts_busy:
+            self._proactive_greeting_active = False
+            self._proactive_greeting_release_timer.stop()
 
     def get_current_character_id(self) -> str | None:
         """UI 動作/idle/聲線一律以 router snapshot 為唯一 active character 來源。"""

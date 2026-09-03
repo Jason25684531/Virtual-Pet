@@ -53,6 +53,20 @@ def test_reset_presentation_clears_stt_conversation_busy_and_ui_route():
     assert window._conversation_trace_id is None
 
 
+def test_clear_chat_history_only_clears_rendered_turns():
+    calls = []
+    window = SimpleNamespace(
+        clear_conversation_turns=lambda: calls.append("clear-turns"),
+        set_action_status=lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    from ui.transparent_window import TransparentWindow
+    TransparentWindow.clear_chat_history(window)
+
+    assert calls[0] == "clear-turns"
+    assert calls[1][0][0] == "聊天室已清空。"
+
+
 class _Window:
     def __init__(self): self.calls = []
     def _on_action_bus_conversation(self, payload): self.calls.append(("conversation", payload))

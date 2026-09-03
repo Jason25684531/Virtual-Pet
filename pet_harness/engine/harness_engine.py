@@ -16,6 +16,7 @@ from pet_harness.agent.prompt_builder import PromptBuilder
 from pet_harness.agent.provider_adapter import LLMProviderAdapter, ProviderReply
 from pet_harness.agent.result_parser import ResultParser
 from pet_harness.asset.factory import build_asset_service
+from pet_harness.asset.mock_asset_service import MockAssetService
 from pet_harness.behavior.behavior_manager import BehaviorManager
 from pet_harness.character.profile import CharacterProfile
 from pet_harness.memory.base_memory_store import BaseMemoryStore, NullMemoryStore
@@ -943,7 +944,7 @@ class PetHarnessEngine:
         if self.growth_trigger is not None:
             growth = (
                 self.growth_trigger.on_interaction(event.event_id)
-                if not config.COMFYUI_ENABLED
+                if isinstance(self.asset_service, MockAssetService)
                 else self.growth_trigger.on_xp_awarded(self.store.get_user_progress()["xp_total"], event.event_id)
             )
             if growth is not None:

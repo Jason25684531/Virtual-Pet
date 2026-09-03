@@ -697,10 +697,17 @@
             return;
         }
         var failed = job.status === 'failed' || job.status === 'timed_out';
+        var progress = Math.max(0, Math.min(100, Number(job.progress_percent) || 0));
+        var label = renderActivityBadge.querySelector('.render-activity-badge__label');
+        var value = renderActivityBadge.querySelector('.render-activity-badge__value');
+        var fill = renderActivityBadge.querySelector('.render-activity-badge b');
         renderActivityBadge.hidden = false;
         renderActivityBadge.classList.toggle('is-active', !failed);
         renderActivityBadge.classList.toggle('is-failed', failed);
-        renderActivityBadge.setAttribute('aria-label', failed ? 'Render failed' : 'Render in progress');
+        if (label) label.textContent = failed ? '生成失敗' : '生成中';
+        if (value) value.textContent = failed ? '!' : Math.round(progress) + '%';
+        if (fill) fill.style.width = progress + '%';
+        renderActivityBadge.setAttribute('aria-label', failed ? 'Render failed' : 'Render ' + Math.round(progress) + '%');
         if (failed) {
             renderProgressCloseTimer = window.setTimeout(function () { renderActivity(null); }, 2000);
         }
@@ -715,6 +722,15 @@
             var active = relevant.filter(function (job) { return ['queued', 'uploading', 'submitted', 'running'].indexOf(job.status) >= 0; })[0];
             var terminal = relevant[0];
             renderActivity(active || (terminal && ['failed', 'timed_out'].indexOf(terminal.status) >= 0 ? terminal : null));
+            if (active) lastNullRenderJobId = null;
+            if (terminal && terminal.status === 'completed' && terminal.job_id !== lastCompletedRenderJobId) {
+                lastCompletedRenderJobId = terminal.job_id;
+                refreshStyleSlots(requestedCharacter);
+            }
+            if (terminal && terminal.status === 'completed' && terminal.output_null && terminal.job_id !== lastNullRenderJobId) {
+                lastNullRenderJobId = terminal.job_id;
+                setStatus('本次無新造型', 'idle', 3600);
+            }
         }).catch(function () {});
     }
 
@@ -843,6 +859,8 @@
     var styleRefreshSequence = 0;
     var renderProgressTimer = null;
     var renderProgressCloseTimer = null;
+    var lastCompletedRenderJobId = null;
+    var lastNullRenderJobId = null;
 
     function refreshStyleSlots(characterId) {
         if (!characterId) return Promise.resolve();

@@ -27,6 +27,19 @@ skills-lock.json
 
 # Generated application data
 assets/
+!assets/
+assets/*
+!assets/presets/
+assets/presets/*
+!assets/presets/development_a/
+assets/presets/development_a/*
+!assets/presets/development_a/idle.webm
+!assets/presets/development_b/
+assets/presets/development_b/*
+!assets/presets/development_b/idle.webm
+!assets/presets/event/
+assets/presets/event/*
+!assets/presets/event/idle.webm
 docs/
 ui/assets/
 !ui/assets/

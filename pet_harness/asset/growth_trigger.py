@@ -77,7 +77,8 @@ class GrowthTriggerService:
         metadata = {"threshold": threshold, "preset": preset}
         if threshold == 9:
             metadata.update({"output": None, "preset": None})
-        offer = self._offer("development", "interaction_milestone", source_event_id, require_context=False, metadata=metadata)
+        variant = preset or "development"
+        offer = self._offer(variant, "interaction_milestone", source_event_id, require_context=False, metadata=metadata)
         if offer is not None:
             self._store.set_setting(
                 "asset_triggered_interaction_thresholds",

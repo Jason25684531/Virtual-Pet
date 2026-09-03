@@ -107,12 +107,17 @@ class QuickIntentHandler(EventActionHandler):
 
 
 class ResetHandler(ActionHandler):
-    def __init__(self, motion, cancel_conversation: Callable[[], bool]) -> None:
+    def __init__(self, motion, cancel_conversation: Callable[[], bool], reset_domain: Callable[..., None] | None = None) -> None:
         self._motion = motion
         self._cancel = cancel_conversation
-    def can_handle(self, command: ActionCommand) -> bool: return command.action == "reset"
+        self._reset_domain = reset_domain or (lambda: None)
+    def can_handle(self, command: ActionCommand) -> bool: return command.action in {"reset", "reset_all"}
     def handle(self, command: ActionCommand) -> ActionResult:
         self._cancel()
+        if command.action == "reset_all":
+            self._reset_domain(True)
+        else:
+            self._reset_domain()
         self._motion.reset()
         return ActionResult("ok", payload={"accepted": True})
 

@@ -507,6 +507,24 @@ class TestGetActiveState:
         with pytest.raises(ValueError, match="not ready"):
             ui_service.apply_style("Choppr", "event")
 
+    def test_style_menu_hides_untriggered_variants(self, service, monkeypatch):
+        ui_service, router, _registry = service
+        profile = router.switch_character("Choppr")
+        store = SQLiteStore(profile.sqlite_path)
+        store.initialize()
+        monkeypatch.setattr(character_ui_module.CharacterLibrary, "list_variant_inventory", lambda _self, _id: [
+            {"variant": "og", "state": "ready", "thumb": "", "is_active": True},
+            {"variant": "development", "state": "ready", "thumb": "", "is_active": False},
+            {"variant": "event", "state": "ready", "thumb": "", "is_active": False},
+        ])
+
+        assert [item["variant"] for item in ui_service.list_style_variants("Choppr")] == ["og"]
+
+        job = AssetRepository(store).create_job(AssetJob("Choppr", "variant_png", "development", "growth-3"))
+        AssetRepository(store).update(job.job_id, JobStatus.COMPLETED)
+
+        assert [item["variant"] for item in ui_service.list_style_variants("Choppr")] == ["og", "development"]
+
     def test_first_time_generation_stays_empty_until_content_lands(self, service, monkeypatch):
         ui_service, router, _registry = service
         router.switch_character("Choppr")
@@ -523,8 +541,13 @@ class TestGetActiveState:
         assert ui_service.list_style_variants("Choppr")[0]["state"] == "empty"
 
     def test_applying_variant_without_background_clears_the_previous_background(self, service, monkeypatch):
-        ui_service, _router, _registry = service
+        ui_service, router, _registry = service
         manifest = {"background_image": "old-background.png"}
+        profile = router.switch_character("Choppr")
+        store = SQLiteStore(profile.sqlite_path)
+        store.initialize()
+        job = AssetRepository(store).create_job(AssetJob("Choppr", "variant_png", "event", "event-ready"))
+        AssetRepository(store).update(job.job_id, JobStatus.COMPLETED)
 
         class Library:
             def list_variant_inventory(self, _character_id):
@@ -546,9 +569,14 @@ class TestGetActiveState:
         assert result["background_image"] == ""
 
     def test_applying_variant_in_manual_mode_does_not_touch_background(self, service, monkeypatch):
-        ui_service, _router, _registry = service
+        ui_service, router, _registry = service
         manifest = {"background_image": "manual-background.png"}
         calls = []
+        profile = router.switch_character("Choppr")
+        store = SQLiteStore(profile.sqlite_path)
+        store.initialize()
+        job = AssetRepository(store).create_job(AssetJob("Choppr", "variant_png", "event", "event-ready"))
+        AssetRepository(store).update(job.job_id, JobStatus.COMPLETED)
 
         class Library:
             def list_variant_inventory(self, _character_id):

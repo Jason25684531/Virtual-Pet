@@ -131,11 +131,23 @@ class CharacterUiService:
         profile, _ = self._router.load_profile(character_id)
         store = SQLiteStore(profile.sqlite_path)
         store.initialize()
+        jobs = store.list_asset_jobs(character_id)
+        generated_variants = {
+            str(job["variant"])
+            for job in jobs
+            if job["workflow_type"] in {"variant_png", "motion_set", "motion_clip"}
+            and job["status"] in {"queued", "uploading", "submitted", "running", "completed"}
+            and job.get("metadata", {}).get("output", "preset") is not None
+        }
         generating = {
-            job.variant for job in AssetRepository(store).pending()
-            if job.workflow_type == "variant_png" or job.workflow_type == "motion_clip" and job.motion_key == "idle"
+            str(job["variant"])
+            for job in jobs
+            if job["status"] in {"queued", "uploading", "submitted", "running"}
         }
         motion_offer = self._active_pending_motion_offer(store)
+        if motion_offer:
+            generated_variants.add(str(motion_offer["variant"]))
+        items = [item for item in items if item["variant"] == "og" or item["variant"] in generated_variants]
         for item in items:
             # 未落地任何素材的格子不進「生成中」態,避免 HUD 顯示空白預覽的生成中格子。
             if item["variant"] in generating and item["state"] != "empty":
@@ -162,6 +174,7 @@ class CharacterUiService:
                 "progress_percent": percent,
                 "status": job["status"],
                 "error_message": job.get("error_message"),
+                "output_null": "output" in job.get("metadata", {}) and job.get("metadata", {}).get("output") is None,
             })
         return result
 
@@ -247,6 +260,7 @@ class CharacterUiService:
             return {"accepted": False, "pending": False}
         context = "\n".join(str(row["text"]) for row in self._active_memory_rows(store, character_id))[:2000]
         metadata = {"variant_type": str(offer["variant"]), "trigger_reason": str(offer["reason"])}
+        metadata.update(dict(offer.get("metadata") or {}))
         if metadata["variant_type"] == "event":
             metadata["event_prompt"] = self._select_festival_prompt(store)
         response = build_asset_service(store, character_id, CharacterLibrary()).create_asset(AssetRequest(
@@ -254,7 +268,9 @@ class CharacterUiService:
             source_event_id=str(offer["source_event_id"]),
             metadata=metadata,
         ))
-        accepted = response.status in {"queued", "completed"} and response.metadata.get("service") != "mock_asset_service"
+        accepted = response.status in {"queued", "completed"} and (
+            response.metadata.get("service") != "mock_asset_service" or bool(response.job_id)
+        )
         if accepted:
             store.set_setting("asset_pending_offer", None)
             store.set_setting("asset_generation_freeze", {"created_at": utc_now()})
