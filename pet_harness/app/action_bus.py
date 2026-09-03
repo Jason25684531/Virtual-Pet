@@ -1,8 +1,15 @@
-from .action_handler import ActionHandler
-from .commands import ActionCommand
+from abc import ABC, abstractmethod
+
+from .commands import ActionCommand, ActionResult, AppEvent
 from .event_bus import SimpleEventBus
-from .events import AppEvent
-from .results import ActionResult
+
+
+class ActionHandler(ABC):
+    @abstractmethod
+    def can_handle(self, command: ActionCommand) -> bool: ...
+
+    @abstractmethod
+    def handle(self, command: ActionCommand) -> ActionResult: ...
 
 
 class ActionBus:

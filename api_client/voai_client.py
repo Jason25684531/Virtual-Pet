@@ -33,10 +33,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _get_api_key() -> str:
-    return (
-        os.getenv("VOAI_API_KEY", "").strip()
-        or os.getenv("VoAI_API_KEY", "").strip()
-    )
+    return config.get_voai_api_key()
 
 
 def _classify_fast_fail(exc: Exception) -> tuple[str, str, bool]:

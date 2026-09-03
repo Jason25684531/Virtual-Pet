@@ -12,10 +12,10 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+from config import PROJECT_ROOT
 from pet_harness.storage.sqlite_store import SQLiteStore
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
 ASSETS_WEBM_DIR = PROJECT_ROOT / "assets" / "webm"
 CHARACTER_LIBRARY_DIR = PROJECT_ROOT / "assets" / "characters"
 LEGACY_CHARACTER_LIBRARY_DIR = ASSETS_WEBM_DIR / "characters"
@@ -45,12 +45,6 @@ LEGACY_TO_CANONICAL_ACTION_ALIASES = {legacy: canonical for canonical, legacy in
 
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
-
-
-def _slugify(value: str) -> str:
-    cleaned = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "-", value.strip())
-    cleaned = re.sub(r"-+", "-", cleaned).strip("-_")
-    return cleaned or "character"
 
 
 def _character_id(value: str) -> str:
@@ -94,42 +88,6 @@ class CharacterLibrary:
         if not character_dir.is_dir():
             raise FileNotFoundError(f"character not found: {character_id}")
         shutil.rmtree(character_dir)
-
-    def create_character(self, image_path: str, display_name: str = "") -> dict:
-        source_path = Path(image_path)
-        if not source_path.is_file():
-            raise FileNotFoundError(f"找不到角色圖片: {image_path}")
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_name = _slugify(display_name or source_path.stem)
-        character_id = f"{timestamp}_{base_name}"
-
-        character_dir = CHARACTER_LIBRARY_DIR / character_id
-        source_dir = character_dir / "source"
-        motions_dir = character_dir / "motions"
-        source_dir.mkdir(parents=True, exist_ok=False)
-        motions_dir.mkdir(parents=True, exist_ok=True)
-
-        copied_name = f"source{source_path.suffix.lower()}"
-        copied_path = source_dir / copied_name
-        shutil.copy2(source_path, copied_path)
-
-        manifest = {
-            "id": character_id,
-            "name": display_name.strip() or source_path.stem,
-            "created_at": _now_iso(),
-            "updated_at": _now_iso(),
-            "source_image": self._to_relative(copied_path),
-            "source_dir": self._to_relative(source_dir),
-            "motions_dir": self._to_relative(motions_dir),
-            "motions": {},
-            "active_variant": "og",
-            "selected_generations": {},
-            "positive_prompt": "",
-            "negative_prompt": "",
-        }
-        self._save_manifest(character_id, manifest)
-        return manifest
 
     def create_validated_character(self, character_id: str, image_path: str, display_name: str, voice_gender: str = "") -> dict:
         source_path = Path(image_path)
@@ -407,9 +365,6 @@ class CharacterLibrary:
             return int(selected["generation"])
         return int(revisions[-1]["generation"])
 
-    def _has_revision_history(self, character_id: str, variant: str) -> bool:
-        return bool(self._asset_store(character_id).list_character_assets(character_id, active_only=False, variant=variant))
-
     def _generation_motion_file(self, character_id: str, variant: str, generation: int, motion_key: str) -> Path:
         root = self._manifest_path(character_id).parent / "motions" / variant
         revision = root / f"g{generation:02d}" / f"{motion_key}.webm"
@@ -511,9 +466,6 @@ class CharacterLibrary:
                 continue
             effective[canonical] = motion_key
         return effective
-
-    def is_valid_action_tag(self, character_id: str | None, action_tag: str | None) -> bool:
-        return self.resolve_action_tag(character_id, action_tag) is not None
 
     def _resolve_idle_pool_entry(
         self,
@@ -652,12 +604,6 @@ class CharacterLibrary:
         if not absolute_path.is_file():
             return None
         return str(absolute_path)
-
-    def get_source_dir_path(self, character_id: str) -> str:
-        manifest = self.get_character(character_id)
-        if not manifest:
-            raise FileNotFoundError(f"找不到角色資料: {character_id}")
-        return str(PROJECT_ROOT / manifest["source_dir"])
 
     def get_motions_dir_path(self, character_id: str) -> str:
         manifest = self.get_character(character_id)

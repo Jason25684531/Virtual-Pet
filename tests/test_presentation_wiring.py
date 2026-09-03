@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 from types import SimpleNamespace
 
 from pet_harness.app.event_bus import SimpleEventBus
-from pet_harness.app.events import AppEvent
+from pet_harness.app.commands import AppEvent
 from ui.presentation_wiring import MotionPortAdapter, PresentationEventBinder
 
 

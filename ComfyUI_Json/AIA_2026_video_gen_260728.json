@@ -1,0 +1,952 @@
+{
+  "618": {
+    "inputs": {
+      "fps": 24,
+      "images": [
+        "756",
+        0
+      ]
+    },
+    "class_type": "PreviewAnimation",
+    "_meta": {
+      "title": "Preview Animation 97x720x1280"
+    }
+  },
+  "628": {
+    "inputs": {
+      "text": "```\n350\n```",
+      "anything": [
+        "629",
+        0
+      ]
+    },
+    "class_type": "easy showAnything",
+    "_meta": {
+      "title": "Show Any"
+    }
+  },
+  "629": {
+    "inputs": {
+      "text_prompt": "你現在是一個角色分類機器人，你的工作是辨識輸入的角色圖片的身高、胖瘦、年齡、性別(男:M，女:F)，並將分析結果套用到以下分類表中對應或最相近的分類。最終只要輸出純數字\n\n以下是將分類系統轉換為純文字清單的版本。每一行代表一種組合，使用「 | 」符號分隔不同屬性。\n資料排列順序為： [編號] 類型名稱 | 頭身比 | 視覺年齡 | 身高範圍 | 特徵與範例\n[350] 極度Q版/SD | 2頭身 | 不限(吉祥物) | 30-60cm | 無頸部，手腳呈圓球狀，強調可愛 (例：黏土人) \n[350] 微Q版 | 3頭身 | 幼兒/吉祥物 | 60-90cm | 略微拉長，可見手肘膝蓋，動作較靈活 (例：飛天小女警) \n[350] 幼兒體型 | 4頭身 | 3-5歲 | 85-110cm | 頭大肩窄，腹部凸出，四肢短圓 (例：蠟筆小新) \n[350] 兒童體型 | 5頭身 | 6-10歲 | 110-135cm | 出現腰身，腿部拉長，典型小學生 (例：名偵探柯南) \n[350] 少男少女型 | 6頭身 | 12-14歲 | 140-158cm | 國中生骨架，纖細未完全發育 (例：EVA駕駛員) \n[350] 標準萌系/高中 | 6.5頭身 | 15-17歲 | 158-170cm | 動漫最主流比例，兼具可愛與成熟 (例：輕音部) \n[350] 標準寫實型 | 7頭身 | 18-22歲 | 165-178cm | 接近現實亞洲成人，萬用型 (例：咒術迴戰) \n[350] 模特/長腿型 | 7.5頭身 | 20-30歲 | 175-185cm | 強調女性曲線或男性寬肩，修長美感 (例：航海王羅賓) \n[350] 英雄壯碩型 | 8頭身 | 25-40歲 | 180-195cm | 頭部比例小，極具力量與壓迫感 (例：超人特攻隊) \n[350] 超長身/誇張型 | 9頭身以上 | 不限 | 200cm+ | 異樣修長，強調華麗或非寫實氣場 (例：CLAMP作品) \n[350] 非人形角色、無四肢角色、物件。(有四肢的機器人算是人型)\n最終只要輸出純數字。絕對不能有其他字元、符號出現。 \n",
+      "azure_endpoint": "https://rogaiasteven.cognitiveservices.azure.com/",
+      "deployment_name": "gpt-4o",
+      "api_key": "",
+      "api_version": "2024-12-01-preview",
+      "max_tokens": 1024,
+      "images": [
+        "735",
+        0
+      ]
+    },
+    "class_type": "Azure_ChatGPT_Node",
+    "_meta": {
+      "title": "Azure ChatGPT (4o/4o-mini)"
+    }
+  },
+  "654": {
+    "inputs": {
+      "a": [
+        "661",
+        0
+      ],
+      "b": 3,
+      "operation": "add"
+    },
+    "class_type": "easy mathInt",
+    "_meta": {
+      "title": "Awkward Hand Wave"
+    }
+  },
+  "655": {
+    "inputs": {
+      "a": [
+        "661",
+        0
+      ],
+      "b": 1,
+      "operation": "add"
+    },
+    "class_type": "easy mathInt",
+    "_meta": {
+      "title": "Cheerful Laugh"
+    }
+  },
+  "656": {
+    "inputs": {
+      "a": [
+        "661",
+        0
+      ],
+      "b": 7,
+      "operation": "add"
+    },
+    "class_type": "easy mathInt",
+    "_meta": {
+      "title": "Pleasant Smile"
+    }
+  },
+  "658": {
+    "inputs": {
+      "a": [
+        "661",
+        0
+      ],
+      "b": 6,
+      "operation": "add"
+    },
+    "class_type": "easy mathInt",
+    "_meta": {
+      "title": "Waving"
+    }
+  },
+  "659": {
+    "inputs": {
+      "a": [
+        "661",
+        0
+      ],
+      "b": 5,
+      "operation": "add"
+    },
+    "class_type": "easy mathInt",
+    "_meta": {
+      "title": "Attentive Listening"
+    }
+  },
+  "660": {
+    "inputs": {
+      "a": [
+        "661",
+        0
+      ],
+      "b": 2,
+      "operation": "add"
+    },
+    "class_type": "easy mathInt",
+    "_meta": {
+      "title": "Annoyed Pout"
+    }
+  },
+  "661": {
+    "inputs": {
+      "input": [
+        "769",
+        0
+      ]
+    },
+    "class_type": "Basic data handling: CastToInt",
+    "_meta": {
+      "title": "to INT"
+    }
+  },
+  "662": {
+    "inputs": {
+      "a": [
+        "661",
+        0
+      ],
+      "b": 4,
+      "operation": "add"
+    },
+    "class_type": "easy mathInt",
+    "_meta": {
+      "title": "Speechless Eye Roll"
+    }
+  },
+  "683": {
+    "inputs": {
+      "text": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走 ",
+      "clip": [
+        "704",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Negative Prompt)"
+    }
+  },
+  "684": {
+    "inputs": {
+      "ckpt_name": "Wan2.1\\sam3.1_multiplex_fp16.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "Load Checkpoint"
+    }
+  },
+  "685": {
+    "inputs": {
+      "enable_fp16_accumulation": true,
+      "model": [
+        "707",
+        0
+      ]
+    },
+    "class_type": "ModelPatchTorchSettings",
+    "_meta": {
+      "title": "Model Patch Torch Settings"
+    }
+  },
+  "686": {
+    "inputs": {
+      "shift": 5,
+      "model": [
+        "685",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingSD3",
+    "_meta": {
+      "title": "ModelSamplingSD3"
+    }
+  },
+  "687": {
+    "inputs": {
+      "resize_type": "scale to multiple",
+      "resize_type.multiple": 32,
+      "scale_method": "nearest-exact",
+      "input": [
+        "694",
+        0
+      ]
+    },
+    "class_type": "ResizeImageMaskNode",
+    "_meta": {
+      "title": "Resize Image/Mask"
+    }
+  },
+  "688": {
+    "inputs": {
+      "crop": "none",
+      "clip_vision": [
+        "706",
+        0
+      ],
+      "image": [
+        "687",
+        0
+      ]
+    },
+    "class_type": "CLIPVisionEncode",
+    "_meta": {
+      "title": "CLIP Vision Encode"
+    }
+  },
+  "689": {
+    "inputs": {
+      "frame_rate": 24,
+      "loop_count": 0,
+      "filename_prefix": "AnimateDiff",
+      "format": "video/h264-mp4",
+      "pix_fmt": "yuv420p",
+      "crf": 19,
+      "save_metadata": true,
+      "trim_to_audio": false,
+      "pingpong": false,
+      "save_output": false,
+      "images": [
+        "710",
+        0
+      ]
+    },
+    "class_type": "VHS_VideoCombine",
+    "_meta": {
+      "title": "Video Combine 🎥🅥🅗🅢"
+    }
+  },
+  "690": {
+    "inputs": {
+      "images": [
+        "710",
+        1
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "693": {
+    "inputs": {
+      "value": false
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Character Replacement"
+    }
+  },
+  "694": {
+    "inputs": {
+      "resize_type": "scale total pixels",
+      "resize_type.megapixels": 0.9,
+      "scale_method": "nearest-exact",
+      "input": [
+        "735",
+        0
+      ]
+    },
+    "class_type": "ResizeImageMaskNode",
+    "_meta": {
+      "title": "Resize Image/Mask"
+    }
+  },
+  "695": {
+    "inputs": {
+      "image": [
+        "687",
+        0
+      ]
+    },
+    "class_type": "GetImageSize",
+    "_meta": {
+      "title": "Get Image Size"
+    }
+  },
+  "700": {
+    "inputs": {
+      "frame_rate": 24,
+      "loop_count": 0,
+      "filename_prefix": "aia_2026_video_gen/mp4/mp4",
+      "format": "video/h264-mp4",
+      "pix_fmt": "yuv420p",
+      "crf": 19,
+      "save_metadata": true,
+      "trim_to_audio": false,
+      "pingpong": false,
+      "save_output": false,
+      "images": [
+        "708",
+        0
+      ]
+    },
+    "class_type": "VHS_VideoCombine",
+    "_meta": {
+      "title": "Video Combine 🎥🅥🅗🅢"
+    }
+  },
+  "701": {
+    "inputs": {
+      "unet_name": "Wan2.1\\wan2.1_14B_SCAIL_2_fp8_scaled.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "702": {
+    "inputs": {
+      "lora_name": "Wan2.2\\lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
+      "strength_model": 1,
+      "model": [
+        "701",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "Load LoRA"
+    }
+  },
+  "704": {
+    "inputs": {
+      "clip_name": "Wan2.1\\umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "type": "wan",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "705": {
+    "inputs": {
+      "vae_name": "Wan2.1\\Wan2_1_VAE_bf16.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "706": {
+    "inputs": {
+      "clip_name": "Wan2.1\\clip_vision_h.safetensors"
+    },
+    "class_type": "CLIPVisionLoader",
+    "_meta": {
+      "title": "Load CLIP Vision"
+    }
+  },
+  "707": {
+    "inputs": {
+      "sage_attention": "disabled",
+      "allow_compile": true,
+      "model": [
+        "702",
+        0
+      ]
+    },
+    "class_type": "PathchSageAttentionKJ",
+    "_meta": {
+      "title": "Patch Sage Attention KJ"
+    }
+  },
+  "708": {
+    "inputs": {
+      "width": [
+        "695",
+        0
+      ],
+      "height": [
+        "695",
+        1
+      ],
+      "seed": 123,
+      "steps": 6,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "window_length": 81,
+      "previous_frame_count": 5,
+      "max_frames": 0,
+      "decode_tiled": false,
+      "vary_seed_per_window": false,
+      "pose_strength": 1,
+      "pose_start": 0,
+      "pose_end": 1,
+      "replacement_mode": [
+        "693",
+        0
+      ],
+      "positive": [
+        "715",
+        0
+      ],
+      "negative": [
+        "683",
+        0
+      ],
+      "model": [
+        "686",
+        0
+      ],
+      "vae": [
+        "705",
+        0
+      ],
+      "pose_video": [
+        "756",
+        0
+      ],
+      "pose_video_mask": [
+        "710",
+        0
+      ],
+      "reference_image": [
+        "687",
+        0
+      ],
+      "reference_image_mask": [
+        "710",
+        1
+      ],
+      "clip_vision_output": [
+        "688",
+        0
+      ]
+    },
+    "class_type": "WanSCAILInfinity",
+    "_meta": {
+      "title": "⚡SCAIL-2 Infinity (auto window)⚡"
+    }
+  },
+  "709": {
+    "inputs": {
+      "detection_threshold": 0.5,
+      "max_objects": 0,
+      "detect_interval": 1,
+      "images": [
+        "687",
+        0
+      ],
+      "model": [
+        "684",
+        0
+      ],
+      "conditioning": [
+        "712",
+        0
+      ]
+    },
+    "class_type": "SAM3_VideoTrack",
+    "_meta": {
+      "title": "SAM3 Video Track"
+    }
+  },
+  "710": {
+    "inputs": {
+      "object_indices": "",
+      "sort_by": "area",
+      "replacement_mode": [
+        "693",
+        0
+      ],
+      "driving_track_data": [
+        "711",
+        0
+      ],
+      "ref_track_data": [
+        "709",
+        0
+      ]
+    },
+    "class_type": "SCAIL2ColoredMask",
+    "_meta": {
+      "title": "Create SCAIL-2 Colored Mask"
+    }
+  },
+  "711": {
+    "inputs": {
+      "detection_threshold": 0.5,
+      "max_objects": 0,
+      "detect_interval": 1,
+      "images": [
+        "756",
+        0
+      ],
+      "model": [
+        "684",
+        0
+      ],
+      "conditioning": [
+        "716",
+        0
+      ]
+    },
+    "class_type": "SAM3_VideoTrack",
+    "_meta": {
+      "title": "SAM3 Video Track"
+    }
+  },
+  "712": {
+    "inputs": {
+      "text": "character",
+      "clip": [
+        "684",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode_Character"
+    }
+  },
+  "715": {
+    "inputs": {
+      "text": "green screen background",
+      "clip": [
+        "704",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Positive Prompt)"
+    }
+  },
+  "716": {
+    "inputs": {
+      "text": "human",
+      "clip": [
+        "684",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode_Reference"
+    }
+  },
+  "727": {
+    "inputs": {
+      "images": [
+        "728",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "728": {
+    "inputs": {
+      "folder_path": "C:\\ComfyUI_windows_portable_260701\\ComfyUI\\output\\AIA2026_CharacterArc\\Gamer_Development",
+      "sort_by": "date",
+      "invert_order": true
+    },
+    "class_type": "CRTLoadLastMedia",
+    "_meta": {
+      "title": "Load Last Image (CRT)"
+    }
+  },
+  "730": {
+    "inputs": {
+      "folder_path": "C:\\ComfyUI_windows_portable_260701\\ComfyUI\\output\\AIA2026_CharacterArc\\Gamer_Event",
+      "sort_by": "date",
+      "invert_order": true
+    },
+    "class_type": "CRTLoadLastMedia",
+    "_meta": {
+      "title": "Load Last Image (CRT)"
+    }
+  },
+  "731": {
+    "inputs": {
+      "images": [
+        "730",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "732": {
+    "inputs": {
+      "images": [
+        "735",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "733": {
+    "inputs": {
+      "folder_path": "C:\\ComfyUI_windows_portable_260701\\ComfyUI\\output\\AIA2026_CharacterArc\\Gamer_OG",
+      "sort_by": "date",
+      "invert_order": false
+    },
+    "class_type": "CRTLoadLastMedia",
+    "_meta": {
+      "title": "Load Last Image (CRT)"
+    }
+  },
+  "734": {
+    "inputs": {
+      "images": [
+        "733",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "735": {
+    "inputs": {
+      "select": 2,
+      "sel_mode": true,
+      "input1": [
+        "733",
+        0
+      ],
+      "input2": [
+        "728",
+        0
+      ],
+      "input3": [
+        "730",
+        0
+      ]
+    },
+    "class_type": "ImpactSwitch",
+    "_meta": {
+      "title": "Switch (Any)"
+    }
+  },
+  "753": {
+    "inputs": {
+      "mask": [
+        "752:101",
+        0
+      ]
+    },
+    "class_type": "InvertMask",
+    "_meta": {
+      "title": "Invert Mask"
+    }
+  },
+  "754": {
+    "inputs": {
+      "image": [
+        "708",
+        0
+      ],
+      "alpha": [
+        "753",
+        0
+      ]
+    },
+    "class_type": "JoinImageWithAlpha",
+    "_meta": {
+      "title": "Join Image with Alpha"
+    }
+  },
+  "756": {
+    "inputs": {
+      "directory": "C:\\ComfyUI_windows_portable_260701\\2026_AIA_MotionVideos",
+      "motion_id_1": 0,
+      "motion_id_2": [
+        "655",
+        0
+      ],
+      "motion_id_3": 0,
+      "motion_id_4": 0,
+      "motion_id_5": 0,
+      "motion_id_6": [
+        "660",
+        0
+      ],
+      "motion_id_7": 0,
+      "motion_id_8": 0,
+      "motion_id_9": 0,
+      "motion_id_10": 0,
+      "motion_id_11": [
+        "654",
+        0
+      ],
+      "motion_id_12": 0,
+      "motion_id_13": [
+        "662",
+        0
+      ],
+      "motion_id_14": 0,
+      "motion_id_15": 0,
+      "motion_id_16": [
+        "659",
+        0
+      ],
+      "motion_id_17": [
+        "658",
+        0
+      ],
+      "motion_id_18": [
+        "656",
+        0
+      ],
+      "motion_id_19": 0,
+      "motion_id_20": 0,
+      "motion_id_21": 0,
+      "motion_id_22": 0,
+      "motion_id_23": 0,
+      "motion_id_24": 0,
+      "motion_id_25": 0,
+      "motion_id_26": 0,
+      "motion_id_27": 0,
+      "motion_id_28": 0,
+      "motion_id_29": 0,
+      "motion_id_30": 0
+    },
+    "class_type": "AutoMotionSequenceOpen",
+    "_meta": {
+      "title": "Auto Motion Sequence (Open)"
+    }
+  },
+  "757": {
+    "inputs": {
+      "flow_control": [
+        "756",
+        3
+      ],
+      "loop_info": [
+        "756",
+        4
+      ],
+      "done_signal_1": [
+        "770",
+        0
+      ]
+    },
+    "class_type": "AutoMotionSequenceClose",
+    "_meta": {
+      "title": "Auto Motion Sequence (Close)"
+    }
+  },
+  "762": {
+    "inputs": {
+      "value": "aia_2026_video_gen/"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Text String (Multiline)"
+    }
+  },
+  "763": {
+    "inputs": {
+      "value": "Chopper"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Text String (Multiline)"
+    }
+  },
+  "764": {
+    "inputs": {
+      "action": "append",
+      "tidy_tags": "no",
+      "text_a": [
+        "762",
+        0
+      ],
+      "text_b": [
+        "763",
+        0
+      ],
+      "text_c": ""
+    },
+    "class_type": "StringFunction|pysssss",
+    "_meta": {
+      "title": "String Function 🐍"
+    }
+  },
+  "765": {
+    "inputs": {
+      "text": "aia_2026_video_gen/Chopper",
+      "anything": [
+        "764",
+        0
+      ]
+    },
+    "class_type": "easy showAnything",
+    "_meta": {
+      "title": "Show Any"
+    }
+  },
+  "766": {
+    "inputs": {
+      "input_text": [
+        "756",
+        1
+      ],
+      "pattern": "^.*[\\\\/]\\d+_[MF]_(.+)\\.[^.\\\\/]+$",
+      "replacement": "\\1",
+      "flags": "0",
+      "ui_widget": "## Result:\n\n  **Original Text**: C:\\ComfyUI_windows_portable_260701\\2026_AIA_MotionVideos\\351_F_Cheerful Laugh.mp4\n  **Regex Pattern**: ^.*[\\\\/]\\d+_[MF]_(.+)\\.[^.\\\\/]+$\n  **Replacement Substring**: \\1\n  **Regex Flags**: 0\n  **Resulting Text**: Cheerful Laugh\n  **Replacements Made**: 1\n        "
+    },
+    "class_type": "LF_RegexReplace",
+    "_meta": {
+      "title": "Regex replace"
+    }
+  },
+  "768": {
+    "inputs": {
+      "separator": "/",
+      "prompt1": [
+        "764",
+        0
+      ],
+      "prompt2": [
+        "766",
+        0
+      ]
+    },
+    "class_type": "easy promptConcat",
+    "_meta": {
+      "title": "PromptConcat"
+    }
+  },
+  "769": {
+    "inputs": {
+      "value": 350
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Int"
+    }
+  },
+  "770": {
+    "inputs": {
+      "frame_rate": 24,
+      "loop_count": 0,
+      "filename_prefix": [
+        "768",
+        0
+      ],
+      "format": "video/webm",
+      "pix_fmt": "yuva420p",
+      "crf": 20,
+      "save_metadata": true,
+      "trim_to_audio": false,
+      "pingpong": false,
+      "save_output": true,
+      "images": [
+        "754",
+        0
+      ]
+    },
+    "class_type": "VHS_VideoCombine_Overwrite",
+    "_meta": {
+      "title": "Video Combine (Overwrite, No Counter) 🎥🅥🅗🅢"
+    }
+  },
+  "752:100": {
+    "inputs": {
+      "text": "the full body person",
+      "clip": [
+        "752:102",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)（去背偵測詞：character 會被 SAM3 當成文字字元，勿用）"
+    }
+  },
+  "752:102": {
+    "inputs": {
+      "ckpt_name": "Wan2.1\\sam3.1_multiplex_fp16.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "Load Checkpoint"
+    }
+  },
+  "752:101": {
+    "inputs": {
+      "threshold": 0.5,
+      "refine_iterations": 2,
+      "individual_masks": false,
+      "model": [
+        "752:102",
+        0
+      ],
+      "image": [
+        "708",
+        0
+      ],
+      "conditioning": [
+        "752:100",
+        0
+      ]
+    },
+    "class_type": "SAM3_Detect",
+    "_meta": {
+      "title": "SAM3 Detect"
+    }
+  },
+  "752:104": {
+    "inputs": {},
+    "class_type": "GetVideoComponents",
+    "_meta": {
+      "title": "Get Video Components"
+    }
+  }
+}

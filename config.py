@@ -339,10 +339,11 @@ def get_voai_config_for_character(character_id: str | None) -> dict:
 
 
 def get_voai_api_key() -> str:
-    """取得 VoAI API key（優先 VOAI_API_KEY，次 VoAI_API_KEY）。"""
+    """取得 VoAI API key（優先 VOAI_API_KEY，其次 VoAI_API_KEY、VOAI_TOKEN）。"""
     return (
         os.getenv("VOAI_API_KEY", "").strip()
         or os.getenv("VoAI_API_KEY", "").strip()
+        or os.getenv("VOAI_TOKEN", "").strip()
     )
 
 
@@ -351,7 +352,7 @@ def resolve_tts_runtime_mode() -> tuple[str, str | None]:
 
     Returns:
         (mode, reason) tuple：
-        - mode: "voai_first" | "fallback_enabled" | "mock_only"
+        - mode: "voai_first" | "fallback_enabled"
         - reason: 解析原因（debug 用），e.g. "voai_api_key_available" 或 "voai_api_key_missing"
     """
     voai_key = get_voai_api_key()

@@ -1,0 +1,632 @@
+{
+  "457": {
+    "inputs": {
+      "strength": 1,
+      "pre_cfg": false,
+      "model": [
+        "459",
+        0
+      ]
+    },
+    "class_type": "CFGNorm",
+    "_meta": {
+      "title": "CFGNorm"
+    }
+  },
+  "458": {
+    "inputs": {
+      "samples": [
+        "462",
+        0
+      ],
+      "vae": [
+        "461",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "459": {
+    "inputs": {
+      "shift": 3,
+      "model": [
+        "469",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": {
+      "title": "ModelSamplingAuraFlow"
+    }
+  },
+  "461": {
+    "inputs": {
+      "vae_name": "qwen_image_edit_2511\\qwen_image_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "462": {
+    "inputs": {
+      "seed": 15454484203189,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "457",
+        0
+      ],
+      "positive": [
+        "474",
+        0
+      ],
+      "negative": [
+        "463",
+        0
+      ],
+      "latent_image": [
+        "471",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "463": {
+    "inputs": {
+      "prompt": "",
+      "clip": [
+        "470",
+        0
+      ],
+      "vae": [
+        "461",
+        0
+      ],
+      "image1": [
+        "464",
+        0
+      ]
+    },
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "_meta": {
+      "title": "TextEncodeQwenImageEditPlus"
+    }
+  },
+  "464": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "megapixels": 1,
+      "resolution_steps": 1,
+      "image": [
+        "496",
+        1
+      ]
+    },
+    "class_type": "ImageScaleToTotalPixels",
+    "_meta": {
+      "title": "Scale Image to Total Pixels"
+    }
+  },
+  "467": {
+    "inputs": {
+      "filename_prefix": "AIA2026_CharacterArc\\Gamer_Development\\Gamer_Development",
+      "images": [
+        "458",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  },
+  "469": {
+    "inputs": {
+      "lora_name": "Qwen_Edit\\Lightning\\Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors",
+      "strength_model": 1,
+      "model": [
+        "722",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "Load LoRA"
+    }
+  },
+  "470": {
+    "inputs": {
+      "clip_name": "Qwen\\qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "471": {
+    "inputs": {
+      "pixels": [
+        "464",
+        0
+      ],
+      "vae": [
+        "461",
+        0
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode"
+    }
+  },
+  "472": {
+    "inputs": {
+      "image": "Gamer_OG_Optimized_00001_.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "474": {
+    "inputs": {
+      "prompt": [
+        "507",
+        0
+      ],
+      "clip": [
+        "470",
+        0
+      ],
+      "vae": [
+        "461",
+        0
+      ],
+      "image1": [
+        "464",
+        0
+      ]
+    },
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "_meta": {
+      "title": "TextEncodeQwenImageEditPlus"
+    }
+  },
+  "475": {
+    "inputs": {
+      "filename_prefix": "AIA2026_CharacterArc\\Gamer_OG\\Gamer_OG",
+      "images": [
+        "496",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "OG"
+    }
+  },
+  "481": {
+    "inputs": {
+      "strength": 1,
+      "pre_cfg": false,
+      "model": [
+        "482",
+        0
+      ]
+    },
+    "class_type": "CFGNorm",
+    "_meta": {
+      "title": "CFGNorm"
+    }
+  },
+  "482": {
+    "inputs": {
+      "shift": 3,
+      "model": [
+        "485",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": {
+      "title": "ModelSamplingAuraFlow"
+    }
+  },
+  "483": {
+    "inputs": {
+      "vae_name": "qwen_image_edit_2511\\qwen_image_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "485": {
+    "inputs": {
+      "lora_name": "Qwen_Edit\\Lightning\\Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors",
+      "strength_model": 1,
+      "model": [
+        "723",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "Load LoRA"
+    }
+  },
+  "486": {
+    "inputs": {
+      "clip_name": "Qwen\\qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "487": {
+    "inputs": {
+      "seed": 734108714673100,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "481",
+        0
+      ],
+      "positive": [
+        "491",
+        0
+      ],
+      "negative": [
+        "489",
+        0
+      ],
+      "latent_image": [
+        "488",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "488": {
+    "inputs": {
+      "pixels": [
+        "493",
+        0
+      ],
+      "vae": [
+        "483",
+        0
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode"
+    }
+  },
+  "489": {
+    "inputs": {
+      "prompt": "",
+      "clip": [
+        "486",
+        0
+      ],
+      "vae": [
+        "483",
+        0
+      ],
+      "image1": [
+        "493",
+        0
+      ]
+    },
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "_meta": {
+      "title": "TextEncodeQwenImageEditPlus"
+    }
+  },
+  "490": {
+    "inputs": {
+      "samples": [
+        "487",
+        0
+      ],
+      "vae": [
+        "483",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "491": {
+    "inputs": {
+      "prompt": "這個角色戴上聖誕帽",
+      "clip": [
+        "486",
+        0
+      ],
+      "vae": [
+        "483",
+        0
+      ],
+      "image1": [
+        "493",
+        0
+      ]
+    },
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "_meta": {
+      "title": "TextEncodeQwenImageEditPlus"
+    }
+  },
+  "492": {
+    "inputs": {
+      "filename_prefix": "AIA2026_CharacterArc\\Gamer_Event\\Gamer_Event",
+      "images": [
+        "490",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  },
+  "493": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "megapixels": 1,
+      "resolution_steps": 1,
+      "image": [
+        "496",
+        2
+      ]
+    },
+    "class_type": "ImageScaleToTotalPixels",
+    "_meta": {
+      "title": "Scale Image to Total Pixels"
+    }
+  },
+  "496": {
+    "inputs": {
+      "select": [
+        "504",
+        0
+      ],
+      "sel_mode": false,
+      "input": [
+        "472",
+        0
+      ]
+    },
+    "class_type": "ImpactInversedSwitch",
+    "_meta": {
+      "title": "Inversed Switch (Any)"
+    }
+  },
+  "498": {
+    "inputs": {
+      "text_prompt": [
+        "501",
+        0
+      ],
+      "azure_endpoint": "https://rogaiasteven.cognitiveservices.azure.com/",
+      "deployment_name": "gpt-4o",
+      "api_key": "",
+      "api_version": "2024-12-01-preview",
+      "max_tokens": 1024
+    },
+    "class_type": "Azure_ChatGPT_Node",
+    "_meta": {
+      "title": "LLM"
+    }
+  },
+  "501": {
+    "inputs": {
+      "action": "append",
+      "tidy_tags": "yes",
+      "text_a": "請幫我根據以下對話內容，判斷這個aia陪伴機器人是否需要造型上的改變，改變共有三個方向分別是:不改變、成長改變、事件改變",
+      "text_b": [
+        "736",
+        0
+      ],
+      "text_c": "分析完以上對話內容，\n判斷角色造型不需要改變請輸出數字1(不要包含任何其他字元、符號，單純一個數字就好)\n判斷角色因為互動、時間而成長或是有其他狀態導致造型變化(疲勞黑眼圈等等)請輸出數字2(不要包含任何其他字元、符號，單純一個數字就好)\n判斷角色因為因特殊節日或活動導致造型變化(聖誕節戴聖誕帽等等)請輸出數字3(不要包含任何其他字元、符號，單純一個數字就好)"
+    },
+    "class_type": "StringFunction|pysssss",
+    "_meta": {
+      "title": "String Function 🐍"
+    }
+  },
+  "504": {
+    "inputs": {
+      "string": [
+        "498",
+        0
+      ]
+    },
+    "class_type": "StringToInt",
+    "_meta": {
+      "title": "String to Int"
+    }
+  },
+  "507": {
+    "inputs": {
+      "text_prompt": [
+        "508",
+        0
+      ],
+      "azure_endpoint": "",
+      "deployment_name": "gpt-4o",
+      "api_key": "",
+      "api_version": "2024-12-01-preview",
+      "max_tokens": 1024,
+      "images": [
+        "496",
+        1
+      ]
+    },
+    "class_type": "Azure_ChatGPT_Node",
+    "_meta": {
+      "title": "LLM"
+    }
+  },
+  "508": {
+    "inputs": {
+      "action": "append",
+      "tidy_tags": "yes",
+      "text_a": [
+        "736",
+        0
+      ],
+      "text_b": "請幫我分析以上對話內容，判斷對話中的AIA陪伴機器人的造型有甚麼改變，並參考這張圖片角色的原始樣貌，生成一段將原角色造型變化的圖像編輯的prompt，只要角色變化就好，保持乾淨無背景。最後只要輸出prompt就好。",
+      "text_c": ""
+    },
+    "class_type": "StringFunction|pysssss",
+    "_meta": {
+      "title": "String Function 🐍"
+    }
+  },
+  "509": {
+    "inputs": {
+      "text": "3",
+      "anything": [
+        "504",
+        0
+      ]
+    },
+    "class_type": "easy showAnything",
+    "_meta": {
+      "title": "Show Any"
+    }
+  },
+  "510": {
+    "inputs": {
+      "action": "append",
+      "tidy_tags": "yes",
+      "text_a": [
+        "736",
+        0
+      ],
+      "text_b": "請幫我分析以上對話內容，判斷對話中的AIA陪伴機器人的造型有甚麼改變，並參考這張圖片角色的原始樣貌，生成一段將原角色造型變化的圖像編輯的prompt，只要角色變化就好，保持乾淨無背景。最後只要輸出prompt就好。",
+      "text_c": ""
+    },
+    "class_type": "StringFunction|pysssss",
+    "_meta": {
+      "title": "String Function 🐍"
+    }
+  },
+  "511": {
+    "inputs": {
+      "text_prompt": [
+        "510",
+        0
+      ],
+      "azure_endpoint": "https://rogaiasteven.cognitiveservices.azure.com/",
+      "deployment_name": "gpt-4o",
+      "api_key": "",
+      "api_version": "2024-12-01-preview",
+      "max_tokens": 1024,
+      "images": [
+        "472",
+        0
+      ]
+    },
+    "class_type": "Azure_ChatGPT_Node",
+    "_meta": {
+      "title": "LLM"
+    }
+  },
+  "722": {
+    "inputs": {
+      "unet_name": "Qwen\\qwen_image_edit_2509_fp8_e4m3fn.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "723": {
+    "inputs": {
+      "unet_name": "Qwen\\qwen_image_edit_2509_fp8_e4m3fn.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "725": {
+    "inputs": {
+      "text": "\"Generate an edited version of the character wearing a loose hoodie and cat ear headphones. Adjust their outfit to reflect a relaxed gamer aesthetic, while keeping the overall proportions consistent and ensuring the background is clean with no elements present.\"",
+      "anything": [
+        "507",
+        0
+      ]
+    },
+    "class_type": "easy showAnything",
+    "_meta": {
+      "title": "Show Any"
+    }
+  },
+  "736": {
+    "inputs": {
+      "value": "使用者：欸，我剛剛滑IG才意識到今天是聖誕節。\n\nAIA陪伴機器人：難怪你今天到現在都還沒吃晚餐，原來是突然發現沒人約，在沙發上懷疑人生嗎？\n\n使用者：靠北喔，我是這幾天工作太忙根本忘記這回事好嗎。剛剛看動態大家都在發耶誕城的限動，現在外面到處都是人，我才懶得去擠。\n\nAIA陪伴機器人：也是，現在出門大概只能看別人的後腦勺，還要吹冷風。不如叫個你最愛的披薩，我們來挑部片看？\n\n使用者：披薩可以，我今天想看點輕鬆的喜劇。不過說真的，本來覺得自己一個人過節有點悶，跟你這樣瞎聊反而滿放鬆的。就算我房間裡連棵聖誕樹都沒有，好像也沒差啦。\n\n使用者：欸？等一下，你的大頭貼怎麼突然多了一頂聖誕帽？我剛剛看還沒有的吧？\n\nAIA陪伴機器人：喔，被你發現了。系統偵測到今天是特殊節日，加上你剛剛說的話讓我們的互動親密度達標，就自動觸發了外觀的隱藏彩蛋。\n\n使用者：笑死，我還以為我的APP壞了。不過滿可愛的啦，本來以為你們這種升級都會變身成什麼聖誕樹或麋鹿之類的，只加一頂帽子還滿低調的。\n\nAIA陪伴機器人：怕太浮誇會嚇到你，維持原來的樣子再加點過節的儀式感剛剛好。怎麼樣，現在你的手機畫面裡總算有點聖誕氣氛了吧？\n\n使用者：有啦，誠意我收到了。這頂帽子看起來滿保暖的，看在你這麼應景的份上，我現在就來點披薩，你順便幫我找找有什麼好笑的喜劇片。\n\nAIA陪伴機器人：沒問題，片單已經在整理了。你慢慢挑口味，我戴著這頂帽子陪你等外送。"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "對話"
+    }
+  },
+  "739": {
+    "inputs": {
+      "text_prompt": "",
+      "azure_endpoint": "https://rogaiasteven.cognitiveservices.azure.com/",
+      "deployment_name": "gpt-4o",
+      "api_key": "",
+      "api_version": "2024-12-01-preview",
+      "max_tokens": 1024
+    },
+    "class_type": "Azure_ChatGPT_Node",
+    "_meta": {
+      "title": "LLM"
+    }
+  },
+  "740": {
+    "inputs": {
+      "text_prompt": "",
+      "azure_endpoint": "https://rogaiasteven.cognitiveservices.azure.com/",
+      "deployment_name": "gpt-4o",
+      "api_key": "",
+      "api_version": "2024-12-01-preview",
+      "max_tokens": 1024
+    },
+    "class_type": "Azure_ChatGPT_Node",
+    "_meta": {
+      "title": "LLM"
+    }
+  }
+}

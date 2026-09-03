@@ -7,6 +7,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 runtime_cache/
+*.zip
 
 # Agent/editor metadata
 openspec/
@@ -55,7 +56,6 @@ ui/assets/buttons/*
 ui/ref_pic/*
 tests/ref_pic/*
 ui/web_container/Web/
-ComfyUI_Json/*
 PNGSample/*
 artifacts/*
 outputs/retrieval_eval/latest.json

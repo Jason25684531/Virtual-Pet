@@ -15,10 +15,10 @@
 │                                                             │
 │  拿不到(全部被 .gitignore):                                │
 │    .env                → 所有 API key                        │
-│    .agentic/*          → soul.md / skills / behavior / rewards│
+│    .agentic/*          → 部分檔案已入庫,其餘需複製              │
 │    skills-lock.json    → 技能鎖定檔                          │
 │    assets/             → 角色 WebM / 圖片 / manifest(最大宗)│
-│    ComfyUI_Json/       → 資產生成 workflow 模板              │
+│    ComfyUI_Json/       → 已入庫的資產生成 workflow 模板      │
 │    data/characters/    → *.db 狀態 / personal.json / qdrant/ │
 │    runtime_cache/      → whisper 模型 / 語意路由索引 / 音檔快取│
 │    docs/、openspec/    → 架構文件與變更管理                  │
@@ -40,10 +40,10 @@ robocopy D:\01_Project\Virtual-Pet <目的地> /E /XD .venv __pycache__ .pytest_
 | 路徑 | 內容 | 不帶的後果 |
 |------|------|-----------|
 | `.env` | VOAI / ElevenLabs / OpenAI 金鑰、COMFYUI/STT 設定 | 快捷動作全靜音;API provider 不可用 |
-| `.agentic/`(soul.md、agentic.md、skills/、behavior/、rewards/) | 人格、技能定義、behavior 映射、獎勵規則 | **對話大腦無人格、無技能、無動畫映射** |
+| `.agentic/`(目前 git 追蹤 behavior_map.json、reward_rules.json、bahamut_daily_news.md、youtube_music_playback.md；其餘檔案仍需複製) | 人格、技能定義、behavior 映射、獎勵規則 | 未複製的檔案會使對話大腦、技能或動畫映射不完整 |
 | `skills-lock.json` | 技能鎖定檔 | SkillLoader 行為不一致 |
 | `assets/webm/characters/` | 角色 manifest + WebM 動作 + 圖片 + 背景 | **無角色可顯示,應用等於空殼** |
-| `ComfyUI_Json/` | ComfyUI workflow 模板 | 資產生成不可用(退回 Mock) |
+| `ComfyUI_Json/` | 已入庫的 ComfyUI workflow 模板 | git clone 即可取得模板；仍需在 ComfyUI 端準備引用的 model/checkpoint |
 | `data/characters/{id}/` | state.db(XP/事件/記憶)、profile.json、personal.json、qdrant/ | 角色從零開始:XP、對話記憶、人設覆寫全失 |
 
 ## 三、建議帶(可重建但成本高)

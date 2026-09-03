@@ -22,7 +22,6 @@ def _configure_sigint_timer(app):
 
 
 def _create_application(argv):
-    import os
     from PyQt5.QtCore import QCoreApplication, Qt
     from PyQt5.QtWidgets import QApplication
 

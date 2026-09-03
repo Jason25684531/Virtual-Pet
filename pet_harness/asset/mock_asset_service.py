@@ -15,13 +15,11 @@ class MockAssetService(AssetService):
     def __init__(
         self,
         store: SQLiteStore,
-        complete_immediately: bool = False,
         character_id: str | None = None,
         library: CharacterLibrary | None = None,
         duration_sec: float | None = None,
     ) -> None:
         self.store = store
-        self.complete_immediately = complete_immediately
         self.character_id = character_id
         self.library = library or CharacterLibrary()
         self.worker = MockRenderWorker(

@@ -33,7 +33,6 @@ class PygameInMemoryAudioPlayer:
     def __init__(self, mixer_module=None, poll_interval: float = 0.02):
         self._mixer = mixer_module or (pygame.mixer if pygame is not None else None)
         self._poll_interval = poll_interval
-        self._initialized = False
 
     def play(self, audio_buffer: io.BytesIO, before_start=None):
         if self._mixer is None:
@@ -68,7 +67,6 @@ class PygameInMemoryAudioPlayer:
     def _ensure_initialized(self):
         get_init = getattr(self._mixer, "get_init", None)
         if callable(get_init) and get_init():
-            self._initialized = True
             return
 
         init = getattr(self._mixer, "init", None)
@@ -81,7 +79,6 @@ class PygameInMemoryAudioPlayer:
             channels=int(os.getenv("PYGAME_MIXER_CHANNELS", "2")),
             buffer=int(os.getenv("PYGAME_MIXER_BUFFER", "512")),
         )
-        self._initialized = True
 
 
 class FfplayPcmAudioPlayer:

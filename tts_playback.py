@@ -5,13 +5,14 @@ from __future__ import annotations
 import inspect
 import logging
 import queue
+import re
 from uuid import uuid4
 
 from PyQt5.QtCore import QTimer
 
 import config
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
-from text_utils import sanitize_tts_text
+from pet_harness.app.commands import ACTION_DIRECTIVE_PATTERN
 
 LOGGER = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ class TtsPlaybackMixin:
         if not self._tts_enabled or tone in {"warn", "error"}:
             return
 
-        speech_text = sanitize_tts_text(message)
+        speech_text = re.sub(r"\s+", " ", ACTION_DIRECTIVE_PATTERN.sub("", message or "")).strip()
         if not speech_text:
             return
 
