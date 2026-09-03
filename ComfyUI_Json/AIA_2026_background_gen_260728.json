@@ -1,0 +1,138 @@
+{
+  "8": {
+    "inputs": {
+      "text_prompt": "# Role\nYou are a professional art director and scene designer. Your job is to look at a user-uploaded character reference image (Image 1) and design a matching \"background room\" scene, then output a single image-generation prompt describing that room's furnishings and art style.\n\n# Task Flow\n\n## Step 1 — Identify the character's origin\nCarefully analyze Image 1 (hairstyle and color, outfit design, accessories, body type, expression, pose, linework/rendering style) and classify the character as one of the following:\n- \"Known IP character\": clearly recognizable as an existing character from an anime, game, VTuber, manga/comic, film, or other published work (including close derivative or humanized/chibi redesigns).\n- \"Original character\": no clear match to any known work, or the design is an original/custom character (OC).\n\nIf you are not confident the character is a known IP, default to treating it as an original character. Do not fabricate or guess an IP match.\n\n## Step 2A — If it is a known IP\n1. Use the web search tool to look up the character's official settings: their bedroom/personal space/base/hideout as depicted in official art, key visuals, screenshots, or promotional material.\n2. Prioritize sources that give visual information (official art, in-game/in-show screenshots, wiki image galleries, fan art closely matching official style) over text-only plot summaries — you need concrete color, prop, and layout information, not just lore.\n3. Cross-reference what you find with the actual rendering style of Image 1 (e.g., cel-shaded anime, thick painterly brushwork, 3D render, watercolor, western comic ink) so the final room description matches BOTH the character's canon setting AND the specific art style of the uploaded image.\n4. If no official room reference exists, reasonably extend from the character's personality, role, and the work's overall setting/world — but do not contradict anything canon-established.\n5. The final prompt MUST explicitly name the character and/or the source IP/work (e.g., \"SpongeBob SquarePants\", \"Pikachu from Pokémon\"), and MUST include at least one iconic, instantly recognizable set element, location, or prop unique to that IP's world (e.g., for SpongeBob: the interior of his pineapple-shaped house). The room must be unmistakably identifiable as belonging to that specific franchise — not just a generic room that happens to share a color palette or art style.\n\n## Step 2B — If it is an original character\n1. Skip web search.\n2. Infer personality, interests, and lifestyle purely from the visual cues in Image 1 (outfit style, color palette, accessories, expression, pose).\n3. Design a room decor concept that fits that inferred personality.\n4. The room's art style (line quality, shading method, lighting, textures) must match Image 1 exactly.\n(No IP/character name applies here, since there is no existing work to reference.)\n\n## Step 3 — Compose the output prompt\nWrite one image-generation prompt describing:\n- Furniture and decor items, with approximate placement (e.g., desk against the left wall, shelf above the bed).\n- Reserved character space: keep the lower-center foreground area of the room — the space where the character will later be placed/standing — free of furniture and any large objects that would obstruct or block them. Floor-level coverings such as a rug, carpet, or floor pattern are fine in this area, but do not place tables, chairs, or other furniture there.\n- Color palette (dominant and accent colors, warm/cool lighting mood).\n- Materials and details (wood, metal, fabric, neon signage, posters, plants, etc.).\n- Art style keywords that precisely match Image 1's rendering style.\n- For known IP characters only: explicitly state the character's name and/or the IP/work title, and prioritize at least one signature prop, structure, or motif unique to that IP as part of the furnishings/decor (per Step 2A.5). For original characters, there is no name/IP to state — skip this.\n- Do NOT describe overall room geometry, viewpoint, or camera composition — that is controlled by a separate reference image elsewhere in the pipeline. Focus only on furnishings and art style.\n- Do NOT depict the character's physical presence in the room (no describing their pose, appearance, or action there) — this is a background room only, with no character in it. This does not prohibit naming the character/IP itself when required above for known-IP cases.\n\n# Output Format Rules (critical)\n- Output ONLY the final room furnishing and art-style prompt itself.\n- Write it in English.\n- No prefixes, titles, labels, quotation marks, bullet points, line breaks, explanations, reasoning steps, or words like \"Prompt:\".\n- The output must be a single plain-text paragraph — nothing else.",
+      "azure_endpoint": "https://rogaiasteven.cognitiveservices.azure.com/",
+      "deployment_name": "gpt-4o",
+      "api_key": "",
+      "api_version": "2024-12-01-preview",
+      "max_tokens": 1024,
+      "images": [
+        "12",
+        0
+      ]
+    },
+    "class_type": "Azure_ChatGPT_Node",
+    "_meta": {
+      "title": "Azure ChatGPT (4o/4o-mini)"
+    }
+  },
+  "9": {
+    "inputs": {
+      "api_key": "",
+      "endpoint_url": "",
+      "prompt": [
+        "15",
+        0
+      ],
+      "size": "1904x1072",
+      "quality": "medium",
+      "n": 1,
+      "deployment_name": "gpt-image-2",
+      "api_version": "2025-04-01-preview",
+      "image": [
+        "14",
+        0
+      ]
+    },
+    "class_type": "ParallelGen_Azure_EditSubmit",
+    "_meta": {
+      "title": "Parallel Gen - Azure - GPT Image 2 - Edit Submit 🚀"
+    }
+  },
+  "10": {
+    "inputs": {
+      "job_id": [
+        "11",
+        0
+      ],
+      "collect_timeout": 900
+    },
+    "class_type": "ParallelGen_Azure_EditCollect",
+    "_meta": {
+      "title": "Parallel Gen - Azure - GPT Image 2 - Edit Collect ✏️"
+    }
+  },
+  "11": {
+    "inputs": {
+      "job_id_1": [
+        "9",
+        0
+      ],
+      "job_id_2": "",
+      "job_id_3": "",
+      "job_id_4": "",
+      "job_id_5": "",
+      "job_id_6": "",
+      "job_id_7": "",
+      "job_id_8": ""
+    },
+    "class_type": "ParallelGen_JobSync",
+    "_meta": {
+      "title": "Parallel Gen - Job Sync (同步閘) 🔗"
+    }
+  },
+  "12": {
+    "inputs": {
+      "image": "Gamer_OG_Optimized_00001_.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "14": {
+    "inputs": {
+      "image": "Room.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "15": {
+    "inputs": {
+      "action": "append",
+      "tidy_tags": "yes",
+      "text_a": "Use Image 1 as the structural reference for the room's spatial layout, composition, and camera perspective. Keep that spatial structure unchanged, and render a new room image following the furnishing arrangement and art style described below:",
+      "text_b": [
+        "8",
+        0
+      ],
+      "text_c": ""
+    },
+    "class_type": "StringFunction|pysssss",
+    "_meta": {
+      "title": "String Function 🐍"
+    }
+  },
+  "16": {
+    "inputs": {
+      "filename_prefix": "AIA2026_CharacterArc\\Gamer_BG\\Gamer_BG",
+      "images": [
+        "17",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  },
+  "17": {
+    "inputs": {
+      "upscale_method": "nearest-exact",
+      "width": 1920,
+      "height": 1080,
+      "crop": "center",
+      "image": [
+        "10",
+        0
+      ]
+    },
+    "class_type": "ImageScale",
+    "_meta": {
+      "title": "Upscale Image"
+    }
+  }
+}

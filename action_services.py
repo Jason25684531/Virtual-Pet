@@ -170,7 +170,7 @@ def _synthesize_fixed_audio_to_file(
             return
         raise RuntimeError("測試 synthesizer 未產出有效音檔。")
 
-    api_key = os.getenv("VOAI_API_KEY") or os.getenv("VoAI_API_KEY") or os.getenv("VOAI_TOKEN")
+    api_key = config.get_voai_api_key()
     if not api_key:
         raise RuntimeError("缺少 VOAI_API_KEY，無法第一次生成固定音檔。")
 
@@ -421,14 +421,12 @@ class NewsFetchWorker(QThread):
 
     def __init__(
         self,
-        feed_url: str | None = None,
         character_id: str | None = None,
         cache_dir: str | Path | None = None,
         synthesizer=None,
         parent=None,
     ):
         super().__init__(parent)
-        self._feed_url = feed_url
         self._character_id = str(character_id or "").strip() or None
         self._cache_dir = Path(cache_dir) if cache_dir else NEWS_AUDIO_CACHE_DIR
         self._synthesizer = synthesizer

@@ -1,7 +1,7 @@
 from collections import defaultdict
 from typing import Callable
 
-from .events import AppEvent
+from .commands import AppEvent
 
 
 class SimpleEventBus:

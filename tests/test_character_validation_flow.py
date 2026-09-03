@@ -156,7 +156,7 @@ def test_worker_runs_idle_then_background_before_other_motions(tmp_path, monkeyp
 def test_mock_asset_service_exposes_validation_and_background_requests(tmp_path):
     store = SQLiteStore(tmp_path / "state.db")
     store.initialize()
-    service = MockAssetService(store, complete_immediately=False)
+    service = MockAssetService(store)
 
     assert service.create_character_validation_request("upload.png", "丘比", "event-1").status == "queued"
     assert service.create_background_request("char-1", "event-1").status == "queued"

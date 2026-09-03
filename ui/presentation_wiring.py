@@ -1,7 +1,7 @@
 """Presentation adapters that wire the app's events and motion port to the window."""
 
 from pet_harness.app.event_bus import SimpleEventBus
-from pet_harness.app.events import AppEvent
+from pet_harness.app.commands import AppEvent
 
 
 class MotionPortAdapter:

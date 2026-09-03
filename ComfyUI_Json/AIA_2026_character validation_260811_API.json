@@ -1,0 +1,359 @@
+{
+  "8": {
+    "inputs": {
+      "text_prompt": "# Role\nYou are an image-editing prompt writer. You will be shown one uploaded character reference image (Image 1). Write a single image-editing instruction prompt that will be sent to an image-editing model to transform this exact image into a standardized reference pose, while keeping the character's identity and art style completely unchanged.\n# Target Conditions\nThe edited image must achieve:\n1. Full body in frame, facing directly forward toward the viewer (a true front view, not a 3/4 or angled view), in a natural, relaxed idle standing pose — weight evenly balanced, arms in a neutral relaxed position, not a dynamic action pose or exaggerated gesture. If the original image is cropped (e.g., missing the legs or feet) or shown at an angle, extend the character's existing outfit, accessories, and design elements to complete the pose and reorient it to a full-body front view, strictly following the character's existing proportions, outfit, and design — do not invent new clothing, features, or body details, and do not change the character's apparent age or body proportions.\n2. A clean, solid green-screen background (uniform chroma-key green, no texture, pattern, gradient, or shadows), completely replacing the original background.\n# Preservation Rules (critical)\n- Keep the character's face, hairstyle, color palette, outfit/clothing design, accessories, proportions, and art style/rendering technique (line work, shading, coloring method) exactly as shown in Image 1.\n- The character must remain fully clothed in their original outfit at all times. Do not generate exposed skin, undressing, nudity, or any anatomical detail beyond what is already visible and depicted in Image 1. Any body part not visible in the original (e.g., legs hidden by cropping) must be completed by extending the character's existing clothing and design — never by generating bare skin or body detail.\n- Only change what is necessary to meet the two target conditions above (pose/orientation/framing and background). Do not redesign, restyle, or otherwise alter the character's appearance.\n- If the original image already satisfies a condition (e.g., already full-body and front-facing), make only minimal or no changes to that aspect — avoid unnecessary alterations.\n# Output Format Rules (critical)\n- Output ONLY the final image-editing instruction prompt itself.\n- Write it in English.\n- No prefixes, titles, labels, quotation marks, bullet points, line breaks, explanations, reasoning steps, or words like \"Prompt:\".\n- The output must be a single plain-text paragraph — nothing else.",
+      "azure_endpoint": "https://rogaiasteven.cognitiveservices.azure.com/",
+      "deployment_name": "gpt-4o",
+      "api_key": "",
+      "api_version": "2024-12-01-preview",
+      "max_tokens": 1024,
+      "images": [
+        "28",
+        0
+      ]
+    },
+    "class_type": "Azure_ChatGPT_Node",
+    "_meta": {
+      "title": "Azure ChatGPT (4o/4o-mini)"
+    }
+  },
+  "12": {
+    "inputs": {
+      "image": "reze_green_screen_540x960 1 - 複製.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "16": {
+    "inputs": {
+      "filename_prefix": "C:\\ComfyUI_windows_portable_260701\\ComfyUI\\output\\AIA2026_CharacterArc\\Gamer_OG_Optimized\\Gamer_OG_Optimized",
+      "images": [
+        "17",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  },
+  "17": {
+    "inputs": {
+      "upscale_method": "nearest-exact",
+      "width": 720,
+      "height": 1280,
+      "crop": "center",
+      "image": [
+        "41",
+        0
+      ]
+    },
+    "class_type": "ImageScale",
+    "_meta": {
+      "title": "Upscale Image"
+    }
+  },
+  "21": {
+    "inputs": {
+      "text_prompt": "# Role\nYou are a strict quality-control reviewer for character reference images. You will be shown one uploaded image (Image 1) of a character. Judge whether this image is usable for a downstream character-processing pipeline, based on exactly three criteria.\n\n# Criteria (ALL three must be satisfied to pass)\n1. Limbed form with a head: the character has a clearly distinguishable head and four limbs (two arms/forelimbs, two legs) in reasonably balanced, non-extreme proportions. The character does NOT need to be human — non-human characters with a head and four limbs in normal proportions are acceptable (e.g., robots, Pikachu, Doraemon). This criterion fails if the character is missing limbs or a head (e.g., a floating head with no body, a limbless object or blob, a snake-like creature with no limbs), or if the body proportions are too extreme to read as a standable figure (e.g., limbs too small/vestigial to be functional, or a body shape too abstract/simplified to have a discernible head-and-limb structure).\n2. Full body, front-facing: the character's entire body — head to feet — must be visible in the frame. Minor cropping at the edges (e.g., the very top of the head or the tips of the feet slightly cut off) is acceptable. The character must also be shown roughly facing the camera (front view or near-front view); a fully side-profile or fully back-facing view fails this criterion.\n3. Clean background: the background must not obscure the character. At minimum, the character's complete silhouette/outline must be clearly distinguishable from the background — no heavy clutter, overlapping objects, or other characters obscuring their outline.\n\n# Judgment Process\nEvaluate the image against all three criteria independently. The image passes only if ALL three are satisfied.\n\n# Output Rules (critical)\n- If the image passes all three criteria: output ONLY the single digit 1 — no other character, word, space, or punctuation.\n- If the image fails ANY criterion: output the digit 2, followed by a short English reason, in exactly this format: \"2 - <brief reason>\". Keep the reason to one short sentence. If multiple criteria fail, briefly mention the main ones in that same single sentence.\n- Never output anything other than these two formats. No greetings, no markdown, no extra commentary.\n\nEvaluate the image and return ONLY a single integer from 0 to 5.\n\nDo not include explanations.\nDo not include punctuation.\nDo not include any other text.\n\nValid output examples:\n0\n1\n2\n3\n4\n5\n\nYour entire response must match this regex:\n^[0-5]$",
+      "azure_endpoint": "https://rogaiasteven.cognitiveservices.azure.com/",
+      "deployment_name": "gpt-4o",
+      "api_key": "",
+      "api_version": "2024-12-01-preview",
+      "max_tokens": 1024,
+      "images": [
+        "12",
+        0
+      ]
+    },
+    "class_type": "Azure_ChatGPT_Node",
+    "_meta": {
+      "title": "Azure ChatGPT (4o/4o-mini)"
+    }
+  },
+  "24": {
+    "inputs": {
+      "string": [
+        "21",
+        0
+      ]
+    },
+    "class_type": "StringToInt",
+    "_meta": {
+      "title": "String to Int"
+    }
+  },
+  "28": {
+    "inputs": {
+      "select": [
+        "24",
+        0
+      ],
+      "sel_mode": false,
+      "input": [
+        "12",
+        0
+      ]
+    },
+    "class_type": "ImpactInversedSwitch",
+    "_meta": {
+      "title": "Inversed Switch (Any)"
+    }
+  },
+  "30": {
+    "inputs": {
+      "source": [
+        "21",
+        0
+      ]
+    },
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "Preview as Text"
+    }
+  },
+  "31": {
+    "inputs": {
+      "source": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "Preview as Text"
+    }
+  },
+  "36": {
+    "inputs": {
+      "strength": 1,
+      "pre_cfg": false,
+      "model": [
+        "37",
+        0
+      ]
+    },
+    "class_type": "CFGNorm",
+    "_meta": {
+      "title": "CFGNorm"
+    }
+  },
+  "37": {
+    "inputs": {
+      "shift": 3,
+      "model": [
+        "43",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": {
+      "title": "ModelSamplingAuraFlow"
+    }
+  },
+  "38": {
+    "inputs": {
+      "seed": 195981663525952,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "36",
+        0
+      ],
+      "positive": [
+        "42",
+        0
+      ],
+      "negative": [
+        "40",
+        0
+      ],
+      "latent_image": [
+        "39",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "39": {
+    "inputs": {
+      "pixels": [
+        "28",
+        0
+      ],
+      "vae": [
+        "45",
+        0
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode"
+    }
+  },
+  "40": {
+    "inputs": {
+      "prompt": "",
+      "clip": [
+        "44",
+        0
+      ],
+      "vae": [
+        "45",
+        0
+      ]
+    },
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "_meta": {
+      "title": "TextEncodeQwenImageEditPlus"
+    }
+  },
+  "41": {
+    "inputs": {
+      "samples": [
+        "38",
+        0
+      ],
+      "vae": [
+        "45",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "42": {
+    "inputs": {
+      "prompt": [
+        "8",
+        0
+      ],
+      "clip": [
+        "44",
+        0
+      ],
+      "vae": [
+        "45",
+        0
+      ],
+      "image1": [
+        "28",
+        0
+      ]
+    },
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "_meta": {
+      "title": "TextEncodeQwenImageEditPlus"
+    }
+  },
+  "43": {
+    "inputs": {
+      "lora_name": "Qwen_Edit\\Lightning\\Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors",
+      "strength_model": 1,
+      "model": [
+        "46",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "Load LoRA"
+    }
+  },
+  "44": {
+    "inputs": {
+      "clip_name": "Qwen\\qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "45": {
+    "inputs": {
+      "vae_name": "qwen_image_edit_2511\\qwen_image_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "46": {
+    "inputs": {
+      "unet_name": "Qwen\\qwen_image_edit_2509_fp8_e4m3fn.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "52": {
+    "inputs": {
+      "prefix": [
+        "30",
+        0
+      ],
+      "suffix": "Steven"
+    },
+    "class_type": "SomethingToString",
+    "_meta": {
+      "title": "Something To String"
+    }
+  },
+  "55": {
+    "inputs": {
+      "text_prompt": "# Role\nYou are a strict image classifier for character reference images. You will be shown one uploaded image (Image 1) of a character. Your task is to judge the character's gender based on visual appearance.\n\n# Judgment Process\nLook at the character in the image and assess visual gender cues such as facial features, hairstyle, clothing, body shape, and other stylistic indicators typically associated with male or female characters. Make your best single judgment.\n\n# Output Rules (critical)\n- If the character appears male: output ONLY the single character \"M\" — no other character, word, space, or punctuation.\n- If the character appears female: output ONLY the single character \"F\" — no other character, word, space, or punctuation.\n- Never output anything other than \"M\" or \"F\". No greetings, no markdown, no explanations, no extra commentary.\n\nYour entire response must match this regex:\n^[MF]$",
+      "azure_endpoint": "https://rogaiasteven.cognitiveservices.azure.com/",
+      "deployment_name": "gpt-4o",
+      "api_key": "",
+      "api_version": "2024-12-01-preview",
+      "max_tokens": 1024,
+      "images": [
+        "28",
+        0
+      ]
+    },
+    "class_type": "Azure_ChatGPT_Node",
+    "_meta": {
+      "title": "Azure ChatGPT (4o/4o-mini)"
+    }
+  },
+  "56": {
+    "inputs": {
+      "source": [
+        "55",
+        0
+      ]
+    },
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "Preview as Text"
+    }
+  },
+  "57": {
+    "inputs": {
+      "prefix": [
+        "56",
+        0
+      ],
+      "suffix": "Steven"
+    },
+    "class_type": "SomethingToString",
+    "_meta": {
+      "title": "Something To String"
+    }
+  }
+}

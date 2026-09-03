@@ -180,13 +180,11 @@ Virtual-Pet/
 ├── character_library.py            # 角色資產庫:manifest 讀取、active_variant、motion 路徑解析、變體庫存(快捷動作+Harness 共用)
 ├── interaction_trace.py            # 每回合 STT→LLM→TTS 分段延遲追蹤
 ├── action_dispatcher.py            # MotionCoordinator:action 白名單/alias 正規化、WebM 動作切換、TTS queue 與播放收尾狀態機
-├── action_services.py              # 快捷動作背景 QThread worker(新聞/揮手/固定意圖快取,文字生成走 LangChain ChatOpenAI)
-├── text_utils.py                   # sanitize_tts_text:去除 ACTION 標記供 TTS 朗讀
+├── action_services.py              # 快捷動作背景 QThread worker(新聞/揮手/固定意圖快取,文字生成走 ProviderRuntime)
 ├── audio_playback.py               # 快捷動作用 provider-neutral 播放器(ffplay / pygame)
 ├── audio_worker.py                 # trace-aware PCM/MP3 串流播放 worker(daemon thread,producer-consumer 佇列)
 │
 ├── sensors/                        # 語音輸入(STT)
-│   ├── base_stt.py                 # BaseSTT ABC + TranscriptionResult(provider 可替換契約)
 │   ├── faster_whisper_stt.py       # FasterWhisperSTT:CUDA-only 模型生命週期與轉錄(含 Windows CUDA DLL PATH 註冊)
 │   ├── microphone_recorder.py      # sounddevice InputStream 收音(mono/16kHz/float32 buffer)
 │   ├── silero_vad.py               # Silero VAD 語音端點偵測(可選,STT_VAD_ENABLED)
@@ -200,9 +198,8 @@ Virtual-Pet/
 ├── pet_harness/                    # ★ Harness 模式核心引擎
 │   ├── app/                        # ★ Application 層(禁止 import PyQt)
 │   │   ├── application_coordinator.py  # 唯一組裝入口:ProviderRuntime/Router/ActionBus/handlers
-│   │   ├── action_bus.py           # ActionCommand → handler 路由;unknown→rejected、例外隔離
-│   │   ├── action_handler.py       # ActionHandler ABC
-│   │   ├── commands.py / results.py / events.py  # ActionCommand / ActionResult / AppEvent dataclass
+│   │   ├── action_bus.py           # ActionBus + ActionHandler ABC; ActionCommand → handler 路由
+│   │   ├── commands.py             # ActionCommand / ActionResult / AppEvent dataclass
 │   │   ├── event_bus.py            # EventBus + SimpleEventBus
 │   │   ├── handlers.py             # conversation / news / music / wave / quick_intent / speak / motion_only / reset handlers
 │   │   ├── ports.py                # ConversationPort / MotionPort / BackgroundExecutor(ABC)
@@ -233,10 +230,10 @@ Virtual-Pet/
 │   ├── memory/                     # ★ 對話記憶(hybrid 檢索)
 │   │   ├── base_memory_store.py    # BaseMemoryStore ABC + NullMemoryStore(headless/測試零開銷預設)
 │   │   ├── hybrid_qdrant_memory_store.py  # per-character 嵌入式 Qdrant(dense + sparse 混合,背景寫入、fail-open 檢索)
-│   │   ├── base_hybrid_index.py    # 混合索引介面
+│   │   ├── reranker.py / fastembed_reranker.py  # 檢索結果重排序(Protocol + fastembed cross-encoder 實作)
 │   │   ├── memory_extractor.py     # LLM 記憶抽取(判定哪些對話值得長期記憶)
 │   │   ├── memory_item_repository.py  # SQLite memory_items 持久層
-│   │   ├── contextual_memory_retriever.py  # 檢索編排(rewrite → hybrid search → policy)
+│   │   ├── contextual_memory_retriever.py  # 檢索編排(rewrite → hybrid search → rerank → policy)
 │   │   ├── query_rewriter.py       # 上下文查詢改寫(代名詞/省略補全)
 │   │   ├── sparse_encoder.py       # jieba + BM25 sparse 向量編碼
 │   │   ├── result_policy.py        # 檢索結果過濾/去重策略
@@ -257,6 +254,7 @@ Virtual-Pet/
 │   │   └── intent_normalizer.py    # 輸入意圖正規化
 │   ├── storage/
 │   │   ├── sqlite_store.py         # SQLite 持久層(XP / events / tool results / settings / memory_items / asset jobs)
+│   │   ├── save_snapshot_service.py # 手動存檔快照(data/saves/,搭配 scripts/restore_save.py)
 │   │   └── schema.sql              # DB schema 定義
 │   ├── tools/
 │   │   ├── registry.py             # Tool 註冊表(靜態註冊內建工具)
@@ -277,6 +275,7 @@ Virtual-Pet/
 │   ├── ui/
 │   │   ├── pyqt_harness_adapter.py # PyQt ↔ Harness Engine 橋接層(provider 狀態、skills CRUD、前端 payload)
 │   │   └── character_ui_service.py # 角色 CRUD / persona 面板 / 成長 offer 確認 / 造型變體(list_style_variants、apply_style)
+│   ├── latency.py                  # TurnTimeline:harness 回合分段延遲量測
 │   └── voice_runtime_status_adapter.py  # STT 狀態 → 前端 DTO
 │
 ├── ui/
@@ -291,13 +290,14 @@ Virtual-Pet/
 │       ├── style.css               # 舞台 CSS(2560×1440 設計空間;實機為 Chromium 83,不可用 inset / flex gap)
 │       └── app.js                  # 前端控制(idle/motion/conversation/agentic panel/HUD 輪詢)
 │
-├── assets/webm/characters/         # 角色資產(manifest.json + motions/ + images/;gitignore)
+├── assets/characters/              # 角色資產主目錄(manifest.json + motions/ + images/;gitignore)
+├── assets/webm/characters/         # legacy 角色資產目錄(相容掃描,gitignore)
 ├── .agentic/                       # Harness 人格與技能定義(soul.md / behavior_map.json / reward_rules.json / skills/*.md)
 ├── data/characters/{id}/           # per-character 狀態:state.db、qdrant/、profile.json、personal.json
 ├── runtime_cache/                  # 執行期快取(news_audio / wave_audio / fixed_intents / qdrant 語意路由索引 / whisper 模型)
-├── ComfyUI_Json/                   # ComfyUI workflow 模板(gitignore;被 asset/factory.py 與測試引用)
+├── ComfyUI_Json/                   # 已入庫的 ComfyUI workflow 模板(被 asset/factory.py 與測試引用)
 ├── scripts/                        # CLI 除錯與驗證工具(見下方「測試與驗證」)
-├── tests/                          # pytest 測試(~82 檔,見下方「測試與驗證」)
+├── tests/                          # pytest 測試(~95 檔,見下方「測試與驗證」)
 ├── docs/                           # 架構與部署文件(大部分 gitignore)
 ├── openspec/                       # OpenSpec 變更管理(gitignore)
 └── requirements.txt
@@ -538,7 +538,7 @@ Linux 若遇到 Qt / WebEngine / WebGL 問題,請參考 [linux_deployment.md](do
 
 ### 測試哲學
 
-- **產品碼無 mock、測試一律注入 fake adapter**:`tests/conftest.py` 提供 `FakeProvider`(deterministic 假 LLM);`tests/fakes/` 有 `FakeBrowserRuntime`(記錄 browser command 不開瀏覽器)、`FakeSemanticRetriever`、`FakeBackgroundExecutor`(同步執行免執行緒)。
+- **產品碼無 mock、測試一律注入 fake adapter**:`tests/conftest.py` 提供 `FakeProvider`(deterministic 假 LLM);`tests/fakes/` 有 `FakeSemanticRetriever`、`FakeBackgroundExecutor`(同步執行免執行緒)。
 - **不需要** 真 QApplication/QWebEngineView(UI 測試用 unbound method + MagicMock)、GPU/CUDA、Whisper/Silero 模型下載、網路——全部以假物件驗證。
 - **characterization tests** 鎖定既有行為(動作派發、motion 清理、關機順序),防止重構時行為漂移;`tests/test_dependency_boundaries.py` 是架構守門(Application/Domain import PyQt 即 fail);`tests/test_workflow_secret_scan.py` 掃描 ComfyUI workflow 模板不得內嵌 API key。
 
@@ -560,7 +560,7 @@ Linux 若遇到 Qt / WebEngine / WebGL 問題,請參考 [linux_deployment.md](do
 COMFYUI_SMOKE=1 .venv/Scripts/python -m pytest tests/test_comfyui_smoke.py
 ```
 
-### 測試分群(~82 檔)
+### 測試分群(~95 檔,各群數字為約略)
 
 | 主題 | 代表檔案 | 驗證邏輯 |
 |---|---|---|
@@ -570,7 +570,7 @@ COMFYUI_SMOKE=1 .venv/Scripts/python -m pytest tests/test_comfyui_smoke.py
 | **UI / browser**(~9 檔) | `test_cac_ui_browser`、`test_cac_ui_contract`、`test_js_gateway`、`test_browser_recovery`、`test_transparent_window_stt_states`、`test_presentation_wiring` | Web 容器 UI 互動接縫(真 Chromium 驗 CAC UX)、QWebChannel/JS gateway 契約、browser runtime 復原 |
 | **STT / audio**(~10 檔) | `test_faster_whisper_stt`、`test_silero_vad`、`test_microphone_recorder`、`test_stt_controller/_toggle_integration`、`test_audio_playback`、`test_tts_runtime_mode` | Whisper/VAD/錄音以 monkeypatch 假模型驗(含 Windows CUDA DLL 註冊邏輯)、STT 狀態機、TTS 模式與快速失敗分類 |
 | **agent / provider**(~12 檔) | `test_provider_bootstrap/_runtime`、`test_prompt_builder`、`test_result_parser_contract/_fenced_json`、`test_skill_router`、`test_semantic_routing`、`test_hostile_provider_interaction`、`test_conversation_pipeline_regression` | provider 設定/健康狀態、prompt 組裝、回覆解析契約與惡意輸出防禦、技能路由、對話 pipeline 回歸與 rollback |
-| **dispatch / characterization**(~6 檔) | `test_action_dispatch_characterization`、`test_motion_coordinator_cleanup_characterization`、`test_shutdown_order_characterization`、`test_legacy_inventory` | 鎖定動作派發入口、motion 清理、關機順序既有行為;legacy 程式碼清單守門 |
+| **dispatch / characterization**(~6 檔) | `test_action_dispatch_characterization`、`test_dispatch_entry_characterization`、`test_motion_coordinator_cleanup_characterization`、`test_shutdown_order_characterization` | 鎖定動作派發入口、motion 清理、關機順序既有行為,防止重構時行為漂移 |
 | **架構/基礎**(~7 檔) | `test_composition_root_smoke`、`test_dependency_boundaries`、`test_runtime_lifecycle`、`test_action_bus`、`test_qt_background_executor` | 組合根可建構、依賴邊界、生命週期反序 shutdown、事件匯流排 |
 
 ### 特殊環境需求
@@ -589,16 +589,17 @@ COMFYUI_SMOKE=1 .venv/Scripts/python -m pytest tests/test_comfyui_smoke.py
 | `debug_harness.py` | `python scripts/debug_harness.py --text "..."`;另有 `--list-skills / --state / --recent-events / --run-tool / --ollama-health` | 不開 UI 直接驅動 harness engine 的 CLI 除錯工具,可切 api/ollama provider,事件輸出到 `debug/events/` |
 | `verify_memory_retrieval.py` | `python scripts/verify_memory_retrieval.py "問題" --character Choppr` | 對單一問題印出 Qdrant 檢索 trace 與 evidence,人工檢查記憶命中(需真實角色 qdrant 資料) |
 | `eval_retrieval.py` | `python scripts/eval_retrieval.py`(eval set 在 `tests/data/retrieval_eval_set.json`) | 記憶檢索評測:recall@5、MRR、nDCG@5、空檢索率、p50/p95 延遲、跨角色洩漏 |
-| `inspect_memory_storage.py` | `python scripts/inspect_memory_storage.py --character Choppr --limit 10` | 並列 SQLite memory_items 與 Qdrant collection,檢查兩邊儲存一致性 |
-| `measure_rewrite_latency.py` | `python scripts/measure_rewrite_latency.py --model X --samples 20` | 打真 Ollama 量測查詢改寫延遲 p50/p95 |
 | `backfill_memory_items.py` | `python scripts/backfill_memory_items.py --character miku [--dry-run]` | 把 SQLite 記憶回填到 Qdrant 混合索引(一次性遷移工具,有測試守護) |
-| `_verify_panel_video.py` | `python scripts/_verify_panel_video.py`(需 Qt + Choppr 素材) | 固定 1600×900 viewport 驗 panel webm 滿版渲染,截圖輸出到 `artifacts/` |
+| `eval_harness.py` | (程式庫,非 CLI;由 `eval_retrieval.py` 與測試引用) | 記憶檢索評測核心:依 eval set 建臨時索引跑檢索、nDCG/門檻掃描、可選 Ollama pointwise 證據評分 |
+| `eval_backfill.py` | `python scripts/eval_backfill.py --input … --output …` | 彙整評測輸出(可合併 pytest XML)產生報告 |
+| `restore_save.py` | `python scripts/restore_save.py <character_id> [timestamp]` | 從 `data/saves/` 還原角色狀態快照(state.db 等) |
+| `new_character.py` | `python scripts/new_character.py my-pet "My Pet"`;`--check` 驗證 | 建立角色目錄鷹架與 manifest,`--check` 做不寫入檢查 |
 
 ---
 
 ## 角色資產規則
 
-角色資產放在 `assets/webm/characters/<character_id>/`:
+角色資產放在 `assets/characters/<character_id>/`(舊角色沿用 `assets/webm/characters/`,兩個目錄都會被掃描,新角色一律放前者):
 
 ```text
 <character_id>/

@@ -15,6 +15,20 @@ class ActionCommand:
     character_id: str | None = None
 
 
+@dataclass(frozen=True)
+class AppEvent:
+    name: str
+    trace_id: str | None = None
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ActionResult:
+    status: str
+    reason: str | None = None
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
 ACTION_DIRECTIVE_PATTERN = re.compile(
     r"(?:\[\s*ACTION\s*:\s*(?P<bracket>[A-Za-z0-9_-]+)\s*\]|(?<!\w)ACTION\s*:\s*(?P<bare>[A-Za-z0-9_-]+))",
     re.IGNORECASE,

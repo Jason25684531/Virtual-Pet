@@ -22,14 +22,6 @@ class ToolExecutionClass(str, Enum):
     NETWORK = "network"
 
 
-class ToolResultStatus(str, Enum):
-    SUCCESS = "success"
-    PARTIAL = "partial"
-    FAILED = "failed"
-    BLOCKED = "blocked"
-    CANCELLED = "cancelled"
-
-
 @dataclass
 class ToolDefinition:
     name: str

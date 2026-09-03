@@ -1,9 +1,9 @@
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 import json
 import logging
 import re
 
+from config import PROJECT_ROOT as _PROJECT_ROOT
 from pet_harness.models.skill import Skill
 
 from pet_harness.character.exceptions import InvalidCharacterIdError
@@ -17,8 +17,6 @@ from pet_harness.character.personal import (
 _LOGGER = logging.getLogger(__name__)
 
 _ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
-
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 @dataclass

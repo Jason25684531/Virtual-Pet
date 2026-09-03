@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 import queue
-import re
 import inspect
 from collections import deque
 from uuid import uuid4
@@ -27,7 +26,7 @@ from audio_worker import AudioStreamWorker
 from character_library import ASSETS_WEBM_DIR
 import config
 from interaction_trace import InteractionLatencyTracker
-from pet_harness.app.commands import ACTION_DIRECTIVE_PATTERN
+from pet_harness.app.commands import action_command_from_directive
 from pet_harness.latency import get_turn
 from tts_playback import TtsPlaybackMixin
 
@@ -466,12 +465,9 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         if not stripped:
             return None, ""
 
-        match = ACTION_DIRECTIVE_PATTERN.search(stripped)
-        message_text = ACTION_DIRECTIVE_PATTERN.sub("", stripped)
-        message_text = re.sub(r"\s{2,}", " ", message_text).strip()
-        if match:
-            action_name = (match.group("bracket") or match.group("bare") or "").lower()
-            return action_name, message_text
+        command = action_command_from_directive(stripped)
+        if command.action:
+            return command.action, command.text
 
         normalized = stripped.lower()
         if normalized.startswith("action:"):

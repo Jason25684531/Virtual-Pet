@@ -130,7 +130,6 @@ class _PcmTraceSession:
         if timeline is not None:
             timeline.mark("audio_play_started")
             timeline.log_current()
-        self._owner.playback_started.emit(self._session_reply_id, self._trace_id)
         return True
 
     def _schedule_pending_segments_locked(self):
@@ -195,7 +194,6 @@ class AudioStreamWorker(QObject):
     """
 
     driver_started = pyqtSignal(str, str)     # reply_id, trace_id
-    playback_started = pyqtSignal(str, str)   # legacy alias: reply_id, trace_id
     playback_finished = pyqtSignal(str, str)  # reply_id, trace_id
     queue_drained = pyqtSignal()         # 佇列清空（TTS 全部播完）
 
@@ -205,7 +203,6 @@ class AudioStreamWorker(QObject):
         pcm_player_factory=None,
         pcm_sample_rate: int = 32000,
         pcm_channels: int = 1,
-        pcm_session_idle_ms: int = 250,
         parent=None,
     ):
         super().__init__(parent)
@@ -217,7 +214,6 @@ class AudioStreamWorker(QObject):
         self._pcm_sample_rate = int(pcm_sample_rate)
         self._pcm_channels = int(pcm_channels)
         self._pcm_bytes_per_second = max(1, self._pcm_sample_rate * self._pcm_channels * 2)
-        self._pcm_session_idle_ms = max(0, int(pcm_session_idle_ms))
         self._playing_lock = threading.Lock()
         self._pcm_lock = threading.Lock()
         self._current_reply_id: str | None = None
@@ -409,7 +405,6 @@ class AudioStreamWorker(QObject):
                     if timeline is not None:
                         timeline.mark("audio_play_started")
                         timeline.log_current()
-                    self.playback_started.emit(reply_id, trace_id)
                     return True
 
                 self._play_buffer(audio_bytes, before_start)
