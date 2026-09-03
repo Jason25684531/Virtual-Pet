@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from threading import Event
 from typing import Any, Callable, Iterator
 
@@ -12,10 +13,39 @@ from pet_harness.models.provider import ProviderConfig, ProviderStatus, Provider
 from pet_harness.models.skill import Skill
 
 
+# 模型駐留 VRAM 時長;Ollama 預設 5m,閒置後下一輪要重付冷載入(gemma3:12b 實測 60s+)。
+_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
+# 上下文上限:prompt 實測 ~4.3k 字元,預設載到 131k 的 KV cache 只會拖慢載入與推理。
+# 注意:所有請求(含 warmup)必須用同一個 num_ctx,不同值會觸發 Ollama 重載模型。
+_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
+
+
 class OllamaProvider:
     def __init__(self, config: ProviderConfig, request_fn: Callable[..., Any] | None = None) -> None:
         self.config = config
         self.request_fn = request_fn or self._default_request
+
+    def warmup(self) -> bool:
+        """啟動時預載模型並用長 prompt 預熱 prefill kernel。
+
+        冷載入實測 30s+;首次大 prompt 的 GPU kernel 編譯另需 20s+,兩者都在
+        背景啟動時付掉,首輪對話才守得住延遲預算(app prompt 約 4.3k 字元)。"""
+        base_url = self.config.base_url or "http://localhost:11434"
+        try:
+            response = self.request_fn(
+                "POST",
+                f"{base_url}/api/generate",
+                timeout=300,
+                json={
+                    "model": self.config.model_name,
+                    "prompt": "暖機用的長輸入。" * 500,
+                    "keep_alive": _KEEP_ALIVE,
+                    "options": {"num_ctx": _NUM_CTX, "num_predict": 1},
+                },
+            )
+            return getattr(response, "status_code", 500) < 400
+        except Exception:  # noqa: BLE001 - 暖機失敗不擋啟動
+            return False
 
     def generate_reply(
         self,
@@ -30,6 +60,8 @@ class OllamaProvider:
                 "model": self.config.model_name,
                 "prompt": prompt,
                 "stream": False,
+                "keep_alive": _KEEP_ALIVE,
+                "options": {"num_ctx": _NUM_CTX},
             }
             payload.update({key: self.config.metadata[key] for key in ("format", "options") if key in self.config.metadata})
             response = self.request_fn(
@@ -77,7 +109,7 @@ class OllamaProvider:
             "POST",
             f"{base_url}/api/generate",
             timeout=self.config.timeout_seconds,
-            json={"model": self.config.model_name, "prompt": prompt, "stream": True},
+            json={"model": self.config.model_name, "prompt": prompt, "stream": True, "keep_alive": _KEEP_ALIVE, "options": {"num_ctx": _NUM_CTX}},
             stream=True,
         )
         if getattr(response, "status_code", 500) >= 400:

@@ -76,6 +76,30 @@ def test_no_match_returns_none_and_empty_diagnostics():
     assert diagnostics == {"matched": False, "skill_id": None, "trigger": None, "candidates": []}
 
 
+def test_polite_music_request_hits_music_intent():
+    """回歸:「你可以幫我播X嗎」這類帶「你」前綴的請求必須命中 music intent。"""
+    music = Skill(
+        name="youtube_music_playback",
+        description="fixture music",
+        triggers=[],
+        behavior="music_idle",
+        xp_reward=1,
+        capability="music",
+    )
+    router = SkillRouter([music])
+
+    for text in (
+        "你可以幫我播刀劍神域的主題曲嗎",
+        "妳能幫我放一首周杰倫的歌嗎",
+        "我要聽夜曲",
+        "來一首晴天",
+    ):
+        assert router.match(text) is not None, text
+
+    assert router.match("你可以幫我播一部電影嗎") is None
+    assert router.match("放假要去哪裡玩") is None
+
+
 def test_no_cross_character_leakage_between_independent_routers():
     miku_router = SkillRouter([_skill("music_bgm", ["放歌"])])
     choppr_router = SkillRouter([_skill("music_bgm", [])])

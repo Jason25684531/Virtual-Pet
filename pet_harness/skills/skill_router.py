@@ -7,8 +7,9 @@ from pet_harness.models.skill import Skill
 from pet_harness.skills.intent_normalizer import normalize
 from pet_harness.skills.semantic_skill_retriever import BaseSemanticSkillRetriever
 
-_MUSIC_START = re.compile(r"^(?:幫我|請)?(?:播放|播歌|播|放一首|放)\s*(.+)$")
-_MUSIC_LISTEN = re.compile(r"^(?:我想聽|想聽)\s*(.+)$")
+# ponytail: 停用詞表擋「放假/放心」類誤觸發,誤判案例增多時改語意路由
+_MUSIC_START = re.compile(r"^(?:幫我|請)?(?:播放|播歌|播|放一首|放(?!假|心|棄|鬆|下|手|學|晴|大|置|過|開|馬|了))\s*(.+)$")
+_MUSIC_LISTEN = re.compile(r"^(?:我想聽|想聽|我要聽|來一首|來首|點一首|點播)\s*(.+)$")
 _MUSIC_FOLLOW_UP = {"暫停", "繼續播放", "停止播放", "現在在播放什麼"}
 _NON_MUSIC_PLAYBACK = ("影片", "video", "電影", "動畫")
 _NEWS_TERMS = ("遊戲新聞", "巴哈新聞", "gnn新聞", "game news")

@@ -217,6 +217,16 @@ class PyQtHarnessAdapter:
             if callable(self._stream_chunk_callback) else None
         )
         executor.submit(engine.warmup_memory, lambda ok, message, _payload: LOGGER.warning("[MEMORY WARMUP] executor error=%s", message) if not ok else None)
+        executor.submit(self._warmup_llm, lambda ok, message, _payload: LOGGER.warning("[LLM WARMUP] executor error=%s", message) if not ok else None)
+
+    def _warmup_llm(self) -> None:
+        """Ollama 模型冷載入實測 60s+;啟動時預載進 VRAM,首輪對話才守得住延遲預算。"""
+        warmup = getattr(self.provider_runtime.get_provider(), "warmup", None)
+        if not callable(warmup):
+            return
+        started = time.perf_counter()
+        success = warmup()
+        LOGGER.info("[LLM WARMUP] done warmup_ms=%s success=%s", round((time.perf_counter() - started) * 1000), success)
 
     def prepare_turn(self, text: str, source: str, character_id: str, trace_id: str | None = None) -> PreparedTurn:
         cleaned = str(text or "").strip()

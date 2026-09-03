@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 
 _WHITESPACE = re.compile(r"\s+")
-_PREFIXES = ("可不可以", "能不能", "可以", "麻煩", "幫我", "請", "能")
+_PREFIXES = ("可不可以", "能不能", "可以", "麻煩", "幫我", "請", "能", "你", "妳")
 _ENDING = re.compile(r"(?:[嗎呢吧]|[?？!！。])+\s*$")
 
 
