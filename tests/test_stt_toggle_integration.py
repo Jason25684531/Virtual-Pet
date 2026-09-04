@@ -10,6 +10,8 @@ def test_transcript_submission_uses_action_bus_without_adapter_fallback():
     window = SimpleNamespace(
         _conversation_pending=False,
         _conversation_character_id=None,
+        _proactive_greeting_active=False,
+        _motion_coordinator=None,
         _action_bus=SimpleNamespace(execute=lambda command: commands.append(command) or SimpleNamespace(status="ok")),
         _set_agentic_busy=lambda _busy: None,
         set_action_status=lambda *_args, **_kwargs: None,
@@ -29,9 +31,15 @@ def test_second_transcript_cancels_previous_conversation_before_retrying():
     window = SimpleNamespace(
         _conversation_pending=True,
         _conversation_character_id="Choppr",
+        _conversation_trace_id=None,
+        _proactive_greeting_active=False,
+        _motion_coordinator=None,
         _action_bus=SimpleNamespace(execute=lambda _command: None),
         _set_agentic_busy=lambda _busy: None,
         set_action_status=lambda message, **_kwargs: statuses.append(message),
+        get_current_character_id=lambda: None,
+        stop_motion_loop=lambda: None,
+        restore_idle_video=lambda: None,
     )
 
     TransparentWindow.submit_agentic_text(window, "late transcript")
@@ -54,6 +62,7 @@ def test_starting_new_recording_immediately_interrupts_active_conversation():
         _conversation_pending=True,
         _conversation_character_id="Choppr",
         _conversation_trace_id="old-trace",
+        _proactive_greeting_active=False,
         _action_bus=SimpleNamespace(cancel_conversation=lambda: calls.append("cancel")),
         _motion_coordinator=motion,
         stop_motion_loop=lambda: calls.append("stop-motion"),
@@ -75,6 +84,7 @@ def test_starting_recording_interrupts_playback_after_conversation_has_finished(
         _stt_state="idle",
         _conversation_pending=False,
         _conversation_trace_id=None,
+        _proactive_greeting_active=False,
         _action_bus=SimpleNamespace(cancel_conversation=lambda: calls.append("cancel")),
         _motion_coordinator=SimpleNamespace(interrupt_all=lambda: calls.append("interrupt-all")),
         stop_motion_loop=lambda: calls.append("stop-motion"),

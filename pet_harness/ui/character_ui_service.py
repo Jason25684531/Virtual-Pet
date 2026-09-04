@@ -303,9 +303,7 @@ class CharacterUiService:
 
     @staticmethod
     def _active_memory_rows(store: SQLiteStore, character_id: str):
-        now = utc_now()
-        with store.connect() as conn:
-            return conn.execute("SELECT text FROM memory_items WHERE character_id=? AND status='active' AND (expires_at IS NULL OR expires_at>?) ORDER BY created_at DESC", (character_id, now)).fetchall()
+        return store.active_memory_rows(character_id)
 
     def trigger_skill(self, skill_id: str) -> dict[str, Any]:
         profile = self._router.get_active_character()

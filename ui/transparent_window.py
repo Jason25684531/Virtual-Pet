@@ -729,9 +729,6 @@ class TransparentWindow(QMainWindow):
         self.set_conversation_assistant(trace_id, assistant_text)
         self.finish_conversation_turn(trace_id)
 
-    def set_stt_listening(self, active: bool):
-        self.set_stt_state("listening" if active else "idle")
-
     def set_stt_state(self, state: str):
         normalized = str(state or "idle").strip().lower()
         if normalized not in {"idle", "starting", "listening", "stopping", "transcribing", "loading", "unavailable"}:
@@ -756,7 +753,7 @@ class TransparentWindow(QMainWindow):
         self._apply_stt_button_state()
 
     def _handle_stt_button_clicked(self):
-        if getattr(self, "_proactive_greeting_active", False) is True:
+        if self._proactive_greeting_active is True:
             self.set_action_status("請等我說完再輸入。", tone="warn", timeout_ms=1800)
             return
         if not self._stt_available:
@@ -954,15 +951,14 @@ class TransparentWindow(QMainWindow):
         if not cleaned:
             self.set_action_status("Please enter text first.", tone="warn", timeout_ms=2200)
             return
-        if getattr(self, "_proactive_greeting_active", False) is True:
+        if self._proactive_greeting_active is True:
             self.set_action_status("請等我說完再輸入。", tone="warn", timeout_ms=1800)
             return
-        coordinator = getattr(self, "_motion_coordinator", None)
+        coordinator = self._motion_coordinator
         if self._conversation_pending or bool(getattr(coordinator, "has_active_motion", False)) or bool(getattr(coordinator, "is_tts_busy", False)):
             TransparentWindow._interrupt_active_conversation(self)
         from pet_harness.app.commands import ActionCommand
-        get_current_character_id = getattr(self, "get_current_character_id", lambda: None)
-        character_id = get_current_character_id()
+        character_id = self.get_current_character_id()
         if not character_id:
             self.set_action_status("No active character.", tone="warn", timeout_ms=2200)
             return
@@ -988,22 +984,20 @@ class TransparentWindow(QMainWindow):
 
     def _interrupt_active_conversation(self) -> None:
         """Cancel the active turn before starting another input source."""
-        action_bus = getattr(self, "_action_bus", None)
+        action_bus = self._action_bus
         cancel = getattr(action_bus, "cancel_conversation", None)
         if callable(cancel):
             cancel()
-        coordinator = getattr(self, "_motion_coordinator", None)
+        coordinator = self._motion_coordinator
         interrupt_all = getattr(coordinator, "interrupt_all", None)
         if callable(interrupt_all):
             interrupt_all()
         else:
-            previous_trace_id = getattr(self, "_conversation_trace_id", None)
+            previous_trace_id = self._conversation_trace_id
             if coordinator is not None and previous_trace_id:
                 coordinator.interrupt_trace(previous_trace_id)
-        for method_name in ("stop_motion_loop", "restore_idle_video"):
-            method = getattr(self, method_name, None)
-            if callable(method):
-                method()
+        self.stop_motion_loop()
+        self.restore_idle_video()
         self._conversation_pending = False
         self._conversation_character_id = None
         self._conversation_trace_id = None
@@ -1013,7 +1007,7 @@ class TransparentWindow(QMainWindow):
             self._finish_conversation_for(payload.get("character_id"))
             return
         self.consume_interaction_result(payload, message="Interaction complete.")
-        coordinator = getattr(self, "_motion_coordinator", None)
+        coordinator = self._motion_coordinator
         finish_streaming_trace = getattr(coordinator, "finish_streaming_trace", None)
         if callable(finish_streaming_trace):
             QTimer.singleShot(0, lambda current_trace_id=str(payload.get("trace_id") or ""): finish_streaming_trace(current_trace_id))
@@ -1064,7 +1058,7 @@ class TransparentWindow(QMainWindow):
         metadata = payload.get("metadata") or (payload.get("raw_event") or {}).get("metadata") or {}
         streaming = bool(metadata.get("agentic", {}).get("streaming"))
         if streaming and webm_key:
-            coordinator = getattr(self, "_motion_coordinator", None)
+            coordinator = self._motion_coordinator
             has_motion = getattr(coordinator, "has_motion_for_trace", None)
             if not callable(has_motion) or has_motion(trace_id) is not True:
                 self.dispatch_action(
@@ -1210,18 +1204,6 @@ class TransparentWindow(QMainWindow):
     def _set_agentic_busy(self, busy: bool) -> None:
         self._run_javascript("setAgenticBusy", bool(busy))
 
-    def get_render_diagnostics(self) -> dict[str, object]:
-        return {
-            "brain_mode": self._brain_mode,
-            "runtime_contract": dict(self._runtime_contract),
-            "background_status": self._background_status,
-            "background_url": self._background_url,
-            "stt_state": self._stt_state,
-            "stt_available": self._stt_available,
-            "webview_ready": self._js_gateway.ready,
-            "latest_agentic_event": self._latest_agentic_event,
-        }
-
     def set_action_status(self, message: str, tone: str = "idle", timeout_ms: int = 0):
         self._run_javascript("setActionStatus", message, tone, timeout_ms)
 
@@ -1273,12 +1255,8 @@ class TransparentWindow(QMainWindow):
 
     def reset_presentation(self):
         self._proactive_greeting_active = False
-        release_timer = getattr(self, "_proactive_greeting_release_timer", None)
-        if release_timer is not None:
-            release_timer.stop()
-        greeter = getattr(self, "_greeter", None)
-        if greeter is not None:
-            greeter.reset()
+        self._proactive_greeting_release_timer.stop()
+        self._greeter.reset()
         if self._stt_state == "listening":
             self.stt_stop_requested.emit()
         self._conversation_pending = False
@@ -1340,12 +1318,6 @@ class TransparentWindow(QMainWindow):
             self._character_object_position,
         )
 
-    def set_character_position(self, x_offset: int, y_offset: int):
-        """更新角色位移設定並立即套用。"""
-        self._character_x_offset = x_offset
-        self._character_y_offset = y_offset
-        self.apply_character_position()
-
     def apply_character_layout(self, character_id: str | None = None):
         layout = self._library.get_layout_config(character_id)
         self._character_x_offset = self._coerce_int(
@@ -1367,15 +1339,6 @@ class TransparentWindow(QMainWindow):
             self.DEFAULT_CHARACTER_OBJECT_POSITION,
         )
         self.apply_character_position()
-
-    def move_character_to(self, x_offset: int, y_offset: int):
-        """以左為正 x、以下為正 y 的像素偏移量移動角色。"""
-        self.apply_character_transform(
-            x_offset,
-            y_offset,
-            self._character_scale,
-            self._character_object_position,
-        )
 
     def apply_character_transform(
         self,
@@ -1456,13 +1419,6 @@ class TransparentWindow(QMainWindow):
 
     def _run_javascript(self, function_name: str, *args):
         self._js_gateway.call(function_name, *args)
-
-    def _flush_pending_javascript_calls(self):
-        self._js_gateway.mark_ready()
-
-    @staticmethod
-    def _build_javascript_bridge_call(function_name: str, *args) -> str:
-        return JsGateway.build_call(function_name, *args)
 
     @staticmethod
     def _build_media_source_url(absolute_path: str) -> str:
