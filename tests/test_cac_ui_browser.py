@@ -112,6 +112,24 @@ def test_growth_offer_stays_open_when_generation_was_not_queued(page):
     assert page.locator("#modal-growth-offer").is_visible()
 
 
+def test_hydrate_opens_pending_offer_without_hud_polling(page):
+    page.evaluate(
+        "window.hydrateAgenticUI({state: {pending_offer: {variant: 'event', reason: 'shortcut_f'}}})"
+    )
+
+    assert page.locator("#modal-growth-offer").is_visible()
+
+
+def test_pending_offer_does_not_reenter_an_open_modal(page):
+    _enter_companion_stage(page)
+    page.evaluate("window.requestClose()")
+    page.evaluate(
+        "window.hydrateAgenticUI({state: {pending_offer: {variant: 'event', reason: 'shortcut_f'}}})"
+    )
+
+    assert page.locator("#modal-growth-offer").is_hidden()
+
+
 def test_scene_panel_shows_real_backgrounds_with_no_objects_tab(page):
     _enter_companion_stage(page)
     page.evaluate(

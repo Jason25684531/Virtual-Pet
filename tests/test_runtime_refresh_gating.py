@@ -22,6 +22,24 @@ def test_get_current_state_does_not_rebuild_runtime(harness_env):
         mocked_refresh.assert_not_called()
 
 
+def test_get_current_state_includes_pending_asset_offers(harness_env):
+    _tmp_path, agentic_root = harness_env
+    adapter = PyQtHarnessAdapter(
+        default_character_id="Choppr",
+        agentic_root=str(agentic_root),
+        provider_runtime=ProviderRuntime(provider=FakeProvider()),
+    )
+    growth_offer = {"variant": "event", "reason": "shortcut_f"}
+    motion_offer = {"variant": "development", "reason": "level_up"}
+    adapter.store.set_setting("asset_pending_offer", growth_offer)
+    adapter.store.set_setting("asset_pending_motion_offer", motion_offer)
+
+    state = adapter.get_current_state()
+
+    assert state["pending_offer"] == growth_offer
+    assert state["pending_motion_offer"] == motion_offer
+
+
 def test_get_provider_status_does_not_rebuild_runtime(harness_env):
     _tmp_path, agentic_root = harness_env
     adapter = PyQtHarnessAdapter(

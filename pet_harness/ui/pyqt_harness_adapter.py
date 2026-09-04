@@ -296,6 +296,8 @@ class PyQtHarnessAdapter:
         )
         return {
             "xp": xp_state,
+            "pending_offer": self.store.get_setting("asset_pending_offer"),
+            "pending_motion_offer": self.store.get_setting("asset_pending_motion_offer"),
             "provider_config": self._mask_payload(provider_config),
             "provider_status": self._mask_payload(provider_status),
             "provider_diagnostics": self._build_provider_diagnostics(provider_config, provider_status),
