@@ -24,7 +24,7 @@ def test_quick_intent_bridge_and_overlay_aliases_reach_their_command_entries():
 
 
 def test_submit_agentic_text_sends_a_conversation_command_to_action_bus():
-    commands = []
+    commands, conversation_calls = [], []
     window = SimpleNamespace(
         _action_bus=SimpleNamespace(execute=lambda command: commands.append(command) or SimpleNamespace(status="ok")),
         _conversation_pending=False,
@@ -32,12 +32,41 @@ def test_submit_agentic_text_sends_a_conversation_command_to_action_bus():
         _set_agentic_busy=lambda active: None,
         set_action_status=lambda *args, **kwargs: None,
         get_current_character_id=lambda: "Choppr",
+        begin_conversation_turn=lambda *args: conversation_calls.append(args),
     )
 
     TransparentWindow.submit_agentic_text(window, "hello")
 
     assert [(command.action, command.text, command.source, command.character_id) for command in commands] == [
         ("conversation", "hello", "ui", "Choppr")
+    ]
+    assert conversation_calls == [(commands[0].trace_id, "Talk", "hello")]
+
+
+def test_rejected_conversation_closes_waiting_turn_with_failure():
+    calls = []
+    window = SimpleNamespace(
+        _action_bus=SimpleNamespace(
+            execute=lambda _command: SimpleNamespace(status="rejected", reason="busy")
+        ),
+        _conversation_pending=False,
+        _conversation_character_id=None,
+        _conversation_trace_id=None,
+        _set_agentic_busy=lambda active: None,
+        set_action_status=lambda *args, **kwargs: None,
+        get_current_character_id=lambda: "Choppr",
+        begin_conversation_turn=lambda *args: calls.append(("begin", args)),
+        set_conversation_assistant=lambda *args: calls.append(("assistant", args)),
+        finish_conversation_turn=lambda *args: calls.append(("finish", args)),
+    )
+
+    TransparentWindow.submit_agentic_text(window, "hello")
+
+    trace_id = calls[0][1][0]
+    assert calls == [
+        ("begin", (trace_id, "Talk", "hello")),
+        ("assistant", (trace_id, "busy")),
+        ("finish", (trace_id,)),
     ]
 
 
@@ -59,6 +88,7 @@ def test_submit_agentic_text_interrupts_finished_turns_with_active_tts_motion():
         stop_motion_loop=lambda: calls.append("stop-motion"),
         restore_idle_video=lambda: calls.append("restore-idle"),
         get_current_character_id=lambda: "Choppr",
+        begin_conversation_turn=lambda *args: None,
     )
 
     TransparentWindow.submit_agentic_text(window, "next turn")

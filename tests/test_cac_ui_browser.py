@@ -313,6 +313,16 @@ def test_chat_history_is_in_its_hud_and_developer_controls_use_the_debug_panel(p
     assert page.evaluate("window.__skill_toggles") == 1
 
 
+def test_streamed_reply_survives_authoritative_turn_update(page):
+    page.evaluate(
+        "window.beginConversationTurn('turn-stream', 'Talk', 'Hello');"
+        "window.appendConversationAssistant('turn-stream', 'First sentence.');"
+        "window.beginConversationTurn('turn-stream', 'Talk', 'Hello');"
+    )
+
+    assert page.locator("#conversation-list .conversation-turn__text").nth(1).inner_text() == "First sentence."
+
+
 def _enter_companion_stage(page):
     page.locator("#menu-create-button").click()
     page.locator("#preset-select-button").click()

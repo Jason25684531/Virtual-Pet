@@ -1444,8 +1444,10 @@
         var turn = ensureConversationTurn(String(turnId), sourceLabel || 'User');
         turn.root.dataset.state = 'active';
         turn.userText.textContent = userText || '';
-        turn.assistantText.textContent = 'Waiting for reply...';
-        turn.assistantText.classList.add('conversation-turn__text--muted');
+        if (!turn.assistantText.textContent || turn.assistantText.classList.contains('conversation-turn__text--muted')) {
+            turn.assistantText.textContent = 'Waiting for reply...';
+            turn.assistantText.classList.add('conversation-turn__text--muted');
+        }
     };
 
     window.appendConversationAssistant = function (turnId, fragment) {

@@ -14,6 +14,7 @@ def test_transcript_submission_uses_action_bus_without_adapter_fallback():
         _set_agentic_busy=lambda _busy: None,
         set_action_status=lambda *_args, **_kwargs: None,
         get_current_character_id=lambda: "Choppr",
+        begin_conversation_turn=lambda *args: None,
     )
 
     TransparentWindow.submit_agentic_text(window, "transcript")

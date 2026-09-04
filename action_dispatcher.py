@@ -267,6 +267,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             timeline = get_turn(trace_id)
             if timeline is not None:
                 timeline.mark("tts_request_started")
+            self._window.append_conversation_assistant(trace_id, text)
             self.speak_text(text, trace_id=trace_id, has_action=False)
 
     def _dispatch_stream_action(self, action: str, trace_id: str) -> None:

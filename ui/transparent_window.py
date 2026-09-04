@@ -967,6 +967,7 @@ class TransparentWindow(QMainWindow):
             self.set_action_status("No active character.", tone="warn", timeout_ms=2200)
             return
         trace_id = f"turn-{uuid4().hex}"
+        self.begin_conversation_turn(trace_id, "Talk", cleaned)
         self._conversation_pending = True
         self._conversation_character_id = character_id
         self._conversation_trace_id = trace_id
@@ -977,6 +978,8 @@ class TransparentWindow(QMainWindow):
         self.set_action_status("Processing interaction...", tone="working", timeout_ms=0)
         result = self._action_bus.execute(ActionCommand("conversation", cleaned, trace_id=trace_id, source="ui", character_id=character_id))
         if result.status != "ok":
+            self.set_conversation_assistant(trace_id, result.reason or "Interaction rejected.")
+            self.finish_conversation_turn(trace_id)
             self._conversation_pending = False
             self._conversation_character_id = None
             self._conversation_trace_id = None
@@ -1021,6 +1024,10 @@ class TransparentWindow(QMainWindow):
         if not self._is_current_conversation_character(character_id):
             self._finish_conversation_for(character_id)
             return
+        trace_id = self._conversation_trace_id
+        if trace_id:
+            self.set_conversation_assistant(trace_id, message or "Interaction failed.")
+            self.finish_conversation_turn(trace_id)
         self._finish_conversation_for(character_id)
         self._on_agentic_error(message)
 
