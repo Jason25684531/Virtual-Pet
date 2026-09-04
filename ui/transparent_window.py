@@ -44,7 +44,7 @@ class TransparentWindow(QMainWindow):
     stt_stop_requested = pyqtSignal()
     RAW_JAVASCRIPT_MARKER = "__raw_javascript__"
     # 更換主選單的角色與背景
-    MAIN_MENU_BACKGROUND = "assets/webm/characters/Choppr/BG_Final.png"
+    MAIN_MENU_BACKGROUND = "D:\\01_project\\Virtual-Pet\\ui\\BG\\Lab_BG.png"
     MAIN_MENU_CHARACTER_MOTION = "assets/webm/characters/Choppr/motions/Idle.webm"
 
     DEV_INPUT_WIDTH = 560
@@ -112,6 +112,9 @@ class TransparentWindow(QMainWindow):
         self._stt_available = False
         self._stt_state = "idle"
         self._stt_controller = None
+        # JS 端 uiRoute.screen 為空才是角色互動舞台；選角色／load-save 等選單畫面時為 True。
+        # 初始值對齊 app.js 的 uiRoute 預設值（'screen-main-menu'），開場尚未進舞台。
+        self._on_stage = False
         self._proactive_greeting_active = False
         self._proactive_greeting_release_timer = QTimer(self)
         self._proactive_greeting_release_timer.setInterval(100)
@@ -658,7 +661,8 @@ class TransparentWindow(QMainWindow):
     @property
     def is_busy(self) -> bool:
         return (
-            self._proactive_greeting_active
+            not self._on_stage
+            or self._proactive_greeting_active
             or self._conversation_pending
             or self._stt_listening
             or (self._motion_coordinator is not None and (
@@ -970,6 +974,12 @@ class TransparentWindow(QMainWindow):
         self._conversation_pending = True
         self._conversation_character_id = character_id
         self._conversation_trace_id = trace_id
+        # STT/文字輸入完成即已知道使用者說了什麼；在這裡先把使用者文字畫到 UI，
+        # 不要等 AI 回覆與 TTS 都跑完才在 consume_interaction_result() 一起顯示，
+        # 否則使用者文字的顯示反而比 TTS 開口還慢。
+        begin_conversation_turn = getattr(self, "begin_conversation_turn", None)
+        if callable(begin_conversation_turn):
+            begin_conversation_turn(trace_id, "Talk", cleaned)
         start_streaming_trace = getattr(coordinator, "start_streaming_trace", None)
         if callable(start_streaming_trace):
             start_streaming_trace(trace_id)
@@ -1305,6 +1315,10 @@ class TransparentWindow(QMainWindow):
         if coordinator is None or not coordinator.is_tts_busy:
             self._proactive_greeting_active = False
             self._proactive_greeting_release_timer.stop()
+
+    def set_stage_active(self, active: bool) -> None:
+        """由 app.js renderRoute() 回報：uiRoute.screen 是否為空（=在角色互動舞台上）。"""
+        self._on_stage = bool(active)
 
     def get_current_character_id(self) -> str | None:
         """UI 動作/idle/聲線一律以 router snapshot 為唯一 active character 來源。"""

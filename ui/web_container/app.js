@@ -760,6 +760,11 @@
         var modalLayer = document.getElementById('modal-layer');
         Array.prototype.slice.call(document.querySelectorAll('.modal')).forEach(function (modal) { modal.hidden = modal.id !== uiRoute.modal; });
         if (modalLayer) modalLayer.hidden = !uiRoute.modal;
+
+        // uiRoute.screen 非空＝選角色/load-save/建立角色等選單畫面；為空才是真正的角色互動舞台。
+        // 主動打招呼只該在舞台上發生，這裡是所有畫面切換（routeToScreen/closeModal/enterCompanionStage/resetUiRoute）
+        // 唯一共同匯集點，回報一次即可涵蓋全部入口。
+        callBridge('setStageActive', !uiRoute.screen);
     }
 
     function routeToScreen(screenId) {

@@ -8,6 +8,7 @@ __pycache__/
 .ruff_cache/
 runtime_cache/
 *.zip
+FinalReport/*
 
 # Agent/editor metadata
 openspec/

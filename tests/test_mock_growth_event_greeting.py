@@ -318,6 +318,10 @@ def test_transparent_window_wires_busy_property_as_callback(monkeypatch):
     )
     try:
         assert callable(captured["is_busy"])
+        # 剛啟動時尚在主選單（未進舞台），is_busy 理應為 True，擋下打招呼；
+        # 進入舞台後（_on_stage=True）其餘旗標皆為預設 False 才會回報不忙碌。
+        assert captured["is_busy"]() is True
+        window._on_stage = True
         assert captured["is_busy"]() is False
     finally:
         window._playtime_timer.stop()
