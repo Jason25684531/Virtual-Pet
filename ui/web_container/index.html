@@ -11,10 +11,10 @@
     <div id="stage-background" class="stage-background" aria-hidden="true"><img class="room-background" src="../../assets/backgrounds/default_room.jpg" alt=""></div>
     <div id="stage-pet-layer" class="stage-pet-layer" aria-label="角色，點擊可開啟聊天">
       <div id="panel-video-anchor" class="room-panel-anchor"><video id="panel-video" muted playsinline></video></div>
-      <button id="pet-character" class="room-character" type="button" aria-label="與角色聊天"><video id="pet-video" autoplay loop muted playsinline></video></button>
+      <button id="pet-character" class="room-character" type="button" data-hit-region aria-label="與角色聊天"><video id="pet-video" autoplay loop muted playsinline></video></button>
     </div>
     <div id="hud-level-badge" class="level-badge" aria-live="polite"><span id="hud-score-text">★ Score 0</span><span id="hud-score-level">· Lv.1</span><span id="hud-score-delta" hidden>+0</span></div>
-    <nav id="companion-nav" aria-label="Companion actions">
+    <nav id="companion-nav" data-hit-region aria-label="Companion actions">
       <button class="companion-nav__item" type="button" data-hud="hud-chat" aria-label="Chat"><span class="nav-glyph">◌</span><span class="nav-badge" hidden></span><span>Chat</span></button>
       <button class="companion-nav__item" type="button" data-hud="hud-agent" aria-label="Agent"><span class="nav-glyph">✦</span><span>Agent</span></button>
       <button class="companion-nav__item" type="button" data-hud="hud-style" aria-label="Style"><span class="nav-glyph">◇</span><span>Style</span></button>

@@ -14,7 +14,7 @@ import time
 from uuid import uuid4
 
 import config
-from PyQt5.QtCore import QEvent, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QEvent, QPoint, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWidgets import (
@@ -33,6 +33,7 @@ from ui.background_resolver import BackgroundResolver
 from ui.character_ui_bridge import CharacterUiBridge
 from ui.js_gateway import JsGateway
 from ui.harness_ui_bridge import HarnessUiBridge
+from ui.interaction_region_manager import InteractionRegionManager
 from ui.web_page_widgets import DeveloperInputLineEdit, EchoesWebPage
 from ui.proactive_greeter import ProactiveGreeter
 
@@ -42,6 +43,7 @@ class TransparentWindow(QMainWindow):
     developer_query_submitted = pyqtSignal(str)
     stt_start_requested = pyqtSignal()
     stt_stop_requested = pyqtSignal()
+    motion_offer_ready = pyqtSignal()
     RAW_JAVASCRIPT_MARKER = "__raw_javascript__"
     # 更換主選單的角色與背景
     MAIN_MENU_BACKGROUND = "assets/webm/characters/Choppr/BG_Final.png"
@@ -80,6 +82,7 @@ class TransparentWindow(QMainWindow):
         adapter: PyQtHarnessAdapter | None = None,
         lifecycle_shutdown=None,
         action_bus=None,
+        interaction_regions: InteractionRegionManager | None = None,
     ):
         super().__init__()
         self._brain_mode = brain_mode
@@ -97,6 +100,8 @@ class TransparentWindow(QMainWindow):
         self._adapter = adapter
         self._lifecycle_shutdown = lifecycle_shutdown
         self._action_bus = action_bus
+        self._interaction_regions = interaction_regions or InteractionRegionManager()
+        self._desktop_companion_mode = bool(getattr(config, "DESKTOP_COMPANION_MODE", True))
         self._motion_coordinator = None
         self._settings_dialog = None
         self._conversation_pending = False
@@ -126,6 +131,8 @@ class TransparentWindow(QMainWindow):
         self._playtime_timer.start()
         self._init_window()
         self._init_webview()
+        self.motion_offer_ready.connect(self.refresh_agentic_ui)
+        self._adapter.configure_motion_offer_callback(self.motion_offer_ready.emit)
         self._js_gateway = JsGateway(lambda: self.web_view.page(), self.RAW_JAVASCRIPT_MARKER)
         self._init_developer_input()
         self._init_tray()
@@ -149,12 +156,11 @@ class TransparentWindow(QMainWindow):
     # ── 視窗初始化 ──────────────────────────────────────────
 
     def _init_window(self):
-        """設定無邊框、置頂視窗，並填滿主螢幕可用區"""
-        self.setWindowFlags(
-            Qt.FramelessWindowHint
-            | Qt.WindowStaysOnTopHint
-            | Qt.Tool  # 不在工作列顯示圖示
-        )
+        """設定無邊框視窗；rollback 時保留既有置頂行為。"""
+        flags = Qt.FramelessWindowHint | Qt.Tool  # 不在工作列顯示圖示
+        if not self._desktop_companion_mode:
+            flags |= Qt.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setStyleSheet("background: transparent;")
         # 視窗尺寸就是 CSS 視口尺寸：寫死解析度時視窗會超出螢幕，使用者只看得到畫布
@@ -174,7 +180,7 @@ class TransparentWindow(QMainWindow):
 
         # 掛上自訂 Page，讓前端 console 訊息可轉印至 Python Terminal。
         self.web_view.setPage(EchoesWebPage(self.web_view))
-        self._bridge = HarnessUiBridge(self)
+        self._bridge = HarnessUiBridge(self, self._interaction_regions)
         self._character_bridge = CharacterUiBridge(self._adapter.character_service, self, self._adapter)
         self._channel = QWebChannel(self.web_view.page())
         self._channel.registerObject("harnessBridge", self._bridge)
@@ -330,6 +336,9 @@ class TransparentWindow(QMainWindow):
             self.height() - self.DEV_INPUT_HEIGHT - self.DEV_INPUT_MARGIN_BOTTOM,
         )
         self._developer_input.setGeometry(x, y, available_width, self.DEV_INPUT_HEIGHT)
+        bridge = getattr(self, "_bridge", None)
+        if bridge is not None:
+            bridge.sync_developer_input_region()
 
     def _on_webview_loaded(self, ok: bool):
         if not ok:
@@ -503,6 +512,8 @@ class TransparentWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._update_developer_input_geometry()
+        if hasattr(self, "_js_gateway"):
+            self._run_javascript("refreshHitRegions")
 
     def keyPressEvent(self, event):
         if self._handle_cached_intent_shortcut(event):
@@ -555,6 +566,7 @@ class TransparentWindow(QMainWindow):
         self.set_room_character(character_name)
         self.set_action_status(f"{character_name} 已待命", tone="idle", timeout_ms=2200)
         self._apply_resolved_background(self._library.get_background_path(character_id))
+        self._run_javascript("refreshHitRegions")
 
         return True
 
@@ -920,18 +932,21 @@ class TransparentWindow(QMainWindow):
         self._developer_input.raise_()
         self._developer_input.setFocus(Qt.ShortcutFocusReason)
         self._developer_input.selectAll()
+        self._bridge.sync_developer_input_region()
         self.set_action_status("Dev Mode 已開啟，按 Enter 可直接測試大腦與 TTS", tone="working", timeout_ms=2200)
 
     def _hide_developer_input(self):
         if not self._developer_input.isVisible():
             self._developer_input.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             self._developer_input.setEnabled(False)
+            self._bridge.sync_developer_input_region()
             return
 
         self._developer_input.clearFocus()
         self._developer_input.hide()
         self._developer_input.setEnabled(False)
         self._developer_input.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._bridge.sync_developer_input_region()
 
     def _submit_developer_query(self):
         query = self._developer_input.text().strip()
@@ -976,6 +991,7 @@ class TransparentWindow(QMainWindow):
         if result.status != "ok":
             self.set_conversation_assistant(trace_id, result.reason or "Interaction rejected.")
             self.finish_conversation_turn(trace_id)
+            TransparentWindow._finish_streaming_trace(self, trace_id)
             self._conversation_pending = False
             self._conversation_character_id = None
             self._conversation_trace_id = None
@@ -1007,10 +1023,10 @@ class TransparentWindow(QMainWindow):
             self._finish_conversation_for(payload.get("character_id"))
             return
         self.consume_interaction_result(payload, message="Interaction complete.")
-        coordinator = self._motion_coordinator
-        finish_streaming_trace = getattr(coordinator, "finish_streaming_trace", None)
-        if callable(finish_streaming_trace):
-            QTimer.singleShot(0, lambda current_trace_id=str(payload.get("trace_id") or ""): finish_streaming_trace(current_trace_id))
+        QTimer.singleShot(
+            0,
+            lambda current_trace_id=str(payload.get("trace_id") or ""): TransparentWindow._finish_streaming_trace(self, current_trace_id),
+        )
         self._finish_conversation_for(payload.get("character_id"))
 
     def _on_action_bus_error(self, message: str, character_id: str | None = None) -> None:
@@ -1022,11 +1038,17 @@ class TransparentWindow(QMainWindow):
         if trace_id:
             self.set_conversation_assistant(trace_id, message or "Interaction failed.")
             self.finish_conversation_turn(trace_id)
+            TransparentWindow._finish_streaming_trace(self, trace_id)
         self._finish_conversation_for(character_id)
         self._on_agentic_error(message)
 
     def _is_current_conversation_character(self, character_id: str | None) -> bool:
         return bool(character_id) and character_id == self.get_current_character_id()
+
+    def _finish_streaming_trace(self, trace_id: str | None) -> None:
+        finish = getattr(self._motion_coordinator, "finish_streaming_trace", None)
+        if callable(finish):
+            finish(trace_id)
 
     def _finish_conversation_for(self, character_id: str | None) -> None:
         if character_id and character_id != self._conversation_character_id:
@@ -1351,20 +1373,36 @@ class TransparentWindow(QMainWindow):
         self._run_javascript("setCharacterObjectPosition", object_position)
 
     def nativeEvent(self, event_type, message):
-        """整個視窗都是 client area。可點區域一律由前端 UI 決定,Qt 端不再用矩形白名單猜:
-        回 HTCAPTION 會讓 Windows 改送 WM_NCLBUTTONDOWN(視窗管理員接管拖曳),
-        QWebEngineView 就永遠收不到那個點擊。視窗拖曳走前端的 beginWindowDrag()。"""
+        """Only reported UI owns clicks; the rest passes through to the desktop."""
         if sys.platform != "win32":
             return super().nativeEvent(event_type, message)
 
         wm_nchittest = 0x0084
         try:
-            if ctypes.wintypes.MSG.from_address(int(message)).message == wm_nchittest:
-                return True, 1  # HTCLIENT
+            native_message = ctypes.wintypes.MSG.from_address(int(message))
+            if native_message.message == wm_nchittest:
+                if not self._desktop_companion_mode:
+                    return True, 1  # HTCLIENT: rollback behaviour
+                local_pos = self._native_screen_to_local(native_message.pt.x, native_message.pt.y)
+                developer_input_visible = (
+                    self._developer_input.isVisible()
+                    and self._developer_input.geometry().contains(local_pos)
+                )
+                if developer_input_visible or self._interaction_regions.hit_test(local_pos):
+                    return True, 1  # HTCLIENT
+                return True, -1  # HTTRANSPARENT
         except Exception:  # noqa: BLE001
             # Native hit-test is optional; use Qt's default handling when unavailable.
             pass
         return super().nativeEvent(event_type, message)
+
+    def _native_screen_to_local(self, x: int, y: int) -> QPoint:
+        """WM_NCHITTEST uses native pixels; Qt/WebEngine use logical CSS pixels."""
+        ratio = self.devicePixelRatioF() or 1.0
+        return self.mapFromGlobal(QPoint(
+            InteractionRegionManager.native_to_css(x, ratio),
+            InteractionRegionManager.native_to_css(y, ratio),
+        ))
 
     @staticmethod
     def _coerce_int(value, default: int) -> int:

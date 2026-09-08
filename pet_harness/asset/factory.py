@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
+from typing import Callable
 
 import config
 from character_library import CharacterLibrary
@@ -19,7 +20,12 @@ from pet_harness.storage.sqlite_store import SQLiteStore
 LOGGER = logging.getLogger(__name__)
 
 
-def build_asset_service(store: SQLiteStore, character_id: str | None, library: CharacterLibrary) -> AssetService:
+def build_asset_service(
+    store: SQLiteStore,
+    character_id: str | None,
+    library: CharacterLibrary,
+    on_motion_offer_ready: Callable[[], None] | None = None,
+) -> AssetService:
     if not config.COMFYUI_ENABLED:
         LOGGER.warning("ComfyUI disabled by COMFYUI_ENABLED, falling back to MockAssetService — queued jobs will not be processed by ComfyUI; mock worker active")
         return MockAssetService(store, character_id=character_id, library=library)
@@ -38,7 +44,7 @@ def build_asset_service(store: SQLiteStore, character_id: str | None, library: C
         root / "ComfyUI_Json" / "AIA_2026_background_gen_260728.json",
         config.COMFYUI_VIDEO_TIMEOUT_SEC,
     )
-    worker = AssetJobWorker(orchestrator.repository, orchestrator, client, library)
+    worker = AssetJobWorker(orchestrator.repository, orchestrator, client, library, on_motion_offer_ready)
 
     def _resume() -> None:
         # 啟動即恢復中斷 job 並排空殘留佇列;否則 App 重啟後 queued job 永遠不會被處理。

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import logging
 import threading
 from pathlib import Path
+from typing import Callable
 
 import character_library as library_module
 from character_library import CharacterLibrary
@@ -16,6 +18,7 @@ from pet_harness.models.events import utc_now
 
 _STORE_LOCKS: dict[str, threading.Lock] = {}
 _STORE_LOCKS_GUARD = threading.Lock()
+LOGGER = logging.getLogger(__name__)
 
 
 def _store_lock(repository: AssetRepository) -> threading.Lock:
@@ -25,8 +28,16 @@ def _store_lock(repository: AssetRepository) -> threading.Lock:
 
 
 class AssetJobWorker:
-    def __init__(self, repository: AssetRepository, orchestrator: AssetOrchestrator, client: ComfyUIClient, library: CharacterLibrary | None = None) -> None:
+    def __init__(
+        self,
+        repository: AssetRepository,
+        orchestrator: AssetOrchestrator,
+        client: ComfyUIClient,
+        library: CharacterLibrary | None = None,
+        on_motion_offer_ready: Callable[[], None] | None = None,
+    ) -> None:
         self.repository, self.orchestrator, self.client, self.library = repository, orchestrator, client, library or CharacterLibrary()
+        self._on_motion_offer_ready = on_motion_offer_ready
         self._run_lock = _store_lock(repository)
 
     def run_once(self) -> bool:
@@ -160,6 +171,12 @@ class AssetJobWorker:
             "reason": str(job.metadata.get("trigger_reason", "")),
             "created_at": utc_now(),
         })
+        if callable(self._on_motion_offer_ready):
+            try:
+                self._on_motion_offer_ready()
+            except Exception:  # noqa: BLE001
+                # A closed UI must not turn a completed asset job into a failure.
+                LOGGER.debug("motion offer UI notification failed", exc_info=True)
 
     @staticmethod
     def _output_info(job) -> tuple[str, str, str]:

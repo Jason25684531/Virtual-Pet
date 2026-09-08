@@ -47,6 +47,7 @@ def test_submit_agentic_text_sends_a_conversation_command_to_action_bus():
 
 def test_rejected_conversation_closes_waiting_turn_with_failure():
     calls = []
+    stream_finishes = []
     window = SimpleNamespace(
         _action_bus=SimpleNamespace(
             execute=lambda _command: SimpleNamespace(status="rejected", reason="busy")
@@ -55,7 +56,9 @@ def test_rejected_conversation_closes_waiting_turn_with_failure():
         _conversation_character_id=None,
         _conversation_trace_id=None,
         _proactive_greeting_active=False,
-        _motion_coordinator=None,
+        _motion_coordinator=SimpleNamespace(
+            finish_streaming_trace=lambda trace_id: stream_finishes.append(trace_id),
+        ),
         _set_agentic_busy=lambda active: None,
         set_action_status=lambda *args, **kwargs: None,
         get_current_character_id=lambda: "Choppr",
@@ -72,6 +75,30 @@ def test_rejected_conversation_closes_waiting_turn_with_failure():
         ("assistant", (trace_id, "busy")),
         ("finish", (trace_id,)),
     ]
+    assert stream_finishes == [trace_id]
+
+
+def test_action_bus_error_closes_waiting_streaming_trace():
+    stream_finishes = []
+    window = SimpleNamespace(
+        _motion_coordinator=SimpleNamespace(
+            finish_streaming_trace=lambda trace_id: stream_finishes.append(trace_id),
+        ),
+        _conversation_trace_id="trace-1",
+        _conversation_character_id="Choppr",
+        _conversation_pending=True,
+        _set_agentic_busy=lambda _busy: None,
+        get_current_character_id=lambda: "Choppr",
+        _is_current_conversation_character=lambda character_id: character_id == "Choppr",
+        set_conversation_assistant=lambda *_args: None,
+        finish_conversation_turn=lambda *_args: None,
+        _finish_conversation_for=lambda _character_id: None,
+        _on_agentic_error=lambda _message: None,
+    )
+
+    TransparentWindow._on_action_bus_error(window, "provider failed", "Choppr")
+
+    assert stream_finishes == ["trace-1"]
 
 
 def test_submit_agentic_text_interrupts_finished_turns_with_active_tts_motion():

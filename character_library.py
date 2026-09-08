@@ -136,18 +136,27 @@ class CharacterLibrary:
         self._save_manifest(character_id, manifest)
         return manifest
 
+    # ponytail: 唯一已知的舊命名是單張 development.png(char-Omni),故只映射這一格,不做通用別名表
+    _SCENE_VARIANTS = ("og", "development_a", "development_b", "event")
+    _SCENE_LEGACY_FALLBACK = {"development_a": "development"}
+
     def list_background_scenes(self, character_id: str) -> list[dict[str, object]]:
         manifest = self.get_character(character_id)
         if not manifest:
             return []
-        background_root = self._manifest_path(character_id).parent / "images" / "bg"
-        if not background_root.is_dir():
-            return []
         current = manifest.get("background_image") or ""
-        return [
-            {"scene_id": path.stem, "thumb": self._to_relative(path), "is_current": self._to_relative(path) == current}
-            for path in sorted(background_root.glob("*.png"))
-        ]
+        items = []
+        for variant in self._SCENE_VARIANTS:
+            source = variant
+            path = self.variant_background_path(character_id, source)
+            if not path and variant in self._SCENE_LEGACY_FALLBACK:
+                source = self._SCENE_LEGACY_FALLBACK[variant]
+                path = self.variant_background_path(character_id, source)
+            if not path:
+                continue
+            relative = self._to_relative(Path(path))
+            items.append({"scene_id": source, "thumb": relative, "is_current": relative == current})
+        return items
 
     def set_background(self, character_id: str, image_path: str) -> dict:
         manifest = self.get_character(character_id)
@@ -262,6 +271,11 @@ class CharacterLibrary:
             revisions = self._revision_inventory(character_id, variant)
             wearable = [item for item in revisions if item["wearable"]]
             images = sorted((images_root / variant).glob("*.png"), key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
+            if not images:
+                # ponytail: development_a/development_b 共用 images/development/ 一個資料夾,靠檔名(不是資料夾名)分辨
+                shared = images_root / "development" / f"{variant}.png"
+                if shared.is_file():
+                    images = [shared]
             item = {
                 "variant": variant,
                 "state": "ready" if wearable or variant == "og" and self.get_motion_path(character_id, "idle") else "generating" if images else "empty",

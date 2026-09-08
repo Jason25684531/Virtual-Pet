@@ -20,7 +20,7 @@ from pet_harness.runtime.provider_runtime import ProviderRuntime
 from pet_harness.storage.sqlite_store import SQLiteStore
 from pet_harness.tools.registry import ToolRegistry
 from pet_harness.tools.tool_models import ToolDefinition, ToolExecutionClass, ToolRiskLevel
-from pet_harness.ui.character_ui_service import CharacterUiService
+from pet_harness.ui.character_ui_service import CharacterUiService, active_pending_motion_offer
 from pet_harness.app.secret_masking import SecretMasker, load_project_env
 from pet_harness.app.provider_config_service import ProviderConfigService
 from pet_harness.app.ports import PreparedTurn
@@ -96,6 +96,7 @@ class PyQtHarnessAdapter:
         if self.router.get_active_engine() is None:
             self.router.switch_character(default_character_id)
         self.character_service = CharacterUiService(router=self.router, registry=self._character_registry)
+        self._check_time_trigger()
         self._brain_mode = str(brain_mode or "harness")
         self._background_resolver = background_resolver or BackgroundResolver(project_root=self._project_root)
         self._voice_status_adapter = voice_status_adapter or VoiceRuntimeStatusAdapter()
@@ -150,6 +151,7 @@ class PyQtHarnessAdapter:
 
     def switch_character(self, character_id: str):
         profile = self.router.switch_character(character_id)
+        self._check_time_trigger()
         self._refresh_runtime()
         return profile
 
@@ -192,6 +194,17 @@ class PyQtHarnessAdapter:
     def configure_streaming(self, chunk_callback=None, action_callback=None) -> None:
         self._stream_chunk_callback = chunk_callback
         self._stream_action_callback = action_callback
+
+    def configure_motion_offer_callback(self, callback) -> None:
+        self.character_service.configure_motion_offer_callback(callback)
+
+    def _check_time_trigger(self) -> None:
+        engine = self.router.get_active_engine()
+        trigger = getattr(engine, "growth_trigger", None)
+        check = getattr(trigger, "check_time_trigger", None)
+        if callable(check):
+            character_id = getattr(engine, "_character_id", "unknown")
+            check(f"startup-{character_id}-{time.time_ns()}")
 
     def register_voice_turn_timing(self, is_vad_endpoint: bool, vad_endpoint_ts: float, stt_started_ts: float, stt_done_ts: float) -> None:
         """Owns the pet_harness.latency object creation for voice turns; sensors/stt_controller.py
@@ -297,7 +310,7 @@ class PyQtHarnessAdapter:
         return {
             "xp": xp_state,
             "pending_offer": self.store.get_setting("asset_pending_offer"),
-            "pending_motion_offer": self.store.get_setting("asset_pending_motion_offer"),
+            "pending_motion_offer": active_pending_motion_offer(self.store),
             "provider_config": self._mask_payload(provider_config),
             "provider_status": self._mask_payload(provider_status),
             "provider_diagnostics": self._build_provider_diagnostics(provider_config, provider_status),

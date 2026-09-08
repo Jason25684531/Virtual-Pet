@@ -650,6 +650,40 @@
         return harnessBridge[method].apply(harnessBridge, args);
     }
 
+    var hitRegionFrame = null;
+
+    function markHitRegions() {
+        ['#hud-chat', '#hud-agent', '#hud-style', '#hud-scene', '.app-screen', '.modal'].forEach(function (selector) {
+            document.querySelectorAll(selector).forEach(function (element) {
+                element.setAttribute('data-hit-region', '');
+            });
+        });
+    }
+
+    function reportHitRegions() {
+        hitRegionFrame = null;
+        if (!harnessBridge || typeof harnessBridge.update_hit_regions !== 'function') return;
+        var regions = Array.prototype.slice.call(document.querySelectorAll(
+            '[data-hit-region], button, input, textarea, select, [contenteditable="true"]'
+        )).filter(function (element) {
+            var style = window.getComputedStyle(element);
+            return !element.hidden && style.display !== 'none' && style.visibility !== 'hidden';
+        }).map(function (element) {
+            var rect = element.getBoundingClientRect();
+            return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        }).filter(function (rect) { return rect.width > 0 && rect.height > 0; });
+        harnessBridge.update_hit_regions(JSON.stringify({
+            regions: regions,
+            devicePixelRatio: window.devicePixelRatio,
+        }));
+    }
+
+    function scheduleHitRegionReport() {
+        if (hitRegionFrame === null) hitRegionFrame = window.requestAnimationFrame(reportHitRegions);
+    }
+
+    window.refreshHitRegions = scheduleHitRegionReport;
+
     // ── Character Bridge 呼叫（async，帶 callback → Promise）─────
 
     function callCharacterBridge(method) {
@@ -760,6 +794,7 @@
         var modalLayer = document.getElementById('modal-layer');
         Array.prototype.slice.call(document.querySelectorAll('.modal')).forEach(function (modal) { modal.hidden = modal.id !== uiRoute.modal; });
         if (modalLayer) modalLayer.hidden = !uiRoute.modal;
+        scheduleHitRegionReport();
     }
 
     function routeToScreen(screenId) {
@@ -852,7 +887,7 @@
 
     var styleSlots = [];
     var sceneSlots = { scenes: [] };
-    var SCENE_VARIANT_ORDER = ['og', 'development', 'event'];
+    var SCENE_VARIANT_ORDER = ['og', 'development_a', 'development_b', 'event'];
     var selectedSlots = { style: null, scene: null };
     var pendingCreation = null;
     var activeStyleCharacterId = '';
@@ -884,8 +919,8 @@
             var byId = {};
             (items || []).forEach(function (item) { byId[item.scene_id] = item; });
             sceneSlots.scenes = SCENE_VARIANT_ORDER.map(function (variant) {
-                var item = byId[variant];
-                return { slot_id: variant, state: item ? 'ready' : 'empty', label: variant, thumb: item ? normalizeProjectAssetSource(item.thumb) : '' };
+                var item = variant === 'development_a' ? (byId.development_a || byId.development) : byId[variant];
+                return { slot_id: item ? item.scene_id : variant, state: item ? 'ready' : 'empty', label: variant, thumb: item ? normalizeProjectAssetSource(item.thumb) : '' };
             });
             if (!sceneSlots.scenes.some(function (slot) { return slot.slot_id === selectedSlots.scene && slot.state === 'ready'; })) {
                 selectedSlots.scene = null;
@@ -1434,6 +1469,7 @@
             refreshMainMenu();
             routeToScreen('screen-main-menu');
             startHudPolling();
+            scheduleHitRegionReport();
         });
     }
 
@@ -2002,14 +2038,22 @@
 
     try {
         updateStageScale();
+        markHitRegions();
         if (typeof ResizeObserver !== 'undefined') {
             resizeObserver = new ResizeObserver(function () {
                 updateStageScale();
+                scheduleHitRegionReport();
             });
             resizeObserver.observe(document.documentElement);
         } else {
-            window.addEventListener('resize', updateStageScale);
+            window.addEventListener('resize', function () {
+                updateStageScale();
+                scheduleHitRegionReport();
+            });
         }
+        new MutationObserver(scheduleHitRegionReport).observe(document.body, {
+            attributes: true, childList: true, subtree: true,
+        });
         setupForms();
         wireDynamicActions();
         setupAppScreens();
