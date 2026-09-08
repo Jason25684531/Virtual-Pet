@@ -29,6 +29,27 @@ def _level_for_xp(xp_total: int) -> int:
     return max(1, (max(0, xp_total) // 100) + 1)
 
 
+def active_pending_motion_offer(store: SQLiteStore) -> dict[str, Any] | None:
+    offer = store.get_setting("asset_pending_motion_offer")
+    if not offer:
+        return None
+    import config
+
+    if offer_expired(offer.get("created_at"), config.PREVIEW_OFFER_TTL_HOURS):
+        store.set_setting("asset_pending_motion_offer", None)
+        return None
+    return offer
+
+
+def offer_expired(created_at: str | None, ttl_hours: float) -> bool:
+    if not created_at:
+        return False
+    try:
+        return datetime.now(UTC) - datetime.fromisoformat(created_at) > timedelta(hours=ttl_hours)
+    except ValueError:
+        return False
+
+
 class CharacterUiService:
     def __init__(
         self,
@@ -41,6 +62,10 @@ class CharacterUiService:
         self._customization = customization_service or CharacterCustomizationService(
             registry=registry, router=router
         )
+        self._on_motion_offer_ready = None
+
+    def configure_motion_offer_callback(self, callback) -> None:
+        self._on_motion_offer_ready = callback if callable(callback) else None
 
     def list_characters(self) -> list[dict[str, Any]]:
         items = {profile.character_id: self._summarize(profile) for profile in self._registry.list_characters()}
@@ -123,7 +148,7 @@ class CharacterUiService:
                 for skill in engine.skills
             ],
             "pending_offer": engine.store.get_setting("asset_pending_offer"),
-            "pending_motion_offer": self._active_pending_motion_offer(engine.store),
+            "pending_motion_offer": active_pending_motion_offer(engine.store),
         }
 
     def list_style_variants(self, character_id: str) -> list[dict[str, object]]:
@@ -144,7 +169,7 @@ class CharacterUiService:
             for job in jobs
             if job["status"] in {"queued", "uploading", "submitted", "running"}
         }
-        motion_offer = self._active_pending_motion_offer(store)
+        motion_offer = active_pending_motion_offer(store)
         if motion_offer:
             generated_variants.add(str(motion_offer["variant"]))
         items = [item for item in items if item["variant"] == "og" or item["variant"] in generated_variants]
@@ -181,31 +206,11 @@ class CharacterUiService:
     def select_style_generation(self, character_id: str, variant: str, asset_id: str) -> dict[str, object]:
         return CharacterLibrary().select_style_generation(character_id, variant, asset_id)
 
-    def _active_pending_motion_offer(self, store: SQLiteStore) -> dict[str, Any] | None:
-        offer = store.get_setting("asset_pending_motion_offer")
-        if not offer:
-            return None
-        import config
-
-        if self._offer_expired(offer.get("created_at"), config.PREVIEW_OFFER_TTL_HOURS):
-            store.set_setting("asset_pending_motion_offer", None)
-            return None
-        return offer
-
-    @staticmethod
-    def _offer_expired(created_at: str | None, ttl_hours: float) -> bool:
-        if not created_at:
-            return False
-        try:
-            return datetime.now(UTC) - datetime.fromisoformat(created_at) > timedelta(hours=ttl_hours)
-        except ValueError:
-            return False
-
     def confirm_motion_generation(self, character_id: str, accept: bool) -> dict[str, Any]:
         profile, _ = self._router.load_profile(character_id)
         store = SQLiteStore(profile.sqlite_path)
         store.initialize()
-        offer = self._active_pending_motion_offer(store)
+        offer = active_pending_motion_offer(store)
         if not offer:
             return {"accepted": False, "pending": False}
         if not accept:
@@ -231,8 +236,24 @@ class CharacterUiService:
             manifest = library.set_background(character_id, library.variant_background_path(character_id, variant))
         return {"character_id": character_id, "variant": variant, "background_image": manifest.get("background_image", "")}
 
+    @staticmethod
+    def _completed_render_variants(store: SQLiteStore, character_id: str) -> set[str]:
+        """成長/節慶觸發成功落地的變體(D7 契約:存在檔案不算解鎖,須有成功 render job)。"""
+        return {
+            str(job["variant"])
+            for job in store.list_asset_jobs(character_id)
+            if job["workflow_type"] in {"variant_png", "motion_set", "motion_clip"}
+            and job["status"] == "completed"
+            and job.get("metadata", {}).get("output", "preset") is not None
+        }
+
     def list_scene_backgrounds(self, character_id: str) -> list[dict[str, object]]:
-        return CharacterLibrary().list_background_scenes(character_id)
+        scenes = CharacterLibrary().list_background_scenes(character_id)
+        profile, _ = self._router.load_profile(character_id)
+        store = SQLiteStore(profile.sqlite_path)
+        store.initialize()
+        unlocked = self._completed_render_variants(store, character_id)
+        return [scene for scene in scenes if scene["scene_id"] == "og" or scene["scene_id"] in unlocked]
 
     def apply_scene(self, character_id: str, scene_id: str) -> dict[str, object]:
         library = CharacterLibrary()
@@ -241,6 +262,12 @@ class CharacterUiService:
             active_variant = str((library.get_character(character_id) or {}).get("active_variant") or "og")
             manifest = library.set_background(character_id, library.variant_background_path(character_id, active_variant))
             return {"character_id": character_id, "background_mode": "follow", "background_image": manifest.get("background_image", "")}
+        if scene_id != "og":
+            profile, _ = self._router.load_profile(character_id)
+            store = SQLiteStore(profile.sqlite_path)
+            store.initialize()
+            if scene_id not in self._completed_render_variants(store, character_id):
+                raise ValueError(f"scene not unlocked: {scene_id}")
         path = library.variant_background_path(character_id, scene_id)
         if not path:
             raise ValueError(f"scene background not ready: {scene_id}")
@@ -263,7 +290,8 @@ class CharacterUiService:
         metadata.update(dict(offer.get("metadata") or {}))
         if metadata["variant_type"] == "event":
             metadata["event_prompt"] = self._select_festival_prompt(store)
-        response = build_asset_service(store, character_id, CharacterLibrary()).create_asset(AssetRequest(
+        service_kwargs = {"on_motion_offer_ready": self._on_motion_offer_ready} if self._on_motion_offer_ready else {}
+        response = build_asset_service(store, character_id, CharacterLibrary(), **service_kwargs).create_asset(AssetRequest(
             asset_type="variant_png", prompt_params={"generation_context": context},
             source_event_id=str(offer["source_event_id"]),
             metadata=metadata,
@@ -303,9 +331,7 @@ class CharacterUiService:
 
     @staticmethod
     def _active_memory_rows(store: SQLiteStore, character_id: str):
-        now = utc_now()
-        with store.connect() as conn:
-            return conn.execute("SELECT text FROM memory_items WHERE character_id=? AND status='active' AND (expires_at IS NULL OR expires_at>?) ORDER BY created_at DESC", (character_id, now)).fetchall()
+        return store.active_memory_rows(character_id)
 
     def trigger_skill(self, skill_id: str) -> dict[str, Any]:
         profile = self._router.get_active_character()

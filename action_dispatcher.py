@@ -9,7 +9,6 @@ import os
 import queue
 import inspect
 from collections import deque
-from uuid import uuid4
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -267,6 +266,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             timeline = get_turn(trace_id)
             if timeline is not None:
                 timeline.mark("tts_request_started")
+            self._window.append_conversation_assistant(trace_id, text)
             self.speak_text(text, trace_id=trace_id, has_action=False)
 
     def _dispatch_stream_action(self, action: str, trace_id: str) -> None:
@@ -523,8 +523,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             self._current_loop_action_key = None
             self._current_loop_binding = None
             self._loop_action_tts_queued = False
-            if hasattr(self._window, "stop_motion_loop"):
-                self._window.stop_motion_loop()
+            self._window.stop_motion_loop()
             self._window.restore_idle_video()
 
     def interrupt_all(self) -> None:
@@ -555,12 +554,9 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._panel_video_ended = False
         self._wait_for_room_audio_ended = False
         self._loop_action_service_pending = False
-        if hasattr(self._window, "stop_motion_loop"):
-            self._window.stop_motion_loop()
-        if hasattr(self._window, "stop_music"):
-            self._window.stop_music()
-        if hasattr(self._window, "clear_panel_video"):
-            self._window.clear_panel_video()
+        self._window.stop_motion_loop()
+        self._window.stop_music()
+        self._window.clear_panel_video()
         self._window.restore_idle_video()
 
     @staticmethod
@@ -619,7 +615,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         current_character_id = self._current_character_id()
         if current_character_id:
             panel_path = self._call_library_method("get_panel_motion_path", current_character_id, "report_news")
-            if panel_path and hasattr(self._window, "play_panel_video"):
+            if panel_path:
                 self._panel_video_started = True
                 self._panel_video_ended = False
                 self._window.play_panel_video(panel_path, muted=binding.panel_muted, loop=binding.panel_loop)
@@ -641,13 +637,12 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         )
 
     def _handle_play_music(self, binding: ActionBinding, motion_found: bool):
-        if hasattr(self._window, "stop_music"):
-            self._window.stop_music()
+        self._window.stop_music()
         current_character_id = self._current_character_id()
         panel_path = None
         if current_character_id:
             panel_path = self._call_library_method("get_panel_motion_path", current_character_id, "play_music")
-        if panel_path and hasattr(self._window, "play_panel_video"):
+        if panel_path:
             self._panel_video_started = True
             self._panel_video_ended = False
             self._window.play_panel_video(panel_path, muted=binding.panel_muted, loop=binding.panel_loop)
@@ -721,8 +716,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._suppressed_traces.discard(normalized_trace_id)
         self._tts_not_expected_traces.discard(normalized_trace_id)
         self._audio_worker.clear_suppressed_trace(normalized_trace_id)
-        if hasattr(self._window, "stop_motion_loop"):
-            self._window.stop_motion_loop()
+        self._window.stop_motion_loop()
         # 不在此處呼叫 restore_idle_video()：這一刻還不知道新動作最終會不會
         # 找到 webm，若在這裡先把 <video> 重新導回 idle 來源，緊接著
         # start_motion_loop() 又立刻把它導回動作來源，QWebEngine(Chromium 83)
@@ -819,20 +813,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._schedule_loop_cleanup(12000 if self._wait_for_main_video_ended else 3000)
 
     def _render_synthetic_turn(self, source_label: str, assistant_text: str):
-        show_synthetic_turn = getattr(self._window, "show_synthetic_conversation_turn", None)
-        if callable(show_synthetic_turn):
-            show_synthetic_turn("Dev Query", source_label, assistant_text)
-            return
-        trace_id = uuid4().hex
-        begin_turn = getattr(self._window, "begin_conversation_turn", None)
-        set_assistant = getattr(self._window, "set_conversation_assistant", None)
-        finish_turn = getattr(self._window, "finish_conversation_turn", None)
-        if callable(begin_turn):
-            begin_turn(trace_id, "Dev Query", source_label)
-        if callable(set_assistant):
-            set_assistant(trace_id, assistant_text)
-        if callable(finish_turn):
-            finish_turn(trace_id)
+        self._window.show_synthetic_conversation_turn("Dev Query", source_label, assistant_text)
 
     def _play_binding_motion(self, binding: ActionBinding) -> bool:
         motion_path, used_idle_fallback = self._resolve_action_motion_path(binding.motion_key)
@@ -851,11 +832,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             self._wait_for_main_video_ended = False
             self._wait_for_room_audio_ended = False
             self._loop_action_service_pending = False
-            if hasattr(self._window, "play_resolved_motion"):
-                return bool(self._window.play_resolved_motion(binding.motion_key, motion_path, loop=True))
-            if hasattr(self._window, "change_video"):
-                return bool(self._window.change_video(motion_path, loop=True))
-            return bool(self._window.play_action_motion(binding.motion_key))
+            return bool(self._window.play_resolved_motion(binding.motion_key, motion_path, loop=True))
 
         # 所有真實動作統一使用 start_motion_loop（循環到明確停止為止）
         self._current_loop_action_key = binding.motion_key
@@ -865,19 +842,10 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._wait_for_room_audio_ended = False
         self._panel_video_started = False
         self._panel_video_ended = False
-        if binding.play_once and hasattr(self._window, "play_resolved_motion"):
+        if binding.play_once:
             return bool(self._window.play_resolved_motion(binding.motion_key, motion_path, loop=False))
-        if binding.play_once and hasattr(self._window, "change_video"):
-            return bool(self._window.change_video(motion_path, loop=False))
-        if hasattr(self._window, "start_motion_loop"):
-            self._window.start_motion_loop(motion_path, 300)
-            return True
-        # fallback
-        if hasattr(self._window, "play_resolved_motion"):
-            return bool(self._window.play_resolved_motion(binding.motion_key, motion_path, loop=True))
-        if hasattr(self._window, "change_video"):
-            return bool(self._window.change_video(motion_path, loop=True))
-        return bool(self._window.play_action_motion(binding.motion_key))
+        self._window.start_motion_loop(motion_path, 300)
+        return True
 
     def _resolve_action_motion_path(self, motion_key: str) -> tuple[str | None, bool]:
         motion_path = self._find_motion_path(motion_key)
@@ -929,10 +897,8 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         return self._resolve_existing_webm_path(candidate)
 
     def _build_demo_motion_path(self, motion_key: str) -> str | None:
-        mapping = getattr(self._window, "DEMO_MOTION_MAPPING", None)
-        animations_dir = getattr(self._window, "DEMO_ANIMATIONS_DIR", None)
-        if not isinstance(mapping, dict) or not animations_dir:
-            return None
+        mapping = self._window.DEMO_MOTION_MAPPING
+        animations_dir = self._window.DEMO_ANIMATIONS_DIR
 
         demo_filename = mapping.get(motion_key)
         if not demo_filename:
@@ -941,11 +907,8 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
 
     def _current_character_id(self) -> str | None:
         """active character 唯一來源是 window 背後的 router snapshot,不讀持久化 UI 狀態。"""
-        getter = getattr(self._window, "get_current_character_id", None)
-        if not callable(getter):
-            return None
         try:
-            return getter()
+            return self._window.get_current_character_id()
         except Exception as exc:  # noqa: BLE001 - 與 _call_library_method 相同的防禦策略
             print(f"[ECHOES] 警告: 取得 active character 失敗: {exc}")
             return None
@@ -1055,7 +1018,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
 
         if not has_audio:
             self._window.stop_music()
-            if self._panel_video_started and hasattr(self._window, "set_panel_video_muted"):
+            if self._panel_video_started:
                 self._window.set_panel_video_muted(False)
                 fallback_title = payload.get("title") if isinstance(payload, dict) else ""
                 if fallback_title:
@@ -1157,10 +1120,8 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             self._tts_not_expected_traces.discard(self._active_action_trace_id)
             self._audio_worker.clear_suppressed_trace(self._active_action_trace_id)
             self._active_action_trace_id = None
-        if hasattr(self._window, "stop_motion_loop"):
-            self._window.stop_motion_loop()
-        if hasattr(self._window, "clear_panel_video"):
-            self._window.clear_panel_video()
+        self._window.stop_motion_loop()
+        self._window.clear_panel_video()
         self._window.restore_idle_video()
         self._drain_deferred_dispatches()
 

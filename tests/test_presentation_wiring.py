@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from pet_harness.app.event_bus import SimpleEventBus
 from pet_harness.app.commands import AppEvent
+from action_dispatcher import MotionCoordinator
 from ui.presentation_wiring import MotionPortAdapter, PresentationEventBinder
 
 
@@ -23,6 +24,23 @@ def test_motion_port_adapter_delegates_to_existing_coordinator():
     window.reset_presentation.assert_called_once()
 
 
+def test_stream_chunk_renders_before_tts_enqueue():
+    calls = []
+    dispatcher = SimpleNamespace(
+        _window=SimpleNamespace(
+            append_conversation_assistant=lambda *args: calls.append(("append", args)),
+        ),
+        speak_text=lambda *args, **kwargs: calls.append(("speak", args, kwargs)),
+    )
+
+    MotionCoordinator._enqueue_stream_chunk(dispatcher, "First sentence.", "trace-1")
+
+    assert calls == [
+        ("append", ("trace-1", "First sentence.")),
+        ("speak", ("First sentence.",), {"trace_id": "trace-1", "has_action": False}),
+    ]
+
+
 def test_reset_presentation_clears_stt_conversation_busy_and_ui_route():
     calls = []
     window = SimpleNamespace(
@@ -30,6 +48,9 @@ def test_reset_presentation_clears_stt_conversation_busy_and_ui_route():
         _conversation_pending=True,
         _conversation_character_id="Choppr",
         _conversation_trace_id="trace-1",
+        _proactive_greeting_active=False,
+        _proactive_greeting_release_timer=MagicMock(),
+        _greeter=MagicMock(),
         stt_stop_requested=SimpleNamespace(emit=lambda: calls.append("stt-stop")),
         _set_agentic_busy=lambda busy: calls.append(("busy", busy)),
         set_conversation_queue_depth=lambda depth: calls.append(("queue", depth)),

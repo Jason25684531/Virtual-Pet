@@ -103,9 +103,7 @@ class GrowthTriggerService:
             self._store.set_setting(key, None)
 
     def build_generation_context(self) -> str:
-        now = datetime.now(UTC).isoformat()
-        with self._store.connect() as conn:
-            rows = conn.execute("SELECT text FROM memory_items WHERE character_id=? AND status='active' AND (expires_at IS NULL OR expires_at>?) ORDER BY created_at DESC", (self._character_id, now)).fetchall()
+        rows = self._store.active_memory_rows(self._character_id)
         return "\n".join(str(row["text"]) for row in rows)[:2000]
 
     def _offer(

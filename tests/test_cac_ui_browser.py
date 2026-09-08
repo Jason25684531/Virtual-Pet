@@ -25,7 +25,7 @@ def page():
             window.QWebChannel = function (_, ready) {
               var ok = function (data) { return JSON.stringify({ok: true, data: data}); };
               ready({objects: {
-                harnessBridge: {setDragEnabled: function () {}, beginWindowDrag: function () { window.__drag_calls = (window.__drag_calls || 0) + 1; }, refreshState: function () {}, toggleSkill: function () { window.__skill_toggles = (window.__skill_toggles || 0) + 1; }, sendText: function () {}, toggleStt: function () {}, triggerQuickIntent: function () {}, triggerOverlayAction: function (action) { window.__overlay_action = action; }},
+                harnessBridge: {setDragEnabled: function () {}, beginWindowDrag: function () { window.__drag_calls = (window.__drag_calls || 0) + 1; }, refreshState: function () {}, toggleSkill: function () { window.__skill_toggles = (window.__skill_toggles || 0) + 1; }, sendText: function () {}, toggleStt: function () {}, triggerQuickIntent: function () {}, triggerOverlayAction: function (action) { window.__overlay_action = action; }, update_hit_regions: function (payload) { window.__hit_regions = JSON.parse(payload); }},
                 characterBridge: {
                   listCharacters: function (done) { done(ok([])); },
                   listPresets: function (done) { done(ok([{character_id: 'miku', name: 'Miku', persona_description: 'Virtual singer'}])); },
@@ -112,7 +112,44 @@ def test_growth_offer_stays_open_when_generation_was_not_queued(page):
     assert page.locator("#modal-growth-offer").is_visible()
 
 
+def test_hydrate_opens_pending_offer_without_hud_polling(page):
+    page.evaluate(
+        "window.hydrateAgenticUI({state: {pending_offer: {variant: 'event', reason: 'shortcut_f'}}})"
+    )
+
+    assert page.locator("#modal-growth-offer").is_visible()
+
+
+def test_pending_offer_does_not_reenter_an_open_modal(page):
+    _enter_companion_stage(page)
+    page.evaluate("window.requestClose()")
+    page.evaluate(
+        "window.hydrateAgenticUI({state: {pending_offer: {variant: 'event', reason: 'shortcut_f'}}})"
+    )
+
+    assert page.locator("#modal-growth-offer").is_hidden()
+
+
 def test_scene_panel_shows_real_backgrounds_with_no_objects_tab(page):
+    _enter_companion_stage(page)
+    page.evaluate(
+        "window.__sceneBackgrounds = ["
+        "{scene_id: 'og', thumb: 'bg/og.png', is_current: true},"
+        "{scene_id: 'development_a', thumb: 'bg/development_a.png', is_current: false}]"
+    )
+
+    page.locator('[data-hud="hud-scene"]').click()
+
+    assert page.locator("[data-scene-tab]").count() == 0
+    assert page.locator("#scene-slot-grid .slot--ready").count() == 2
+    assert page.locator("#scene-slot-grid .slot--empty").count() == 2
+
+    page.locator("#scene-slot-grid .slot--ready").nth(1).click()
+    page.locator("#scene-apply-button").click()
+    assert page.evaluate("window.__applied_scene") == "development_a"
+
+
+def test_scene_panel_uses_legacy_development_as_development_a(page):
     _enter_companion_stage(page)
     page.evaluate(
         "window.__sceneBackgrounds = ["
@@ -122,9 +159,8 @@ def test_scene_panel_shows_real_backgrounds_with_no_objects_tab(page):
 
     page.locator('[data-hud="hud-scene"]').click()
 
-    assert page.locator("[data-scene-tab]").count() == 0
     assert page.locator("#scene-slot-grid .slot--ready").count() == 2
-    assert page.locator("#scene-slot-grid .slot--empty").count() == 1
+    assert page.locator("#scene-slot-grid .slot--empty").count() == 2
 
     page.locator("#scene-slot-grid .slot--ready").nth(1).click()
     page.locator("#scene-apply-button").click()
@@ -295,6 +331,16 @@ def test_chat_history_is_in_its_hud_and_developer_controls_use_the_debug_panel(p
     assert page.evaluate("window.__skill_toggles") == 1
 
 
+def test_streamed_reply_survives_authoritative_turn_update(page):
+    page.evaluate(
+        "window.beginConversationTurn('turn-stream', 'Talk', 'Hello');"
+        "window.appendConversationAssistant('turn-stream', 'First sentence.');"
+        "window.beginConversationTurn('turn-stream', 'Talk', 'Hello');"
+    )
+
+    assert page.locator("#conversation-list .conversation-turn__text").nth(1).inner_text() == "First sentence."
+
+
 def _enter_companion_stage(page):
     page.locator("#menu-create-button").click()
     page.locator("#preset-select-button").click()
@@ -370,6 +416,19 @@ def test_voice_button_stays_an_icon_and_carries_its_label_as_a_tooltip(page):
 
     box = button.bounding_box()
     assert box["width"] <= 48 and box["height"] <= 48
+
+
+def test_visible_companion_controls_are_reported_as_hit_regions(page):
+    _enter_companion_stage(page)
+
+    page.wait_for_function("window.__hit_regions && window.__hit_regions.regions.length > 0")
+
+    pet = page.locator("#pet-character").bounding_box()
+    assert any(
+        region["x"] <= pet["x"] <= region["x"] + region["width"]
+        and region["y"] <= pet["y"] <= region["y"] + region["height"]
+        for region in page.evaluate("window.__hit_regions.regions")
+    )
 
 
 def test_hud_panel_sits_above_the_nav_instead_of_dead_center(page):

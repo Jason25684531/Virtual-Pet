@@ -105,6 +105,29 @@ def test_variant_inventory_uses_png_preview_until_idle_motion_is_ready(tmp_path,
     assert library.list_variant_inventory("miku")[0]["state"] == "ready"
 
 
+def test_variant_inventory_resolves_thumb_by_filename_in_shared_development_folder(tmp_path, monkeypatch):
+    """char-Adol 等角色的 development_a/development_b 來源圖共放在 images/development/ 一個資料夾裡,
+    檔名才是變體名,不是資料夾名——thumb 解析要靠檔名 fallback,不能只看 images/{variant}/ 資料夾。"""
+    library = _library(tmp_path, monkeypatch)
+    character_dir = tmp_path / "assets" / "characters" / "char-Adol"
+    (character_dir / "images" / "development").mkdir(parents=True)
+    (character_dir / "images" / "development" / "development_a.png").write_bytes(b"a")
+    (character_dir / "images" / "development" / "development_b.png").write_bytes(b"b")
+    for variant in ("development_a", "development_b"):
+        (character_dir / "motions" / variant).mkdir(parents=True)
+        (character_dir / "motions" / variant / "idle.webm").write_bytes(variant.encode())
+    (character_dir / "manifest.json").write_text(json.dumps({
+        "id": "char-Adol", "motions_dir": "assets/characters/char-Adol/motions",
+        "motions": {}, "active_variant": "development_a", "selected_generations": {},
+    }), encoding="utf-8")
+
+    items = {item["variant"]: item for item in library.list_variant_inventory("char-Adol")}
+
+    assert items["development_a"]["thumb"].endswith("development_a.png")
+    assert items["development_b"]["thumb"].endswith("development_b.png")
+    assert items["development_a"]["state"] == "ready"
+
+
 def test_motion_resolution_prefers_active_then_flat_manifest_then_og(tmp_path, monkeypatch):
     library = _library(tmp_path, monkeypatch)
     character_dir = tmp_path / "assets" / "characters" / "miku"
@@ -231,6 +254,44 @@ def test_list_background_scenes_reports_available_variant_backgrounds(tmp_path, 
     assert set(scenes) == {"og", "event"}
     assert scenes["og"]["is_current"] is True
     assert scenes["event"]["is_current"] is False
+
+
+def test_list_background_scenes_maps_legacy_development_png_to_development_a(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+    character_dir = tmp_path / "assets" / "characters" / "omni"
+    bg_dir = character_dir / "images" / "bg"
+    bg_dir.mkdir(parents=True)
+    (bg_dir / "og.png").write_bytes(b"og")
+    (bg_dir / "development.png").write_bytes(b"legacy")
+    (character_dir / "manifest.json").write_text(json.dumps({
+        "id": "omni", "motions_dir": "assets/characters/omni/motions", "motions": {},
+        "active_variant": "og", "background_image": "",
+    }), encoding="utf-8")
+
+    scenes = {item["scene_id"]: item for item in library.list_background_scenes("omni")}
+
+    # 舊制單張 development.png 沒有 development_a 檔名可用,故以 scene_id="development" 後援列出
+    # (零遷移),而不是被略過或誤判成獨立的第五格。
+    assert set(scenes) == {"og", "development"}
+
+
+def test_list_background_scenes_never_leaks_generation_suffixed_filename_as_its_own_scene(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+    character_dir = tmp_path / "assets" / "characters" / "miku"
+    bg_dir = character_dir / "images" / "bg"
+    bg_dir.mkdir(parents=True)
+    (bg_dir / "og.png").write_bytes(b"og")
+    (bg_dir / "development_a-g02.png").write_bytes(b"regenerated, not yet registered as a generation")
+    (character_dir / "manifest.json").write_text(json.dumps({
+        "id": "miku", "motions_dir": "assets/characters/miku/motions", "motions": {},
+        "active_variant": "og", "background_image": "",
+    }), encoding="utf-8")
+
+    scenes = {item["scene_id"]: item for item in library.list_background_scenes("miku")}
+
+    # 舊實作對 bg/*.png 做 glob,檔名 stem 直接當 scene_id,會把重生檔案的 "development_a-g02"
+    # 誤判成獨立第五格。改走 variant_background_path 後只認四個固定變體,不會漏出裸檔名。
+    assert set(scenes) == {"og"}
 
 
 def test_variant_inventory_uses_newest_png_as_thumbnail(tmp_path, monkeypatch):
