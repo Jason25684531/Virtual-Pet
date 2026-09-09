@@ -124,9 +124,6 @@ class PromptBuilder:
                 "## Retrieval Evidence",
                 memory_text,
                 "",
-                "## User Text",
-                event.text,
-                "",
                 "## Tool Result",
                 tool_result_text,
                 "",
@@ -136,6 +133,14 @@ class PromptBuilder:
                 "",
                 "## Global Response Rules",
                 response_rules_text,
+                "",
+                # ponytail: User Text 必須是 prompt 的最後一個內容區塊。放在 Conversation
+                # History 之後、2.2k 字 response rules 之前時,12B 本地模型會照抄上一輪的
+                # Assistant 回覆(實測:『我喜歡蘋果』回出上一輪的笑話台詞)。
+                "## User Text",
+                event.text,
+                "Answer this message. Conversation History above is context only — never repeat or "
+                "lightly reword a previous Assistant reply; if your reply resembles the last one, rewrite it.",
                 "",
                 "## Output Contract",
                 'Return JSON only with keys: "reply", "matched_skill", "action_tag", "confidence", "tool_request", and either "notes" or "reasoning_summary".',

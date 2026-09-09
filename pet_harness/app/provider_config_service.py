@@ -27,7 +27,7 @@ class ProviderConfigService:
                 api_key_env_var=next((key for key in ("ECHOES_API_KEY", "OPENAI_API_KEY", "CHATGPT_API_KEY") if self._environment.get(key) or os.environ.get(key)), "OPENAI_API_KEY"),
                 **common,
             )
-        return ProviderConfig(provider_type=ProviderType.OLLAMA, base_url=self._environment.get("OLLAMA_BASE_URL") or config.DEFAULT_OLLAMA_BASE_URL, model_name=self._environment.get("OLLAMA_MODEL") or self._ollama_model, api_key_env_var=None, timeout_seconds=60.0, **common)
+        return ProviderConfig(provider_type=ProviderType.OLLAMA, base_url=self._environment.get("OLLAMA_BASE_URL") or config.DEFAULT_OLLAMA_BASE_URL, model_name=self._environment.get("OLLAMA_MODEL") or self._ollama_model, api_key_env_var=None, timeout_seconds=60.0, metadata={"format": "json"}, **common)
 
     def configure(self, provider: str) -> dict[str, Any]:
         return self._runtime.configure(self.build(provider)).to_dict()

@@ -321,6 +321,7 @@ class PetHarnessEngine:
         LOGGER.info("[MEMORY WARMUP] started character_id=%s", self._character_id)
         success = False
         try:
+            self._reindex_pending()
             warmup = getattr(self.memory_retriever, "warmup", None)
             if callable(warmup):
                 warmup(self._character_id or "default")
@@ -966,6 +967,15 @@ class PetHarnessEngine:
                 daemon=True,
                 name="memory-item-index",
             ).start()
+
+    def _reindex_pending(self) -> None:
+        """補索引:上次關閉時背景 index thread 沒跑完的項目(indexed_at IS NULL)。"""
+        if self._memory_repository is None:
+            return
+        pending = self._memory_repository.list_pending_index()
+        if pending:
+            self._memory_repository.mark_indexed(self.memory_store.index(pending))
+            LOGGER.info("[MEMORY WARMUP] reindexed pending=%d", len(pending))
 
     def _index_memory_turn(self, event_id: str, user_text: str, reply: str) -> None:
         try:

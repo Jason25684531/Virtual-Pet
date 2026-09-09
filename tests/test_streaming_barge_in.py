@@ -90,6 +90,33 @@ def test_ollama_stream_uses_iter_lines_and_honors_cancel():
     assert calls[-1] == "closed"
 
 
+def test_ollama_stream_forwards_format_metadata():
+    sent = {}
+
+    class Response:
+        status_code = 200
+
+        def iter_lines(self):
+            yield json.dumps({"response": "ok", "done": True}).encode()
+
+        def close(self):
+            pass
+
+    def request(method, url, **kwargs):
+        sent["json"] = kwargs["json"]
+        return Response()
+
+    provider = OllamaProvider(
+        ProviderConfig(
+            provider_type=ProviderType.OLLAMA, model_name="test", base_url="http://ollama",
+            metadata={"format": "json"},
+        ),
+        request_fn=request,
+    )
+    list(provider.generate_reply_stream(type("Event", (), {"text": "hello"})()))
+    assert sent["json"]["format"] == "json"
+
+
 class _StreamingProvider(FakeProvider):
     def generate_reply_stream(self, event, matched_skill=None, prompt_text=None, cancel=None):
         yield "[ACTION:laugh] First sentence. Second sentence."

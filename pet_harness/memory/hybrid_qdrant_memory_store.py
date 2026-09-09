@@ -156,6 +156,11 @@ class HybridQdrantMemoryStore(BaseMemoryStore):
         self._ensure_ready(":memory:")
 
     def shutdown(self) -> None:
+        # 背景 memory-item-index thread 可能還在跑(extract 要呼叫 LLM,數秒起跳),
+        # 關閉後它才走到 index()/recall()。先降級 status,讓既有的 ready 檢查擋下來,
+        # 而不是讓 QdrantLocal 拋 "instance is closed"。未索引的項目 indexed_at 仍為
+        # NULL,下次 warmup 會補索引。
+        self._status = MemoryStoreStatus("closed", "store_shut_down")
         close = getattr(self._client, "close", None)
         if callable(close):
             close()
