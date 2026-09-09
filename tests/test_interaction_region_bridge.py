@@ -8,7 +8,7 @@ from ui.interaction_region_manager import InteractionRegionManager
 
 def _bridge(manager):
     bridge = SimpleNamespace(
-        _window=SimpleNamespace(_developer_input=None),
+        _window=SimpleNamespace(_developer_input=None, set_stage_active=lambda _active: None),
         _interaction_region_manager=manager,
         _web_regions=[],
     )

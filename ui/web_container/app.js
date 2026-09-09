@@ -675,6 +675,7 @@
         harnessBridge.update_hit_regions(JSON.stringify({
             regions: regions,
             devicePixelRatio: window.devicePixelRatio,
+            stageActive: !uiRoute.screen,
         }));
     }
 

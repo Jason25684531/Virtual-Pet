@@ -24,7 +24,7 @@ def test_hit_test_and_empty_regions_fail_open():
 
 def test_invalid_payload_is_ignored_with_fail_open():
     manager = InteractionRegionManager()
-    fake = SimpleNamespace(_interaction_regions=manager, _developer_input=None)
+    fake = SimpleNamespace(_interaction_regions=manager, _developer_input=None, set_stage_active=lambda _active: None)
     bridge = SimpleNamespace(
         _window=fake,
         _interaction_region_manager=manager,
@@ -43,7 +43,7 @@ def test_dpi_conversion_keeps_dom_css_coordinates_aligned_with_native_pixels():
     assert InteractionRegionManager.native_to_css(100, 1.0) == 100
 
     manager = InteractionRegionManager()
-    fake = SimpleNamespace(_interaction_regions=manager, _developer_input=None)
+    fake = SimpleNamespace(_interaction_regions=manager, _developer_input=None, set_stage_active=lambda _active: None)
     bridge = SimpleNamespace(
         _window=fake,
         _interaction_region_manager=manager,

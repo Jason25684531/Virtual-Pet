@@ -15,7 +15,7 @@ from uuid import uuid4
 
 import config
 from PyQt5.QtCore import QEvent, QPoint, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
-from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
+from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter, QRegion
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWidgets import (
     QAction, QApplication, QMainWindow, QMenu, QSystemTrayIcon,
@@ -104,6 +104,9 @@ class TransparentWindow(QMainWindow):
         self._action_bus = action_bus
         self._interaction_regions = interaction_regions or InteractionRegionManager()
         self._desktop_companion_mode = bool(getattr(config, "DESKTOP_COMPANION_MODE", True))
+        self._left_clickthrough_px = max(0, int(getattr(config, "DESKTOP_CLICKTHROUGH_LEFT_PX", 0)))
+        self._stage_active = False
+        self._mask_applied = False
         self._motion_coordinator = None
         self._settings_dialog = None
         self._conversation_pending = False
@@ -172,6 +175,30 @@ class TransparentWindow(QMainWindow):
         screen = QApplication.primaryScreen()
         if screen:
             self.setGeometry(screen.availableGeometry())
+        self._apply_left_clickthrough_mask()
+
+    def _apply_left_clickthrough_mask(self) -> None:
+        """左側這條讓給原生桌面（桌面 icon 才點得到）。
+
+        不能用 WM_NCHITTEST 回 HTTRANSPARENT：那只會往同一個執行緒的視窗傳，跨行程無效
+        （實測 nchittest 回 -1，WindowFromPoint 仍是本視窗）。改用視窗遮罩把那條切到視窗
+        之外，實測 WindowFromPoint 才會落到桌面的 SysListView32。"""
+        inset = self._left_clickthrough_px if self._stage_active else 0
+        if inset <= 0:
+            if self._mask_applied:
+                self.clearMask()
+                self._mask_applied = False
+            return
+        self.setMask(QRegion(inset, 0, max(1, self.width() - inset), self.height()))
+        self._mask_applied = True
+
+    def set_stage_active(self, active: bool) -> None:
+        """只在角色互動舞台上切掉左側；主選單／讀檔那幾頁要整片可點。"""
+        active = bool(active)
+        if active == self._stage_active:
+            return
+        self._stage_active = active
+        self._apply_left_clickthrough_mask()
 
     def _init_webview(self):
         """建立 QWebEngineView 並載入本地 HTML 播放器"""
@@ -185,6 +212,9 @@ class TransparentWindow(QMainWindow):
 
         # 掛上自訂 Page，讓前端 console 訊息可轉印至 Python Terminal。
         self.web_view.setPage(EchoesWebPage(self.web_view))
+        # setPage() 會把 view 的 palette 底色（不透明白）推回 page，蓋掉建構子設的透明底。
+        # 必須在 setPage() 之後再設一次，否則整個視窗會變白底。
+        self.web_view.page().setBackgroundColor(Qt.transparent)
         self._bridge = HarnessUiBridge(self, self._interaction_regions)
         self._character_bridge = CharacterUiBridge(self._adapter.character_service, self, self._adapter)
         self._channel = QWebChannel(self.web_view.page())
@@ -516,6 +546,7 @@ class TransparentWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._apply_left_clickthrough_mask()
         self._update_developer_input_geometry()
         if hasattr(self, "_js_gateway"):
             self._run_javascript("refreshHitRegions")

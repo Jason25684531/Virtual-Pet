@@ -103,7 +103,9 @@ class HarnessUiBridge(QObject):
             if self._interaction_region_manager is not None:
                 self._interaction_region_manager.clear()
                 self._interaction_region_manager.set_fallback_interactive(True)
+            self._window.set_stage_active(False)
             return
 
         self._web_regions = rects
+        self._window.set_stage_active(payload.get("stageActive"))
         self._sync_interaction_regions()
