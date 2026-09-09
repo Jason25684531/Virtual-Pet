@@ -36,6 +36,7 @@ from ui.harness_ui_bridge import HarnessUiBridge
 from ui.interaction_region_manager import InteractionRegionManager
 from ui.web_page_widgets import DeveloperInputLineEdit, EchoesWebPage
 from ui.proactive_greeter import ProactiveGreeter
+from ui.lively_wallpaper import LivelyWallpaper
 
 
 class TransparentWindow(QMainWindow):
@@ -98,6 +99,7 @@ class TransparentWindow(QMainWindow):
         if lifecycle_shutdown is None:
             raise ValueError("TransparentWindow requires an injected lifecycle shutdown")
         self._adapter = adapter
+        self._lively_wallpaper = LivelyWallpaper(self)
         self._lifecycle_shutdown = lifecycle_shutdown
         self._action_bus = action_bus
         self._interaction_regions = interaction_regions or InteractionRegionManager()
@@ -162,6 +164,8 @@ class TransparentWindow(QMainWindow):
             flags |= Qt.WindowStaysOnTopHint
         self.setWindowFlags(flags)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setAutoFillBackground(False)
         self.setStyleSheet("background: transparent;")
         # 視窗尺寸就是 CSS 視口尺寸：寫死解析度時視窗會超出螢幕，使用者只看得到畫布
         # 左上角的裁切（角色與底部導覽整個落在畫面外）。availableGeometry 已扣除工作列。
@@ -172,8 +176,9 @@ class TransparentWindow(QMainWindow):
     def _init_webview(self):
         """建立 QWebEngineView 並載入本地 HTML 播放器"""
         self.web_view = QWebEngineView(self)
+        self.web_view.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.web_view.setAutoFillBackground(False)
         self.web_view.setStyleSheet("background: transparent;")
-        self.web_view.page().setBackgroundColor(Qt.transparent)
 
         # 停用 Chromium 的任何預設右鍵選單，改由 Qt 視窗層統一處理。
         self.web_view.setContextMenuPolicy(Qt.NoContextMenu)
@@ -574,6 +579,12 @@ class TransparentWindow(QMainWindow):
         status, safe_url = self._background_resolver.resolve(configured_path=configured_path)
         self._background_status = status
         self._background_url = safe_url
+        lively = getattr(self, "_lively_wallpaper", None)
+        if getattr(config, "LIVELY_BACKGROUND_ENABLED", False) and lively is not None:
+            lively.sync_background(safe_url)
+            self._run_javascript("setExternalBackgroundMode", True)
+            return
+        self._run_javascript("setExternalBackgroundMode", False)
         if safe_url:
             self._run_javascript("setRoomBackground", safe_url)
             return

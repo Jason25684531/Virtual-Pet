@@ -273,7 +273,7 @@
         article.appendChild(assistantRow);
         if (conversationList) conversationList.appendChild(article);
 
-        var turn = { root: article, userText: userText, assistantText: assistantText };
+        var turn = { root: article, userRow: userRow, userText: userText, assistantText: assistantText };
         conversationTurns.set(turnId, turn);
         trimConversationTurns();
         return turn;
@@ -1480,6 +1480,7 @@
         var turn = ensureConversationTurn(String(turnId), sourceLabel || 'User');
         turn.root.dataset.state = 'active';
         turn.userText.textContent = userText || '';
+        turn.userRow.hidden = !String(userText || '').trim();
         if (!turn.assistantText.textContent || turn.assistantText.classList.contains('conversation-turn__text--muted')) {
             turn.assistantText.textContent = 'Waiting for reply...';
             turn.assistantText.classList.add('conversation-turn__text--muted');
@@ -1574,6 +1575,11 @@
     window.clearRoomBackground = function () {
         var bg = stageBackground ? stageBackground.querySelector('img.room-background') : null;
         if (bg) bg.removeAttribute('src');
+    };
+
+    window.setExternalBackgroundMode = function (enabled) {
+        document.documentElement.classList.toggle('external-background', Boolean(enabled));
+        document.body.classList.toggle('external-background', Boolean(enabled));
     };
 
     window.moveCharacter = function (x, y, scale) {

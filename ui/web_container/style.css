@@ -19,9 +19,19 @@ body {
    height: 100%;
    margin: 0;
    overflow: hidden;
-   background: #09090b;
+   background: transparent;
    color: var(--ink);
-   font-family: "Segoe UI", "Microsoft JhengHei", sans-serif;
+ font-family: "Segoe UI", "Microsoft JhengHei", sans-serif;
+}
+
+html.external-background,
+html.external-background body,
+body.external-background .stage-root {
+ background: transparent;
+}
+
+body.external-background .stage-background {
+ display: none;
 }
 
 button,
@@ -37,6 +47,13 @@ button {
 button:disabled {
    cursor: not-allowed;
    opacity: .38;
+}
+
+/* 角色是一顆滿版按鈕，被點到時 UA focus ring 會框住整個程式。Qt 5.15 內建 Chromium 83，
+   不支援 :focus-visible（Chromium 86 才有），無法只擋滑鼠焦點，所以直接關掉這顆。
+   同功能的 Chat 導覽鍵仍留在 tab 順序中並保有焦點框。 */
+.room-character:focus {
+   outline: none;
 }
 
 [hidden] {
@@ -55,12 +72,12 @@ button:disabled {
 
 .stage-root {
    overflow: hidden;
-   background: #09090b;
+   background: transparent;
 }
 
 .stage-background {
    z-index: 0;
-   background: radial-gradient(circle at 70% 20%, #2b2736, #0b0b0e 72%);
+   background: transparent;
 }
 
 .room-background {
@@ -133,7 +150,6 @@ button:disabled {
    border: 1px solid var(--line);
    border-radius: 999px;
    background: rgba(0, 0, 0, .6);
-   backdrop-filter: blur(12px);
    font-size: 15px;
    letter-spacing: .04em;
 }
@@ -211,7 +227,6 @@ button:disabled {
    border: 1px solid var(--line);
    border-radius: 999px;
    background: rgba(0, 0, 0, .6);
-   backdrop-filter: blur(12px);
    color: var(--ink);
    font-size: 15px;
    font-weight: 600;
@@ -235,7 +250,6 @@ button:disabled {
    border: 1px solid var(--line);
    border-radius: 14px;
    background: rgba(0, 0, 0, .6);
-   backdrop-filter: blur(12px);
    font-size: 13px;
 }
 
@@ -451,7 +465,6 @@ button:disabled {
    border-radius: var(--radius);
    background: var(--surface);
    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, .65);
-   backdrop-filter: blur(20px);
 }
 
 .screen-card--wide {
@@ -859,7 +872,6 @@ button:disabled {
    padding-top: 200px;
    box-sizing: border-box;
    pointer-events: none;
-   background: rgba(0, 0, 0, .17);
 }
 
 .hud-panel {
@@ -870,7 +882,6 @@ button:disabled {
    border-radius: var(--radius);
    background: var(--surface);
    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, .65);
-   backdrop-filter: blur(20px);
    pointer-events: auto;
 }
 
@@ -895,6 +906,10 @@ button:disabled {
 .conversation-turn__row {
    display: grid;
    gap: 5px;
+}
+
+.conversation-turn__row[hidden] {
+   display: none;
 }
 
 .conversation-turn__row:first-child {

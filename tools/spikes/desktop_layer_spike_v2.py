@@ -273,8 +273,8 @@ def native(args):
 
     def record():
         if args.show_desktop:
-            subprocess.run([str(Path.home() / '.headroom/bin/rtk.exe'), 'proxy', 'powershell',
-                            '-NoProfile', '-Command', '(New-Object -ComObject Shell.Application).MinimizeAll()'],
+            subprocess.run(['powershell', '-NoProfile', '-Command',
+                            '(New-Object -ComObject Shell.Application).MinimizeAll()'],
                            check=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
             time.sleep(0.4)
         state = info(hwnd)
