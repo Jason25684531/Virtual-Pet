@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -234,6 +235,50 @@ class TestGenerationFreeze:
         choppr.handle_event({"text": "tell me a joke", "source": "test"})
 
         assert choppr.store.recent_events(limit=1)
+
+
+class TestMemoryWarmupComplete:
+    """任務 4.1.5:memory_warmup_complete 由 completed_at 推導,不再是獨立布林。"""
+
+    def test_not_started_is_false(self, harness_env):
+        tmp_path, agentic_root = harness_env
+        engine = _build_engine(agentic_root, tmp_path, character_id="Choppr")
+        assert engine.memory_warmup_complete is False
+        assert engine.memory_warmup_completed_at is None
+
+    def test_no_retriever_marks_complete(self, harness_env):
+        tmp_path, agentic_root = harness_env
+        engine = _build_engine(agentic_root, tmp_path, character_id="Choppr")
+        engine.memory_retriever = None
+
+        engine.warmup_memory()
+
+        assert engine.memory_warmup_complete is True
+        assert engine.memory_warmup_completed_at is not None
+
+    def test_successful_retriever_warmup_marks_complete(self, harness_env):
+        tmp_path, agentic_root = harness_env
+        engine = _build_engine(agentic_root, tmp_path, character_id="Choppr")
+        engine.memory_retriever = SimpleNamespace(warmup=lambda character_id: None)
+
+        engine.warmup_memory()
+
+        assert engine.memory_warmup_complete is True
+        assert engine.memory_warmup_completed_at is not None
+
+    def test_failed_retriever_warmup_stays_incomplete(self, harness_env):
+        tmp_path, agentic_root = harness_env
+        engine = _build_engine(agentic_root, tmp_path, character_id="Choppr")
+
+        def _boom(character_id):
+            raise RuntimeError("warmup failed")
+
+        engine.memory_retriever = SimpleNamespace(warmup=_boom)
+
+        engine.warmup_memory()
+
+        assert engine.memory_warmup_complete is False
+        assert engine.memory_warmup_completed_at is None
 
 
 class TestLegacyCompatibility:

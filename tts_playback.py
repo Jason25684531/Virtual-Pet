@@ -8,7 +8,6 @@ import queue
 import re
 from uuid import uuid4
 
-from PyQt5.QtCore import QTimer
 
 import config
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker

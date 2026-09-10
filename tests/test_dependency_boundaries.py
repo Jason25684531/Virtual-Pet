@@ -19,7 +19,18 @@ def test_application_layer_has_no_pyqt_imports():
 
 def test_ui_does_not_reach_through_adapter_to_router():
     ui_root = Path(__file__).parents[1] / "ui"
-    violations = [str(path) for path in ui_root.rglob("*.py") if "adapter.router" in path.read_text(encoding="utf-8")]
+    violations = []
+    for path in ui_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Attribute) and node.attr == "router"
+                or isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name) and node.func.id == "getattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant) and node.args[1].value == "router"
+            ):
+                violations.append(f"{path}:{node.lineno}")
     assert not violations, "UI reaches through adapter.router: " + ", ".join(violations)
 
 

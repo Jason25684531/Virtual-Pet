@@ -169,7 +169,7 @@ class _PcmTraceSession:
             self._player.play_chunks(self._iter_chunks(), before_start=self._before_start)
         except PlaybackStartSuppressed:
             pass
-        except Exception as exc:  # pragma: no cover
+        except Exception:  # pragma: no cover
             LOGGER.exception("[ECHOES] PCM session 播放失敗 trace=%s", self._trace_id)
         finally:
             with self._lock:
@@ -411,7 +411,7 @@ class AudioStreamWorker(QObject):
                 self.playback_finished.emit(reply_id, trace_id)
             except PlaybackStartSuppressed:
                 pass
-            except Exception as exc:  # pragma: no cover
+            except Exception:  # pragma: no cover
                 LOGGER.exception("[ECHOES] 播放失敗 reply_id=%s", reply_id)
             finally:
                 with self._playing_lock:

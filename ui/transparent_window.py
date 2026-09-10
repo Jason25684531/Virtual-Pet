@@ -14,7 +14,7 @@ import time
 from uuid import uuid4
 
 import config
-from PyQt5.QtCore import QEvent, QPoint, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QEvent, QPoint, Qt, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter, QRegion
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWidgets import (
@@ -27,8 +27,6 @@ from interaction_trace import InteractionLatencyTracker
 
 from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
 from pet_harness.ui.pyqt_harness_adapter import PyQtHarnessAdapter
-from pet_harness.character.router import ActiveCharacterSnapshot
-from pet_harness.character.profile import CharacterProfile
 from ui.background_resolver import BackgroundResolver
 from ui.character_ui_bridge import CharacterUiBridge
 from ui.js_gateway import JsGateway
@@ -1361,17 +1359,10 @@ class TransparentWindow(QMainWindow):
         return snapshot.character_id if snapshot else None
 
     def _active_snapshot(self):
-        snapshot = self._adapter.get_active_snapshot()
-        if snapshot is None or isinstance(snapshot, ActiveCharacterSnapshot):
-            return snapshot
-        # Compatibility for legacy test doubles that expose only the nested router.
-        return getattr(self._adapter, "router").get_active_snapshot()
+        return self._adapter.get_active_snapshot()
 
     def _active_character(self):
-        character = self._adapter.get_active_character()
-        if character is None or isinstance(character, CharacterProfile):
-            return character
-        return getattr(self._adapter, "router").get_active_character()
+        return self._adapter.get_active_character()
 
     def apply_character_position(self):
         """套用目前由 Python 管理的角色位移設定。"""
