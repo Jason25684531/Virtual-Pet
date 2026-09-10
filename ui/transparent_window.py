@@ -145,7 +145,6 @@ class TransparentWindow(QMainWindow):
             list(config.PROACTIVE_GREETING_PHRASES),
             config.PROACTIVE_GREETING_INTERVAL_SEC,
         )
-        self._greeter.start()
 
     def configure_motion(self, coordinator) -> None:
         """Receive the composition-root-owned coordinator and its JS callbacks."""
@@ -191,12 +190,15 @@ class TransparentWindow(QMainWindow):
         self._mask_applied = True
 
     def set_stage_active(self, active: bool) -> None:
-        """只在角色互動舞台上切掉左側；主選單／讀檔那幾頁要整片可點。"""
+        """只在角色互動舞台上切掉左側；主選單／讀檔那幾頁要整片可點。
+
+        主動打招呼也綁在這個訊號上：沒進角色（主選單／讀檔／loading／開著 modal）就不該說話。"""
         active = bool(active)
         if active == self._stage_active:
             return
         self._stage_active = active
         self._apply_left_clickthrough_mask()
+        self._greeter.start() if active else self._greeter.stop()
 
     def _init_webview(self):
         """建立 QWebEngineView 並載入本地 HTML 播放器"""

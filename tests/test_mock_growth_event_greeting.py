@@ -283,7 +283,27 @@ def test_proactive_greeter_round_robin_and_busy_skip():
     assert all(spoken[index] != spoken[index + 1] for index in range(5))
     greeter.reset()
     assert not greeter._history
+    assert not greeter._timer.isActive()
     app.processEvents()
+
+
+def test_proactive_greeting_only_runs_on_character_stage():
+    pytest.importorskip("PyQt5")
+    from ui.transparent_window import TransparentWindow
+
+    greeter = MagicMock()
+    window = SimpleNamespace(
+        _stage_active=False,
+        _greeter=greeter,
+        _apply_left_clickthrough_mask=MagicMock(),
+    )
+
+    TransparentWindow.set_stage_active(window, False)
+    greeter.start.assert_not_called()
+    TransparentWindow.set_stage_active(window, True)
+    greeter.start.assert_called_once()
+    TransparentWindow.set_stage_active(window, False)
+    greeter.stop.assert_called_once()
 
 
 def test_transparent_window_wires_busy_property_as_callback(monkeypatch):

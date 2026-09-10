@@ -30,9 +30,12 @@ class ProactiveGreeter:
         self._timer.stop()
 
     def reset(self) -> None:
+        """只清語句歷史；沒在跑就別被 reset 叫醒（進角色舞台才由 start() 開跑）。"""
+        was_active = self._timer.isActive()
         self.stop()
         self._history.clear()
-        self.start()
+        if was_active:
+            self.start()
 
     def _on_tick(self) -> None:
         if not self._phrases or self._is_busy():
