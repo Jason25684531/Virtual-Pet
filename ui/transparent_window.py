@@ -14,8 +14,8 @@ import time
 from uuid import uuid4
 
 import config
-from PyQt5.QtCore import QEvent, QPoint, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
-from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
+from PyQt5.QtCore import QEvent, QPoint, Qt, QTimer, QUrl, pyqtSignal
+from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter, QRegion
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWidgets import (
     QAction, QApplication, QMainWindow, QMenu, QSystemTrayIcon,
@@ -27,8 +27,6 @@ from interaction_trace import InteractionLatencyTracker
 
 from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
 from pet_harness.ui.pyqt_harness_adapter import PyQtHarnessAdapter
-from pet_harness.character.router import ActiveCharacterSnapshot
-from pet_harness.character.profile import CharacterProfile
 from ui.background_resolver import BackgroundResolver
 from ui.character_ui_bridge import CharacterUiBridge
 from ui.js_gateway import JsGateway
@@ -36,6 +34,7 @@ from ui.harness_ui_bridge import HarnessUiBridge
 from ui.interaction_region_manager import InteractionRegionManager
 from ui.web_page_widgets import DeveloperInputLineEdit, EchoesWebPage
 from ui.proactive_greeter import ProactiveGreeter
+from ui.lively_wallpaper import LivelyWallpaper
 
 
 class TransparentWindow(QMainWindow):
@@ -98,10 +97,14 @@ class TransparentWindow(QMainWindow):
         if lifecycle_shutdown is None:
             raise ValueError("TransparentWindow requires an injected lifecycle shutdown")
         self._adapter = adapter
+        self._lively_wallpaper = LivelyWallpaper(self)
         self._lifecycle_shutdown = lifecycle_shutdown
         self._action_bus = action_bus
         self._interaction_regions = interaction_regions or InteractionRegionManager()
         self._desktop_companion_mode = bool(getattr(config, "DESKTOP_COMPANION_MODE", True))
+        self._left_clickthrough_px = max(0, int(getattr(config, "DESKTOP_CLICKTHROUGH_LEFT_PX", 0)))
+        self._stage_active = False
+        self._mask_applied = False
         self._motion_coordinator = None
         self._settings_dialog = None
         self._conversation_pending = False
@@ -145,7 +148,6 @@ class TransparentWindow(QMainWindow):
             list(config.PROACTIVE_GREETING_PHRASES),
             config.PROACTIVE_GREETING_INTERVAL_SEC,
         )
-        self._greeter.start()
 
     def configure_motion(self, coordinator) -> None:
         """Receive the composition-root-owned coordinator and its JS callbacks."""
@@ -165,24 +167,57 @@ class TransparentWindow(QMainWindow):
             flags |= Qt.WindowStaysOnTopHint
         self.setWindowFlags(flags)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setAutoFillBackground(False)
         self.setStyleSheet("background: transparent;")
         # 視窗尺寸就是 CSS 視口尺寸：寫死解析度時視窗會超出螢幕，使用者只看得到畫布
         # 左上角的裁切（角色與底部導覽整個落在畫面外）。availableGeometry 已扣除工作列。
         screen = QApplication.primaryScreen()
         if screen:
             self.setGeometry(screen.availableGeometry())
+        self._apply_left_clickthrough_mask()
+
+    def _apply_left_clickthrough_mask(self) -> None:
+        """左側這條讓給原生桌面（桌面 icon 才點得到）。
+
+        不能用 WM_NCHITTEST 回 HTTRANSPARENT：那只會往同一個執行緒的視窗傳，跨行程無效
+        （實測 nchittest 回 -1，WindowFromPoint 仍是本視窗）。改用視窗遮罩把那條切到視窗
+        之外，實測 WindowFromPoint 才會落到桌面的 SysListView32。"""
+        inset = self._left_clickthrough_px if self._stage_active else 0
+        if inset <= 0:
+            if self._mask_applied:
+                self.clearMask()
+                self._mask_applied = False
+            return
+        self.setMask(QRegion(inset, 0, max(1, self.width() - inset), self.height()))
+        self._mask_applied = True
+
+    def set_stage_active(self, active: bool) -> None:
+        """只在角色互動舞台上切掉左側；主選單／讀檔那幾頁要整片可點。
+
+        主動打招呼也綁在這個訊號上：沒進角色（主選單／讀檔／loading／開著 modal）就不該說話。"""
+        active = bool(active)
+        if active == self._stage_active:
+            return
+        self._stage_active = active
+        self._apply_left_clickthrough_mask()
+        self._greeter.start() if active else self._greeter.stop()
 
     def _init_webview(self):
         """建立 QWebEngineView 並載入本地 HTML 播放器"""
         self.web_view = QWebEngineView(self)
+        self.web_view.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.web_view.setAutoFillBackground(False)
         self.web_view.setStyleSheet("background: transparent;")
-        self.web_view.page().setBackgroundColor(Qt.transparent)
 
         # 停用 Chromium 的任何預設右鍵選單，改由 Qt 視窗層統一處理。
         self.web_view.setContextMenuPolicy(Qt.NoContextMenu)
 
         # 掛上自訂 Page，讓前端 console 訊息可轉印至 Python Terminal。
         self.web_view.setPage(EchoesWebPage(self.web_view))
+        # setPage() 會把 view 的 palette 底色（不透明白）推回 page，蓋掉建構子設的透明底。
+        # 必須在 setPage() 之後再設一次，否則整個視窗會變白底。
+        self.web_view.page().setBackgroundColor(Qt.transparent)
         self._bridge = HarnessUiBridge(self, self._interaction_regions)
         self._character_bridge = CharacterUiBridge(self._adapter.character_service, self, self._adapter)
         self._channel = QWebChannel(self.web_view.page())
@@ -514,6 +549,7 @@ class TransparentWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._apply_left_clickthrough_mask()
         self._update_developer_input_geometry()
         if hasattr(self, "_js_gateway"):
             self._run_javascript("refreshHitRegions")
@@ -577,6 +613,12 @@ class TransparentWindow(QMainWindow):
         status, safe_url = self._background_resolver.resolve(configured_path=configured_path)
         self._background_status = status
         self._background_url = safe_url
+        lively = getattr(self, "_lively_wallpaper", None)
+        if getattr(config, "LIVELY_BACKGROUND_ENABLED", False) and lively is not None:
+            lively.sync_background(safe_url)
+            self._run_javascript("setExternalBackgroundMode", True)
+            return
+        self._run_javascript("setExternalBackgroundMode", False)
         if safe_url:
             self._run_javascript("setRoomBackground", safe_url)
             return
@@ -1333,17 +1375,10 @@ class TransparentWindow(QMainWindow):
         return snapshot.character_id if snapshot else None
 
     def _active_snapshot(self):
-        snapshot = self._adapter.get_active_snapshot()
-        if snapshot is None or isinstance(snapshot, ActiveCharacterSnapshot):
-            return snapshot
-        # Compatibility for legacy test doubles that expose only the nested router.
-        return getattr(self._adapter, "router").get_active_snapshot()
+        return self._adapter.get_active_snapshot()
 
     def _active_character(self):
-        character = self._adapter.get_active_character()
-        if character is None or isinstance(character, CharacterProfile):
-            return character
-        return getattr(self._adapter, "router").get_active_character()
+        return self._adapter.get_active_character()
 
     def apply_character_position(self):
         """套用目前由 Python 管理的角色位移設定。"""

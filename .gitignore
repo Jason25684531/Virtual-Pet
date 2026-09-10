@@ -8,8 +8,8 @@ __pycache__/
 .ruff_cache/
 runtime_cache/
 *.zip
+Claude outputs/*
 FinalReport/*
-
 # Agent/editor metadata
 openspec/
 .agent/

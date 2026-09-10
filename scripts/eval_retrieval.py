@@ -32,10 +32,6 @@ def quality_report(summary: dict) -> tuple[dict, str]:
     return {"rag_quality": values}, "\n".join(lines)
 
 
-def _ratio(passed: int, total: int) -> dict[str, Any]:
-    return {"value": passed / total if total else None, "passed": passed, "total": total}
-
-
 def _trace_passed(trace: dict[str, Any]) -> bool:
     if trace.get("ground_truth", {}).get("has_memory"):
         if not trace.get("retrieval_evaluation", {}).get("hit", False):
@@ -101,7 +97,6 @@ def main() -> int:
         report["threshold_sweep"] = calibration.get("rows", [])
         report["selection"] = calibration.get("selection", {})
         report["real_model_calibration"] = calibration.get("calibration", report).get("real_model_calibration", report.get("real_model_calibration"))
-        selected = report["selection"].get("selected_threshold", 0.0)
         if report["threshold_sweep"] and report["selection"].get("selected") and report["valid_relevant_cases"] >= 10 and report["valid_no_memory_cases"] >= 5:
             report["final"] = run_evaluation(cases, real_encoder=True, collect_traces=True, pointwise_evaluator=pointwise)
         else:

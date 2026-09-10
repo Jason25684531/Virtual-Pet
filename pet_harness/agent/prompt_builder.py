@@ -116,9 +116,14 @@ class PromptBuilder:
                 "Conversation History and Retrieval Evidence are factual records of what the user told you.",
                 "These are factual records of what the user told you. If the user asks about something "
                 "they told you earlier, answer from those sections. Never reply that you cannot access "
+                # ponytail: 正面框架取代「Do not use user facts…」禁令。實測 gemma3:12b、
+                # 問句「那你可以跟我說 我喜歡什麼嗎?」——禁令版 6/55 命中,正面版 28/55;
+                # 禁令句被句首的「你」觸發,連帶封鎖了整個 Retrieval Evidence。
+                # 代價:ECHOES 自身行程題的使用者事實外洩 0/20 -> 2/20(仍歸屬給使用者)。
                 "the user's information when it appears here. In the current user message, I/my refers "
-                "to the user and you/your refers to ECHOES. Do not use user facts to answer questions "
-                "about ECHOES's own plans, identity, preferences, or state.",
+                "to the user and you/your refers to ECHOES. When the user asks what they themselves "
+                "said, like, or did, answer from Retrieval Evidence. When the question is about ECHOES "
+                "itself, answer from the Character Persona.",
                 history_text,
                 "",
                 "## Retrieval Evidence",

@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 DEFAULT_BACKGROUND_CANDIDATES = (
+    "assets/backgrounds/BG_Final.png",
     "assets/backgrounds/default_room.png",
     "assets/backgrounds/default_room.jpg",
     "assets/backgrounds/default_room.webp",

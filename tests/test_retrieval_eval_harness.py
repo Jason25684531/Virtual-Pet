@@ -1,4 +1,4 @@
-from scripts.eval_harness import DeterministicFakeDenseEncoder, metric_for_keys, run_evaluation, select_threshold, validate_case
+from scripts.eval_harness import DeterministicFakeDenseEncoder, metric_for_keys, run_evaluation, select_threshold
 
 
 def test_recall_and_mrr_rank_1_to_3_and_miss():

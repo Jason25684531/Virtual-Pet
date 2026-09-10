@@ -291,7 +291,6 @@ class PetHarnessEngine:
         self._shutdown = False
         self._background_executor = None
         self._slow_tool_failure_callback = None
-        self._memory_warmup_complete = False
         self._memory_warmup_completed_at: float | None = None
 
     def configure_background_executor(self, executor) -> None:
@@ -303,7 +302,7 @@ class PetHarnessEngine:
 
     @property
     def memory_warmup_complete(self) -> bool:
-        return self._memory_warmup_complete
+        return self._memory_warmup_completed_at is not None
 
     @property
     def memory_warmup_completed_at(self) -> float | None:
@@ -314,7 +313,6 @@ class PetHarnessEngine:
 
     def warmup_memory(self) -> None:
         if self.memory_retriever is None:
-            self._memory_warmup_complete = True
             self._memory_warmup_completed_at = perf_counter()
             return
         started = perf_counter()
@@ -332,7 +330,6 @@ class PetHarnessEngine:
         except Exception:
             LOGGER.exception("[MEMORY WARMUP] failed character_id=%s", self._character_id)
         finally:
-            self._memory_warmup_complete = success
             self._memory_warmup_completed_at = perf_counter() if success else None
             LOGGER.info("[MEMORY WARMUP] done warmup_ms=%s success=%s", round((perf_counter() - started) * 1000), success)
 

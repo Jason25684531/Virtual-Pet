@@ -89,7 +89,13 @@ def test_prompt_instructs_the_model_to_use_evidence_and_keeps_persona_priority(h
 
 
 def test_prompt_keeps_user_facts_separate_from_echoes_own_state(harness_env):
-    """使用者記憶不得用來回答 ECHOES 自己的行程或狀態。"""
+    """區分「使用者自己的事」與「ECHOES 自己的事」，且用正面框架而非禁令。
+
+    依據 2026-09-10 A/B 實測(gemma3:12b, N=55/組):禁令句
+    「Do not use user facts to answer questions about ECHOES's own…」
+    會被問句句首的「你」觸發而封鎖整個 Retrieval Evidence,命中率 6/55;
+    改成指路式的正面框架後為 28/55。禁語留在評分端,不留在 prompt。
+    """
     tmp_path, agentic_root = harness_env
     engine = PetHarnessEngine(
         FakeProvider(),
@@ -102,7 +108,10 @@ def test_prompt_keeps_user_facts_separate_from_echoes_own_state(harness_env):
     engine.handle_event({"text": "我要去福岡七天六夜", "source": "test"})
     engine.handle_event({"text": "那你下周要幹嘛？", "source": "test"})
 
-    assert "Do not use user facts to answer questions about ECHOES's own plans" in engine.last_prompt
+    prompt = engine.last_prompt
+    assert "When the user asks what they themselves said, like, or did, answer from Retrieval Evidence" in prompt
+    assert "When the question is about ECHOES itself, answer from the Character Persona" in prompt
+    assert "Do not use user facts" not in prompt
 
 
 if __name__ == "__main__":
