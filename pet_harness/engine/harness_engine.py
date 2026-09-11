@@ -352,6 +352,31 @@ class PetHarnessEngine:
     def spoken_reply(self) -> str:
         return " ".join(self._spoken_chunks).strip()
 
+    def log_assistant_utterance(self, text: str, source: str = "proactive_greeting") -> None:
+        """記錄角色主動說出的話（無對應使用者輸入）。
+
+        主動打招呼走 motion-only 路徑、不經過 handle()，所以不會進 event_log；
+        不補這一筆，模型就不知道自己剛才說了什麼。刻意不加經驗值、不跑節慶偵測、
+        不寫長期記憶——那些都是「使用者有互動」才該發生的事。"""
+        utterance = str(text or "").strip()
+        if not utterance:
+            return
+        user_event = UserEvent(text="", source=source, event_type="assistant_utterance")
+        pet_event = PetEvent(
+            source_event_id=user_event.event_id,
+            reply=utterance,
+            matched_skill=None,
+            behavior_id="idle",
+            webm_key="idle",
+            xp_delta=0,
+            reward_events=[],
+            tool_request=None,
+            provider_status={},
+            saved_to_db=False,
+            metadata={"assistant_utterance": True, "source": source},
+        )
+        self.store.log_event(user_event.to_dict(), pet_event.to_dict())
+
     def refresh_skill_catalog(self) -> list[Skill]:
         loader = SkillLoader(self.agentic_root / "skills")
         self.available_skills = loader.load_skills()
@@ -582,7 +607,7 @@ class PetHarnessEngine:
         if stream_cancelled:
             spoken_reply = self.spoken_reply()
             if not spoken_reply:
-                return PetEvent(
+                stale_event = PetEvent(
                     source_event_id=user_event.event_id,
                     reply="",
                     matched_skill=None,
@@ -595,6 +620,12 @@ class PetHarnessEngine:
                     saved_to_db=False,
                     metadata={"stale_turn": True, "spoken_chunks": 0},
                 )
+                # 被打斷的回合仍要留在 event_log,否則使用者問過的問題會從短期
+                # 歷史(recent_events)中蒸發,下一輪的追問就失去上下文。只寫
+                # event_log:空回覆沒有值得長期記憶的內容,寫進向量庫只是噪音。
+                self.store.log_event(user_event.to_dict(), stale_event.to_dict())
+                stale_event.saved_to_db = True
+                return stale_event
             agent_result.reply = spoken_reply
             provider_reply.reply = spoken_reply
         matched_skill, skill_source = self._parse_and_route(user_event, agent_result, active_capabilities)

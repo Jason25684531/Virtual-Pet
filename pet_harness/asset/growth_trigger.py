@@ -30,6 +30,10 @@ class GrowthTriggerService:
         self._character_id = character_id
         self._xp_per_level = max(1, xp_per_level)
         self._event_interval = timedelta(minutes=event_interval_minutes)
+        # 節慶間隔以本次場次為基準:時間戳存在 SQLite,上次關程式留下的值通常已經
+        # 超過門檻,會讓新場次(或剛切換的角色)的第一個回合立刻觸發算圖。本服務在
+        # 每次程式啟動與每次 switch_character 都會重新建構,所以這裡就是那個基準點。
+        store.set_setting("asset_last_event_variant_at", datetime.now(UTC).isoformat())
 
     def on_xp_awarded(self, xp_total: int, source_event_id: str) -> GrowthOffer | None:
         level = max(0, xp_total) // self._xp_per_level

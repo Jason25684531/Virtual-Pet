@@ -25,6 +25,7 @@ import time
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
+import config
 from audio_playback import FfplayPcmAudioPlayer, PlaybackStartSuppressed, PygameInMemoryAudioPlayer
 from pet_harness.latency import get_turn
 
@@ -47,6 +48,7 @@ class _PcmTraceSession:
         self._session_reply_id = session_reply_id
         self._player = player
         self._bytes_per_second = max(1.0, float(bytes_per_second or 1.0))
+        self.sample_rate: int | None = None
         self._chunk_queue: "queue.Queue[tuple[str, bytes] | object]" = queue.Queue()
         self._lock = threading.Lock()
         self._segment_bytes: dict[str, int] = {}
@@ -201,7 +203,7 @@ class AudioStreamWorker(QObject):
         self,
         audio_player=None,
         pcm_player_factory=None,
-        pcm_sample_rate: int = 32000,
+        pcm_sample_rate: int | None = None,
         pcm_channels: int = 1,
         parent=None,
     ):
@@ -211,7 +213,7 @@ class AudioStreamWorker(QObject):
         self._pcm_player_factory = pcm_player_factory or (
             lambda sample_rate, channels: FfplayPcmAudioPlayer(sample_rate=sample_rate, channels=channels)
         )
-        self._pcm_sample_rate = int(pcm_sample_rate)
+        self._pcm_sample_rate = int(pcm_sample_rate if pcm_sample_rate is not None else config.TTS_PCM_SAMPLE_RATE)
         self._pcm_channels = int(pcm_channels)
         self._pcm_bytes_per_second = max(1, self._pcm_sample_rate * self._pcm_channels * 2)
         self._playing_lock = threading.Lock()
@@ -273,14 +275,33 @@ class AudioStreamWorker(QObject):
             session = self._pcm_sessions.get(normalized_trace_id)
             if session is None:
                 session_sample_rate = int(sample_rate or self._pcm_sample_rate)
+                player = self._pcm_player_factory(session_sample_rate, self._pcm_channels)
+                # 後端不可用時必須在這裡就拋出，讓 producer 收到失敗：session thread
+                # 內的例外只會寫 log，呼叫端會誤判 success，動畫因而永遠等不到
+                # driver_started。且 session 失敗即被移除，不擋在這裡會變成每個
+                # chunk 重建一次 session、重噴一次 traceback。
+                is_available = getattr(player, "is_available", None)
+                if callable(is_available) and not is_available():
+                    raise RuntimeError("找不到 ffplay，無法播放 PCM 串流。")
                 session = _PcmTraceSession(
                     self,
                     normalized_trace_id,
                     reply_id,
-                    self._pcm_player_factory(session_sample_rate, self._pcm_channels),
+                    player,
                     max(1, session_sample_rate * self._pcm_channels * 2),
                 )
+                session.sample_rate = session_sample_rate
                 self._pcm_sessions[normalized_trace_id] = session
+            elif sample_rate is not None and int(sample_rate) != session.sample_rate:
+                # ffplay 的 -ar 在 session 建立時就鎖死了。同一回合中途換 TTS provider
+                # 而取樣率不同時，硬灌進去會變速播放，而且 bytes_per_second 反推的
+                # 句段結束時間會失準(提早發 playback_finished → 關掉 stdin → 尾巴
+                # 被截掉)。寧可丟掉這一段並留下明確 log，也不要無聲地播錯。
+                LOGGER.error(
+                    "[ECHOES] PCM 取樣率不符，已丟棄該句段 trace=%s session_rate=%s chunk_rate=%s",
+                    normalized_trace_id, session.sample_rate, int(sample_rate),
+                )
+                return
         session.enqueue_chunk(reply_id, chunk)
 
     def finish_pcm_segment(self, reply_id: str, trace_id: str = "") -> None:

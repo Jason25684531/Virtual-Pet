@@ -124,6 +124,14 @@ class PromptBuilder:
                 "to the user and you/your refers to ECHOES. When the user asks what they themselves "
                 "said, like, or did, answer from Retrieval Evidence. When the question is about ECHOES "
                 "itself, answer from the Character Persona.",
+                # ponytail: 這條必須貼著 history_text。實測 gemma3:12b 在使用者連續追問
+                # 同一主題時（「什麼可愛小故事?」→「還有其他小故事嗎?」）會把上一輪的
+                # Assistant 句子幾乎逐字改寫後再送一次；放到末端的 Global Response Rules
+                # 隔了 4 個區塊就管不到。同一個 adjacency 教訓見上面 Conversation History 註解。
+                "The Assistant lines below are what you have ALREADY said. Each new reply must contain "
+                "new content: never repeat or reword an Assistant line from the history. If the user asks "
+                "for more on the same topic, give specifics you have not said yet. If you have nothing new "
+                "on that topic, say so plainly in one sentence instead of restating your last reply.",
                 history_text,
                 "",
                 "## Retrieval Evidence",

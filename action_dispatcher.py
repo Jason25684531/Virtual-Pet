@@ -730,6 +730,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             wait_for_tts_start=wait_for_tts_start,
         )
         self._pending_actions[normalized_trace_id] = state
+        self._preload_binding_motion(binding)
         if any(trace == normalized_trace_id for _, trace in self._driver_started_pairs):
             state.has_tts = True
             self._activate_pending_action(normalized_trace_id)
@@ -743,6 +744,21 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         timer.timeout.connect(lambda current_trace_id=normalized_trace_id: self._promote_pending_action(current_trace_id))
         timer.start(self._action_sync_timeout_ms)
         state.timeout_timer = timer
+
+    def _preload_binding_motion(self, binding: ActionBinding) -> None:
+        """action tag 一到就先載 webm。此刻 TTS 還在做 HTTP + 合成，這段時間本來
+        是閒著的；不先載，webm 的冷啟動載入就會整段疊在語音起播之後。
+
+        只在會走 start_motion_loop 的情境預載：play_once 與 idle fallback 都由
+        play_resolved_motion 自己換 src，預載對它們沒有幫助。"""
+        if binding.play_once:
+            return
+        preload = getattr(self._window, "preload_motion", None)
+        if not callable(preload):
+            return
+        motion_path, used_idle_fallback = self._resolve_action_motion_path(binding.motion_key)
+        if motion_path and not used_idle_fallback:
+            preload(motion_path)
 
     def _clear_pending_action(self, trace_id: str | None):
         normalized_trace_id = str(trace_id or "").strip()

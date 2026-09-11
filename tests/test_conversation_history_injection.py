@@ -26,6 +26,29 @@ def test_second_turn_prompt_includes_first_turn_conversation(harness_env):
     assert "## Conversation History" in engine.last_prompt
 
 
+def test_history_block_forbids_restating_previous_replies(harness_env):
+    """gemma3:12b 在連續追問同一主題時會把上一輪的 Assistant 句子改寫後再送一次。
+    指示必須貼著 history 本身——放到末端的 Global Response Rules 隔太遠就管不到。"""
+    tmp_path, agentic_root = harness_env
+    engine = PetHarnessEngine(
+        FakeProvider(),
+        agentic_root=agentic_root,
+        db_path=tmp_path / "state.db",
+        snapshot_path=tmp_path / "debug" / "latest_pet_event.json",
+        character_id="Choppr",
+    )
+
+    engine.handle_event({"text": "你知道超夢嗎?", "source": "test"})
+    engine.handle_event({"text": "還有其他小故事嗎?", "source": "test"})
+
+    prompt = engine.last_prompt
+    assert "never repeat or reword an Assistant line" in prompt
+    # 必須落在 Conversation History 與 Retrieval Evidence 之間（緊鄰 history）
+    history_at = prompt.index("## Conversation History")
+    evidence_at = prompt.index("## Retrieval Evidence")
+    assert history_at < prompt.index("never repeat or reword an Assistant line") < evidence_at
+
+
 def test_memory_recall_hits_are_injected_into_prompt(harness_env):
     tmp_path, agentic_root = harness_env
 

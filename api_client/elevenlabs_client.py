@@ -91,7 +91,7 @@ class ElevenLabsStreamingTTSWorker(QThread):
                 url,
                 headers=headers,
                 params={
-                    "output_format": "pcm_24000" if self._pcm_stream_sink is not None else os.getenv("ELEVENLABS_OUTPUT_FORMAT", "mp3_22050_32"),
+                    "output_format": f"pcm_{config.TTS_PCM_SAMPLE_RATE}" if self._pcm_stream_sink is not None else os.getenv("ELEVENLABS_OUTPUT_FORMAT", "mp3_22050_32"),
                     "optimize_streaming_latency": os.getenv("ELEVENLABS_OPTIMIZE_STREAMING_LATENCY", "3"),
                 },
                 json=payload,
@@ -123,7 +123,7 @@ class ElevenLabsStreamingTTSWorker(QThread):
                         chunk,
                         self._reply_id,
                         self._trace_id,
-                        sample_rate=24000,
+                        sample_rate=config.TTS_PCM_SAMPLE_RATE,
                     )
                     pcm_segment_started = True
                 else:

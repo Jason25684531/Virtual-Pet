@@ -107,11 +107,15 @@
     var motionLoopSource = null;
     var motionLoopActive = false;
     var motionLoopGeneration = 0;
+    var preloadedMotionSource = null;
     var panelVideoGeneration = 0;
     var conversationTurns = new Map();
-    var maxConversationTurns = 3;
+    // 3 輪會讓歷史真的被 removeChild 刪掉，不是捲不到而是不存在。
+    var maxConversationTurns = 50;
+    var pinConversationFrame = null;
     var latestRuntimeState = null;
     var latestHudState = null;
+    var lastRenderedAgentReply = '';
     var currentCharacterSkills = [];
     var hudDeltaTimer = null;
     var resizeObserver = null;
@@ -215,6 +219,9 @@
             console.warn('[ECHOES] invalid video source', source);
             return;
         }
+        // 任何真正換 src 的動作都讓預載失效，否則 startMotionLoop 會拿著舊的
+        // preloadedMotionSource 誤判「已經載好了」而直接 play 到別的片子。
+        preloadedMotionSource = null;
         video.loop = Boolean(shouldLoop);
         video.src = source;
         video.load();
@@ -234,7 +241,22 @@
         }
     }
 
+    // 量測必須在內容變更「之前」（變更後量到的已經是加長後的高度），捲動必須在
+    // 變更「之後」。rAF 讓同一個 tick 的所有同步變更都做完才捲。
+    function pinConversationToBottom() {
+        if (!conversationList || pinConversationFrame !== null) return;
+        var distanceFromBottom = conversationList.scrollHeight
+            - conversationList.scrollTop
+            - conversationList.clientHeight;
+        if (distanceFromBottom >= 40) return;   // 使用者正在看歷史，別把他拉回底部
+        pinConversationFrame = window.requestAnimationFrame(function () {
+            pinConversationFrame = null;
+            conversationList.scrollTop = conversationList.scrollHeight;
+        });
+    }
+
     function ensureConversationTurn(turnId, sourceLabel) {
+        pinConversationToBottom();
         var existing = conversationTurns.get(turnId);
         if (existing) return existing;
 
@@ -676,6 +698,9 @@
             regions: regions,
             devicePixelRatio: window.devicePixelRatio,
             stageActive: !uiRoute.screen && !uiRoute.modal,
+            // modal 只是蓋在舞台上（角色還在後面），不該中斷進行中的回合；
+            // 真正離開舞台是 route 到別的畫面。兩者granularity 不同，分開回報。
+            screenRouted: Boolean(uiRoute.screen),
         }));
     }
 
@@ -1323,27 +1348,54 @@
         setupCompanionDock();
     }
 
+    // startSystemMove() 是 OS 層級的視窗搬移，會完全奪走滑鼠。所以預設不可拖，
+    // 只有明確標記 .window-drag-handle 的區域才拖 —— 白名單式的「除了這些元素以外
+    // 都可以拖」就是捲軸拉不動、整片畫面被拖走的成因。
+    function isDragBlockedBy(element) {
+        return Boolean(element.closest('button, input, a, textarea, select, label, [contenteditable="true"]'));
+    }
+
+    // 捲軸滑塊不是子元素，按在上面時 offsetX/offsetY 會落在 client 區域之外。
+    function isOnScrollbar(element, event) {
+        var rect = element.getBoundingClientRect();
+        return (event.clientX - rect.left) > element.clientWidth
+            || (event.clientY - rect.top) > element.clientHeight;
+    }
+
+    function isScrollableInteraction(handle, target, event) {
+        for (var node = target; node && node !== handle.parentElement; node = node.parentElement) {
+            var scrollable = node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth;
+            if (scrollable && (isOnScrollbar(node, event) || node !== handle)) return true;
+        }
+        return false;
+    }
+
     function setupWindowDragHandles() {
-        var dragStart = null;
+        var petDragStart = null;
         document.addEventListener('mousedown', function (event) {
             if (event.button !== 0) return;
-            var control = event.target.closest('button, input, a, textarea, select, label, [contenteditable="true"]');
-            if (control && control.id !== 'pet-character') return;
-            if (!control) {
-                callBridge('beginWindowDrag');
+            // 桌寵本體是自己的把手：按住拖曳搬移視窗，單純點擊仍然開聊天，
+            // 用 5px 門檻區分。這條按住後移動的路徑只給 #pet-character，
+            // 套用到所有元素就會把捲軸與按鈕都變成半個拖曳把手。
+            if (event.target.closest('#pet-character')) {
+                petDragStart = { x: event.clientX, y: event.clientY };
                 return;
             }
-            dragStart = { x: event.clientX, y: event.clientY };
+            var handle = event.target.closest('.window-drag-handle');
+            if (!handle) return;
+            if (isDragBlockedBy(event.target)) return;
+            if (isScrollableInteraction(handle, event.target, event)) return;
+            callBridge('beginWindowDrag');
         });
         document.addEventListener('mousemove', function (event) {
-            if (!dragStart || !(event.buttons & 1)) return;
-            if (Math.hypot(event.clientX - dragStart.x, event.clientY - dragStart.y) < 5) return;
-            dragStart = null;
+            if (!petDragStart || !(event.buttons & 1)) return;
+            if (Math.hypot(event.clientX - petDragStart.x, event.clientY - petDragStart.y) < 5) return;
+            petDragStart = null;
             event.preventDefault();
             callBridge('beginWindowDrag');
         });
         document.addEventListener('mouseup', function () {
-            dragStart = null;
+            petDragStart = null;
         });
     }
 
@@ -1675,7 +1727,19 @@
         motionLoopSource = source;
         motionLoopActive = true;
         // QWebEngine 對部分 WebM 不可靠地觸發原生 loop，改由 ended 事件明確重播。
-        setSource(source, false);
+        // 已預載同一個 source 時絕對不能再 setSource()：同一個 <video> 連續兩次
+        // load() 會讓前一次 play() 被 abort，並讓該元素後續的 ended/watchdog
+        // 偵測失靈，動作只播一次就卡住。
+        if (preloadedMotionSource === source && video.readyState >= 2) {
+            video.loop = false;
+            video.currentTime = 0;
+            video.play().catch(function (err) {
+                console.warn('[ECHOES] preloaded motion playback failed:', err.message);
+            });
+        } else {
+            setSource(source, false);
+        }
+        preloadedMotionSource = null;
         motionLoopTimer = setInterval(function () {
             if (loopGeneration !== motionLoopGeneration) return;
             if (motionLoopActive && motionLoopSource && (video.ended || (video.paused && !video.seeking && video.readyState >= 2))) {
@@ -1693,6 +1757,19 @@
         motionLoopSource = null;
         motionLoopActive = false;
         console.log('[ECHOES] motionLoop stopped');
+    };
+
+    // 動作與語音對齊：action tag 一到就先把 webm 載進來（只 load，不 play），
+    // 等音訊起播時 startMotionLoop 才 play()，省掉冷啟動的載入時間。
+    window.preloadMotion = function (source) {
+        if (!source || typeof source !== 'string' || !video) return;
+        if (preloadedMotionSource === source) return;
+        // 不在這裡 play()/pause()：多一個 pending 的 play promise 只會跟之後
+        // 真正的 play() 互相搶。
+        preloadedMotionSource = source;
+        video.loop = false;
+        video.src = source;
+        video.load();
     };
 
     window.restoreIdleMotion = function (fallbackSource) {
@@ -1854,18 +1931,21 @@
         hudScore.hidden = false;
         if (hudScoreText) hudScoreText.textContent = '★ Score ' + xpTotal;
         if (hudScoreLevel) hudScoreLevel.textContent = '· Lv.' + level;
-        showHudDelta(xpDeltaOverride != null ? xpDeltaOverride : xpState.last_delta);
+        // 不從 state 推導飄字：xp.last_delta 是持久化狀態，當事件用會讓每次重整
+        // 都重播一次。只有呼叫端明確給的本輪 delta 才播。
+        showHudDelta(xpDeltaOverride);
     }
 
+    // AI 回覆只認「本輪真的有 reply」。舊版還會 fallback 到 eventData.message /
+    // summary / 固定字串，於是每次畫面重整都把狀態訊息（"Character switched."、
+    // "節慶事件已由 F 快捷鍵觸發。"）當成角色說的話寫進回覆欄，那就是罐頭訊息的
+    // 來源；沒有 reply 時維持現狀比塞一句假的好。
     function renderLatestAgentEvent(eventPayload, fallbackDelta) {
         var eventData = eventPayload || {};
-        var rewardSummary = eventData.reward_summary || {};
-        var reply = eventData.reply
-            || eventData.message
-            || eventData.summary
-            || rewardSummary.summary
-            || rewardSummary.display
-            || '輸入問題或點選快捷指令。';
+        var reply = String(eventData.reply || '').trim();
+        if (!reply) return;
+        if (reply === lastRenderedAgentReply) return;   // 同一輪回覆不重複輸出
+        lastRenderedAgentReply = reply;
         var delta = eventData.xp_delta;
         if (delta == null) delta = fallbackDelta;
         setAgentResult(reply, delta);
@@ -1875,8 +1955,9 @@
         if (!state) return;
         latestRuntimeState = state;
         renderBackgroundStatus(state.background || null);
-        renderCharacterHud({ active: true, xp: state.xp || {} }, state.xp && state.xp.last_delta);
-        renderLatestAgentEvent(state.latest_event || null, state.xp && state.xp.last_delta);
+        renderCharacterHud({ active: true, xp: state.xp || {} }, 0);
+        // 不從 state.latest_event 渲染回覆：那是上一次「完成的回合」的磁碟快照，
+        // 每 5 秒輪詢與每次重整都會把它重播成新回覆。
     }
 
     function refreshCharacterHud() {
@@ -1885,7 +1966,7 @@
             if (latestRuntimeState && latestRuntimeState.xp) {
                 mergedState.xp = latestRuntimeState.xp;
             }
-            renderCharacterHud(mergedState, latestRuntimeState && latestRuntimeState.xp ? latestRuntimeState.xp.last_delta : 0);
+            renderCharacterHud(mergedState, 0);
             if (mergedState.character_id) activeStyleCharacterId = mergedState.character_id;
             var styleRefresh = activeStyleCharacterId ? refreshStyleSlots(activeStyleCharacterId) : Promise.resolve();
             if (activeStyleCharacterId) refreshRenderProgress(activeStyleCharacterId);
@@ -1960,8 +2041,8 @@
             payload.state ? { active: true, xp: payload.state.xp || {}, progress_percent: payload.progress_percent } : null,
             payload.xp_delta
         );
-        var eventData = payload.event || (payload.state && payload.state.latest_event);
-        renderLatestAgentEvent(eventData, payload.xp_delta);
+        // 只吃本輪事件，不再 fallback 到 state.latest_event（磁碟快照 = 上一輪）。
+        renderLatestAgentEvent(payload.event, payload.xp_delta);
         if (payload.state) maybeOpenAssetOfferModal(payload.state);
     };
 

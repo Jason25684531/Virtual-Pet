@@ -368,6 +368,16 @@ button:disabled {
    cursor: pointer;
 }
 
+/* 沒有標題列的整頁畫面(主選單/讀檔)用這條當拖曳把手。 */
+.window-drag-bar {
+   position: absolute;
+   top: 0;
+   left: 0;
+   z-index: 3;
+   width: 100%;
+   height: 48px;
+}
+
 .menu-screen__actions {
    position: absolute;
    top: 62%;
@@ -889,13 +899,25 @@ button:disabled {
    margin-bottom: 30px;
 }
 
+/* 貼底用 margin-top: auto，不用 align-content: end —— 實機 Chromium 83 在 grid
+   align-content: end 時，溢出到起始邊的內容無法被捲動到(scrollTop 不能為負)，
+   歷史會看得到卻捲不上去。
+   間距改用相鄰選擇器加 margin,不用 flex 的間隙屬性(那要 Chromium 84,實機會整條
+   被丟棄讓間距歸零,見 test_style_avoids_css_the_shipped_chromium_cannot_parse)。 */
 .message-list {
-   display: grid;
-   align-content: end;
-   gap: 17px;
+   display: flex;
+   flex-direction: column;
    min-height: 340px;
    max-height: 510px;
    overflow: auto;
+}
+
+.message-list> :first-child {
+   margin-top: auto;
+}
+
+.message-list>*+* {
+   margin-top: 17px;
 }
 
 .conversation-turn {
@@ -1055,12 +1077,16 @@ button:disabled {
    letter-spacing: .1em;
 }
 
+/* 沒有全螢幕遮罩:這個視窗是覆蓋整個桌面的透明桌寵視窗,不是一般 app 視窗。
+   在這裡鋪 scrim 等於把整個桌面刷黑。pointer-events 也必須是 none,否則會變成
+   一片看不見卻吃掉所有桌面點擊的透明擋板;實際可點區域由 .modal 自己宣告
+   (reportHitRegions 收的也只是 .modal 的矩形,不是整層)。 */
 #modal-layer {
    z-index: 40;
    display: grid;
    place-items: center;
-   background: rgba(0, 0, 0, .64);
-   pointer-events: auto;
+   background: transparent;
+   pointer-events: none;
 }
 
 .modal {
@@ -1071,6 +1097,7 @@ button:disabled {
    background: var(--surface-strong);
    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, .75);
    text-align: center;
+   pointer-events: auto;
 }
 
 .modal p {

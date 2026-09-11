@@ -183,6 +183,14 @@ LIVELY_BACKGROUND_ENABLED = _read_bool_env("LIVELY_BACKGROUND_ENABLED", True)
 
 ACTION_SYNC_TIMEOUT_MS = _read_int_env("ACTION_SYNC_TIMEOUT_MS", 6000)
 
+# 所有 TTS provider 的 PCM 取樣率必須一致:ffplay 的 -ar 在播放 session 建立時就
+# 鎖死了,同一回合中途 fallback 到取樣率不同的 provider 會變速播放,而且句段結束
+# 時間是用 bytes/秒 反推的,會提早關掉 stdin 把句尾截掉。這是唯一的定義來源,
+# voai_client / elevenlabs_client / AudioStreamWorker 都讀這個值,不要各寫一份。
+# 24000 是兩家的交集:ElevenLabs 的 PCM 格式是固定清單(16000/22050/24000/44100,
+# 沒有 32000);VoAI 的 x-sample-rate 是請求參數,實測四種取樣率都正常且時長一致。
+TTS_PCM_SAMPLE_RATE = _read_int_env("TTS_PCM_SAMPLE_RATE", 24000)
+
 # ComfyUI asset generation is opt-in; the mock service remains the safe default.
 COMFYUI_BASE_URL = os.getenv("COMFYUI_BASE_URL", "http://127.0.0.1:8188").strip().rstrip("/")
 COMFYUI_WS_URL = os.getenv("COMFYUI_WS_URL", "ws://127.0.0.1:8188").strip().rstrip("/")
@@ -199,7 +207,7 @@ PROACTIVE_GREETING_PHRASES = (
     "想和我聊聊嗎？",
 )
 XP_PER_LEVEL = _read_int_env("XP_PER_LEVEL", 6)
-EVENT_INTERVAL_MINUTES = _read_float_env("EVENT_INTERVAL_MINUTES", 1.0) #時間的設定
+EVENT_INTERVAL_MINUTES = _read_float_env("EVENT_INTERVAL_MINUTES", 100.0) #時間的設定
 FESTIVAL_EVENT_PROMPTS = ("這個角色戴上聖誕帽", "這個角色手上拿春聯", "這個角色手上拿粽子")
 PREVIEW_OFFER_TTL_HOURS = _read_float_env("PREVIEW_OFFER_TTL_HOURS", 24.0)
 # --- Faster Whisper STT（toggle-recording，Week 4） ---

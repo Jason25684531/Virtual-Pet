@@ -104,6 +104,7 @@ class TransparentWindow(QMainWindow):
         self._desktop_companion_mode = bool(getattr(config, "DESKTOP_COMPANION_MODE", True))
         self._left_clickthrough_px = max(0, int(getattr(config, "DESKTOP_CLICKTHROUGH_LEFT_PX", 0)))
         self._stage_active = False
+        self._screen_routed = False
         self._mask_applied = False
         self._motion_coordinator = None
         self._settings_dialog = None
@@ -124,7 +125,6 @@ class TransparentWindow(QMainWindow):
         self._proactive_greeting_release_timer = QTimer(self)
         self._proactive_greeting_release_timer.setInterval(100)
         self._proactive_greeting_release_timer.timeout.connect(self._clear_finished_greeting)
-        self._latest_agentic_event: dict[str, object] | None = None
         self._spoken_chunks: dict[str, list[str]] = {}
         self._playtime_character_id: str | None = None
         self._playtime_started_at: float | None = None
@@ -189,11 +189,21 @@ class TransparentWindow(QMainWindow):
         self.setMask(QRegion(inset, 0, max(1, self.width() - inset), self.height()))
         self._mask_applied = True
 
-    def set_stage_active(self, active: bool) -> None:
+    def set_stage_active(self, active: bool, screen_routed: bool = False) -> None:
         """只在角色互動舞台上切掉左側；主選單／讀檔那幾頁要整片可點。
 
-        主動打招呼也綁在這個訊號上：沒進角色（主選單／讀檔／loading／開著 modal）就不該說話。"""
+        主動打招呼也綁在這個訊號上：沒進角色（主選單／讀檔／loading／開著 modal）就不該說話。
+
+        `screen_routed` 才代表真正離開舞台（route 到別的畫面）。開 modal 也會讓
+        `active` 為 False，但角色還在 modal 後面，此時中斷會讓自動彈出的素材
+        offer 把正在播的回覆攔腰切斷——那正是我們要修的「語音少一段」。"""
         active = bool(active)
+        screen_routed = bool(screen_routed)
+        # 只在「剛離開舞台」這個邊緣中斷一次。hit region 每次重報都會呼叫進來，
+        # 不做邊緣偵測會在主選單裡反覆打 JS。
+        if screen_routed and not self._screen_routed:
+            TransparentWindow._interrupt_active_conversation(self)
+        self._screen_routed = screen_routed
         if active == self._stage_active:
             return
         self._stage_active = active
@@ -754,6 +764,12 @@ class TransparentWindow(QMainWindow):
         if not normalized_trace_id or not str(text or "").strip():
             return
         self._spoken_chunks.setdefault(normalized_trace_id, []).append(str(text).strip())
+        # 只有目前這個對話回合的語音才回報給 engine。主動打招呼與快捷意圖也會經過
+        # 這裡，把它們也累進 engine._spoken_chunks 的話，下一個回合若在產出任何內容
+        # 前被取消，spoken_reply() 會回傳打招呼的句子並當成該回合的 reply——也就是
+        # 「上一輪的內容被直接 feedback 給前端」。
+        if normalized_trace_id != str(self._conversation_trace_id or "").strip():
+            return
         engine = getattr(self._adapter, "engine", None)
         mark = getattr(engine, "mark_spoken_chunk", None)
         if callable(mark):
@@ -807,9 +823,6 @@ class TransparentWindow(QMainWindow):
         self._apply_stt_button_state()
 
     def _handle_stt_button_clicked(self):
-        if self._proactive_greeting_active is True:
-            self.set_action_status("請等我說完再輸入。", tone="warn", timeout_ms=1800)
-            return
         if not self._stt_available:
             self.set_action_status("語音輸入尚未就緒。", tone="warn", timeout_ms=3200)
             return
@@ -819,6 +832,7 @@ class TransparentWindow(QMainWindow):
             self.stt_stop_requested.emit()
             return
         TransparentWindow._interrupt_active_conversation(self)
+        self._greeter.reset()
         self.stt_start_requested.emit()
 
     def toggle_stt_from_bridge(self) -> None:
@@ -917,6 +931,9 @@ class TransparentWindow(QMainWindow):
 
     def on_character_switched(self, profile_payload: dict) -> None:
         """建立/切換角色成功後的回呼：套用 WebM 動作來源並重整 Agentic UI（Skills 清單）。"""
+        # 前一個角色的語音／動作與畫面對話紀錄都不該延續到新角色身上。
+        TransparentWindow._interrupt_active_conversation(self)
+        self.clear_conversation_turns()
         character_id = str(profile_payload.get("character_id") or "").strip()
         if character_id:
             self.apply_character(character_id)
@@ -1008,17 +1025,22 @@ class TransparentWindow(QMainWindow):
         if not cleaned:
             self.set_action_status("Please enter text first.", tone="warn", timeout_ms=2200)
             return
-        if self._proactive_greeting_active is True:
-            self.set_action_status("請等我說完再輸入。", tone="warn", timeout_ms=1800)
-            return
         coordinator = self._motion_coordinator
-        if self._conversation_pending or bool(getattr(coordinator, "has_active_motion", False)) or bool(getattr(coordinator, "is_tts_busy", False)):
+        # 使用者輸入優先於主動打招呼：打斷它，不丟棄使用者的字。
+        if (
+            self._proactive_greeting_active
+            or self._conversation_pending
+            or bool(getattr(coordinator, "has_active_motion", False))
+            or bool(getattr(coordinator, "is_tts_busy", False))
+        ):
             TransparentWindow._interrupt_active_conversation(self)
         from pet_harness.app.commands import ActionCommand
         character_id = self.get_current_character_id()
         if not character_id:
             self.set_action_status("No active character.", tone="warn", timeout_ms=2200)
             return
+        # 自動發話改以使用者最後一次送出為基準往後計時（t+30s），而非固定節拍。
+        self._greeter.reset()
         trace_id = f"turn-{uuid4().hex}"
         self.begin_conversation_turn(trace_id, "Talk", cleaned)
         self._conversation_pending = True
@@ -1059,6 +1081,11 @@ class TransparentWindow(QMainWindow):
         self._conversation_pending = False
         self._conversation_character_id = None
         self._conversation_trace_id = None
+        # 主動打招呼也是被中斷的對象之一：不在這裡清掉旗標，is_busy 會一直是 True
+        # 直到 _clear_finished_greeting 的 100ms 輪詢跑到，那段空窗會讓剛送出的
+        # 使用者回合被誤判成「還在忙」。
+        self._proactive_greeting_active = False
+        self._proactive_greeting_release_timer.stop()
 
     def _on_action_bus_conversation(self, payload: dict) -> None:
         if not self._is_current_conversation_character(payload.get("character_id")):
@@ -1102,7 +1129,6 @@ class TransparentWindow(QMainWindow):
 
     def consume_interaction_result(self, payload: dict, message: str = "Interaction complete.") -> None:
         """所有 Harness 結果（文字互動與立即執行）的唯一 Host 消費流程。"""
-        self._latest_agentic_event = dict(payload or {})
         webm_key = self._validated_event_motion_key(payload)
         reply_text = str(payload.get("reply") or "").strip()
         source_label = "Skill" if payload.get("matched_skill") else "Talk"
@@ -1246,12 +1272,16 @@ class TransparentWindow(QMainWindow):
             "tone": tone,
             "timeoutMs": timeoutMs,
             "runtimeControls": self._build_runtime_controls_state(),
-            "xp_delta": int((event_payload or {}).get("xp_delta", xp_state.get("last_delta", 0)) or 0),
+            # 只有真實回合事件才帶 delta。xp.last_delta 是持久化的狀態欄位，拿它當
+            # 事件會讓每一次畫面重整（動作 offer、角色切換、狀態訊息）都重播一次
+            # 「+N」飄字，看起來像經驗值自己在跳。
+            "xp_delta": int((event_payload or {}).get("xp_delta", 0) or 0),
             "progress_percent": int(xp_state.get("progress_percent", 0) or 0),
         }
-        latest_event = event_payload or self._latest_agentic_event
-        if latest_event:
-            payload["event"] = latest_event
+        # 只有本輪真實事件才帶 event。舊版會 fallback 到上一輪的
+        # _latest_agentic_event，於是每次畫面重整都把上一輪的回覆再送一次給前端。
+        if event_payload:
+            payload["event"] = dict(event_payload)
         self._run_javascript("hydrateAgenticUI", payload)
 
     def _build_runtime_background_state(self, base_background) -> dict:
@@ -1287,6 +1317,10 @@ class TransparentWindow(QMainWindow):
     def start_motion_loop(self, path: str, interval_ms: int = 1000):
         url = QUrl.fromLocalFile(path).toString()
         self._run_javascript("startMotionLoop", url, interval_ms)
+
+    def preload_motion(self, path: str):
+        """先把 webm 載進 <video>（只 load，不 play），讓起播時不必等冷啟動載入。"""
+        self._run_javascript("preloadMotion", QUrl.fromLocalFile(path).toString())
 
     def stop_motion_loop(self):
         self._run_javascript("stopMotionLoop")
@@ -1342,12 +1376,24 @@ class TransparentWindow(QMainWindow):
         self._proactive_greeting_active = True
         trace_id = f"greeting-{uuid4().hex}"
         self.show_synthetic_conversation_turn("主動打招呼", "", message)
+        self._log_assistant_utterance(message)
         if not self.dispatch_action(
             f"[ACTION:wave_response] {message}", trace_id=trace_id,
             allow_tts=True, wait_for_tts_start=True,
         ):
             self.speak_text(message, trace_id=trace_id)
         self._proactive_greeting_release_timer.start()
+
+    def _log_assistant_utterance(self, message: str) -> None:
+        """讓模型知道自己主動說過什麼；記錄失敗不能影響打招呼本身。"""
+        engine = getattr(self._adapter, "engine", None)
+        log = getattr(engine, "log_assistant_utterance", None)
+        if not callable(log):
+            return
+        try:
+            log(message)
+        except Exception:  # noqa: BLE001
+            print("[ECHOES] 警告: 主動發話未能寫入對話歷史。")
 
     def _clear_finished_greeting(self) -> None:
         coordinator = self._motion_coordinator

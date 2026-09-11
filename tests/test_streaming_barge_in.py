@@ -124,17 +124,40 @@ class _CancelingProvider(FakeProvider):
         yield "Never spoken."
 
 
-def test_cancelled_stream_without_spoken_chunk_is_stale(streaming_env):
+def test_cancelled_stream_without_spoken_chunk_still_keeps_the_user_text(streaming_env):
+    """被打斷的回合仍要進 event_log：recent_events 是 prompt 短期歷史的唯一來源，
+    掉一筆就等於使用者問過的問題從上下文蒸發（specs/conversation-continuity）。"""
     tmp_path, agentic_root = streaming_env
     engine = PetHarnessEngine(
         provider=_CancelingProvider(), agentic_root=agentic_root,
         snapshot_path=tmp_path / "debug" / "stale.json", character_id="Choppr",
     )
-    event = engine.handle_event({"text": "interrupt"}, stream_callback=lambda _chunk: None)
+    engine.memory_store.save_turn = MagicMock()
+
+    event = engine.handle_event({"text": "英雄聯盟改版"}, stream_callback=lambda _chunk: None)
 
     assert event.metadata["stale_turn"] is True
-    assert event.saved_to_db is False
-    assert engine.recent_events() == []
+    assert event.saved_to_db is True
+    logged = engine.recent_events()
+    assert [row["input_payload"]["text"] for row in logged] == ["英雄聯盟改版"]
+    assert logged[0]["output_payload"]["reply"] == ""
+    # 空回覆不值得長期記憶，寫進向量庫只是噪音
+    engine.memory_store.save_turn.assert_not_called()
+    assert event.xp_delta == 0
+
+
+def test_interrupted_turn_stays_in_the_next_turns_history(streaming_env):
+    """被打斷後的追問要知道剛才在聊什麼（#14）。"""
+    tmp_path, agentic_root = streaming_env
+    engine = PetHarnessEngine(
+        provider=_CancelingProvider(), agentic_root=agentic_root,
+        snapshot_path=tmp_path / "debug" / "followup.json", character_id="Choppr",
+    )
+    engine.handle_event({"text": "英雄聯盟改版怎麼樣"}, stream_callback=lambda _chunk: None)
+
+    history = [row["input_payload"]["text"] for row in engine.store.recent_events(limit=6)]
+
+    assert "英雄聯盟改版怎麼樣" in history
 
 
 def test_cancelled_stream_with_spoken_chunk_persists_only_spoken_text(streaming_env):

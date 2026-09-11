@@ -292,18 +292,32 @@ def test_proactive_greeting_only_runs_on_character_stage():
     from ui.transparent_window import TransparentWindow
 
     greeter = MagicMock()
+    coordinator = MagicMock()
     window = SimpleNamespace(
         _stage_active=False,
+        _screen_routed=False,
         _greeter=greeter,
         _apply_left_clickthrough_mask=MagicMock(),
+        # route 離開舞台時同時要中斷進行中的回合與語音
+        _action_bus=MagicMock(),
+        _motion_coordinator=coordinator,
+        _conversation_pending=False,
+        _conversation_character_id=None,
+        _conversation_trace_id=None,
+        _proactive_greeting_active=False,
+        _proactive_greeting_release_timer=MagicMock(),
+        stop_motion_loop=MagicMock(),
+        restore_idle_video=MagicMock(),
     )
 
     TransparentWindow.set_stage_active(window, False)
     greeter.start.assert_not_called()
     TransparentWindow.set_stage_active(window, True)
     greeter.start.assert_called_once()
-    TransparentWindow.set_stage_active(window, False)
+    coordinator.interrupt_all.assert_not_called()
+    TransparentWindow.set_stage_active(window, False, True)
     greeter.stop.assert_called_once()
+    coordinator.interrupt_all.assert_called_once()
 
 
 def test_transparent_window_wires_busy_property_as_callback(monkeypatch):
@@ -353,6 +367,7 @@ def test_proactive_greeting_adds_chat_turn_and_dispatches_wave():
         _proactive_greeting_active=False,
         _proactive_greeting_release_timer=MagicMock(),
         show_synthetic_conversation_turn=MagicMock(),
+        _log_assistant_utterance=MagicMock(),
         dispatch_action=MagicMock(return_value=True),
         speak_text=MagicMock(),
     )

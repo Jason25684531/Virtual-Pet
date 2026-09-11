@@ -24,7 +24,8 @@
   </main>
 
   <div id="app-screens" aria-live="polite">
-    <section id="screen-main-menu" class="app-screen menu-screen window-drag-handle" aria-label="Main Menu">
+    <section id="screen-main-menu" class="app-screen menu-screen" aria-label="Main Menu">
+      <div class="window-drag-bar window-drag-handle" aria-hidden="true"></div>
       <nav class="menu-screen__actions">
         <button id="menu-create-button" class="menu-action menu-action--primary" type="button" aria-label="Create"><img src="../assets/buttons/create.png" alt=""><small hidden>建立新角色</small></button>
         <button id="menu-load-button" class="menu-action" type="button" disabled aria-label="Load"><img src="../assets/buttons/load.png" alt=""><small hidden>尚無角色</small></button>
@@ -36,7 +37,7 @@
     <section id="screen-create-character" class="app-screen creation-screen" aria-label="Create Character" hidden>
       <img class="screen-background" src="../ref_pic/Lab_BG.png" alt="">
       <div class="screen-card screen-card--wide">
-        <header class="screen-header"><div><h1>Create Character</h1><p>建立角色</p></div><button class="icon-button" type="button" data-screen="screen-main-menu" aria-label="Back">×</button></header>
+        <header class="screen-header window-drag-handle"><div><h1>Create Character</h1><p>建立角色</p></div><button class="icon-button" type="button" data-screen="screen-main-menu" aria-label="Back">×</button></header>
         <nav class="screen-tabs" aria-label="角色建立方式"><button id="preset-tab-button" class="is-active" type="button">Preset <small>預設 ×7</small></button><button id="customize-tab-button" type="button">Customize <small>客製化</small></button></nav>
         <section id="tab-preset" class="create-tab">
           <div class="preset-carousel"><button id="preset-carousel-prev" class="carousel-arrow" type="button" aria-label="Previous">‹</button><div class="preset-spotlight"><div class="preset-portrait"></div><div><span id="preset-carousel-index" class="counter-pill">0 / 0</span><h2 id="preset-name">尚無預設角色</h2><p id="preset-persona">選擇一位角色開始冒險。</p><button id="preset-select-button" class="primary-button" type="button" disabled>Select</button></div></div><button id="preset-carousel-next" class="carousel-arrow" type="button" aria-label="Next">›</button></div>
@@ -48,9 +49,10 @@
       </div>
     </section>
 
-    <section id="screen-load-save" class="app-screen load-screen window-drag-handle" aria-label="Load Save" hidden>
+    <section id="screen-load-save" class="app-screen load-screen" aria-label="Load Save" hidden>
+      <div class="window-drag-bar window-drag-handle" aria-hidden="true"></div>
       <img class="screen-background" src="../ref_pic/Lab_BG.png" alt="">
-      <div class="screen-card screen-card--save"><header class="screen-header"><div><h1>Load Save</h1><p>載入存檔</p></div><button class="icon-button" type="button" data-screen="screen-main-menu" aria-label="Back">×</button></header><div id="save-card-grid" class="save-card-grid"></div><footer class="screen-footer"><button id="save-back-button" class="ghost-button" type="button">Back</button><span></span><button id="save-delete-button" class="danger-button" type="button" disabled>Delete</button><button id="save-continue-button" class="primary-button" type="button" disabled>Continue</button></footer></div>
+      <div class="screen-card screen-card--save"><header class="screen-header window-drag-handle"><div><h1>Load Save</h1><p>載入存檔</p></div><button class="icon-button" type="button" data-screen="screen-main-menu" aria-label="Back">×</button></header><div id="save-card-grid" class="save-card-grid"></div><footer class="screen-footer"><button id="save-back-button" class="ghost-button" type="button">Back</button><span></span><button id="save-delete-button" class="danger-button" type="button" disabled>Delete</button><button id="save-continue-button" class="primary-button" type="button" disabled>Continue</button></footer></div>
     </section>
 
     <section id="screen-loading" class="app-screen loading-screen" aria-label="Loading" hidden><span id="loading-percent" class="loading-percent">0%</span><div class="loading-screen__copy"><h1>Loading your companion</h1><p>場景與角色正在就位</p><div class="progress-line"><span></span></div></div></section>
