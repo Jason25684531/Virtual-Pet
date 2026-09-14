@@ -64,7 +64,7 @@ class HarnessUiBridge(QObject):
 
     @pyqtSlot(bool)
     @pyqtSlot()
-    def beginWindowDrag(self) -> None: self._window.begin_window_drag()
+    def beginWindowDrag(self) -> None: self._window.begin_window_drag()  # 回傳值只供 Python 端診斷,JS 不需要
 
     @pyqtSlot(str)
     def addSkill(self, payload_json: str) -> None: self._window.add_skill(payload_json)

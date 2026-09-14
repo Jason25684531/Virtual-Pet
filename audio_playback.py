@@ -25,6 +25,44 @@ class PlaybackStartSuppressed(RuntimeError):
     """Raised when a queued reply is intentionally suppressed before playback starts."""
 
 
+# 送進 raw PCM 路徑的位元組必須真的是 raw PCM。把 MP3/WAV/Ogg 容器或錯誤訊息文字
+# 當成 s16le 灌給 ffplay 就是滿耳雜訊 —— 容器 header 本身會被當成樣本播出來。
+_CONTAINER_SIGNATURES = (
+    (b"RIFF", "wav"), (b"ID3", "mp3"), (b"OggS", "ogg"), (b"fLaC", "flac"),
+    (b"\xff\xfb", "mp3"), (b"\xff\xf3", "mp3"), (b"\xff\xf2", "mp3"), (b"\xff\xe3", "mp3"),
+)
+_RAW_PCM_CONTENT_TYPES = ("audio/pcm", "audio/l16", "audio/x-pcm", "audio/raw", "audio/x-raw", "application/octet-stream")
+_TEXT_PROBE_BYTES = 16
+_PRINTABLE = frozenset(range(0x20, 0x7F)) | {0x09, 0x0A, 0x0D}
+
+
+def detect_audio_container(head: bytes) -> str | None:
+    """回傳這段位元組看起來像哪種容器/錯誤文字;看起來像 raw PCM 時回傳 None。
+
+    只認明確的二進位 magic,以及「開頭 16 bytes 全是可列印 ASCII」的錯誤訊息 ——
+    用單一 byte(例如 '{' 或 '<')判斷會誤傷合法的 PCM 樣本,而連續 16 個可列印
+    位元組在真實語音裡幾乎不可能出現(靜音是 0x00,不可列印)。
+    """
+    sample = bytes(head or b"")
+    name = next((name for signature, name in _CONTAINER_SIGNATURES if sample.startswith(signature)), None)
+    if name is not None:
+        return name
+    probe = sample[:_TEXT_PROBE_BYTES]
+    if len(probe) >= _TEXT_PROBE_BYTES and all(byte in _PRINTABLE for byte in probe):
+        return "text"
+    return None
+
+
+def is_raw_pcm_content_type(content_type: str | None) -> bool:
+    """只認明確宣告 raw PCM(或不帶型別的 octet-stream)的回應。
+
+    舊的檢查是 `"audio" in content_type`,audio/mpeg 也會通過 —— 明明要的是 PCM,
+    拿到 MP3 卻照樣送進 raw PCM 播放路徑。
+    """
+    value = str(content_type or "").lower().split(";")[0].strip()
+    return any(value.startswith(allowed) for allowed in _RAW_PCM_CONTENT_TYPES)
+
+
 class PygameInMemoryAudioPlayer:
     """Play a complete MP3 buffer from memory through pygame."""
 
@@ -84,14 +122,18 @@ class PygameInMemoryAudioPlayer:
 class FfplayPcmAudioPlayer:
     """Stream signed 16-bit little-endian PCM chunks into ffplay stdin."""
 
+    # 省略 ffplay_path 代表「自動找」,明確傳 None 代表「沒有播放器」。兩者共用
+    # 同一個預設值時,呼叫端無法表達後者,is_available() 永遠是系統裝了什麼說了算。
+    AUTO_DISCOVER = object()
+
     def __init__(
         self,
-        ffplay_path: str | None = None,
+        ffplay_path: str | None = AUTO_DISCOVER,
         sample_rate: int = 32000,
         channels: int = 1,
         popen_factory=None,
     ):
-        self._ffplay_path = ffplay_path or shutil.which("ffplay")
+        self._ffplay_path = shutil.which("ffplay") if ffplay_path is self.AUTO_DISCOVER else ffplay_path
         self._sample_rate = int(sample_rate)
         self._channels = int(channels)
         self._popen_factory = popen_factory or subprocess.Popen

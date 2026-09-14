@@ -77,3 +77,17 @@ def test_memory_evidence_shows_attribute_without_retrieval_metadata(tmp_path):
     assert "[喜好] 我喜歡拉麵" in prompt
     assert "m1" not in prompt
     assert "score" not in prompt
+
+
+def test_media_clarification_reaches_the_prompt_so_the_reply_asks_instead_of_guessing(tmp_path):
+    """路由判定媒體意圖不明確時不執行工具,但回覆必須把缺的那一項問出來。"""
+    builder = PromptBuilder(tmp_path)
+
+    missing_query = builder.build(UserEvent(text="播放音樂"), [], {}, media_clarification="missing_music_query").prompt
+    conflict = builder.build(UserEvent(text="播新聞和音樂"), [], {}, media_clarification="conflict").prompt
+    ordinary = builder.build(UserEvent(text="你好"), [], {}, media_clarification="none").prompt
+
+    assert "沒有指定歌曲或類型" in missing_query
+    assert "要先做哪一個" in conflict
+    # 一般回合不得混進澄清指引
+    assert "沒有指定歌曲或類型" not in ordinary and "要先做哪一個" not in ordinary

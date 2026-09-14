@@ -41,6 +41,27 @@ def active_pending_motion_offer(store: SQLiteStore) -> dict[str, Any] | None:
     return offer
 
 
+def _missing_assets(profile: CharacterProfile) -> list[str]:
+    """回報角色缺少哪些必要資產,讓選角卡片可以顯示明確的不可用原因。
+
+    action motion 沿用 CharacterLibrary.list_action_tags() —— 它已經只回傳
+    manifest 宣告且檔案確實存在的 tag,不需要在這裡再寫一份解析。
+    """
+    import config
+
+    missing: list[str] = []
+    if not profile.background_image or not (config.PROJECT_ROOT / profile.background_image).is_file():
+        missing.append("background_image")
+    idle_motion = (profile.motions or {}).get("idle")
+    if not idle_motion or not (config.PROJECT_ROOT / idle_motion).is_file():
+        missing.append("idle_motion")
+    if not CharacterLibrary().list_action_tags(profile.character_id):
+        missing.append("action_motion")
+    if not config.get_elevenlabs_voice_id_for_character(profile.character_id):
+        missing.append("voice_id")
+    return missing
+
+
 def offer_expired(created_at: str | None, ttl_hours: float) -> bool:
     if not created_at:
         return False
@@ -75,7 +96,21 @@ class CharacterUiService:
             if character_id and character_id not in items:
                 profile, _ = self._router.load_profile(character_id)
                 items[character_id] = self._summarize(profile)
-        return list(items.values())
+        return self._apply_default_roster_order(items)
+
+    @staticmethod
+    def _apply_default_roster_order(items: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        """固定六人依 config.DEFAULT_CHARACTER_IDS 排在最前,其餘維持既有順序。
+
+        資產更新會改變 registry 目錄排序與 library 的 updated_at 排序,使用者熟悉的
+        選角版面因此每次都不一樣;固定區獨立於這兩者,但不刪除也不改寫任何角色。
+        """
+        import config
+
+        ordered = [items[cid] for cid in config.DEFAULT_CHARACTER_IDS if cid in items]
+        listed = {item["character_id"] for item in ordered}
+        ordered.extend(item for item in items.values() if item["character_id"] not in listed)
+        return ordered
 
     def list_presets(self) -> list[dict[str, Any]]:
         return [item for item in self.list_characters() if item["is_preset"]]
@@ -415,6 +450,7 @@ class CharacterUiService:
         xp_total = int(store.get_user_progress().get("xp_total", 0))
         playtime_seconds = int(store.get_setting(PLAYTIME_SECONDS_KEY, 0) or 0)
         last_played_at = store.get_setting(LAST_PLAYED_AT_KEY)
+        missing_assets = _missing_assets(profile)
         return {
             "character_id": profile.character_id,
             "name": profile.name,
@@ -424,4 +460,7 @@ class CharacterUiService:
             "background_image": profile.background_image,
             "playtime_seconds": max(0, playtime_seconds),
             "last_played_at": last_played_at,
+            # 缺資產的角色仍保留卡片,由 UI 顯示不可用原因,不以其他角色遞補。
+            "missing_assets": missing_assets,
+            "asset_status": "ok" if not missing_assets else "incomplete",
         }

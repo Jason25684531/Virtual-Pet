@@ -15,6 +15,7 @@ import requests
 from PyQt5.QtCore import QThread, pyqtSignal
 
 import config
+from audio_playback import is_raw_pcm_content_type
 
 def _sanitize_stream_tts_text(text: str) -> str:
     return str(text or "").strip()
@@ -103,6 +104,11 @@ class ElevenLabsStreamingTTSWorker(QThread):
             content_type = str(response.headers.get("content-type", "") or "").lower()
             if "audio" not in content_type:
                 self.finished_signal.emit(False, "ElevenLabs 串流回傳了無效音訊格式。", None)
+                return
+            # 要的是 pcm_{rate} 就必須拿到 raw PCM。舊的檢查只看有沒有 "audio",
+            # audio/mpeg 一樣通過,MP3 位元組就這樣被當成 s16le 播成雜訊。
+            if self._pcm_stream_sink is not None and not is_raw_pcm_content_type(content_type):
+                self.finished_signal.emit(False, f"ElevenLabs 要求 PCM 但回傳 {content_type}。", None)
                 return
 
             for chunk in response.iter_content(chunk_size=4096):

@@ -1035,18 +1035,27 @@
         var total = presetList.length;
         var current = total ? presetList[presetIndex] : null;
         setText(presetCarouselIndex, (total ? presetIndex + 1 : 0) + ' / ' + total);
+        // 缺資產的角色保留卡片但明示原因並擋住 Select:靜靜讓人選進去只會在舞台上
+        // 看到黑畫面或不動的角色,不知道是哪個檔案沒生出來。
+        var unavailable = Boolean(current && current.asset_status && current.asset_status !== 'ok');
         setText(presetName, current ? current.name : '尚無預設角色');
-        setText(presetPersona, current ? (current.persona_description || '') : '[ 個性 / 簡介 ]');
+        setText(
+            presetPersona,
+            !current ? '[ 個性 / 簡介 ]'
+                : unavailable ? '此角色缺少必要資產：' + (current.missing_assets || []).join('、')
+                : (current.persona_description || '')
+        );
         if (presetPortrait) presetPortrait.style.backgroundImage = current && current.background_image ? 'url("' + normalizeProjectAssetSource(current.background_image) + '")' : '';
-        if (presetSelectButton) presetSelectButton.disabled = !current;
+        if (presetSelectButton) presetSelectButton.disabled = !current || unavailable;
 
         if (presetThumbList) {
             var slots = [];
             for (var i = 0; i < 7; i++) {
                 var preset = presetList[i];
                 if (preset) {
+                    var broken = preset.asset_status && preset.asset_status !== 'ok' ? ' is-unavailable' : '';
                     slots.push(
-                        '<button type="button" class="preset-thumb' + (i === presetIndex ? ' is-active' : '') + '" data-preset-index="' + i + '">' +
+                        '<button type="button" class="preset-thumb' + (i === presetIndex ? ' is-active' : '') + broken + '" data-preset-index="' + i + '">' +
                         String(i + 1) + '</button>'
                     );
                 } else {

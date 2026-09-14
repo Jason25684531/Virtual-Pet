@@ -889,12 +889,23 @@ class TransparentWindow(QMainWindow):
         self.consume_interaction_result(result, message="Skill executed.")
         return True
 
-    def begin_window_drag(self) -> None:
+    def begin_window_drag(self) -> bool:
         """視窗拖曳的唯一入口:整個視窗都是 client area、點擊一律交給 QWebEngineView,
-        所以拖曳由前端的 `.window-drag-handle` 明確呼叫這裡。"""
+        所以拖曳由前端的 `.window-drag-handle` 明確呼叫這裡。
+
+        回傳原生搬移是否真的開始。startSystemMove() 可能因平台或視窗狀態而被拒絕,
+        靜靜當成成功會讓「拖不動」這件事完全沒有線索;失敗時留 log 並回傳 False,
+        前端不攔截任何輸入,頁面控制項照常運作。
+        """
         window_handle = self.windowHandle()
-        if window_handle is not None:
-            window_handle.startSystemMove()
+        start_system_move = getattr(window_handle, "startSystemMove", None)
+        if not callable(start_system_move):
+            print("[DRAG] startSystemMove 不可用（視窗尚未建立或 Qt 版本不支援），本次不搬移視窗。")
+            return False
+        started = bool(start_system_move())
+        if not started:
+            print("[DRAG] startSystemMove() 被平台拒絕，視窗未開始搬移。")
+        return started
 
     def _flush_playtime_tick(self) -> None:
         self._flush_playtime(force=False)

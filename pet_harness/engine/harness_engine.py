@@ -18,6 +18,7 @@ from pet_harness.agent.result_parser import ResultParser
 from pet_harness.asset.factory import build_asset_service
 from pet_harness.asset.mock_asset_service import MockAssetService
 from pet_harness.behavior.behavior_manager import BehaviorManager
+from pet_harness.character import generation as character_generation
 from pet_harness.character.profile import CharacterProfile
 from pet_harness.memory.base_memory_store import BaseMemoryStore, NullMemoryStore
 from pet_harness.models.events import PetEvent, ToolRequestEvent, UserEvent
@@ -605,6 +606,7 @@ class PetHarnessEngine:
         )
         stream_cancelled = bool(provider_reply.metadata.get("cancelled")) or bool(cancel is not None and cancel.is_set())
         if stream_cancelled:
+            timeline.cancel("stream_interrupted")
             spoken_reply = self.spoken_reply()
             if not spoken_reply:
                 stale_event = PetEvent(
@@ -680,6 +682,9 @@ class PetHarnessEngine:
             skill_name=matched_skill.name if matched_skill else None,
             streaming=bool(provider_reply.metadata.get("streaming")),
             slow_tool=False,
+            route_source=skill_source,
+            character_generation=character_generation.current(),
+            tool_status=(tool_result_payload or {}).get("status"),
         )
         pet_event.metadata["latency"] = timeline.report(**timeline.context)
 
@@ -711,8 +716,15 @@ class PetHarnessEngine:
         )
         timeline.mark("tool_started")
 
+        # 同步路徑的 complete() 在 set_context() 之前跑,非同步路徑在之後;兩邊都要
+        # 拿到真實的工具狀態,所以用一個 cell 讓兩條路都寫得到、讀得到。
+        tool_status: dict[str, str | None] = {"value": None}
+
         def complete(ok: bool, message: str, result) -> None:
             timeline.mark("tool_done")
+            tool_status["value"] = getattr(result, "status", "failed") if ok else "failed"
+            if timeline.context:  # 非同步路徑:context 已由 turn_complete 設好,就地更新
+                timeline.context["tool_status"] = tool_status["value"]
             # ack-only's one [TURN LATENCY] line fires at turn_complete, before this async
             # tool finishes — tool_ms is always None there. Re-log now that tool_done is
             # set, so tool_completion_ms actually surfaces per tool-result-synthesis's
@@ -755,6 +767,9 @@ class PetHarnessEngine:
         timeline.mark("turn_complete")
         timeline.set_context(
             character_id=self._character_id, route_kind="deterministic", skill_name=skill.name, streaming=True, slow_tool=True,
+            # ack-only 的確認語音和工具完成是兩件事:turn_complete 時工具還在跑,
+            # tool_status 留 null,等 complete() 拿到真實結果才填。
+            route_source="deterministic", character_generation=character_generation.current(), tool_status=tool_status["value"],
         )
         pet_event.metadata["latency"] = timeline.report(**timeline.context)
         self._persist_and_snapshot(event, pet_event)
@@ -802,6 +817,7 @@ class PetHarnessEngine:
             memory_hits=memory_hits,
             retrieval_result=retrieval_result,
             ack_emitted=ack_emitted,
+            media_clarification=self.router.last_media_intent.reason,
         )
 
     def _run_tool_first(self, event: UserEvent, skill: Skill | None) -> tuple[ToolRequestEvent | None, ToolResult | None]:
@@ -1111,6 +1127,9 @@ class PetHarnessEngine:
         article_index = self.media_session_context.follow_up_index(user_event.text)
         media_context = self.media_session_context.load()
         articles = media_context.get("articles") or []
+        # 文章序號追問也是新聞能力的一部分:角色停用新聞技能後不得繞過設定抓文章。
+        if article_index and "news" not in {skill.capability for skill in self.skills}:
+            article_index = None
         if article_index and article_index <= len(articles):
             action = "open_article" if "打開" in user_event.text else "get_article_detail"
             return ToolRequest(
@@ -1158,8 +1177,17 @@ class PetHarnessEngine:
         return tool_event, tool_result, tool_result.to_dict(), tool_xp_bonus
 
     def _active_capabilities(self) -> set[str]:
+        """目前角色可被追問控制的能力。
+
+        必須同時滿足「這個角色現在啟用了該技能」與「本次執行真的有工作階段」:
+        停用技能後的「暫停」不得繞過設定,切換角色或重啟後也不得控制舊工作階段
+        (角色隔離來自 per-character store,重啟隔離來自 playback 的 runtime id)。
+        """
         context = self.media_session_context.load()
-        return {"music"} if context.get("playback") else set()
+        if not context.get("playback"):
+            return set()
+        enabled = {skill.capability for skill in self.skills}
+        return {"music"} & enabled
 
     @staticmethod
     def _media_arguments(skill: Skill, text: str) -> dict[str, Any]:
@@ -1172,10 +1200,14 @@ class PetHarnessEngine:
             "暫停": "pause",
             "繼續播放": "resume",
             "停止播放": "stop",
+            "停止音樂": "stop",
             "現在在播放什麼": "get_status",
         }
-        if normalized in actions:
-            return {"action": actions[normalized], "query": ""}
+        # 用「最長命中的控制詞」而不是完全相符:「暫停音樂」本來會落到 search_and_play,
+        # 變成去 YouTube 搜尋一首叫「暫停音樂」的歌。最長優先讓「停止播放」不被「停止」搶走。
+        matched = max((phrase for phrase in actions if phrase in normalized), key=len, default=None)
+        if matched is not None:
+            return {"action": actions[matched], "query": ""}
         query = re.sub(r"^(?:播放|播歌|播|放一首|放|我想聽|想聽)\s*", "", normalized).strip()
         return {"action": "search_and_play", "query": query or normalized}
 

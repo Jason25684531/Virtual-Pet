@@ -19,6 +19,15 @@ ACTION_TAG_GUIDANCE = {
     "listen": "觸發：使用者需要被傾聽、傾訴或表達感受時；避免：需要明確回應或執行任務時。",
 }
 
+# 路由判定媒體意圖不夠明確時不執行工具,但回覆必須把缺的那一項問出來,
+# 否則使用者只會收到一句無關痛癢的閒聊,不知道自己還要補什麼。
+MEDIA_CLARIFICATION_GUIDANCE = {
+    "missing_music_query": "使用者想聽音樂但沒有指定歌曲或類型；本輪不要宣稱已經播放，請直接問他想聽哪一首或哪種風格。",
+    "conflict": "使用者同時要求新聞和音樂但沒有指定順序；本輪不要開始任何一項，請問他要先做哪一個。",
+    "negated": "使用者明確表示不要執行該媒體操作；本輪不得播放或播報，正常回應即可。",
+    "no_media_session": "目前沒有可控制的播放工作階段（可能已切換角色或重新啟動）；請說明沒有正在播放的內容，不要假裝暫停成功。",
+}
+
 
 @dataclass
 class PromptBuildResult:
@@ -46,6 +55,7 @@ class PromptBuilder:
         memory_hits: list[MemoryHit] | None = None,
         retrieval_result=None,
         ack_emitted: bool = False,
+        media_clarification: str | None = None,
     ) -> PromptBuildResult:
         warnings: list[str] = []
         soul_text = self._read_optional(self.agentic_root / "soul.md", "Soul context unavailable.", warnings)
@@ -146,6 +156,7 @@ class PromptBuilder:
                 "## Interaction State",
                 "A deterministic acknowledgement was already spoken; do not repeat or paraphrase it."
                 if ack_emitted else "No acknowledgement has been spoken.",
+                MEDIA_CLARIFICATION_GUIDANCE.get(media_clarification or "", ""),
                 "",
                 "## Global Response Rules",
                 response_rules_text,

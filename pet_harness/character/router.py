@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from threading import RLock
 
+from pet_harness.character import generation as character_generation
 from pet_harness.character import personal as character_personal
 from pet_harness.character.exceptions import NoActiveCharacterError
 from pet_harness.character.exceptions import CharacterNotFoundError
@@ -74,6 +75,8 @@ class CharacterRouter:
             previous_engine = self._active_engine
             if previous_engine is not None:
                 self._retire_engine(previous_engine)
+            # 舊角色的串流/TTS/PCM 可能還在路上,推進世代讓它們被認出來並丟棄。
+            character_generation.advance()
             memory_store = self._memory_store_factory(character_id, profile)
             engine = PetHarnessEngine(
                 provider=self._provider_runtime,

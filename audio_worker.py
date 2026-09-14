@@ -26,7 +26,13 @@ import time
 from PyQt5.QtCore import QObject, pyqtSignal
 
 import config
-from audio_playback import FfplayPcmAudioPlayer, PlaybackStartSuppressed, PygameInMemoryAudioPlayer
+from audio_playback import (
+    FfplayPcmAudioPlayer,
+    PlaybackStartSuppressed,
+    PygameInMemoryAudioPlayer,
+    detect_audio_container,
+)
+from pet_harness.character import generation as character_generation
 from pet_harness.latency import get_turn
 
 _SENTINEL = None
@@ -42,12 +48,17 @@ class _PcmTraceSession:
         session_reply_id: str,
         player,
         bytes_per_second: float,
+        frame_bytes: int = 2,
+        generation: int = 0,
     ):
         self._owner = owner
         self._trace_id = trace_id
         self._session_reply_id = session_reply_id
         self._player = player
         self._bytes_per_second = max(1.0, float(bytes_per_second or 1.0))
+        self._frame_bytes = max(1, int(frame_bytes))
+        self._partial: dict[str, bytes] = {}
+        self.generation = generation
         self.sample_rate: int | None = None
         self._chunk_queue: "queue.Queue[tuple[str, bytes] | object]" = queue.Queue()
         self._lock = threading.Lock()
@@ -69,18 +80,37 @@ class _PcmTraceSession:
         self._thread.start()
 
     def enqueue_chunk(self, reply_id: str, chunk: bytes):
+        """只把完整的 16-bit frame 往下送;殘片留到下一個 chunk 補齊。
+
+        網路分塊會切在樣本中間,直接丟給 ffplay 會讓之後的每個樣本都錯位一個 byte
+        (高低位元組對調 = 爆音),而且 bytes→時長的反推也會跟著失準。
+        """
         if not chunk:
             return
         with self._lock:
             if self._closed or self._aborted:
                 return
-            self._segment_bytes[reply_id] = self._segment_bytes.get(reply_id, 0) + len(chunk)
-        self._chunk_queue.put((reply_id, bytes(chunk)))
+            buffered = self._partial.pop(reply_id, b"") + bytes(chunk)
+            aligned_length = len(buffered) - (len(buffered) % self._frame_bytes)
+            aligned, remainder = buffered[:aligned_length], buffered[aligned_length:]
+            if remainder:
+                self._partial[reply_id] = remainder
+            if not aligned:
+                return
+            self._segment_bytes[reply_id] = self._segment_bytes.get(reply_id, 0) + len(aligned)
+        self._chunk_queue.put((reply_id, aligned))
 
     def finish_segment(self, reply_id: str):
         with self._lock:
             if self._aborted or reply_id in self._finalized_segments:
                 return
+            leftover = self._partial.pop(reply_id, b"")
+            if leftover:
+                # 串流結尾還有殘缺樣本代表這段沒有完整收到;記錄失敗,不把半個樣本輸出成雜訊。
+                LOGGER.error(
+                    "[ECHOES] PCM 串流結尾殘留不完整樣本,已丟棄 trace=%s reply=%s bytes=%s",
+                    self._trace_id, reply_id, len(leftover),
+                )
             self._finalized_segments.append(reply_id)
             self._schedule_pending_segments_locked()
 
@@ -220,6 +250,11 @@ class AudioStreamWorker(QObject):
         self._pcm_lock = threading.Lock()
         self._current_reply_id: str | None = None
         self._suppressed_traces: set[str] = set()
+        # 已取消/已中斷的回合:TTS worker 可能還在路上,遲到的分塊一律丟棄而不是
+        # 重新開一個 session 播出來。
+        # ponytail: 與既有的 _suppressed_traces 一樣只增不減(每筆是一個 trace id
+        # 字串);長時間執行若真的吃到記憶體,再改成有上限的 deque。
+        self._stale_traces: set[str] = set()
         self._pcm_sessions: dict[str, _PcmTraceSession] = {}
         # daemon=True：主程式退出時此 thread 自動終止，不觸發 Qt 的 QThread abort
         self._thread = threading.Thread(target=self._run, daemon=True, name="AudioStreamWorker")
@@ -268,12 +303,31 @@ class AudioStreamWorker(QObject):
         normalized_trace_id = str(trace_id or "").strip()
         if not normalized_trace_id:
             raise ValueError("PCM session playback requires a non-empty trace_id")
+        if not chunk:
+            # 空回應不該開一個 ffplay 出來等著;沒有音訊就是沒有 session。
+            return
+        current_generation = character_generation.current()
+        if normalized_trace_id in self._stale_traces:
+            LOGGER.info("[ECHOES] 丟棄已取消回合的遲到 PCM trace=%s reply=%s", normalized_trace_id, reply_id)
+            return
         timeline = get_turn(normalized_trace_id)
         if timeline is not None:
             timeline.mark("tts_first_pcm")
         with self._pcm_lock:
             session = self._pcm_sessions.get(normalized_trace_id)
+            if session is not None and session.generation != current_generation:
+                # 切換角色後才抵達的分塊:屬於上一個角色,不得混進現在的 session。
+                LOGGER.warning(
+                    "[ECHOES] 丟棄跨角色世代的 PCM trace=%s session_generation=%s current=%s",
+                    normalized_trace_id, session.generation, current_generation,
+                )
+                return
             if session is None:
+                # 容器/錯誤文字只會出現在串流開頭。所有 provider 都經過這裡,格式
+                # 防護放在這一層才擋得住全部來源,而不是每個 client 各寫一份。
+                container = detect_audio_container(chunk)
+                if container is not None:
+                    raise ValueError(f"raw PCM sink received {container} data, refusing to play it as s16le")
                 session_sample_rate = int(sample_rate or self._pcm_sample_rate)
                 player = self._pcm_player_factory(session_sample_rate, self._pcm_channels)
                 # 後端不可用時必須在這裡就拋出，讓 producer 收到失敗：session thread
@@ -289,6 +343,8 @@ class AudioStreamWorker(QObject):
                     reply_id,
                     player,
                     max(1, session_sample_rate * self._pcm_channels * 2),
+                    frame_bytes=self._pcm_channels * 2,
+                    generation=current_generation,
                 )
                 session.sample_rate = session_sample_rate
                 self._pcm_sessions[normalized_trace_id] = session
@@ -322,10 +378,14 @@ class AudioStreamWorker(QObject):
         if session is not None:
             session.close()
 
-    def interrupt_trace(self, trace_id: str | None) -> None:
+    def interrupt_trace(self, trace_id: str | None, reason: str = "playback_interrupted") -> None:
         normalized_trace_id = str(trace_id or "").strip()
         if not normalized_trace_id:
             return
+        timeline = get_turn(normalized_trace_id)
+        if timeline is not None:
+            timeline.cancel(reason)
+        self._stale_traces.add(normalized_trace_id)
         with self._pcm_lock:
             session = self._pcm_sessions.get(normalized_trace_id)
         if session is not None:
@@ -339,9 +399,15 @@ class AudioStreamWorker(QObject):
             except queue.Empty:
                 break
 
-    def interrupt_all(self) -> None:
+    def interrupt_all(self, reason: str = "playback_interrupted") -> None:
         with self._pcm_lock:
+            trace_ids = list(self._pcm_sessions)
             sessions = list(self._pcm_sessions.values())
+        for trace_id in trace_ids:
+            timeline = get_turn(trace_id)
+            if timeline is not None:
+                timeline.cancel(reason)
+            self._stale_traces.add(trace_id)
         for session in sessions:
             session.interrupt()
         self.clear_queue()
@@ -354,13 +420,14 @@ class AudioStreamWorker(QObject):
         if not normalized:
             return
         self._suppressed_traces.add(normalized)
-        self.interrupt_trace(normalized)
+        self.interrupt_trace(normalized, reason="playback_suppressed")
 
     def clear_suppressed_trace(self, trace_id: str | None) -> None:
         normalized = str(trace_id or "").strip()
         if not normalized:
             return
         self._suppressed_traces.discard(normalized)
+        self._stale_traces.discard(normalized)
 
     def is_busy(self) -> bool:
         """回傳是否正在播放或佇列中仍有待播項目。"""

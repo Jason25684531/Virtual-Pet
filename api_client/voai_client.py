@@ -18,7 +18,7 @@ import requests
 from PyQt5.QtCore import QThread, pyqtSignal
 
 import config
-from audio_playback import FfplayPcmAudioPlayer, PlaybackStartSuppressed
+from audio_playback import FfplayPcmAudioPlayer, PlaybackStartSuppressed, is_raw_pcm_content_type
 
 _VOAI_TTS_URL = "https://connect.voai.ai/TTS/Speech"
 _VOAI_HTTP_SESSION = requests.Session()
@@ -212,8 +212,10 @@ class VoAIStreamingTTSWorker(QThread):
             )
             response.raise_for_status()
             content_type = str(response.headers.get("content-type", "") or "").lower()
-            if "audio" not in content_type and "octet-stream" not in content_type:
-                return False, f"VoAI PCM 回傳非音訊格式：{content_type}", None
+            # 這裡要的是 x-output-format: pcm。拿到 audio/mpeg 之類的容器就當作 PCM
+            # 嘗試失敗,交給下面的 MP3 fallback 正確解碼,而不是灌進 raw PCM 播成雜訊。
+            if not is_raw_pcm_content_type(content_type):
+                return False, f"VoAI PCM 回傳非 raw PCM 格式：{content_type}", None
 
             def iter_chunks():
                 nonlocal bytes_forwarded
@@ -346,7 +348,8 @@ class VoAIStreamingTTSWorker(QThread):
                         },
                     )
                     return False, "suppressed"
-            self._pcm_stream_sink.enqueue_pcm_chunk(chunk, self._reply_id, self._trace_id)
+            # 明確帶上取樣率,同回合 fallback 到另一個 provider 時 session guard 才擋得住。
+            self._pcm_stream_sink.enqueue_pcm_chunk(chunk, self._reply_id, self._trace_id, sample_rate=_PCM_SAMPLE_RATE)
         if first_chunk_seen:
             self._pcm_stream_sink.finish_pcm_segment(self._reply_id, self._trace_id)
         return True, ""

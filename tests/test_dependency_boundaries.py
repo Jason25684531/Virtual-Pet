@@ -10,8 +10,12 @@ def test_application_layer_has_no_pyqt_imports():
         for path in root.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
+                # 只看 import 節點:ast.Global / ast.Nonlocal 也有 .names,但裡面是字串,
+                # 用 getattr 通吃會在任何一個 `global x` 上炸掉。
+                if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                    continue
                 module = getattr(node, "module", "") or ""
-                names = [alias.name for alias in getattr(node, "names", ())]
+                names = [alias.name for alias in node.names]
                 if module.startswith("PyQt5") or any(name.startswith("PyQt5") for name in names):
                     violations.append(f"{path}:{node.lineno}")
     assert not violations, "Application layer imports PyQt: " + ", ".join(violations)

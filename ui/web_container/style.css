@@ -399,9 +399,10 @@ button:disabled {
    text-align: center;
 }
 
+/* we角色webm 位移 位移 */
 .menu-screen__preview-card {
    position: absolute;
-   top: 58%;
+   top: 45%;
    left: 50%;
    width: 28%;
    max-width: 540px;
@@ -636,6 +637,12 @@ button:disabled {
 
 .preset-thumb--empty {
    opacity: .28;
+}
+
+/* 缺資產的角色仍然佔位,但要一眼看得出來不可用 */
+.preset-thumb.is-unavailable {
+   border-color: #e0603a;
+   color: #e0603a;
 }
 
 .customize-grid {
@@ -904,11 +911,22 @@ button:disabled {
    歷史會看得到卻捲不上去。
    間距改用相鄰選擇器加 margin,不用 flex 的間隙屬性(那要 Chromium 84,實機會整條
    被丟棄讓間距歸零,見 test_style_avoids_css_the_shipped_chromium_cannot_parse)。 */
+#hud-chat {
+   display: flex;
+   flex-direction: column;
+}
+
+#hud-chat .hud-header,
+#hud-chat .hud-composer,
+#hud-chat #conversation-queue-text {
+   flex-shrink: 0;
+}
+
 .message-list {
    display: flex;
    flex-direction: column;
-   min-height: 340px;
-   max-height: 510px;
+   flex: 1;
+   min-height: 0;
    overflow: auto;
 }
 

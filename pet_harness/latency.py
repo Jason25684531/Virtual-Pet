@@ -27,6 +27,7 @@ class TurnTimeline:
     checkpoints: dict[str, float | None] = field(default_factory=lambda: dict.fromkeys(CHECKPOINTS))
     warmup_complete_before_turn: bool = False
     ack_emitted: bool = False
+    cancel_reason: str | None = None
     context: dict[str, Any] = field(default_factory=dict)
     _lock: RLock = field(default_factory=RLock, repr=False)
 
@@ -43,6 +44,12 @@ class TurnTimeline:
         with self._lock:
             if self.checkpoints[checkpoint] is None:
                 self.checkpoints[checkpoint] = at if at is not None else perf_counter()
+
+    def cancel(self, reason: str) -> None:
+        """記下這條時間線為何提早結束;只留第一個原因(最接近真正的觸發點)。"""
+        with self._lock:
+            if self.cancel_reason is None:
+                self.cancel_reason = reason
 
     def resolve_warmup(self, warmup_completed_at: float | None) -> None:
         """Compare against this turn's own start time, not wall-clock "now", so a
@@ -89,7 +96,19 @@ class TurnTimeline:
             expected += ["tts_request_started", "tts_first_pcm", "audio_play_started"]
         return tuple(expected)
 
-    def report(self, *, character_id: str | None, route_kind: str, skill_name: str | None, streaming: bool, slow_tool: bool) -> dict[str, Any]:
+    def report(
+        self,
+        *,
+        character_id: str | None,
+        route_kind: str,
+        skill_name: str | None,
+        streaming: bool,
+        slow_tool: bool,
+        route_source: str | None = None,
+        character_generation: int | None = None,
+        tool_status: str | None = None,
+        cancel_reason: str | None = None,
+    ) -> dict[str, Any]:
         import config
 
         endpoint_to_audio = self.ms("vad_endpoint", "audio_play_started")
@@ -97,11 +116,18 @@ class TurnTimeline:
         data = {
             "turn_id": self.turn_id, "character_id": character_id, "route_kind": route_kind,
             "skill_name": skill_name, "streaming": streaming, "slow_tool": slow_tool,
+            # route_source 區分 deterministic/semantic/provider;character_generation 讓切角後
+            # 遲到的回合可以被認出來;tool_status 區分「確認語音已說」與「工具真的完成」;
+            # cancel_reason 說明這條時間線為何提早結束。不適用的階段一律留 null,不以 0 充數。
+            "route_source": route_source, "character_generation": character_generation,
+            "tool_status": tool_status, "cancel_reason": cancel_reason or self.cancel_reason,
             "endpoint_to_stt_ms": self.ms("vad_endpoint", "stt_done"),
             "retrieval_ms": self.ms("stt_done", "pre_llm_done"), "tool_ms": self.ms("tool_started", "tool_done"),
             "llm_ttft_ms": self.ms("llm_request_started", "llm_first_token"),
             "first_speech_chunk_ms": self.ms("vad_endpoint", "first_speech_chunk_emitted"),
+            "tts_request_ms": self.ms("first_speech_chunk_emitted", "tts_request_started"),
             "tts_first_pcm_ms": self.ms("first_speech_chunk_emitted", "tts_first_pcm"),
+            "audio_start_ms": self.ms("tts_first_pcm", "audio_play_started"),
             "endpoint_to_first_audio_ms": endpoint_to_audio,
             "turn_complete_ms": self.ms("vad_endpoint", "turn_complete"),
             "warmup_complete_before_turn": self.warmup_complete_before_turn,
@@ -115,7 +141,9 @@ class TurnTimeline:
 
     def log(self, **kwargs: Any) -> dict[str, Any]:
         data = self.report(**kwargs)
-        log = LOGGER.warning if (data["budget_exceeded"] or not data["timeline_complete"]) else LOGGER.info
+        # 被取消的回合本來就跑不完後面的階段,那是預期行為而不是接線缺口。
+        incomplete = (data["budget_exceeded"] or not data["timeline_complete"]) and not data["cancel_reason"]
+        log = LOGGER.warning if incomplete else LOGGER.info
         log("[TURN LATENCY] %s", data)
         return data
 
@@ -132,6 +160,50 @@ class TurnTimeline:
         if not self.context:
             return None
         return self.log(**self.context)
+
+
+def _percentile(values: list[int], fraction: float) -> int | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[round(fraction * (len(ordered) - 1))]
+
+
+def summarize(reports, *, budget_ms: int | None = None) -> list[dict[str, Any]]:
+    """把多筆 report() 聚成每角色 × 每路由 × 冷/暖機的 p50、p95 與失敗率。
+
+    樣本要靠真實服務跑出來(3.2 的量測步驟);這裡只負責聚合,讓離線測試也能驗證
+    統計本身沒算錯。沒有量到 endpoint_to_first_audio_ms 的回合算進 samples 與
+    failures,但不進百分位數 —— 量不到就是量不到,不能拿來充當一個好成績。
+    """
+    import config
+
+    budget = config.TURN_LATENCY_BUDGET_MS if budget_ms is None else budget_ms
+    groups: dict[tuple, list[dict[str, Any]]] = {}
+    for report in reports:
+        key = (
+            report.get("character_id"),
+            report.get("skill_name") or report.get("route_kind") or "conversation",
+            "warm" if report.get("warmup_complete_before_turn") else "cold",
+        )
+        groups.setdefault(key, []).append(report)
+
+    summary = []
+    for (character_id, route, warmup), rows in sorted(groups.items(), key=lambda item: [str(part) for part in item[0]]):
+        first_audio = [row["endpoint_to_first_audio_ms"] for row in rows if row.get("endpoint_to_first_audio_ms") is not None]
+        tool = [row["tool_ms"] for row in rows if row.get("tool_ms") is not None]
+        failures = [row for row in rows if row.get("cancel_reason") or row.get("endpoint_to_first_audio_ms") is None]
+        summary.append({
+            "character_id": character_id, "route": route, "warmup": warmup,
+            "samples": len(rows), "measured_samples": len(first_audio),
+            "first_audio_p50_ms": _percentile(first_audio, 0.50),
+            "first_audio_p95_ms": _percentile(first_audio, 0.95),
+            "tool_p50_ms": _percentile(tool, 0.50), "tool_p95_ms": _percentile(tool, 0.95),
+            "failure_rate": round(len(failures) / len(rows), 4),
+            "over_budget_rate": round(sum(value > budget for value in first_audio) / len(first_audio), 4) if first_audio else None,
+            "budget_ms": budget,
+        })
+    return summary
 
 
 def create_turn(turn_id: str, origin: str, *, vad_endpoint: bool = False, warmup_complete: bool = False) -> TurnTimeline:

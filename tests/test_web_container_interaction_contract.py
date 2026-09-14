@@ -73,6 +73,28 @@ def test_drag_still_excludes_controls():
     assert "isDragBlockedBy(event.target)" in body
 
 
+def test_drag_block_list_covers_every_editable_and_control_element():
+    """5.1:按鈕、輸入框、contenteditable 與內容區都必須把事件還給頁面。"""
+    app_js = _app_js()
+    start = app_js.index("function isDragBlockedBy(element)")
+    body = app_js[start:app_js.index("\n    }", start)]
+
+    for selector in ("button", "input", "a", "textarea", "select", "label", '[contenteditable="true"]'):
+        assert selector in body, selector
+
+
+def test_native_move_result_is_observable_instead_of_silently_assumed():
+    """5.2:startSystemMove() 被平台拒絕時要看得見,不得靜靜當成成功。"""
+    source = (Path(__file__).parents[1] / "ui" / "transparent_window.py").read_text(encoding="utf-8")
+    start = source.index("    def begin_window_drag(self)")
+    body = source[start:source.index("\n    def ", start + 10)]
+
+    assert "def begin_window_drag(self) -> bool" in body
+    assert "started = bool(start_system_move())" in body
+    assert "return started" in body
+    assert body.count("[DRAG]") == 2      # 不支援與被拒絕各有一條可查的紀錄
+
+
 def test_full_screen_sections_are_no_longer_whole_drag_surfaces():
     html = _document()
 

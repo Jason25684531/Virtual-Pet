@@ -135,21 +135,6 @@ class CharacterRegistry:
                 )
         return characters
 
-    def update_profile(
-        self,
-        character_id: str,
-        persona_description: str | None = None,
-        skill_config: list[str] | None = None,
-    ) -> CharacterProfile:
-        """更新 profile.json 中的給定欄位，未給定的欄位維持原值。"""
-        profile = self.load_character(character_id)
-        if persona_description is not None:
-            profile.persona_description = persona_description
-        if skill_config is not None:
-            profile.skill_config = skill_config
-        profile.save()
-        return profile
-
     def update_manifest(self, character_id: str, manifest_patch: dict) -> None:
         """manifest.json 唯一寫入口，保留給 AssetManager 使用。
 
