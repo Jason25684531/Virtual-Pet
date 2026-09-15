@@ -469,9 +469,9 @@ def test_agent_chips_go_solid_only_when_a_matching_skill_is_enabled(page):
 
     page.evaluate(
         "window.hydrateAgenticUI({skills: ["
-        "{skill_id: 'bahamut_daily_news', default_behavior: 'news_idle', enabled: true},"
-        "{skill_id: 'music_bgm', default_behavior: 'music_idle', enabled: false},"
-        "{skill_id: 'youtube_music_playback', default_behavior: 'music_idle', enabled: false}]})"
+            "{skill_id: 'bahamut_daily_news', capability: 'news', enabled: true},"
+            "{skill_id: 'music_bgm', capability: 'music', enabled: false},"
+            "{skill_id: 'youtube_music_playback', capability: 'music', enabled: false}]})"
     )
 
     assert page.locator("#agent-chip-news").is_enabled()
@@ -482,7 +482,7 @@ def test_agent_chips_go_solid_only_when_a_matching_skill_is_enabled(page):
 
     page.evaluate(
         "window.hydrateAgenticUI({skills: ["
-        "{skill_id: 'music_bgm', default_behavior: 'music_idle', enabled: true}]})"
+            "{skill_id: 'music_bgm', capability: 'music', enabled: true}]})"
     )
     assert page.locator("#agent-chip-music").is_enabled()
 
@@ -495,10 +495,10 @@ def test_agent_chips_have_a_toggle_for_the_highest_priority_matching_skill(page)
 
     page.evaluate(
         "window.hydrateAgenticUI({skills: ["
-        "{skill_id: 'music_bgm', default_behavior: 'music_idle', enabled: false, priority: 0},"
-        "{skill_id: 'youtube_music_playback', default_behavior: 'music_idle', enabled: true, priority: 100},"
-        "{skill_id: 'game_news', default_behavior: 'news_idle', enabled: false, priority: 0},"
-        "{skill_id: 'bahamut_daily_news', default_behavior: 'news_idle', enabled: true, priority: 100}]})"
+        "{skill_id: 'music_bgm', capability: 'music', enabled: false, priority: 0},"
+        "{skill_id: 'youtube_music_playback', capability: 'music', enabled: true, priority: 100},"
+        "{skill_id: 'game_news', capability: 'news', enabled: false, priority: 0},"
+        "{skill_id: 'bahamut_daily_news', capability: 'news', enabled: true, priority: 100}]})"
     )
 
     music_toggle = page.locator("#agent-toggle-music")

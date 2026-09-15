@@ -58,6 +58,22 @@ def test_mock_interaction_thresholds_and_reset(tmp_path, monkeypatch):
     assert growth.on_interaction("event-reset-1") is None
 
 
+def test_mock_interaction_milestone_defers_until_offer_slot_is_free(tmp_path, monkeypatch):
+    monkeypatch.setattr("config.COMFYUI_ENABLED", False)
+    store = SQLiteStore(tmp_path / "state.db")
+    store.initialize()
+    growth = GrowthTriggerService(store, object(), "pet", 6, 3)
+    store.set_setting("interaction_count", 2)
+    store.set_setting("asset_pending_offer", {"busy": True})
+
+    assert growth.on_interaction("event-3") is None
+    store.set_setting("asset_pending_offer", None)
+    offer = growth.on_interaction("event-4")
+
+    assert offer is not None
+    assert offer.metadata["threshold"] == 3
+
+
 def test_mock_interaction_thresholds_name_the_prebuilt_variant_directories(tmp_path, monkeypatch):
     monkeypatch.setattr("config.COMFYUI_ENABLED", False)
     store = SQLiteStore(tmp_path / "state.db")
@@ -284,6 +300,27 @@ def test_proactive_greeter_round_robin_and_busy_skip():
     greeter.reset()
     assert not greeter._history
     assert not greeter._timer.isActive()
+    app.processEvents()
+
+
+def test_proactive_greeter_reset_restarts_full_t_plus_interval():
+    pytest.importorskip("PyQt5")
+    from PyQt5.QtCore import QCoreApplication
+    from PyQt5.QtTest import QTest
+
+    from ui.proactive_greeter import ProactiveGreeter
+
+    app = QCoreApplication.instance() or QCoreApplication([])
+    greeter = ProactiveGreeter(lambda _message: None, lambda: False, ["hello"], 0.2)
+    greeter.start()
+    QTest.qWait(80)
+    before_reset = greeter._timer.remainingTime()
+
+    greeter.reset()
+
+    assert greeter._timer.isActive()
+    assert greeter._timer.remainingTime() > before_reset
+    greeter.stop()
     app.processEvents()
 
 

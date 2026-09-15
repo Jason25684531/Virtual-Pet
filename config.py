@@ -50,9 +50,7 @@ CHARACTER_ELEVENLABS_VOICE_ENV_KEYS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# 預設選角版面的固定成員與順序。集中在這裡是因為 registry 依目錄名排序、library
-# 依 updated_at 排序,兩者都會讓資產一更新就換一個版面;選角畫面與測試矩陣需要
-# 的是一個不隨資產變動的固定順序。其他角色仍可正常載入,只是排在這六個之後。
+# 預設選角版面的固定成員與順序；其餘角色仍可正常載入並排在後面。
 DEFAULT_CHARACTER_IDS: tuple[str, ...] = (
     "char-Adol",
     "char-Jack",

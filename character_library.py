@@ -235,6 +235,9 @@ class CharacterLibrary:
             candidate = PROJECT_ROOT / str(motions_dir) / f"{motion_key}.webm"
             if candidate.is_file():
                 return str(candidate)
+            candidate = PROJECT_ROOT / str(motions_dir) / variant / f"{motion_key}.webm"
+            if candidate.is_file():
+                return str(candidate)
         # A missing key never searches another revision. OG is the only
         # cross-variant fallback allowed by the contract.
         og_generation = self._selected_wearable_generation(character_id, "og")

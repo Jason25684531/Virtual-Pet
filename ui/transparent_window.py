@@ -855,26 +855,24 @@ class TransparentWindow(QMainWindow):
             "news": "report_news",
         }
         resolved = alias_map.get(normalized, normalized)
-        # 技能定義的 behavior 欄位一律是 music_idle/news_idle（見 .agentic/skills/*.md）；
-        # play_music/report_news 是 action_dispatcher 的一次性動作播放鍵，命名空間不同。
         if resolved == "play_music":
-            self.trigger_enabled_skill_for_behavior("music_idle")
+            self.trigger_enabled_skill("youtube_music_playback")
             return
         if resolved == "report_news":
-            self.trigger_enabled_skill_for_behavior("news_idle")
+            self.trigger_enabled_skill("bahamut_daily_news")
             return
         if resolved == "quit":
             QApplication.quit()
             return
         print(f"[ECHOES] Ignored unknown overlay action from web bridge: {action_name}")
 
-    def trigger_enabled_skill_for_behavior(self, behavior: str) -> bool:
+    def trigger_enabled_skill(self, skill_id: str) -> bool:
         """技能快捷入口一律經角色授權與 enabled overlay 後走 Harness。"""
-        target = str(behavior or "").strip()
+        target = str(skill_id or "").strip()
         skill = next(
             (
                 item for item in self._adapter.list_skills()
-                if item.get("enabled") and item.get("default_behavior") == target
+                if item.get("enabled") and item.get("skill_id") == target
             ),
             None,
         )
@@ -973,9 +971,9 @@ class TransparentWindow(QMainWindow):
             self._emit_cached_intent_request("share", "share 按鈕觸發")
             return True
         if event.key() == Qt.Key_3:
-            return self.trigger_enabled_skill_for_behavior("play_music")
+            return self.trigger_enabled_skill("youtube_music_playback")
         if event.key() == Qt.Key_4:
-            return self.trigger_enabled_skill_for_behavior("report_news")
+            return self.trigger_enabled_skill("bahamut_daily_news")
         if event.key() == Qt.Key_F:
             self._trigger_festival_event_shortcut()
             return True

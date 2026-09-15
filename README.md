@@ -345,7 +345,7 @@ Virtual-Pet/
 
 技能定義放在 `.agentic/skills/*.md`,使用 frontmatter 描述觸發關鍵字、XP 獎勵、`required_tool`、`tool_policy` 等。`SkillLoader` 在引擎初始化時掃描載入,`SkillRouter` 依 deterministic → semantic(Qdrant,預設 shadow mode 只記錄不生效)→ provider 建議的順序路由。
 
-目前內建技能:`bahamut_daily_news`、`gacha_fortune`、`game_news`、`music_bgm`、`youtube_music_playback`。
+目前內建技能:`bahamut_daily_news`、`gacha_fortune`、`youtube_music_playback`。
 
 ### Tool 系統 (`pet_harness/tools/`)
 

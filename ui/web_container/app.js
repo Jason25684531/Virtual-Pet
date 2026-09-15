@@ -1050,7 +1050,7 @@
 
         if (presetThumbList) {
             var slots = [];
-            for (var i = 0; i < 7; i++) {
+    for (var i = 0; i < 9; i++) {
                 var preset = presetList[i];
                 if (preset) {
                     var broken = preset.asset_status && preset.asset_status !== 'ok' ? ' is-unavailable' : '';
@@ -2007,17 +2007,13 @@
         document.getElementById(prefix + '-description').textContent = '本次' + action + '依據「' + trigger + '」建立。確認後才會開始生成。';
     }
 
-    function pickPrimarySkillForBehavior(items, behavior) {
-        var candidates = items.filter(function (s) { return s.default_behavior === behavior; });
+function pickPrimarySkillForCapability(items, capability) {
+  var candidates = items.filter(function (s) { return s.capability === capability; });
         if (!candidates.length) return null;
         candidates.sort(function (a, b) { return (b.priority || 0) - (a.priority || 0); });
         return candidates[0];
     }
 
-    // ponytail: 開關鈕固定切「該類別優先度最高」的技能（youtube_music_playback／
-    // bahamut_daily_news）。若使用者另外從除錯面板把次要技能（music_bgm／game_news）
-    // 也開啟，實際觸發走 trigger_enabled_skill_for_behavior 的 discovery 順序，
-    // 未必等於這裡認定的「主要技能」——雙開才會有落差，預設情境下不會發生。
     function syncSkillToggleButton(button, skill) {
         if (!button) return;
         if (!skill) { button.hidden = true; return; }
@@ -2028,8 +2024,8 @@
 
     function updateAgentChipAvailability(skills) {
         var items = Array.isArray(skills) ? skills : [];
-        var musicSkill = pickPrimarySkillForBehavior(items, 'music_idle');
-        var newsSkill = pickPrimarySkillForBehavior(items, 'news_idle');
+  var musicSkill = pickPrimarySkillForCapability(items, 'music');
+  var newsSkill = pickPrimarySkillForCapability(items, 'news');
         if (agentChipMusic) agentChipMusic.disabled = !(musicSkill && musicSkill.enabled);
         if (agentChipNews) agentChipNews.disabled = !(newsSkill && newsSkill.enabled);
         syncSkillToggleButton(agentToggleMusic, musicSkill);

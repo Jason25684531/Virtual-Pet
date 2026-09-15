@@ -12,11 +12,11 @@ _MEDIA_CAPABILITIES = {"news", "music"}
 _NON_MUSIC_PLAYBACK = ("影片", "video", "電影", "動畫")
 # 「別」要排除 特別／分別／類別 這類複合詞,否則「特別想聽稻香」會被當成否定。
 _NEGATION = re.compile(r"不要|不用|不想|不需要|(?<![特分個性類差告級識])別|拒絕|don't|do not|no need")
-_NEWS_WORDS = re.compile(r"新聞|頭條|快報|gnn|巴哈|news")
+_NEWS_WORDS = re.compile(r"新聞|頭條|快報|最新消息|新聞播報|gnn|巴哈|news")
 _MUSIC_WORDS = re.compile(r"音樂|歌曲|歌|music|song|bgm|playlist|soundtrack")
 _MUSIC_CONTROL = re.compile(r"暫停|繼續播放|停止播放|停止|音量|現在在播放什麼|pause|resume|stop|volume")
-_PLAY_VERB = re.compile(r"^(?:播放|播報|播歌|播|放一首|放|play|put on)\s*(.*)$")
-_LISTEN_VERB = re.compile(r"^(?:我想聽|想聽|listen to)\s*(.*)$")
+_PLAY_VERB = re.compile(r"^(?:幫我)?(?:播放|播報|念|讀|看|播歌|播|放一首|放|play|put on)\s*(.*)$")
+_LISTEN_VERB = re.compile(r"^(?:我想聽|想聽|聽|來點|listen to)\s*(.*)$")
 # 澄清/否決狀態下一律不執行媒體技能:媒體動作有外部副作用,置信度不足時 fail-closed。
 _MEDIA_BLOCKING_REASONS = {"negated", "conflict", "missing_music_query", "no_media_session"}
 
