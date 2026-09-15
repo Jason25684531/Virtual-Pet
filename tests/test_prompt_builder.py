@@ -79,6 +79,44 @@ def test_memory_evidence_shows_attribute_without_retrieval_metadata(tmp_path):
     assert "score" not in prompt
 
 
+def test_knowledge_evidence_is_isolated_from_retrieval_evidence(tmp_path):
+    memory_item = MemoryItem("m1", "miku", "default", "使用者.喜好.拉麵", "semantic", "我喜歡拉麵", "active", "e1", "2026-01-01T00:00:00+00:00")
+    knowledge_item = MemoryItem("k1", "shared", "default", "er_core_0001", "core_system", "生命力決定角色的最大 HP。", "active", None, "2026-01-01T00:00:00+00:00")
+    result = RetrievalResult([memory_item], RetrievalTrace.empty("拉麵"))
+    prompt = PromptBuilder(tmp_path).build(
+        UserEvent(text="hello"), [], {}, retrieval_result=result, knowledge_evidence=[knowledge_item],
+    ).prompt
+
+    retrieval_section = prompt.split("## Retrieval Evidence")[1].split("## Knowledge Reference")[0]
+    knowledge_section = prompt.split("## Knowledge Reference")[1].split("## User Text")[0]
+    assert "我喜歡拉麵" in retrieval_section and "生命力決定角色的最大 HP" not in retrieval_section
+    assert "生命力決定角色的最大 HP" in knowledge_section and "我喜歡拉麵" not in knowledge_section
+    assert "[core_system] 生命力決定角色的最大 HP。" in prompt
+    assert prompt.index("## Retrieval Evidence") < prompt.index("## Knowledge Reference") < prompt.index("## User Text")
+
+
+def test_knowledge_instruction_forbids_stonewalling_when_content_is_available(tmp_path):
+    """實測 bug:gemma3:12b 拿到知識內容仍回「你想從哪開始?」,完全不引用。
+
+    Global Response Rules 的「不空轉」規則離 Knowledge Reference 隔了好幾個
+    區塊,對小模型形同不存在;指示必須貼著知識內容本身重申一次。
+    """
+    knowledge_item = MemoryItem("k1", "shared", "default", "er_faith_0001", "core_system", "信仰是施放禱告的核心屬性。", "active", None, "2026-01-01T00:00:00+00:00")
+    prompt = PromptBuilder(tmp_path).build(
+        UserEvent(text="還有其他內容嗎?"), [], {}, knowledge_evidence=[knowledge_item],
+    ).prompt
+
+    knowledge_section = prompt.split("## Knowledge Reference")[1].split("## User Text")[0]
+    assert "never respond with only a clarifying question" in knowledge_section
+    assert "信仰是施放禱告的核心屬性" in knowledge_section
+
+
+def test_knowledge_reference_is_none_when_no_evidence(tmp_path):
+    prompt = PromptBuilder(tmp_path).build(UserEvent(text="hello"), [], {}).prompt
+    knowledge_section = prompt.split("## Knowledge Reference")[1].split("## User Text")[0]
+    assert knowledge_section.strip().endswith("none")
+
+
 def test_media_clarification_reaches_the_prompt_so_the_reply_asks_instead_of_guessing(tmp_path):
     """路由判定媒體意圖不明確時不執行工具,但回覆必須把缺的那一項問出來。"""
     builder = PromptBuilder(tmp_path)

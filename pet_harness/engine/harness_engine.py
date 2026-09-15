@@ -198,6 +198,8 @@ class PetHarnessEngine:
         profile_loader: Callable[[], CharacterProfile] | None = None,
         memory_store: BaseMemoryStore | None = None,
         memory_retriever=None,
+        knowledge_retriever=None,
+        knowledge_keywords: frozenset[str] | None = None,
         semantic_index_enabled: bool = False,
     ) -> None:
         self.agentic_root = Path(agentic_root)
@@ -205,6 +207,17 @@ class PetHarnessEngine:
         self.memory_store = memory_store or NullMemoryStore()
         self.memory_retriever = memory_retriever
         self._semantic_index_enabled = semantic_index_enabled
+
+        # 共用知識庫:未注入時走行程內單例(切換角色不重建,見 design D2/D8)；
+        # KNOWLEDGE_RAG_ENABLED=False 時單例回傳 None,以下所有知識檢索路徑
+        # 直接以 None 短路,不建立向量庫、不載入模型、不執行檢索(task 4.6)。
+        if knowledge_retriever is None:
+            from pet_harness.knowledge.shared_index import get_knowledge_keywords, get_knowledge_retriever
+            self.knowledge_retriever = get_knowledge_retriever()
+            self._knowledge_keywords = knowledge_keywords if knowledge_keywords is not None else get_knowledge_keywords()
+        else:
+            self.knowledge_retriever = knowledge_retriever
+            self._knowledge_keywords = knowledge_keywords or frozenset()
 
         self._character_id = character_id
         self._profile: CharacterProfile | None = character_profile
@@ -551,9 +564,30 @@ class PetHarnessEngine:
             prior_user, prior_assistant, age = previous_turn(conversation_history, datetime.now(UTC))
             retrieval_request = RetrievalRequest(self._character_id or "default", user_event.text, prior_user, prior_assistant, age)
 
+        # 知識檢索前的輕量閘門:本輪文字沒有命中任何已知的遊戲知識關鍵詞/別名就
+        # 整段跳過,不建 future、不跑 embedding/rerank——這是延遲預算(config.
+        # TURN_LATENCY_BUDGET_MS)的主要防線,而不是事後靠並行去追(design 新增)。
+        #
+        # ponytail: 曾經試過把 previous_turn 的上下文也傳給知識檢索(仿記憶檢索
+        # 的 FollowUpDetector),抽測 3 個案例後發現 tier-1 的原始字串串接對
+        # 知識查詢弊多於利——2/3 案例把正確 top-3 命中擠掉,只有 1/3 有改善,
+        # 原因是這個角色人設的回覆本身很長且話題發散,串接後稀釋了關鍵詞訊號。
+        # 已還原為只用當輪文字。若要做,需要比原始字串串接更精準的改寫,而非
+        # 現在就上。
+        knowledge_request = None
+        if self.knowledge_retriever is not None:
+            import config
+            from pet_harness.knowledge.gate import needs_retrieval
+            if needs_retrieval(user_event.text, self._knowledge_keywords):
+                from pet_harness.memory.memory_models import RetrievalRequest as _KnowledgeRetrievalRequest
+                knowledge_request = _KnowledgeRetrievalRequest(self._character_id or "default", user_event.text, top_k=config.KNOWLEDGE_RETRIEVE_K)
+
         pre_llm_started_at = perf_counter()
         retrieval_ms = None
-        if retrieval_request is None:
+        knowledge_result = None
+        knowledge_ms = None
+        parallel_needed = retrieval_request is not None or knowledge_request is not None
+        if not parallel_needed:
             tool_started_at = perf_counter()
             if deterministic_skill and deterministic_skill.required_tool:
                 timeline.mark("tool_started")
@@ -562,28 +596,40 @@ class PetHarnessEngine:
                 timeline.mark("tool_done")
             tool_ms = round((perf_counter() - tool_started_at) * 1000)
         else:
-            # Both results are inputs to the prompt; state updates remain on this thread.
-            with ThreadPoolExecutor(max_workers=2) as executor:
+            # 三項互不依賴,結果都只是 prompt 的輸入;狀態更新仍留在本執行緒。
+            with ThreadPoolExecutor(max_workers=3) as executor:
                 def run_tool_first():
                     if deterministic_skill and deterministic_skill.required_tool:
                         timeline.mark("tool_started")
                     return _measure_call(self._run_tool_first, user_event, deterministic_skill)
 
                 tool_future = executor.submit(run_tool_first)
-                retrieval_future = executor.submit(_measure_call, self.memory_retriever.retrieve, retrieval_request)
+                retrieval_future = executor.submit(_measure_call, self.memory_retriever.retrieve, retrieval_request) if retrieval_request is not None else None
+                knowledge_future = executor.submit(_measure_call, self.knowledge_retriever.retrieve, knowledge_request) if knowledge_request is not None else None
                 (tool_first_event, tool_first_result), tool_ms = tool_future.result()
-                retrieval_result, retrieval_ms = retrieval_future.result()
+                if retrieval_future is not None:
+                    retrieval_result, retrieval_ms = retrieval_future.result()
+                if knowledge_future is not None:
+                    # 知識檢索是唯讀的加分項,任何注入實作拋例外都必須降級而不是
+                    # 中斷整個回合;記憶檢索不受影響(spec: 知識檢索失敗時的降級)。
+                    try:
+                        knowledge_result, knowledge_ms = knowledge_future.result()
+                    except Exception:
+                        LOGGER.exception("[KNOWLEDGE] retrieval failed; degrading to no evidence")
+                        knowledge_result, knowledge_ms = None, None
             if tool_first_event is not None:
                 timeline.mark("tool_done")
             timeline.mark("retrieval_done")
         pre_llm_ms = round((perf_counter() - pre_llm_started_at) * 1000)
         timeline.mark("pre_llm_done")
         pre_llm_trace = {
-            "execution": "parallel" if retrieval_request is not None else "tool_only",
+            "execution": "parallel" if parallel_needed else "tool_only",
             "tool_ms": tool_ms,
             "retrieval_ms": retrieval_ms,
+            "knowledge_gate": knowledge_request is not None,
+            "knowledge_ms": knowledge_ms,
             "pre_llm_ms": pre_llm_ms,
-            "expected_parallel_ms": max(tool_ms, retrieval_ms or 0),
+            "expected_parallel_ms": max(tool_ms, retrieval_ms or 0, knowledge_ms or 0),
         }
         LOGGER.info("[PRE-LLM] %s", pre_llm_trace)
 
@@ -592,8 +638,10 @@ class PetHarnessEngine:
         else:
             memory_hits = self.memory_store.recall(user_event.text, top_k=3)
         memory_status = self.memory_store.status()
+        # rerank 後只取前 KNOWLEDGE_CONTEXT_K 則送進 prompt,避免把 context 塞爆(design D7)。
+        knowledge_evidence = knowledge_result.evidence[:config.KNOWLEDGE_CONTEXT_K] if knowledge_result is not None else []
 
-        prompt_result = self._build_prompt(user_event, state_before, deterministic_skill, tool_first_result, conversation_history, memory_hits, retrieval_result, ack_emitted=timeline.ack_emitted)
+        prompt_result = self._build_prompt(user_event, state_before, deterministic_skill, tool_first_result, conversation_history, memory_hits, retrieval_result, knowledge_evidence, ack_emitted=timeline.ack_emitted)
         LOGGER.info("[PROMPT SIZE] turn_id=%s chars=%s", timeline.turn_id, prompt_result.section_sizes)
         provider_reply, agent_result = self._invoke_provider(
             user_event,
@@ -796,6 +844,7 @@ class PetHarnessEngine:
         history: list[dict[str, Any]],
         memory_hits: list[Any],
         retrieval_result=None,
+        knowledge_evidence: list[Any] | None = None,
         ack_emitted: bool = False,
     ):
         return self.prompt_builder.build(
@@ -816,6 +865,7 @@ class PetHarnessEngine:
             conversation_history=history,
             memory_hits=memory_hits,
             retrieval_result=retrieval_result,
+            knowledge_evidence=knowledge_evidence,
             ack_emitted=ack_emitted,
             media_clarification=self.router.last_media_intent.reason,
         )

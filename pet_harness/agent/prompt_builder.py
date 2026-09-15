@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from pet_harness.memory.base_memory_store import MemoryHit
+from pet_harness.memory.memory_models import MemoryItem
 from pet_harness.models.events import UserEvent
 from pet_harness.models.skill import Skill
 from pet_harness.tools.tool_models import ToolResult
@@ -54,6 +55,7 @@ class PromptBuilder:
         conversation_history: list[dict] | None = None,
         memory_hits: list[MemoryHit] | None = None,
         retrieval_result=None,
+        knowledge_evidence: list[MemoryItem] | None = None,
         ack_emitted: bool = False,
         media_clarification: str | None = None,
     ) -> PromptBuildResult:
@@ -78,6 +80,7 @@ class PromptBuilder:
         skills_text = "\n".join(skill_lines) if skill_lines else "- none"
         history_text = self._conversation_history_text(conversation_history)
         memory_text = self._memory_hits_text(retrieval_result.evidence if retrieval_result else memory_hits)
+        knowledge_text = self._knowledge_text(knowledge_evidence)
         tool_result_text = self._tool_result_text(tool_result)
         has_persona = bool(persona and persona.strip())
         #Prompt Setting  可以在這裡做設置
@@ -147,6 +150,29 @@ class PromptBuilder:
                 "## Retrieval Evidence",
                 memory_text,
                 "",
+                # ponytail: 指示句緊貼內容,同一個 adjacency 教訓見上面 Conversation
+                # History 段的註解。這裡的關鍵是把知識和 Retrieval Evidence 分開
+                # 講清楚——知識是外部參考資料,不是使用者說過的話(design D5,
+                # ADR-0005 Evidence Isolation 的延伸)。
+                #
+                # ponytail: 額外一句是實測補的。Global Response Rules 的「不空轉」
+                # 規則(被追問細節要給還沒講過的具體內容,同一話題最多反問一次)離
+                # 這裡隔了 User Text/Tool Result/Interaction State 三個區塊——
+                # gemma3:12b 在有知識可用時仍一路用「你想從哪開始?」把問題丟回去,
+                # 完全沒有引用已注入的內容。同一個 adjacency 教訓,把「有內容就要
+                # 講」貼在內容旁邊,而不是依賴遠處的全域規則。
+                "## Knowledge Reference",
+                "The content below is reference material from a game-knowledge corpus, not something "
+                "the user told you and not something you already know outside this section. If it does "
+                "not answer the question, say so plainly instead of guessing or inventing specifics. If a "
+                "note says a topic is version-sensitive, give the general principle and say the exact "
+                "number depends on the current game version rather than stating one. When this section has "
+                "content and the user is asking about the same topic again (including a follow-up like "
+                "\"what else\" or \"tell me more\"), your reply must state at least one concrete fact from "
+                "it that you have not already said — never respond with only a clarifying question when "
+                "this section already has an answer.",
+                knowledge_text,
+                "",
                 "## User Text",
                 event.text,
                 "",
@@ -176,6 +202,7 @@ class PromptBuilder:
         section_sizes = {
             "soul": len(soul_text), "agentic": len(agentic_text), "persona": len(persona or ""),
             "skills": len(skills_text), "history": len(history_text), "memory": len(memory_text),
+            "knowledge": len(knowledge_text),
             "tool_result": len(tool_result_text), "user_text": len(event.text),
             "response_rules": len(response_rules_text), "total": len(prompt),
         }
@@ -213,6 +240,12 @@ class PromptBuilder:
             attribute = key.split(".")[1] if len(key.split(".")) > 1 else "記憶"
             lines.append(f"- [{attribute}] {hit.text[:200]}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _knowledge_text(items: list[MemoryItem] | None) -> str:
+        if not items:
+            return "none"
+        return "\n".join(f"- [{item.memory_type}] {item.text}" for item in items)
 
     @staticmethod
     def _tool_result_text(result: ToolResult | None) -> str:

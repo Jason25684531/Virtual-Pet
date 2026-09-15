@@ -1,0 +1,220 @@
+{
+  "retrieval_cases": [
+    {
+      "query": "血量",
+      "expected_chunk_id": "er_core_0001",
+      "domain": "core_system",
+      "game": "elden_ring"
+    },
+    {
+      "query": "法術欄",
+      "expected_chunk_id": "er_core_0013",
+      "domain": "core_system",
+      "game": "elden_ring"
+    },
+    {
+      "query": "屬性傷害",
+      "expected_chunk_id": "er_combat_0001",
+      "domain": "combat_mechanic",
+      "game": "elden_ring"
+    },
+    {
+      "query": "冰凍",
+      "expected_chunk_id": "er_combat_0016",
+      "domain": "combat_mechanic",
+      "game": "elden_ring"
+    },
+    {
+      "query": "武器種類",
+      "expected_chunk_id": "er_weapon_0001",
+      "domain": "weapon_build",
+      "game": "elden_ring"
+    },
+    {
+      "query": "鐘珠",
+      "expected_chunk_id": "er_weapon_0017",
+      "domain": "weapon_build",
+      "game": "elden_ring"
+    },
+    {
+      "query": "通關順序",
+      "expected_chunk_id": "er_world_0001",
+      "domain": "world_progression",
+      "game": "elden_ring"
+    },
+    {
+      "query": "終章",
+      "expected_chunk_id": "er_world_0015",
+      "domain": "world_progression",
+      "game": "elden_ring"
+    },
+    {
+      "query": "Boss列表",
+      "expected_chunk_id": "er_boss_0001",
+      "domain": "boss_strategy",
+      "game": "elden_ring"
+    },
+    {
+      "query": "荊棘的艾德雷",
+      "expected_chunk_id": "er_boss_0020",
+      "domain": "boss_strategy",
+      "game": "elden_ring"
+    },
+    {
+      "query": "菈尼",
+      "expected_chunk_id": "er_npc_0001",
+      "domain": "npc_quest_ending",
+      "game": "elden_ring"
+    },
+    {
+      "query": "賽蓮",
+      "expected_chunk_id": "er_npc_0011",
+      "domain": "npc_quest_ending",
+      "game": "elden_ring"
+    },
+    {
+      "query": "DLC入口",
+      "expected_chunk_id": "er_dlc_0001",
+      "domain": "dlc_shadow_erdtree",
+      "game": "elden_ring"
+    },
+    {
+      "query": "細身大劍",
+      "expected_chunk_id": "er_dlc_0013",
+      "domain": "dlc_shadow_erdtree",
+      "game": "elden_ring"
+    },
+    {
+      "query": "線上模式",
+      "expected_chunk_id": "er_pvp_0001",
+      "domain": "multiplayer_pvp",
+      "game": "elden_ring"
+    },
+    {
+      "query": "符文弧",
+      "expected_chunk_id": "er_pvp_0006",
+      "domain": "multiplayer_pvp",
+      "game": "elden_ring"
+    },
+    {
+      "query": "峽谷",
+      "expected_chunk_id": "lol_fund_0001",
+      "domain": "fundamentals",
+      "game": "league_of_legends"
+    },
+    {
+      "query": "兵",
+      "expected_chunk_id": "lol_fund_0011",
+      "domain": "fundamentals",
+      "game": "league_of_legends"
+    },
+    {
+      "query": "大龍小龍",
+      "expected_chunk_id": "lol_obj_0001",
+      "domain": "neutral_objective",
+      "game": "league_of_legends"
+    },
+    {
+      "query": "做龍前準備",
+      "expected_chunk_id": "lol_obj_0011",
+      "domain": "neutral_objective",
+      "game": "league_of_legends"
+    },
+    {
+      "query": "線上怎麼打",
+      "expected_chunk_id": "lol_lane_0001",
+      "domain": "laning",
+      "game": "league_of_legends"
+    },
+    {
+      "query": "什麼時候回家",
+      "expected_chunk_id": "lol_lane_0016",
+      "domain": "laning",
+      "game": "league_of_legends"
+    },
+    {
+      "query": "節奏",
+      "expected_chunk_id": "lol_jgl_0001",
+      "domain": "jungling",
+      "game": "league_of_legends"
+    },
+    {
+      "query": "打野窮",
+      "expected_chunk_id": "lol_jgl_0013",
+      "domain": "jungling",
+      "game": "league_of_legends"
+    },
+    {
+      "query": "視野是什麼",
+      "expected_chunk_id": "lol_vision_0001",
+      "domain": "vision_map",
+      "game": "league_of_legends"
+    },
+    {
+      "query": "拆眼",
+      "expected_chunk_id": "lol_vision_0008",
+      "domain": "vision_map",
+      "game": "league_of_legends"
+    },
+    {
+      "query": "進入中期",
+      "expected_chunk_id": "lol_team_0001",
+      "domain": "midgame_teamfight",
+      "game": "league_of_legends"
+    },
+    {
+      "query": "順風怎麼打",
+      "expected_chunk_id": "lol_team_0013",
+      "domain": "midgame_teamfight",
+      "game": "league_of_legends"
+    },
+    {
+      "query": "怎麼出裝",
+      "expected_chunk_id": "lol_build_0001",
+      "domain": "items_runes",
+      "game": "league_of_legends"
+    },
+    {
+      "query": "針對性出裝",
+      "expected_chunk_id": "lol_build_0013",
+      "domain": "items_runes",
+      "game": "league_of_legends"
+    },
+    {
+      "query": "英雄類型",
+      "expected_chunk_id": "lol_champ_0001",
+      "domain": "champion_class",
+      "game": "league_of_legends"
+    },
+    {
+      "query": "英雄克制",
+      "expected_chunk_id": "lol_champ_0011",
+      "domain": "champion_class",
+      "game": "league_of_legends"
+    },
+    {
+      "query": "位置叫法",
+      "expected_chunk_id": "lol_term_0001",
+      "domain": "glossary",
+      "game": "league_of_legends"
+    },
+    {
+      "query": "排位用語",
+      "expected_chunk_id": "lol_term_0011",
+      "domain": "glossary",
+      "game": "league_of_legends"
+    }
+  ],
+  "no_hit_cases": [
+    "今天天氣真好",
+    "你晚餐吃了嗎",
+    "幫我放一首歌",
+    "我心情不太好",
+    "你叫什麼名字",
+    "明天要不要出去玩",
+    "你會不會覺得無聊",
+    "幫我查新聞",
+    "謝謝你陪我聊天",
+    "晚安"
+  ]
+}

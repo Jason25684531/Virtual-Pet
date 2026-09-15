@@ -71,10 +71,11 @@ data/runtime/*
 data/characters/miku/*
 data/characters/*/personal.json
 data/characters/*/qdrant/
+data/knowledge/
 data/saves/
 debug/events/*.json
 debug/ui_smoke_*.txt
-debug/stage_verify/
+debug/*
 device.key
 .tokensave/*
 
@@ -85,3 +86,4 @@ CONTEXT-*.md
 # Local-only generated configuration
 AIA_2026_*Only.json
 outputs/*
+Retriveal_doc/*

@@ -46,10 +46,15 @@ LOGGER = logging.getLogger(__name__)
 def _qdrant_memory_store_factory(character_id: str, profile) -> object:
     """Desktop-only memory adapter; the domain receives this as an injected factory."""
     from pet_harness.memory.hybrid_qdrant_memory_store import HybridQdrantMemoryStore
+    from pet_harness.memory.shared_encoders import get_dense_encoder, get_sparse_encoder
 
+    # 共用 encoder 單例:每次切換角色都會呼叫本工廠建立新 store,若各自載入
+    # 一份 embedding 模型,切換角色就會重複觸發模型載入(design D8)。
     return HybridQdrantMemoryStore(
         character_id=character_id,
         path=f"data/characters/{character_id}/qdrant",
+        dense_encoder=get_dense_encoder(),
+        sparse_encoder=get_sparse_encoder(),
     )
 
 

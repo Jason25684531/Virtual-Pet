@@ -180,6 +180,22 @@ SEMANTIC_ROUTING_MARGIN_THRESHOLD = _read_float_env("SEMANTIC_ROUTING_MARGIN_THR
 QDRANT_MODE = os.getenv("QDRANT_MODE", "local").strip().lower() or "local"
 QDRANT_PATH = os.getenv("QDRANT_PATH", str(PROJECT_ROOT / "runtime_cache" / "qdrant")).strip()
 QDRANT_URL = os.getenv("QDRANT_URL", "").strip()
+
+# 共用遊戲知識語料（Retriveal_doc/）：所有角色共讀同一個 collection，與各角色的
+# 個人記憶庫完全分離。預設關閉，量測延遲通過後才開（見
+# openspec/changes/shared-knowledge-rag/design.md Migration Plan）。
+KNOWLEDGE_RAG_ENABLED = _read_bool_env("KNOWLEDGE_RAG_ENABLED", True)
+KNOWLEDGE_CORPUS_DIR = Path(os.getenv("KNOWLEDGE_CORPUS_DIR", str(PROJECT_ROOT / "Retriveal_doc")))
+KNOWLEDGE_QDRANT_PATH = Path(os.getenv("KNOWLEDGE_QDRANT_PATH", str(PROJECT_ROOT / "data" / "knowledge" / "qdrant")))
+KNOWLEDGE_KEYWORDS_PATH = Path(os.getenv("KNOWLEDGE_KEYWORDS_PATH", str(PROJECT_ROOT / "data" / "knowledge" / "keywords.json")))
+KNOWLEDGE_COLLECTION = os.getenv("KNOWLEDGE_COLLECTION", "knowledge_shared").strip() or "knowledge_shared"
+KNOWLEDGE_RETRIEVE_K = _read_int_env("KNOWLEDGE_RETRIEVE_K", 5)
+KNOWLEDGE_CONTEXT_K = _read_int_env("KNOWLEDGE_CONTEXT_K", 3)
+KNOWLEDGE_DENSE_MIN_SCORE = _read_float_env("KNOWLEDGE_DENSE_MIN_SCORE", 0.0)
+# 獨立於 MEMORY_RERANK_ENABLED:實測 cross-encoder rerank 對知識庫(407 筆、
+# 長段落)耗時 p50 約 1.2s,關閉後降到 p50 約 55ms,但會失去對跨遊戲雜訊的
+# 過濾。3 秒預算吃緊時可關閉,見 openspec/changes/shared-knowledge-rag。
+KNOWLEDGE_RERANK_ENABLED = _read_bool_env("KNOWLEDGE_RERANK_ENABLED", True)
 PROVIDER_ROUTING_FALLBACK_ENABLED = _read_bool_env("PROVIDER_ROUTING_FALLBACK_ENABLED", True)
 PROVIDER_ROUTING_CONFIDENCE_THRESHOLD = _read_float_env("PROVIDER_ROUTING_CONFIDENCE_THRESHOLD", 0.7)
 BROWSER_SESSION_RECOVERY_ENABLED = _read_bool_env("BROWSER_SESSION_RECOVERY_ENABLED", True)
@@ -222,7 +238,7 @@ FESTIVAL_EVENT_PROMPTS = ("這個角色戴上聖誕帽", "這個角色手上拿�
 PREVIEW_OFFER_TTL_HOURS = _read_float_env("PREVIEW_OFFER_TTL_HOURS", 24.0)
 # --- Faster Whisper STT（toggle-recording，Week 4） ---
 STT_ENABLED = _read_bool_env("STT_ENABLED", True)
-STT_MODEL = os.getenv("STT_MODEL", "large-v3-turbo").strip() or "large-v3-turbo" #Whisper Model
+STT_MODEL = os.getenv("STT_MODEL", "large-v3-turbo").strip() or "large-v3-turbo" #Whisper Modeljjj
 STT_DEVICE = os.getenv("STT_DEVICE", "cuda").strip() or "cuda"
 STT_COMPUTE_TYPE = os.getenv("STT_COMPUTE_TYPE", "float16").strip() or "float16"
 STT_MODEL_PATH = os.getenv("STT_MODEL_PATH", str(PROJECT_ROOT / "runtime_cache" / "whisper")).strip()
