@@ -472,9 +472,6 @@ class TtsPlaybackMixin:
         return normalized_trace_id not in self._suppressed_traces
 
     def shutdown(self, wait_ms: int = 5000):
-        if self._news_audio_delay_timer is not None:
-            self._news_audio_delay_timer.stop()
-            self._news_audio_delay_timer = None
         for trace_id in list(self._pending_actions):
             self._clear_pending_action(trace_id)
         self._pending_actions.clear()

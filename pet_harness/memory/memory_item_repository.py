@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -10,11 +11,16 @@ from pet_harness.storage.sqlite_store import DEFAULT_USER_ID, SQLiteStore
 class MemoryItemRepository:
     def __init__(self, store: SQLiteStore, character_id: str) -> None:
         self.store, self.character_id = store, character_id
+        # ponytail: each turn's memory extraction runs on its own background thread
+        # (harness_engine._index_memory_turn); without this lock, two turns restating
+        # the same fact could both SELECT "no active row" before either INSERT commits,
+        # each creating its own memory_id and duplicating the point in Qdrant.
+        self._lock = threading.Lock()
 
     def upsert_candidates(self, candidates: list[MemoryCandidate]) -> list[MemoryItem]:
         now = datetime.now(UTC)
         saved = []
-        with self.store.connect() as conn, conn:
+        with self._lock, self.store.connect() as conn, conn:
             for candidate in candidates:
                 active = conn.execute("SELECT * FROM memory_items WHERE memory_key=? AND status='active'", (candidate.memory_key,)).fetchone()
                 if active and active["text"] == candidate.text:

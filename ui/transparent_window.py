@@ -773,7 +773,7 @@ class TransparentWindow(QMainWindow):
         engine = getattr(self._adapter, "engine", None)
         mark = getattr(engine, "mark_spoken_chunk", None)
         if callable(mark):
-            mark(str(text).strip())
+            mark(str(text).strip(), normalized_trace_id)
 
     def begin_conversation_turn(self, trace_id: str, source_label: str, user_text: str):
         self._run_javascript("beginConversationTurn", trace_id, source_label, user_text)

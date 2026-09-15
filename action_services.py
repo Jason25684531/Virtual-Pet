@@ -24,15 +24,6 @@ from pet_harness.models.events import UserEvent
 LOGGER = logging.getLogger(__name__)
 
 
-FIXED_NEWS_VERSION = "fixed-news-2026-05-06-v1"
-FIXED_NEWS_SCRIPT = "\n".join(
-    [
-        "被盜！《人機迷網》黛安娜「駭入」 《惡靈古堡》官方帳號",
-        "《澀谷交叉物語》公開卡司陣容、 《428》部分原班人馬重聚",
-        "Valve 宣布最新 STEAM 控制器 5 月 5 日上市　台灣等地售價公開",
-    ]
-)
-NEWS_AUDIO_CACHE_DIR = PROJECT_ROOT / "runtime_cache" / "news_audio"
 FIXED_INTENT_CACHE_DIR = PROJECT_ROOT / "runtime_cache" / "fixed_intents"
 FIXED_INTENT_LABELS = {
     "joke": "Joke",
@@ -412,51 +403,6 @@ def build_fixed_intent_payload(
     payload["intent"] = intent_name
     payload["action_name"] = FIXED_INTENT_ACTIONS[intent_name]
     return payload
-
-
-class NewsFetchWorker(QThread):
-    """生成或讀取固定新聞播報音檔，不再走 RSS / LLM。"""
-
-    finished_signal = pyqtSignal(bool, str, object)
-
-    def __init__(
-        self,
-        character_id: str | None = None,
-        cache_dir: str | Path | None = None,
-        synthesizer=None,
-        parent=None,
-    ):
-        super().__init__(parent)
-        self._character_id = str(character_id or "").strip() or None
-        self._cache_dir = Path(cache_dir) if cache_dir else NEWS_AUDIO_CACHE_DIR
-        self._synthesizer = synthesizer
-
-    def run(self):
-        try:
-            payload = _ensure_cached_audio_payload(
-                intent_name="report_news",
-                cache_dir=self._cache_dir,
-                audio_prefix="news",
-                version=FIXED_NEWS_VERSION,
-                cache_identity={"script": FIXED_NEWS_SCRIPT},
-                voice_label=self._character_id or "default",
-                voice_config=self._voice_config(),
-                title="固定新聞播報",
-                text_provider=lambda: FIXED_NEWS_SCRIPT,
-                synthesizer=self._synthesizer,
-                normalize_text=False,
-                extra_payload_builder=lambda normalized_text: {
-                    "headline": normalized_text.splitlines()[0] if normalized_text.splitlines() else normalized_text,
-                    "script": normalized_text,
-                },
-            )
-            message = "固定新聞音檔已就緒。" if payload.get("cached") else "固定新聞音檔已生成。"
-            self.finished_signal.emit(True, message, payload)
-        except Exception as exc:
-            self.finished_signal.emit(False, f"固定新聞音檔準備失敗: {exc}", None)
-
-    def _voice_config(self) -> dict[str, object]:
-        return config.get_voai_config_for_character(self._character_id)
 
 
 class FixedIntentReplyWorker(QThread):

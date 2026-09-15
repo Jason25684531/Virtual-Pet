@@ -47,6 +47,18 @@ def test_sentence_splitter_strips_only_the_first_action_tag():
     assert splitter.flush() == ["Second"]
 
 
+def test_sentence_splitter_force_breaks_long_unpunctuated_news_list():
+    splitter = _SentenceSplitter()
+    # 模擬新聞條目全用逗號串接、沒有句號的長段落
+    long_text = "，".join([f"《遊戲{i}》推出新更新內容囉" for i in range(10)]) + "。"
+
+    sentences = splitter.feed(long_text) + splitter.flush()
+
+    assert len(sentences) > 1
+    assert all(len(sentence) <= 90 for sentence in sentences)
+    assert "".join(sentences) == long_text
+
+
 def test_streaming_reply_extractor_sends_only_json_reply_to_tts():
     extractor = _StreamingReplyExtractor()
     output = []
@@ -167,13 +179,33 @@ def test_cancelled_stream_with_spoken_chunk_persists_only_spoken_text(streaming_
         snapshot_path=tmp_path / "debug" / "spoken.json", character_id="Choppr",
     )
     event = engine.handle_event(
-        {"text": "interrupt"},
-        stream_callback=lambda chunk: engine.mark_spoken_chunk(chunk),
+        {"text": "interrupt", "event_id": "t1"},
+        stream_callback=lambda chunk: engine.mark_spoken_chunk(chunk, "t1"),
     )
 
     assert event.saved_to_db is True
     assert event.reply == "First sentence."
     assert "Never spoken." not in engine.recent_events()[0]["output_payload"]["reply"]
+
+
+def test_cancelled_stream_does_not_leak_a_previous_turns_spoken_text(streaming_env):
+    """Regression: _spoken_chunks used to be one shared list, so a turn cancelled before
+    speaking anything of its own could fall back to a DIFFERENT (earlier) turn's leftover
+    text instead of its own — producing byte-identical replies across unrelated turns."""
+    tmp_path, agentic_root = streaming_env
+    engine = PetHarnessEngine(
+        provider=_CancelingProvider(), agentic_root=agentic_root,
+        snapshot_path=tmp_path / "debug" / "leak.json", character_id="Choppr",
+    )
+    engine.memory_store.save_turn = MagicMock()
+    engine.mark_spoken_chunk("上一輪殘留的內容", "prev-turn")
+
+    event = engine.handle_event(
+        {"text": "英雄聯盟改版", "event_id": "t2"}, stream_callback=lambda _chunk: None,
+    )
+
+    assert event.reply == ""
+    assert event.metadata["stale_turn"] is True
 
 
 def test_interrupt_trace_suppresses_audio_and_clears_active_motion():
@@ -215,20 +247,6 @@ def test_interrupt_all_suppresses_completed_tts_trace_and_restores_idle():
         assert dispatcher._wait_for_room_audio_ended is False
         assert dispatcher._loop_action_service_pending is False
         window.restore_idle_video.assert_called()
-    finally:
-        dispatcher.shutdown(wait_ms=100)
-
-
-def test_interrupt_all_stops_delayed_news_action():
-    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
-    try:
-        news_timer = MagicMock()
-        dispatcher._news_audio_delay_timer = news_timer
-
-        dispatcher.interrupt_all()
-
-        news_timer.stop.assert_called_once()
-        assert dispatcher._news_audio_delay_timer is None
     finally:
         dispatcher.shutdown(wait_ms=100)
 

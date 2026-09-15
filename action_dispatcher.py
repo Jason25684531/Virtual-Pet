@@ -18,7 +18,6 @@ from PyQt5.QtCore import QCoreApplication, QObject, QTimer, pyqtSignal
 from action_services import (
     FixedIntentReplyWorker,
     MusicSelectionWorker,
-    NewsFetchWorker,
     resolve_fixed_intent_source_label,
 )
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
@@ -35,9 +34,6 @@ if TYPE_CHECKING:
     from ui.transparent_window import TransparentWindow
 
 REPLY_STATUS_LABEL = "正在回覆"
-#為了兼顧 VOAI 和 ElevenLabs 的 TTS 響應時間，並給予角色動作足夠的播放時間，設定新聞播報的語音觸發延遲為 2.5 秒。這樣可以確保在大多數情況下，角色的新聞播報動作能夠先行展現，提升互動的自然感。
-REPORT_NEWS_AUDIO_TRIGGER_DELAY_SECONDS = 2.5
-REPORT_NEWS_DELAY_CHARACTER_ID = "miku"
 # report_news/play_music 沒有專屬 webm 的角色（如 char-Adol）改隨機挑一般反應動作，
 # 而不是整段都播 idle。
 _NO_DEDICATED_ASSET_FALLBACK_POOL = ("wave_response", "laugh", "angry", "awkward", "speechless", "listen")
@@ -87,7 +83,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         window: "TransparentWindow",
         library: "CharacterLibrary",
         tts_worker_factory=AdaptiveTTSFallbackWorker,
-        news_worker_factory=NewsFetchWorker,
         music_worker_factory=MusicSelectionWorker,
         fixed_intent_worker_factory=FixedIntentReplyWorker,
         motion_path_resolver=None,
@@ -105,9 +100,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._workers: list[object] = []
         self._tts_worker_factory = (
             tts_worker_factory if callable(tts_worker_factory) else AdaptiveTTSFallbackWorker
-        )
-        self._news_worker_factory = (
-            news_worker_factory if callable(news_worker_factory) else NewsFetchWorker
         )
         self._music_worker_factory = (
             music_worker_factory if callable(music_worker_factory) else MusicSelectionWorker
@@ -140,8 +132,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._current_loop_binding: ActionBinding | None = None
         self._loop_action_tts_queued: bool = False
         self._loop_cleanup_timer: QTimer | None = None
-        self._news_audio_delay_timer: QTimer | None = None
-        self._news_audio_trigger_delay_ms = max(0, int(REPORT_NEWS_AUDIO_TRIGGER_DELAY_SECONDS * 1000))
         self._panel_video_ended: bool = False
         self._panel_video_started: bool = False
         self._wait_for_main_video_ended: bool = False
@@ -158,10 +148,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
                 name="report_news",
                 motion_key="report_news",
                 status_label=REPLY_STATUS_LABEL,
-                handler_name="_handle_report_news",
-                skip_tts_sync=True,
-                panel_loop=True,
-                finish_event="room_audio",
+                handler_name="_handle_motion_only",
                 non_repeatable=True,
                 blocks_following_dispatch=True,
             ),
@@ -549,11 +536,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         if self._loop_cleanup_timer is not None:
             self._loop_cleanup_timer.stop()
             self._loop_cleanup_timer = None
-        for timer_name in ("_news_audio_delay_timer",):
-            timer = getattr(self, timer_name)
-            if timer is not None:
-                timer.stop()
-                setattr(self, timer_name, None)
         self._panel_video_started = False
         self._panel_video_ended = False
         self._wait_for_room_audio_ended = False
@@ -614,32 +596,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             return False
         return True
 
-    def _handle_report_news(self, binding: ActionBinding, motion_found: bool):
-        self._loop_action_service_pending = True
-        current_character_id = self._current_character_id()
-        if current_character_id:
-            panel_path = self._call_library_method("get_panel_motion_path", current_character_id, "report_news")
-            if panel_path:
-                self._panel_video_started = True
-                self._panel_video_ended = False
-                self._window.play_panel_video(panel_path, muted=binding.panel_muted, loop=binding.panel_loop)
-        worker = self._create_service_worker(
-            self._news_worker_factory,
-            parent=self,
-            character_id=current_character_id,
-        )
-        self._start_worker(
-            worker,
-            lambda success, message, payload: self._on_news_finished(
-                binding,
-                motion_found,
-                current_character_id,
-                success,
-                message,
-                payload,
-            ),
-        )
-
     def _handle_play_music(self, binding: ActionBinding, motion_found: bool):
         self._window.stop_music()
         current_character_id = self._current_character_id()
@@ -658,49 +614,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._loop_action_service_pending = True
         worker = self._music_worker_factory(parent=self)
         self._start_worker(worker, lambda success, message, payload: self._on_music_finished(binding, motion_found, success, message, payload))
-
-    def _schedule_report_news_audio_playback(
-        self,
-        binding: ActionBinding,
-        audio_path: str,
-        title: str,
-        character_id: str | None,
-    ):
-        if self._news_audio_delay_timer is not None:
-            self._news_audio_delay_timer.stop()
-        delay_ms = self._report_news_audio_delay_ms_for_character(character_id)
-        if delay_ms <= 0 or QCoreApplication.instance() is None:
-            self._start_report_news_audio_playback(binding, audio_path, title)
-            return
-        timer = QTimer(self)
-        timer.setSingleShot(True)
-        timer.timeout.connect(
-            lambda: self._start_report_news_audio_playback(
-                binding,
-                audio_path,
-                title,
-            )
-        )
-        timer.start(delay_ms)
-        self._news_audio_delay_timer = timer
-
-    def _report_news_audio_delay_ms_for_character(self, character_id: str | None) -> int:
-        normalized_character_id = str(character_id or "").strip().lower()
-        if normalized_character_id != REPORT_NEWS_DELAY_CHARACTER_ID:
-            return 0
-        return self._news_audio_trigger_delay_ms
-
-    def _start_report_news_audio_playback(
-        self,
-        binding: ActionBinding,
-        audio_path: str,
-        title: str,
-    ):
-        self._news_audio_delay_timer = None
-        if self._window.play_music(audio_path, title, update_status=False):
-            self._arm_room_audio_wait()
-            return
-        self._schedule_non_tts_loop_cleanup(binding)
 
     def _handle_motion_only(self, binding: ActionBinding, motion_found: bool):
         if not motion_found:
@@ -1004,31 +917,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         except (TypeError, ValueError):
             return factory(parent=kwargs.get("parent"))
 
-    def _on_news_finished(
-        self,
-        binding: ActionBinding,
-        motion_found: bool,
-        character_id: str | None,
-        success: bool,
-        message: str,
-        payload: object,
-    ):
-        self._loop_action_service_pending = False
-        if success:
-            if isinstance(payload, dict) and payload.get("path"):
-                title = str(payload.get("title") or "固定新聞播報")
-                self._schedule_report_news_audio_playback(
-                    binding,
-                    str(payload.get("path") or ""),
-                    title,
-                    character_id,
-                )
-                return
-            self._schedule_non_tts_loop_cleanup(binding)
-            return
-
-        self._handle_failure(binding, motion_found, message)
-
     def _on_music_finished(
         self,
         binding: ActionBinding,
@@ -1132,9 +1020,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         if self._loop_cleanup_timer is not None:
             self._loop_cleanup_timer.stop()
             self._loop_cleanup_timer = None
-        if self._news_audio_delay_timer is not None:
-            self._news_audio_delay_timer.stop()
-            self._news_audio_delay_timer = None
         self._current_loop_action_key = None
         self._current_loop_binding = None
         self._loop_action_tts_queued = False

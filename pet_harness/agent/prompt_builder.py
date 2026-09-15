@@ -145,6 +145,13 @@ class PromptBuilder:
                 "new content: never repeat or reword an Assistant line from the history. If the user asks "
                 "for more on the same topic, give specifics you have not said yet. If you have nothing new "
                 "on that topic, say so plainly in one sentence instead of restating your last reply.",
+                # ponytail: response_rules.md 的「不空轉」規則管不到這裡——隔了 Retrieval
+                # Evidence/Knowledge Reference/User Text 三個區塊,同一個 adjacency 教訓見上面。
+                # 使用者問自己說過的喜好/事實時,gemma3:12b 常無視 History 改用「你喜歡什麼呢?」
+                # 反問,即使規則已經存在只是離內容太遠。
+                "If the user asks about a preference or fact they already stated above (in History or "
+                "Retrieval Evidence), answer with that specific content directly. Do not ask them what "
+                "they like/mean/want when the answer is already given above.",
                 history_text,
                 "",
                 "## Retrieval Evidence",

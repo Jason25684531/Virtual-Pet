@@ -104,7 +104,7 @@ def test_spoken_chunks_from_the_active_turn_reach_the_engine():
 
     TransparentWindow.record_spoken_chunk(fake, "turn-1", "今天天氣不錯")
 
-    fake._adapter.engine.mark_spoken_chunk.assert_called_once_with("今天天氣不錯")
+    fake._adapter.engine.mark_spoken_chunk.assert_called_once_with("今天天氣不錯", "turn-1")
 
 
 def test_greeting_chunks_do_not_leak_into_the_engine():

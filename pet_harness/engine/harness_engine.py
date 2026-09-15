@@ -47,6 +47,11 @@ class _SentenceSplitter:
 
     _ACTION = re.compile(r"^\s*\[ACTION:([A-Za-z0-9_-]+)\]\s*", re.IGNORECASE)
     _END = set(".!?。！？\n")
+    _SOFT_BREAK = set("，,、；;")
+    # 新聞類回覆常以逗號連接多則條目、沒有句號，若整段不切開會變成一次超長
+    # TTS 請求，部分 provider 對過長文字只合成/播放前半段。超過門檻就在逗號
+    # 處強制斷句，避免單一 TTS chunk 過長被截斷。
+    _MAX_CHUNK_CHARS = 80
 
     def __init__(self) -> None:
         self._buffer = ""
@@ -64,9 +69,15 @@ class _SentenceSplitter:
         sentences: list[str] = []
         start = 0
         for index, char in enumerate(self._buffer):
-            if char not in self._END:
-                continue
-            if char == "." and index + 1 < len(self._buffer) and self._buffer[index + 1].isdigit():
+            is_end = char in self._END
+            if is_end and char == "." and index + 1 < len(self._buffer) and self._buffer[index + 1].isdigit():
+                is_end = False
+            is_soft_break = (
+                not is_end
+                and char in self._SOFT_BREAK
+                and index + 1 - start >= self._MAX_CHUNK_CHARS
+            )
+            if not (is_end or is_soft_break):
                 continue
             sentences.append(self._buffer[start:index + 1].strip())
             start = index + 1
@@ -297,7 +308,10 @@ class PetHarnessEngine:
                 config.EVENT_INTERVAL_MINUTES,
             )
         self.last_prompt: str | None = None
-        self._spoken_chunks: list[str] = []
+        # ponytail: keyed by turn_id so a cancelled turn can only fall back to its OWN
+        # spoken text, never a different turn's leftovers (was a shared list; async TTS
+        # driver-started callbacks race against handle_event resetting it for the next turn).
+        self._spoken_chunks: dict[str, list[str]] = {}
         self.last_provider_raw_result: str | None = None
         self.last_agent_result: AgentResult | None = None
         self.last_tool_result: ToolResult | None = None
@@ -358,13 +372,13 @@ class PetHarnessEngine:
     def character_profile(self) -> CharacterProfile | None:
         return self._profile
 
-    def mark_spoken_chunk(self, text: str) -> None:
+    def mark_spoken_chunk(self, text: str, turn_id: str | None = None) -> None:
         normalized = str(text or "").strip()
         if normalized:
-            self._spoken_chunks.append(normalized)
+            self._spoken_chunks.setdefault(str(turn_id or ""), []).append(normalized)
 
-    def spoken_reply(self) -> str:
-        return " ".join(self._spoken_chunks).strip()
+    def spoken_reply(self, turn_id: str | None = None) -> str:
+        return " ".join(self._spoken_chunks.get(str(turn_id or ""), [])).strip()
 
     def log_assistant_utterance(self, text: str, source: str = "proactive_greeting") -> None:
         """記錄角色主動說出的話（無對應使用者輸入）。
@@ -538,7 +552,7 @@ class PetHarnessEngine:
             # Direct/CLI callers have no adapter; keep observability fail-open.
             timeline = create_turn(user_event.event_id, "engine")
         timeline.mark("route_done")
-        self._spoken_chunks = []
+        self._spoken_chunks.pop(timeline.turn_id, None)
         state_before = self.store.state_snapshot()
         active_capabilities = self._active_capabilities()
         deterministic_skill = self._route_deterministic(user_event, active_capabilities)
@@ -655,7 +669,8 @@ class PetHarnessEngine:
         stream_cancelled = bool(provider_reply.metadata.get("cancelled")) or bool(cancel is not None and cancel.is_set())
         if stream_cancelled:
             timeline.cancel("stream_interrupted")
-            spoken_reply = self.spoken_reply()
+            spoken_reply = self.spoken_reply(timeline.turn_id)
+            self._spoken_chunks.pop(timeline.turn_id, None)
             if not spoken_reply:
                 stale_event = PetEvent(
                     source_event_id=user_event.event_id,
@@ -736,6 +751,7 @@ class PetHarnessEngine:
         )
         pet_event.metadata["latency"] = timeline.report(**timeline.context)
 
+        self._spoken_chunks.pop(timeline.turn_id, None)
         self._persist_and_snapshot(user_event, pet_event)
         LOGGER.info(
             "[CONVERSATION] character=%s user=%r assistant=%r",

@@ -95,6 +95,14 @@ def test_knowledge_evidence_is_isolated_from_retrieval_evidence(tmp_path):
     assert prompt.index("## Retrieval Evidence") < prompt.index("## Knowledge Reference") < prompt.index("## User Text")
 
 
+def test_history_instruction_forbids_asking_back_when_answer_already_given(tmp_path):
+    prompt = PromptBuilder(tmp_path).build(UserEvent(text="hello"), [], {}).prompt
+
+    instruction = "Do not ask them what they like/mean/want when the answer is already given above."
+    assert instruction in prompt
+    assert prompt.index("## Conversation History") < prompt.index(instruction) < prompt.index("## Retrieval Evidence")
+
+
 def test_knowledge_instruction_forbids_stonewalling_when_content_is_available(tmp_path):
     """實測 bug:gemma3:12b 拿到知識內容仍回「你想從哪開始?」,完全不引用。
 
