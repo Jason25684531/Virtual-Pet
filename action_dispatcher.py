@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import queue
+import random
 import inspect
 from collections import deque
 from dataclasses import dataclass, replace
@@ -37,6 +38,9 @@ REPLY_STATUS_LABEL = "正在回覆"
 #為了兼顧 VOAI 和 ElevenLabs 的 TTS 響應時間，並給予角色動作足夠的播放時間，設定新聞播報的語音觸發延遲為 2.5 秒。這樣可以確保在大多數情況下，角色的新聞播報動作能夠先行展現，提升互動的自然感。
 REPORT_NEWS_AUDIO_TRIGGER_DELAY_SECONDS = 2.5
 REPORT_NEWS_DELAY_CHARACTER_ID = "miku"
+# report_news/play_music 沒有專屬 webm 的角色（如 char-Adol）改隨機挑一般反應動作，
+# 而不是整段都播 idle。
+_NO_DEDICATED_ASSET_FALLBACK_POOL = ("wave_response", "laugh", "angry", "awkward", "speechless", "listen")
 
 
 @dataclass(frozen=True)
@@ -867,6 +871,15 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         motion_path = self._find_motion_path(motion_key)
         if motion_path:
             return motion_path, False
+
+        if motion_key in ("report_news", "play_music"):
+            pool = list(_NO_DEDICATED_ASSET_FALLBACK_POOL)
+            random.shuffle(pool)
+            for candidate_key in pool:
+                candidate_path = self._find_motion_path(candidate_key)
+                if candidate_path:
+                    print(f"[ECHOES WARNING] 找不到動作檔案: {motion_key}, 隨機改播 {candidate_key}")
+                    return candidate_path, True
 
         idle_path = self._find_motion_path("idle")
         print(f"[ECHOES WARNING] 找不到動作檔案: {motion_key}, 退回 Idle")

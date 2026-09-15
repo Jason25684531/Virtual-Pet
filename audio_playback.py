@@ -164,6 +164,7 @@ class FfplayPcmAudioPlayer:
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         bytes_written = 0
         try:

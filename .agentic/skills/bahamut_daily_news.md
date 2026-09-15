@@ -1,7 +1,7 @@
 name: bahamut_daily_news
 description: List today's Bahamut GNN gaming news and follow up with an article.
 trigger: 新聞, 最新新聞, 今日新聞, 新聞播報, 念新聞, 讀新聞, 看新聞, 巴哈新聞, GNN新聞, 今日遊戲新聞, 遊戲新聞, game news today
-behavior: idle
+behavior: report_news
 xp_reward: 7
 required_tool: web_article_tool
 priority: 100

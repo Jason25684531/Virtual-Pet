@@ -1,7 +1,7 @@
 name: youtube_music_playback
 description: Search, verify, and control music playback on YouTube.
 trigger: 播放音樂, 播歌, 放歌, 聽歌, 想聽, 來點音樂, 暫停音樂, 繼續播放, 停止音樂, 調整音量, play music
-behavior: idle
+behavior: play_music
 xp_reward: 8
 required_tool: youtube_music_tool
 priority: 100
