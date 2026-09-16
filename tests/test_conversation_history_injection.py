@@ -85,7 +85,7 @@ def test_persona_instruction_names_the_actual_evidence_section(harness_env):
     engine.handle_event({"text": "你好", "source": "test"})
 
     assert "Relevant Memories" not in engine.last_prompt
-    assert "the persona always wins" in engine.last_prompt
+    assert "Global Response Rules below override persona instructions about safety, honesty, factual certainty, and source attribution" in engine.last_prompt
 
 
 def test_prompt_instructs_the_model_to_use_evidence_and_keeps_persona_priority(harness_env):
@@ -108,7 +108,7 @@ def test_prompt_instructs_the_model_to_use_evidence_and_keeps_persona_priority(h
     assert "Conversation History and Retrieval Evidence are factual records of what the user told you" in prompt
     assert "answer from those sections" in prompt
     assert "cannot access" in prompt
-    assert "the persona always wins" in prompt
+    assert "Global Response Rules below override persona instructions about safety, honesty, factual certainty, and source attribution" in prompt
 
 
 def test_prompt_keeps_user_facts_separate_from_echoes_own_state(harness_env):

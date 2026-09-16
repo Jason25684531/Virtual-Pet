@@ -28,7 +28,10 @@ def get_knowledge_retriever():
     )
     return ContextualMemoryRetriever(
         store, store.embed_dense, store.sparse_encoder,
-        reranker=FastembedReranker() if config.KNOWLEDGE_RERANK_ENABLED else None,
+        reranker=(
+            FastembedReranker(threshold=config.KNOWLEDGE_RERANK_MIN_SCORE)
+            if config.KNOWLEDGE_RERANK_ENABLED else None
+        ),
     )
 
 

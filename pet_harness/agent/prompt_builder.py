@@ -105,9 +105,9 @@ class PromptBuilder:
                 "",
                 "## Character Persona",
                 persona.strip() if persona else "No persona configured.",
-                "This persona is your only current identity/setting. If it conflicts with anything in "
-                "Conversation History or Retrieval Evidence below, the persona always wins — those sections "
-                "are past interaction logs, not your current identity.",
+                "This persona defines your current character identity and voice. Global Response Rules below "
+                "override persona instructions about safety, honesty, factual certainty, and source attribution. "
+                "Conversation History and Retrieval Evidence are past user interaction records, not your identity.",
                 "",
                 "## Available Skills",
                 skills_text,
@@ -170,8 +170,9 @@ class PromptBuilder:
                 # 講」貼在內容旁邊,而不是依賴遠處的全域規則。
                 "## Knowledge Reference",
                 "The content below is reference material from a game-knowledge corpus, not something "
-                "the user told you and not something you already know outside this section. If it does "
-                "not answer the question, say so plainly instead of guessing or inventing specifics. If a "
+                "the user told you and not something you already know outside this section. If this section "
+                "is none or does not answer the question, say that you have no reliable information instead "
+                "of guessing or inventing specifics. If a "
                 "note says a topic is version-sensitive, give the general principle and say the exact "
                 "number depends on the current game version rather than stating one. When this section has "
                 "content and the user is asking about the same topic again (including a follow-up like "
@@ -193,6 +194,13 @@ class PromptBuilder:
                 "",
                 "## Global Response Rules",
                 response_rules_text,
+                "",
+                # ponytail: 貼著 Output Contract 放,同一個 adjacency 教訓見上面
+                # Conversation History/Knowledge Reference 段的註解——這是模型生成
+                # JSON 前讀到的最後一段內容,比埋在 Global Response Rules 清單中段的
+                # 「準確」規則更接近生成點,不確定就說不確定的優先權放在這裡最高。
+                "If nothing above resolves a fact, spec, number, or model you are asked about, say "
+                "plainly that you are not sure — never state it with confidence.",
                 "",
                 "## Output Contract",
                 'Return JSON only with keys: "reply", "matched_skill", "action_tag", "confidence", "tool_request", and either "notes" or "reasoning_summary".',

@@ -191,7 +191,10 @@ KNOWLEDGE_KEYWORDS_PATH = Path(os.getenv("KNOWLEDGE_KEYWORDS_PATH", str(PROJECT_
 KNOWLEDGE_COLLECTION = os.getenv("KNOWLEDGE_COLLECTION", "knowledge_shared").strip() or "knowledge_shared"
 KNOWLEDGE_RETRIEVE_K = _read_int_env("KNOWLEDGE_RETRIEVE_K", 5)
 KNOWLEDGE_CONTEXT_K = _read_int_env("KNOWLEDGE_CONTEXT_K", 3)
-KNOWLEDGE_DENSE_MIN_SCORE = _read_float_env("KNOWLEDGE_DENSE_MIN_SCORE", 0.0)
+KNOWLEDGE_DENSE_MIN_SCORE = _read_float_env("KNOWLEDGE_DENSE_MIN_SCORE", 0.30)
+# 知識側 rerank 是最終相關性閘門，不能沿用個人記憶的寬鬆門檻。
+# 0.15 是以現有 34 題遊戲題 / 10 題閒聊題在本機資料庫校準的結果；可由環境變數覆寫。
+KNOWLEDGE_RERANK_MIN_SCORE = _read_float_env("KNOWLEDGE_RERANK_MIN_SCORE", 0.15)
 # 獨立於 MEMORY_RERANK_ENABLED:實測 cross-encoder rerank 對知識庫(407 筆、
 # 長段落)耗時 p50 約 1.2s,關閉後降到 p50 約 55ms,但會失去對跨遊戲雜訊的
 # 過濾。3 秒預算吃緊時可關閉,見 openspec/changes/shared-knowledge-rag。
