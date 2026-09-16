@@ -68,10 +68,13 @@ class ElevenLabsStreamingTTSWorker(QThread):
             "Accept": "audio/pcm" if self._pcm_stream_sink is not None else "audio/mpeg",
             "Content-Type": "application/json",
         }
+        model_id = (
+            os.getenv("ELEVENLABS_MODEL_ID", config.DEFAULT_TTS_MODEL_ID).strip()
+            or config.DEFAULT_TTS_MODEL_ID
+        )
         payload = {
             "text": speech_text,
-            "model_id": os.getenv("ELEVENLABS_MODEL_ID", config.DEFAULT_TTS_MODEL_ID).strip()
-            or config.DEFAULT_TTS_MODEL_ID,
+            "model_id": model_id,
             "voice_settings": {
                 "stability": float(os.getenv("ELEVENLABS_STABILITY", "0.45")),
                 "similarity_boost": float(os.getenv("ELEVENLABS_SIMILARITY_BOOST", "0.75")),
@@ -88,13 +91,17 @@ class ElevenLabsStreamingTTSWorker(QThread):
         pcm_segment_started = False
         pcm_segment_finished = False
         try:
+            params = {
+                "output_format": f"pcm_{config.TTS_PCM_SAMPLE_RATE}" if self._pcm_stream_sink is not None else os.getenv("ELEVENLABS_OUTPUT_FORMAT", "mp3_22050_32"),
+            }
+            # eleven_v3 拒絕 optimize_streaming_latency(400 unsupported_model),之前所有角色
+            # 都因此 400、全部 fallback 到 VoAI 的共用預設聲線,才會聽起來像同一人。
+            if model_id != "eleven_v3":
+                params["optimize_streaming_latency"] = os.getenv("ELEVENLABS_OPTIMIZE_STREAMING_LATENCY", "3")
             response = self._requests_post(
                 url,
                 headers=headers,
-                params={
-                    "output_format": f"pcm_{config.TTS_PCM_SAMPLE_RATE}" if self._pcm_stream_sink is not None else os.getenv("ELEVENLABS_OUTPUT_FORMAT", "mp3_22050_32"),
-                    "optimize_streaming_latency": os.getenv("ELEVENLABS_OPTIMIZE_STREAMING_LATENCY", "3"),
-                },
+                params=params,
                 json=payload,
                 timeout=config.DEFAULT_TTS_TIMEOUT,
                 stream=True,

@@ -5,6 +5,7 @@ ECHOES — Centralized action binding dispatcher
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import random
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
     from character_library import CharacterLibrary
     from ui.transparent_window import TransparentWindow
 
+LOGGER = logging.getLogger(__name__)
 REPLY_STATUS_LABEL = "正在回覆"
 # report_news/play_music 沒有專屬 webm 的角色（如 char-Adol）改隨機挑一般反應動作，
 # 而不是整段都播 idle。
@@ -113,7 +115,9 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._active_tts_worker: object | None = None
         self._pending_tts_chunks: "queue.Queue[tuple[str, str, str | None]]" = queue.Queue()
         self._pending_actions: dict[str, PendingActionState] = {}
-        self._suppressed_traces: set[str] = set()
+        # trace_id -> 抑制原因(如 "skip_tts_sync"/"timeout_promoted"/"critical_tts_failure"/
+        # "barge_in"),供 tts_playback.py 組出反映真實成因的訊息,不再一律寫 timeout_promoted。
+        self._suppressed_traces: dict[str, str] = {}
         self._tts_not_expected_traces: set[str] = set()
         self._driver_started_replies: set[str] = set()
         self._driver_started_pairs: set[tuple[str, str]] = set()
@@ -250,6 +254,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         if not normalized_trace_id:
             return
         self._streaming_traces.discard(normalized_trace_id)
+        self._maybe_close_trace_audio_session(normalized_trace_id)
         self._finish_loop_action_if_tts_idle()
 
     def _enqueue_stream_chunk(self, text: str, trace_id: str) -> None:
@@ -384,11 +389,18 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             print(f"[ECHOES] 警告: action `{action_name}` 尚未綁定。")
             self._window.restore_idle_video()
             return False
-        harness_reply = bool(normalized_trace_id and (display_message or not allow_tts))
+        # 串流回合把文字與 action tag 拆成兩次呼叫(見 consume_interaction_result
+        # 的 streaming 分支/_dispatch_stream_action),action tag 常常不夾帶文字;
+        # 這時仍是 harness 擁有這個回合，不能只靠「這次 dispatch 有沒有夾帶文字」
+        # 反推,否則會把 harness 自己排好的語音當成別人的殘留音訊抑制掉。
+        harness_reply = bool(
+            normalized_trace_id
+            and (display_message or not allow_tts or normalized_trace_id in self._streaming_traces)
+        )
         if harness_reply and binding.skip_tts_sync:
             # The harness has already run the tool and supplied the reply.  Do not
             # replace it with this binding's legacy service audio or suppress TTS.
-            binding = replace(binding, handler_name="_handle_motion_only", skip_tts_sync=False)
+            binding = replace(binding, handler_name="_handle_motion_only", skip_tts_sync=False, finish_event="default")
         if self._is_duplicate_loop_action(binding, normalized_trace_id):
             print(f"[ECHOES] 提示: action `{binding.name}` 已在進行中，略過重複觸發。")
             return True
@@ -417,17 +429,21 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
                 wait_for_tts_start=wait_for_tts_start,
             )
             motion_found = True
-            if binding.skip_tts_sync and normalized_trace_id:
+            if (
+                binding.skip_tts_sync
+                and normalized_trace_id
+                and not self._trace_has_own_speech(normalized_trace_id)
+            ):
                 motion_found = self._activate_pending_action(normalized_trace_id, promoted=False)
                 if motion_found:
-                    self._suppressed_traces.add(normalized_trace_id)
+                    self._suppressed_traces[normalized_trace_id] = "skip_tts_sync"
                     self._tts_not_expected_traces.add(normalized_trace_id)
                     self._audio_worker.suppress_trace(normalized_trace_id)
                     intentional_tts_suppression = True
         else:
             motion_found = self._play_binding_motion(binding)
             if not motion_found:
-                print(f"[ECHOES] 警告: action {action_name} 缺少對應動作，改以安全狀態執行。")
+                LOGGER.warning("[ECHOES] action=%s 缺少對應動作，改以安全狀態執行。", action_name)
                 self._window.restore_idle_video()
 
         getattr(self, binding.handler_name)(binding, motion_found)
@@ -492,7 +508,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         normalized = str(trace_id or "").strip()
         if not normalized:
             return
-        self._suppressed_traces.add(normalized)
+        self._suppressed_traces[normalized] = "barge_in"
         self._streaming_traces.discard(normalized)
         self._audio_worker.suppress_trace(normalized)
         self._clear_pending_action(normalized)
@@ -553,6 +569,14 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         if normalized.startswith(("錯誤:", "[error]", "error:")):
             return "error"
         return "working" if has_action else "idle"
+
+    def _trace_has_own_speech(self, trace_id: str) -> bool:
+        """該 trace 是否已經有(或曾經有)自己的語音在排隊/播放。skip_tts_sync 的
+        快速路徑本意是消掉"別的回合"殘留音訊,不是消掉自己剛排好的 ack。"""
+        return (
+            self._trace_pending_tts_counts.get(trace_id, 0) > 0
+            or trace_id in self._completed_tts_traces
+        )
 
     def _is_duplicate_loop_action(self, binding: ActionBinding, trace_id: str | None = None) -> bool:
         normalized_trace_id = str(trace_id or "").strip()
@@ -630,7 +654,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         if not normalized_trace_id:
             return
         self._clear_pending_action(normalized_trace_id)
-        self._suppressed_traces.discard(normalized_trace_id)
+        self._suppressed_traces.pop(normalized_trace_id, None)
         self._tts_not_expected_traces.discard(normalized_trace_id)
         self._audio_worker.clear_suppressed_trace(normalized_trace_id)
         self._window.stop_motion_loop()
@@ -673,8 +697,8 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         preload = getattr(self._window, "preload_motion", None)
         if not callable(preload):
             return
-        motion_path, used_idle_fallback = self._resolve_action_motion_path(binding.motion_key)
-        if motion_path and not used_idle_fallback:
+        motion_path, motion_kind = self._resolve_action_motion_path(binding.motion_key)
+        if motion_path and motion_kind != "idle":
             preload(motion_path)
 
     def _clear_pending_action(self, trace_id: str | None):
@@ -702,7 +726,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._active_action_trace_id = normalized_trace_id
         motion_found = self._play_binding_motion(state.binding)
         if not motion_found:
-            print(f"[ECHOES] 警告: action {state.binding.name} 缺少對應動作，改以安全狀態執行。")
+            LOGGER.warning("[ECHOES] action=%s 缺少對應動作，改以安全狀態執行。", state.binding.name)
             self._window.restore_idle_video()
             self._clear_pending_action(normalized_trace_id)
             return False
@@ -719,7 +743,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         if promoted:
             if self._latency_tracker is not None:
                 self._latency_tracker.mark_timeout_promoted(normalized_trace_id, state.binding.name)
-            self._suppressed_traces.add(normalized_trace_id)
+            self._suppressed_traces[normalized_trace_id] = "timeout_promoted"
             self._audio_worker.suppress_trace(normalized_trace_id)
             self._schedule_loop_cleanup(2200)
         return True
@@ -749,7 +773,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._window.show_synthetic_conversation_turn("Dev Query", source_label, assistant_text)
 
     def _play_binding_motion(self, binding: ActionBinding) -> bool:
-        motion_path, used_idle_fallback = self._resolve_action_motion_path(binding.motion_key)
+        motion_path, motion_kind = self._resolve_action_motion_path(binding.motion_key)
         if not motion_path:
             self._current_loop_action_key = None
             self._current_loop_binding = None
@@ -758,8 +782,9 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             self._loop_action_service_pending = False
             return False
 
-        if used_idle_fallback:
-            # 找不到對應動作，退回 idle，不視為 loop action
+        if motion_kind == "idle":
+            # 連代打的一般反應動作都找不到，真的退回 idle：idle 本來就該無限
+            # 循環、不需要任何人收尾，不視為 loop action。
             self._current_loop_action_key = None
             self._current_loop_binding = None
             self._wait_for_main_video_ended = False
@@ -767,7 +792,11 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             self._loop_action_service_pending = False
             return bool(self._window.play_resolved_motion(binding.motion_key, motion_path, loop=True))
 
-        # 所有真實動作統一使用 start_motion_loop（循環到明確停止為止）
+        # "exact"（角色自己的動作）與 "substitute"（缺資產時代打的一般反應
+        # 動作）都是真正的 loop action，走同一套收尾生命週期
+        # （queue_drained → _finish_loop_action_if_tts_idle → _finish_loop_action）；
+        # 代打動作過去被誤判成「不是 loop action」卻仍以 loop=True 播放，
+        # 導致沒有人收尾、動畫永遠卡住不回 idle。
         self._current_loop_action_key = binding.motion_key
         self._current_loop_binding = binding
         self._loop_action_tts_queued = False
@@ -780,10 +809,13 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._window.start_motion_loop(motion_path, 300)
         return True
 
-    def _resolve_action_motion_path(self, motion_key: str) -> tuple[str | None, bool]:
+    def _resolve_action_motion_path(self, motion_key: str) -> tuple[str | None, str]:
+        """回傳 (path, kind)。kind 為 "exact"（角色自己的動作）、"substitute"
+        （缺資產時代打的一般反應動作，仍是真正的 loop action）或 "idle"
+        （連代打都找不到，真的退回 idle，不是 loop action）。"""
         motion_path = self._find_motion_path(motion_key)
         if motion_path:
-            return motion_path, False
+            return motion_path, "exact"
 
         if motion_key in ("report_news", "play_music"):
             pool = list(_NO_DEDICATED_ASSET_FALLBACK_POOL)
@@ -791,12 +823,15 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             for candidate_key in pool:
                 candidate_path = self._find_motion_path(candidate_key)
                 if candidate_path:
-                    print(f"[ECHOES WARNING] 找不到動作檔案: {motion_key}, 隨機改播 {candidate_key}")
-                    return candidate_path, True
+                    LOGGER.warning(
+                        "[ECHOES] 找不到動作檔案: motion_key=%s, 隨機改播 %s",
+                        motion_key, candidate_key,
+                    )
+                    return candidate_path, "substitute"
 
         idle_path = self._find_motion_path("idle")
-        print(f"[ECHOES WARNING] 找不到動作檔案: {motion_key}, 退回 Idle")
-        return idle_path, True
+        LOGGER.warning("[ECHOES] 找不到動作檔案: motion_key=%s, 退回 Idle", motion_key)
+        return idle_path, "idle"
 
     def _find_motion_path(self, motion_key: str) -> str | None:
         resolver_path = self._resolve_via_injected_resolver(motion_key)
@@ -1030,7 +1065,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._panel_video_ended = False
         if self._active_action_trace_id:
             self._clear_pending_action(self._active_action_trace_id)
-            self._suppressed_traces.discard(self._active_action_trace_id)
+            self._suppressed_traces.pop(self._active_action_trace_id, None)
             self._tts_not_expected_traces.discard(self._active_action_trace_id)
             self._audio_worker.clear_suppressed_trace(self._active_action_trace_id)
             self._active_action_trace_id = None

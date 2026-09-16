@@ -33,6 +33,28 @@ def test_play_chunks_uses_ch_layout_not_ac():
     assert args[args.index("-ch_layout") + 1] == "1"
 
 
+def test_play_chunks_kills_ffplay_that_never_exits_instead_of_hanging_forever():
+    """Regression fix-play-music-ack-audio-and-idle-restore 4.2.9: 無界的
+    process.wait() 若 ffplay 卡住,session thread 永遠不結束、is_alive() 恆為
+    True、queue_drained 永不發出——這是「動作回不了 idle」的第三條獨立路徑。"""
+    import subprocess
+
+    fake_process = MagicMock()
+    fake_process.stdin = MagicMock()
+    # 第一次 wait() 逾時(模擬卡住的 ffplay),kill() 之後第二次 wait() 才成功返回。
+    fake_process.wait.side_effect = [subprocess.TimeoutExpired(cmd="ffplay", timeout=5.0), 0]
+    fake_popen_factory = MagicMock(return_value=fake_process)
+
+    player = FfplayPcmAudioPlayer(
+        ffplay_path="ffplay", sample_rate=32000, channels=1, popen_factory=fake_popen_factory,
+    )
+
+    player.play_chunks([b"\x00\x00"])
+
+    fake_process.kill.assert_called_once()
+    assert fake_process.wait.call_count == 2
+
+
 def test_enqueue_pcm_chunk_raises_when_ffplay_missing():
     """ffplay 缺席必須讓 producer 收到失敗，而不是每個 chunk 靜靜重試一次。
 

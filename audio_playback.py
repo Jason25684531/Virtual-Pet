@@ -125,6 +125,8 @@ class FfplayPcmAudioPlayer:
     # 省略 ffplay_path 代表「自動找」,明確傳 None 代表「沒有播放器」。兩者共用
     # 同一個預設值時,呼叫端無法表達後者,is_available() 永遠是系統裝了什麼說了算。
     AUTO_DISCOVER = object()
+    # ponytail: 固定 5 秒,若未來需要依裝置/佇列長度動態調整再拆成參數。
+    _PROCESS_EXIT_TIMEOUT_SECONDS = 5.0
 
     def __init__(
         self,
@@ -187,5 +189,14 @@ class FfplayPcmAudioPlayer:
                     process.stdin.close()
                 except Exception:
                     LOGGER.debug("ffplay stdin close failed", exc_info=True)
-            process.wait()
+            # 無界 wait() 若 ffplay 卡住,session thread 永遠不結束、is_alive()
+            # 恆為 True、queue_drained 永不發出——這是「動作回不了 idle」的
+            # 第三條獨立路徑,和音訊內容本身無關。逾時後強制 kill,寧可截斷
+            # 尾音也不要整條收尾鏈路卡死。
+            try:
+                process.wait(timeout=self._PROCESS_EXIT_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                LOGGER.warning("[ECHOES] ffplay 逾時未退出,強制終止。")
+                process.kill()
+                process.wait()
         return bytes_written

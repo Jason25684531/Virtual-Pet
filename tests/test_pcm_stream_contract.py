@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import logging
+import struct
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -233,3 +236,81 @@ def test_suppressed_trace_reports_its_own_reason():
     worker.suppress_trace("trace-suppress")
 
     assert timeline.cancel_reason == "playback_suppressed"
+
+
+class _BlockingPlayer:
+    """play_chunks 消耗完 chunk queue 後卡在 release,讓 session 停留在
+    「已關閉但 thread 尚未從 _pcm_sessions 移除」的視窗,方便測試遲到分塊。"""
+
+    def __init__(self):
+        self.release = threading.Event()
+
+    def is_available(self):
+        return True
+
+    def play_chunks(self, chunks, before_start=None):
+        if callable(before_start):
+            before_start()
+        for _ in chunks:
+            pass
+        self.release.wait(timeout=2)
+        return 0
+
+
+def test_late_chunk_after_session_closed_logs_warning_instead_of_dropping_silently(caplog):
+    """Regression fix-streaming-pcm-session-early-close 2.1: session 已經
+    close() 過,producer 還在路上送分塊時,MUST NOT 靜默丟棄——要留下可辨識的
+    WARNING,且不得因此開出第二個 session/ffplay。"""
+    players: list[_BlockingPlayer] = []
+
+    def factory(_rate, _channels):
+        players.append(_BlockingPlayer())
+        return players[-1]
+
+    worker = AudioStreamWorker(pcm_player_factory=factory)
+    worker.enqueue_pcm_chunk(b"\x01\x01", "reply-1", "trace-1")
+    worker.close_trace_session("trace-1")
+
+    with caplog.at_level(logging.WARNING, logger="audio_worker"):
+        worker.enqueue_pcm_chunk(b"\x02\x02", "reply-1", "trace-1")
+
+    assert any(
+        "session 已關閉" in record.message and "trace-1" in record.message
+        for record in caplog.records
+    )
+    assert len(players) == 1
+
+    players[0].release.set()
+    session = worker._pcm_sessions.get("trace-1")
+    if session is not None:
+        session._thread.join(timeout=2)
+
+
+# --------------------------------------------------------------------------
+# 4.5 中斷收尾：斜坡降到 0，不硬切
+# --------------------------------------------------------------------------
+
+def test_interrupt_appends_a_fade_out_ramp_instead_of_a_hard_cut():
+    """design D4 (fix-play-music-ack-audio-and-idle-restore 4.2.8): 中斷時
+    MUST NOT 把波形停在非零取樣點直接接靜音——那就是爆音。收尾要先把最後一個
+    frame 斜坡降到 0。"""
+    worker, players = _worker()
+    worker.enqueue_pcm_chunk(struct.pack("<h", 4000), "reply-1", "trace-1")
+    session = worker._pcm_sessions["trace-1"]
+
+    worker.interrupt_trace("trace-1")
+    session._thread.join(timeout=2)
+
+    written = b"".join(players[0].chunks)
+    assert len(written) > 2  # 原始 2 bytes 之外還有斜坡尾音
+    assert written[-2:] == struct.pack("<h", 0)  # 斜坡最終降到 0，不是硬切
+    assert session._segment_bytes["reply-1"] == 2  # 斜坡不計入任何 reply 的 segment 長度
+
+
+def test_interrupt_before_any_audio_produces_no_fade_tail():
+    """4.4 既有場景的延伸：suppress_trace 在第一個樣本抵達前就中斷,沒有
+    _last_frame 可以斜坡,不該生出雜訊。"""
+    worker, players = _worker()
+    worker.suppress_trace("trace-1")
+
+    assert players == []

@@ -15,6 +15,16 @@ from pet_harness.app.commands import ACTION_DIRECTIVE_PATTERN
 
 LOGGER = logging.getLogger(__name__)
 
+# 反映 MotionCoordinator._suppressed_traces 記下的真實抑制原因,不再一律寫
+# timeout_promoted——那只是三種成因之一,barge-in/critical_tts_failure 的
+# 晚到語音被寫成「timeout_promoted」會誤導之後看 log 的人。
+_SUPPRESSION_REASON_MESSAGES = {
+    "timeout_promoted": "因 timeout_promoted 抑制晚到音訊。",
+    "critical_tts_failure": "因語音服務失敗抑制晚到音訊。",
+    "skip_tts_sync": "因 play_music fast path 依設計略過語音。",
+    "barge_in": "因新回合打斷抑制晚到音訊。",
+}
+
 
 class TtsPlaybackMixin:
     def _synthesize_tts(self, message: str, tone: str, trace_id: str | None = None):
@@ -175,6 +185,11 @@ class TtsPlaybackMixin:
         if not normalized_trace_id or normalized_trace_id not in self._completed_tts_traces:
             return
         if self._trace_pending_tts_counts.get(normalized_trace_id, 0) > 0:
+            return
+        # 串流回合的句間 TTS 空檔會讓上面兩個條件短暫同時成立(這一句播完了、
+        # 下一句還沒送進來),但回合本身沒結束。串流真正結束後
+        # finish_streaming_trace() 會再呼叫一次這裡把 session 收尾。
+        if normalized_trace_id in self._streaming_traces:
             return
         self._audio_worker.close_trace_session(normalized_trace_id)
 
@@ -397,7 +412,8 @@ class TtsPlaybackMixin:
         if normalized_trace_id in self._suppressed_traces and reply_id not in self._driver_started_replies and not skipped_by_design:
             success = False
             if "抑制" not in message:
-                message = "因 timeout_promoted 抑制晚到音訊。"
+                reason = self._suppressed_traces.get(normalized_trace_id, "")
+                message = _SUPPRESSION_REASON_MESSAGES.get(reason, f"因 {reason or '未知原因'} 抑制晚到音訊。")
         if isinstance(payload, dict):
             selected_provider = str(payload.get("selected_provider") or payload.get("provider") or "").strip()
             if normalized_trace_id and selected_provider:
@@ -452,12 +468,12 @@ class TtsPlaybackMixin:
         normalized_trace_id = str(trace_id or "").strip()
         if not normalized_trace_id:
             return
-        self._suppressed_traces.add(normalized_trace_id)
+        self._suppressed_traces[normalized_trace_id] = "critical_tts_failure"
         self._audio_worker.suppress_trace(normalized_trace_id)
         self._clear_pending_action(normalized_trace_id)
         if self._active_action_trace_id == normalized_trace_id and self._current_loop_action_key is not None:
             self._finish_loop_action()
-            self._suppressed_traces.add(normalized_trace_id)
+            self._suppressed_traces[normalized_trace_id] = "critical_tts_failure"
             self._audio_worker.suppress_trace(normalized_trace_id)
         else:
             self._window.restore_idle_video()

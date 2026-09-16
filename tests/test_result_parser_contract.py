@@ -141,6 +141,45 @@ class TestReplyNormalization:
         assert result.metadata["diagnostics"] == []
 
 
+class TestJsonNeverLeaksToTheReply:
+    """Regression: 回報「前端 UI 偶爾會回吐 JSON 格式」。真正的呼叫端
+    (harness_engine._invoke_provider)把 fallback_reply 設成 provider 的原始輸出——
+    對 Ollama 而言那本來就預期是 JSON。JSON 解析在任何一層失敗時,都不得把這段
+    原始文字原樣當成 reply 顯示出來。"""
+
+    def test_non_object_root_without_a_reply_field_does_not_echo_the_raw_json(self):
+        raw = "[1, 2, 3]"
+        result = ResultParser().parse(raw, provider_type="ollama", fallback_reply=raw)
+
+        assert result.fallback_used is True
+        assert not result.reply.strip().startswith(("[", "{", "```"))
+        assert result.reply == ResultParser().default_reply
+
+    def test_non_object_root_with_a_recoverable_reply_field_extracts_it(self):
+        raw = '[{"reply": "先幫你查一下", "confidence": 0.4}]'
+        result = ResultParser().parse(raw, provider_type="ollama", fallback_reply=raw)
+
+        assert result.reply == "先幫你查一下"
+        assert result.parser_status == "parsed_reply_field_only"
+
+    def test_truncated_json_without_any_reply_field_falls_back_to_default_message(self):
+        raw = '{"confidence": 0.9, "matched_skil'  # 被截斷,連 reply 都還沒開始
+        result = ResultParser().parse(raw, provider_type="ollama", fallback_reply=raw)
+
+        assert result.fallback_used is True
+        assert not result.reply.strip().startswith(("{", "[", "```"))
+        assert result.reply == ResultParser().default_reply
+
+    def test_non_json_provider_plain_text_fallback_is_unaffected(self):
+        """非 JSON provider(例如已經自行抽出文字的 API provider)的 fallback_reply
+        本來就是一般文字,不應被本次守衛誤傷。"""
+        result = ResultParser().parse(
+            "not json at all", provider_type="openai", fallback_reply="抱歉，我剛剛沒聽清楚。",
+        )
+
+        assert result.reply == "抱歉，我剛剛沒聽清楚。"
+
+
 class TestFallbackResultCompleteness:
     def test_fallback_result_is_a_fully_valid_domain_result(self):
         result = _parse("[1, 2, 3]")

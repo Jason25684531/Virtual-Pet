@@ -415,6 +415,81 @@ class _Conversation:
         )
 
 
+def test_sentence_gap_during_streaming_does_not_close_the_audio_session():
+    """Regression: 句與句之間 TTS worker 短暫歸零時,若 trace 仍在
+    _streaming_traces 中(LLM 還在吐下一句),音訊 session MUST NOT 被關閉,
+    否則遲到的分塊會被靜默丟棄或改開第二個 ffplay,造成聽感斷點。"""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._audio_worker.close_trace_session = MagicMock()
+        dispatcher._streaming_traces.add("trace-1")
+        dispatcher._trace_pending_tts_counts["trace-1"] = 1
+
+        dispatcher._on_tts_finished(
+            "reply-1", True, "queued", {"trace_id": "trace-1", "queued_playback": True},
+        )
+
+        dispatcher._audio_worker.close_trace_session.assert_not_called()
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_stream_finishing_after_tts_already_done_closes_the_session():
+    """串流先結束、TTS 後結束:finish_streaming_trace() 時仍有待完成 TTS,
+    不應關閉;該筆 TTS 完成後才關閉一次。"""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._audio_worker.close_trace_session = MagicMock()
+        dispatcher._streaming_traces.add("trace-1")
+        dispatcher._trace_pending_tts_counts["trace-1"] = 1
+
+        dispatcher.finish_streaming_trace("trace-1")
+        dispatcher._audio_worker.close_trace_session.assert_not_called()
+
+        dispatcher._on_tts_finished(
+            "reply-1", True, "queued", {"trace_id": "trace-1", "queued_playback": True},
+        )
+        dispatcher._audio_worker.close_trace_session.assert_called_once_with("trace-1")
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_tts_finishing_before_stream_ends_closes_session_only_once_stream_finishes():
+    """TTS 先結束、串流後結束:TTS 全數完成時不關閉(仍在 _streaming_traces
+    中),finish_streaming_trace() 觸發時才關閉。"""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._audio_worker.close_trace_session = MagicMock()
+        dispatcher._streaming_traces.add("trace-1")
+        dispatcher._trace_pending_tts_counts["trace-1"] = 1
+
+        dispatcher._on_tts_finished(
+            "reply-1", True, "queued", {"trace_id": "trace-1", "queued_playback": True},
+        )
+        dispatcher._audio_worker.close_trace_session.assert_not_called()
+
+        dispatcher.finish_streaming_trace("trace-1")
+        dispatcher._audio_worker.close_trace_session.assert_called_once_with("trace-1")
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_barge_in_interrupts_audio_immediately_even_mid_stream():
+    """barge-in 不受本次修改延後:trace 仍在 _streaming_traces 中(串流尚未
+    宣告結束)時,interrupt_trace() 仍要立即中止音訊,不能等串流結束。"""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._audio_worker.suppress_trace = MagicMock()
+        dispatcher._streaming_traces.add("trace-1")
+
+        dispatcher.interrupt_trace("trace-1")
+
+        dispatcher._audio_worker.suppress_trace.assert_called_once_with("trace-1")
+        assert "trace-1" not in dispatcher._streaming_traces
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
 def test_barge_in_cancels_old_handler_completion_and_accepts_new_turn():
     events, executor, conversation = [], _DeferredExecutor(), _Conversation()
     event_bus = SimpleEventBus()
