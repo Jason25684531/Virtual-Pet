@@ -19,7 +19,7 @@ def load_keywords(path: str | Path) -> frozenset[str]:
     try:
         return frozenset(json.loads(Path(path).read_text(encoding="utf-8")))
     except Exception:
-        LOGGER.info("knowledge keywords sidecar unavailable at %s; retrieval gate defaults to closed", path)
+        LOGGER.error("knowledge keywords sidecar unavailable at %s; retrieval gate defaults to closed", path)
         return frozenset()
 
 

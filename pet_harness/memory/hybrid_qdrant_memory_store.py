@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 import logging
@@ -34,11 +35,30 @@ class HybridQdrantMemoryStore(BaseMemoryStore):
         self._client = client
         self._dense_encoder = dense_encoder
         self.sparse_encoder = sparse_encoder or JiebaBm25SparseEncoder()
-        try:
-            self._ensure_ready(path)
-            self._status = MemoryStoreStatus("ready")
-        except Exception as exc:
-            self._status = MemoryStoreStatus("degraded", str(exc) or type(exc).__name__)
+        # ponytail: 撞到間歇性的 DLL 載入封鎖（如 Windows 應用程式控制原則擋
+        # cygrpc）時，同一個 process 內重試往往就會成功；固定重試 3 次、每次
+        # 間隔 0.5 秒，仍失敗才真的降級。次數固定寫死，之後若要依環境調整再抽成參數。
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                self._ensure_ready(path)
+                self._status = MemoryStoreStatus("ready")
+                break
+            except Exception as exc:
+                reason = str(exc) or type(exc).__name__
+                if attempt < attempts:
+                    LOGGER.warning(
+                        "memory store init failed (attempt %d/%d), retrying: character_id=%s collection=%s reason=%s",
+                        attempt, attempts, character_id, self.collection, reason,
+                    )
+                    time.sleep(0.5)
+                    continue
+                self._status = MemoryStoreStatus("degraded", reason)
+                LOGGER.error(
+                    "memory store degraded at init; search() will return no results for this process: "
+                    "character_id=%s collection=%s reason=%s",
+                    character_id, self.collection, reason,
+                )
 
     def _ensure_ready(self, path: str | Path) -> None:
         from qdrant_client import QdrantClient, models
