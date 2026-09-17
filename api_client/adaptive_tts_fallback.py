@@ -5,6 +5,7 @@ Adaptive multi-provider TTS orchestration for ECHOES.
 from __future__ import annotations
 
 import inspect
+import logging
 from typing import Callable
 
 from PyQt5.QtCore import QObject, pyqtSignal
@@ -12,6 +13,8 @@ from PyQt5.QtCore import QObject, pyqtSignal
 import config
 from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
 from api_client.voai_client import VoAIStreamingTTSWorker
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _normalize_provider_name(value: str | None) -> str:
@@ -219,6 +222,14 @@ class AdaptiveTTSFallbackWorker(QObject):
         if provider == "elevenlabs" and "voai" not in self._provider_chain:
             # ElevenLabs 首選失敗時回退 VoAI，鏡射 voai→elevenlabs 的既有路徑。
             fallback_reason = str(message or "elevenlabs_failed")
+            LOGGER.warning(
+                "[ECHOES] ElevenLabs 失敗改用 VoAI：character=%s voice_id=%s reason=%s text_len=%d text=%r",
+                self._character_id,
+                self._fallback_voice_id,
+                fallback_reason,
+                len(self._text),
+                self._text[:80],
+            )
             self._fallback_reasons.append(("elevenlabs", fallback_reason))
             fallback_payload = dict(normalized_payload)
             fallback_payload.update(
