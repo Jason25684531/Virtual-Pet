@@ -37,6 +37,79 @@ from ui.proactive_greeter import ProactiveGreeter
 from ui.lively_wallpaper import LivelyWallpaper
 
 
+def build_style_scene_menu_items(
+    character: dict[str, object] | str,
+    style_items: list[dict[str, object]],
+    scene_items: list[dict[str, object]],
+    background_mode: str,
+    unlocked: bool,
+) -> list[dict[str, object]]:
+    """Build data-only menu entries for one character."""
+    if isinstance(character, dict):
+        character_id = str(character.get("character_id") or character.get("id") or "")
+    else:
+        character_id = str(character)
+
+    entries = [
+        {
+            "kind": "unlock",
+            "title": "解鎖全部造型與場景",
+            "enabled": True,
+            "checked": unlocked,
+            "character_id": character_id,
+        }
+    ]
+    for item in style_items:
+        state = str(item.get("state") or "empty")
+        status = {"ready": "已就緒", "generating": "生成中"}.get(state, "未就緒")
+        variant = str(item.get("variant") or "")
+        entries.append(
+            {
+                "kind": "style",
+                "title": f"造型：{variant}（{status}）",
+                "enabled": state == "ready",
+                "checked": bool(item.get("is_active")),
+                "character_id": character_id,
+                "variant": variant,
+                "state": state,
+            }
+        )
+
+    entries.append({"kind": "separator"})
+    entries.append(
+        {
+            "kind": "follow",
+            "title": "跟隨造型",
+            "enabled": True,
+            "checked": background_mode == "follow",
+            "character_id": character_id,
+            "scene_id": "follow",
+        }
+    )
+    available = {str(item.get("scene_id")): item for item in scene_items}
+    for scene_id in CharacterLibrary._SCENE_VARIANTS:
+        item = available.get(scene_id)
+        action_id = scene_id
+        if item is None:
+            legacy_id = CharacterLibrary._SCENE_LEGACY_FALLBACK.get(scene_id)
+            item = available.get(legacy_id) if legacy_id else None
+            action_id = legacy_id if item is not None else scene_id
+        ready = item is not None
+        status = "已就緒" if ready else ("未就緒" if unlocked else "未解鎖")
+        entries.append(
+            {
+                "kind": "scene",
+                "title": f"場景：{scene_id}（{status}）",
+                "enabled": ready,
+                "checked": bool(item and item.get("is_current")),
+                "character_id": character_id,
+                "scene_id": action_id,
+                "state": "ready" if ready else ("empty" if unlocked else "locked"),
+            }
+        )
+    return entries
+
+
 class TransparentWindow(QMainWindow):
     """透明無邊框桌面寵物視窗"""
     developer_query_submitted = pyqtSignal(str)
@@ -482,6 +555,11 @@ class TransparentWindow(QMainWindow):
         clear_chat_action.triggered.connect(self.clear_chat_history)
         menu.addAction(clear_chat_action)
 
+        style_scene_menu = menu.addMenu("造型與場景")
+        style_scene_menu.aboutToShow.connect(
+            lambda menu=style_scene_menu: self._populate_style_scene_characters(menu)
+        )
+
         reset_action = QAction("完整重置（回到初始狀態）", self)
         reset_action.triggered.connect(self.reset_to_initial_state)
         menu.addAction(reset_action)
@@ -501,6 +579,147 @@ class TransparentWindow(QMainWindow):
         menu.addAction(quit_action)
 
         return menu
+
+    def _populate_style_scene_characters(self, menu: QMenu) -> None:
+        menu.clear()
+        try:
+            characters = self._adapter.character_service.list_characters()
+        except Exception as exc:  # noqa: BLE001
+            self._show_style_scene_error(str(exc))
+            return
+        if not characters:
+            action = QAction("尚無角色", menu)
+            action.setEnabled(False)
+            menu.addAction(action)
+            return
+
+        current_id = self.get_current_character_id()
+        for character in characters:
+            character_id = str(character.get("character_id") or "")
+            name = str(character.get("name") or character_id)
+            title = f"✓ {name}" if character_id == current_id else name
+            character_menu = menu.addMenu(title)
+            character_menu.aboutToShow.connect(
+                lambda menu=character_menu, character_id=character_id: self._populate_style_scene_items(
+                    menu, character_id
+                )
+            )
+
+    def _populate_style_scene_items(self, menu: QMenu, character_id: str) -> None:
+        menu.clear()
+        service = self._adapter.character_service
+        try:
+            styles = service.list_style_variants(character_id)
+            scenes = service.list_scene_backgrounds(character_id)
+            background_mode = self._library.get_background_mode(character_id)
+            unlocked = service.get_style_unlock_all(character_id)
+            entries = build_style_scene_menu_items(
+                character_id, styles, scenes, background_mode, unlocked
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._show_style_scene_error(str(exc))
+            return
+
+        for entry in entries:
+            kind = entry["kind"]
+            if kind == "separator":
+                menu.addSeparator()
+                continue
+            action = QAction(str(entry["title"]), menu)
+            action.setEnabled(bool(entry.get("enabled", True)))
+            action.setCheckable(kind in {"unlock", "style", "scene", "follow"})
+            action.setChecked(bool(entry.get("checked", False)))
+            if kind == "unlock":
+                action.toggled.connect(
+                    lambda checked, character_id=character_id: self._set_style_unlock(
+                        character_id, checked
+                    )
+                )
+            elif kind == "style":
+                action.triggered.connect(
+                    lambda _checked=False, character_id=character_id, variant=str(entry["variant"]): self._apply_quick_style(
+                        character_id, variant
+                    )
+                )
+            elif kind == "scene" or kind == "follow":
+                action.triggered.connect(
+                    lambda _checked=False, character_id=character_id, scene_id=str(entry["scene_id"]): self._apply_quick_scene(
+                        character_id, scene_id
+                    )
+                )
+            menu.addAction(action)
+
+        reset_action = QAction("回復初始造型與場景", menu)
+        reset_action.triggered.connect(
+            lambda _checked=False, character_id=character_id: self._reset_character_style_state(
+                character_id
+            )
+        )
+        menu.addSeparator()
+        menu.addAction(reset_action)
+
+    def _set_style_unlock(self, character_id: str, enabled: bool) -> None:
+        try:
+            self._adapter.character_service.set_style_unlock_all(character_id, enabled)
+        except Exception as exc:  # noqa: BLE001
+            self._show_style_scene_error(str(exc))
+
+    def _reset_character_style_state(self, character_id: str) -> None:
+        try:
+            self._adapter.character_service.reset_style_state(character_id)
+            if self.get_current_character_id() == character_id:
+                self.apply_character(character_id)
+        except Exception as exc:  # noqa: BLE001
+            self._show_style_scene_error(str(exc))
+
+    def _apply_quick_style(self, character_id: str, variant: str) -> None:
+        original_id = self.get_current_character_id()
+        try:
+            if original_id != character_id and not self.apply_character(character_id):
+                if original_id:
+                    self.apply_character(original_id)
+                return
+            if not self._show_style_scene_result(self._character_bridge.applyStyle(character_id, variant)):
+                if original_id and original_id != character_id:
+                    self.apply_character(original_id)
+                    self._show_style_scene_error("套用失敗")
+        except Exception as exc:  # noqa: BLE001
+            if original_id and self.get_current_character_id() != original_id:
+                self.apply_character(original_id)
+            self._show_style_scene_error(str(exc))
+
+    def _apply_quick_scene(self, character_id: str, scene_id: str) -> None:
+        original_id = self.get_current_character_id()
+        try:
+            if original_id != character_id and not self.apply_character(character_id):
+                if original_id:
+                    self.apply_character(original_id)
+                return
+            if not self._show_style_scene_result(self._character_bridge.applyScene(character_id, scene_id)):
+                if original_id and original_id != character_id:
+                    self.apply_character(original_id)
+                    self._show_style_scene_error("套用失敗")
+        except Exception as exc:  # noqa: BLE001
+            if original_id and self.get_current_character_id() != original_id:
+                self.apply_character(original_id)
+            self._show_style_scene_error(str(exc))
+
+    def _show_style_scene_result(self, raw_result: str) -> bool:
+        try:
+            result = json.loads(raw_result)
+        except (TypeError, json.JSONDecodeError):
+            self._show_style_scene_error("套用失敗：無法解析回應")
+            return False
+        if not result.get("ok", False):
+            self._show_style_scene_error(str(result.get("error") or "套用失敗"))
+            return False
+        return True
+
+    def _show_style_scene_error(self, message: str) -> None:
+        self.set_action_status(f"造型／場景套用失敗：{message}", tone="warn", timeout_ms=3200)
+        tray = getattr(self, "tray_icon", None)
+        if tray is not None and hasattr(tray, "showMessage"):
+            tray.showMessage("造型／場景套用失敗", message, QSystemTrayIcon.Warning)
 
     def _request_close_from_tray(self) -> None:
         """Let the web UI honor its persisted Close-confirm preference."""

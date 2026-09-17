@@ -540,9 +540,10 @@ class TestGetActiveState:
 
         assert ui_service.list_style_variants("Choppr")[0]["state"] == "empty"
 
-    def test_applying_variant_without_background_clears_the_previous_background(self, service, monkeypatch):
+    def test_applying_variant_does_not_bind_background_to_style(self, service, monkeypatch):
         ui_service, router, _registry = service
         manifest = {"background_image": "old-background.png"}
+        calls = []
         profile = router.switch_character("Choppr")
         store = SQLiteStore(profile.sqlite_path)
         store.initialize()
@@ -552,11 +553,14 @@ class TestGetActiveState:
         class Library:
             def list_variant_inventory(self, _character_id):
                 return [{"variant": "event", "state": "ready"}]
+            def get_background_path(self, _character_id):
+                return "assets/characters/Choppr/images/bg/og.png"
             def set_active_variant(self, _character_id, _variant):
                 return manifest
-            def variant_background_path(self, _character_id, _variant):
-                return None
+            def set_background_mode(self, _character_id, mode):
+                calls.append(mode)
             def set_background(self, _character_id, image_path):
+                calls.append(image_path)
                 manifest["background_image"] = image_path or ""
                 return manifest
             def get_background_mode(self, _character_id):
@@ -566,7 +570,8 @@ class TestGetActiveState:
 
         result = ui_service.apply_style("Choppr", "event")
 
-        assert result["background_image"] == ""
+        assert calls == ["manual", "assets/characters/Choppr/images/bg/og.png"]
+        assert result["background_image"] == "assets/characters/Choppr/images/bg/og.png"
 
     def test_applying_variant_in_manual_mode_does_not_touch_background(self, service, monkeypatch):
         ui_service, router, _registry = service

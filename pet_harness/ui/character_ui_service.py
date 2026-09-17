@@ -23,6 +23,7 @@ from pet_harness.storage.sqlite_store import SQLiteStore
 PLAYTIME_SECONDS_KEY = "ui_playtime_seconds"
 LAST_PLAYED_AT_KEY = "ui_last_played_at"
 FESTIVAL_PROMPT_HISTORY_KEY = "asset_event_prompt_history"
+STYLE_UNLOCK_ALL_KEY = "style_unlock_all"
 
 
 def _level_for_xp(xp_total: int) -> int:
@@ -114,6 +115,23 @@ class CharacterUiService:
 
     def list_presets(self) -> list[dict[str, Any]]:
         return [item for item in self.list_characters() if item["is_preset"]]
+
+    def get_style_unlock_all(self, character_id: str) -> bool:
+        profile, _ = self._router.load_profile(character_id)
+        store = SQLiteStore(profile.sqlite_path)
+        store.initialize()
+        return bool(store.get_setting(STYLE_UNLOCK_ALL_KEY, False))
+
+    def set_style_unlock_all(self, character_id: str, enabled: bool) -> bool:
+        profile, _ = self._router.load_profile(character_id)
+        store = SQLiteStore(profile.sqlite_path)
+        store.initialize()
+        value = bool(enabled)
+        store.set_setting(STYLE_UNLOCK_ALL_KEY, value)
+        return value
+
+    def reset_style_state(self, character_id: str) -> dict[str, object]:
+        return CharacterLibrary().reset_style_state(character_id)
 
     def create_from_preset(self, preset_id: str, name: str | None = None) -> dict[str, Any]:
         # Select 直接切換成 preset 本體並開始遊玩，不再複製出 {preset_id}_{n} 分身。
@@ -207,7 +225,8 @@ class CharacterUiService:
         motion_offer = active_pending_motion_offer(store)
         if motion_offer:
             generated_variants.add(str(motion_offer["variant"]))
-        items = [item for item in items if item["variant"] == "og" or item["variant"] in generated_variants]
+        if not self.get_style_unlock_all(character_id):
+            items = [item for item in items if item["variant"] == "og" or item["variant"] in generated_variants]
         for item in items:
             # 未落地任何素材的格子不進「生成中」態,避免 HUD 顯示空白預覽的生成中格子。
             if item["variant"] in generating and item["state"] != "empty":
@@ -266,9 +285,14 @@ class CharacterUiService:
         item = next((item for item in self.list_style_variants(character_id) if item["variant"] == variant), None)
         if item is None or item["state"] != "ready":
             raise ValueError(f"style is not ready: {variant}")
+        background_mode = library.get_background_mode(character_id)
+        current_background = (
+            library.get_background_path(character_id) if background_mode == "follow" else None
+        )
         manifest = library.set_active_variant(character_id, variant)
-        if library.get_background_mode(character_id) == "follow":
-            manifest = library.set_background(character_id, library.variant_background_path(character_id, variant))
+        if background_mode == "follow":
+            library.set_background_mode(character_id, "manual")
+            manifest = library.set_background(character_id, current_background)
         return {"character_id": character_id, "variant": variant, "background_image": manifest.get("background_image", "")}
 
     @staticmethod
@@ -287,6 +311,8 @@ class CharacterUiService:
         profile, _ = self._router.load_profile(character_id)
         store = SQLiteStore(profile.sqlite_path)
         store.initialize()
+        if self.get_style_unlock_all(character_id):
+            return scenes
         unlocked = self._completed_render_variants(store, character_id)
         return [scene for scene in scenes if scene["scene_id"] == "og" or scene["scene_id"] in unlocked]
 
@@ -301,7 +327,7 @@ class CharacterUiService:
             profile, _ = self._router.load_profile(character_id)
             store = SQLiteStore(profile.sqlite_path)
             store.initialize()
-            if scene_id not in self._completed_render_variants(store, character_id):
+            if not self.get_style_unlock_all(character_id) and scene_id not in self._completed_render_variants(store, character_id):
                 raise ValueError(f"scene not unlocked: {scene_id}")
         path = library.variant_background_path(character_id, scene_id)
         if not path:

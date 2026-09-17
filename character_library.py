@@ -204,6 +204,9 @@ class CharacterLibrary:
             raise FileNotFoundError(f"character not found: {character_id}")
         manifest["active_variant"] = "og"
         manifest["selected_generations"] = {}
+        manifest["background_mode"] = "follow"
+        background_path = self.variant_background_path(character_id, "og")
+        manifest["background_image"] = self._to_relative(Path(background_path)) if background_path else ""
         manifest["updated_at"] = _now_iso()
         self._save_manifest(character_id, manifest)
         return manifest
