@@ -490,6 +490,12 @@ STT VAD(語音端點自動停止,預設關閉):
 ```bash
 VOAI_PCM_STREAMING_ENABLED=true
 ELEVENLABS_VOICE_ID=default_elevenlabs_voice_id
+
+# 未指定專屬語音模型的角色一律用這個(預設 eleven_flash_v2_5,低延遲)
+ELEVENLABS_MODEL_ID=eleven_flash_v2_5
+# 角色專屬語音模型覆寫,鍵名規則同 ELEVENLABS_{ID}_VOICE_ID:
+# ELEVENLABS_{character_id 大寫、- 轉 _}_MODEL_ID,優先於內建映射與全域預設
+ELEVENLABS_CHAR_ADOL_MODEL_ID=eleven_v3
 ACTION_SYNC_TIMEOUT_MS=6000
 
 # 資產生成 offer TTL(小時)

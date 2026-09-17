@@ -114,6 +114,104 @@ def test_elevenlabs_rejects_mp3_when_it_asked_for_pcm():
     sink.enqueue_pcm_chunk.assert_not_called()
 
 
+def _fake_pcm_post(captured: dict):
+    def fake_post(_url, headers=None, params=None, json=None, **_kwargs):
+        captured["params"] = params
+        captured["json"] = json
+        response = MagicMock()
+        response.headers = {"content-type": "audio/pcm"}
+        response.iter_content.return_value = [b"\x00\x00" * 8]
+        return response
+
+    return fake_post
+
+
+def test_explicit_model_id_is_sent_instead_of_global_env(monkeypatch):
+    """per-character-tts-model 2.1/3.1:傳入的 model_id 優先於全域 ELEVENLABS_MODEL_ID。"""
+    from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
+
+    monkeypatch.setenv("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5")
+    captured: dict = {}
+    worker = ElevenLabsStreamingTTSWorker(
+        text="測試", reply_id="reply-1", trace_id="trace-1", voice_id="voice",
+        model_id="eleven_v3", requests_post=_fake_pcm_post(captured),
+    )
+    worker.run()
+
+    assert captured["json"]["model_id"] == "eleven_v3"
+
+
+def test_omitted_model_id_falls_back_to_global_env(monkeypatch):
+    from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
+
+    monkeypatch.setenv("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5")
+    captured: dict = {}
+    worker = ElevenLabsStreamingTTSWorker(
+        text="測試", reply_id="reply-1", trace_id="trace-1", voice_id="voice",
+        requests_post=_fake_pcm_post(captured),
+    )
+    worker.run()
+
+    assert captured["json"]["model_id"] == "eleven_flash_v2_5"
+
+
+def test_eleven_v3_request_omits_optimize_streaming_latency(monkeypatch):
+    """v3 拒絕這個 query 參數(400 unsupported_model),見 elevenlabs_client.py 的模型能力表。"""
+    from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
+
+    captured: dict = {}
+    worker = ElevenLabsStreamingTTSWorker(
+        text="測試", reply_id="reply-1", trace_id="trace-1", voice_id="voice",
+        model_id="eleven_v3", requests_post=_fake_pcm_post(captured),
+    )
+    worker.run()
+
+    assert "optimize_streaming_latency" not in captured["params"]
+
+
+def test_flash_request_keeps_optimize_streaming_latency(monkeypatch):
+    from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
+
+    captured: dict = {}
+    worker = ElevenLabsStreamingTTSWorker(
+        text="測試", reply_id="reply-1", trace_id="trace-1", voice_id="voice",
+        model_id="eleven_flash_v2_5", requests_post=_fake_pcm_post(captured),
+    )
+    worker.run()
+
+    assert "optimize_streaming_latency" in captured["params"]
+
+
+def test_flash_speed_is_clamped_to_its_valid_range(monkeypatch):
+    """.env 的 ELEVENLABS_SPEED=1.3 超出 flash 合法範圍(0.7-1.2),否則 400 invalid_voice_settings。"""
+    from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
+
+    monkeypatch.setenv("ELEVENLABS_SPEED", "1.3")
+    captured: dict = {}
+    worker = ElevenLabsStreamingTTSWorker(
+        text="測試", reply_id="reply-1", trace_id="trace-1", voice_id="voice",
+        model_id="eleven_flash_v2_5", requests_post=_fake_pcm_post(captured),
+    )
+    worker.run()
+
+    assert captured["json"]["voice_settings"]["speed"] == 1.2
+
+
+def test_v3_speed_is_not_clamped(monkeypatch):
+    """實測(design.md smoke)v3 接受超出 flash 範圍的 speed,不應被夾住。"""
+    from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
+
+    monkeypatch.setenv("ELEVENLABS_SPEED", "1.3")
+    captured: dict = {}
+    worker = ElevenLabsStreamingTTSWorker(
+        text="測試", reply_id="reply-1", trace_id="trace-1", voice_id="voice",
+        model_id="eleven_v3", requests_post=_fake_pcm_post(captured),
+    )
+    worker.run()
+
+    assert captured["json"]["voice_settings"]["speed"] == 1.3
+
+
 def test_ffplay_path_none_means_unavailable_but_omitting_it_still_auto_discovers():
     assert FfplayPcmAudioPlayer(ffplay_path=None).is_available() is False
     assert FfplayPcmAudioPlayer(ffplay_path="ffplay").is_available() is True

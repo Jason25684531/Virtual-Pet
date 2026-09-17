@@ -53,6 +53,7 @@ class AdaptiveTTSFallbackWorker(QObject):
             str(fallback_voice_id or "").strip()
             or config.get_elevenlabs_voice_id_for_character(self._character_id)
         )
+        self._elevenlabs_model_id = config.get_elevenlabs_model_id_for_character(self._character_id)
         # 具專屬 ElevenLabs 聲線的角色以 ElevenLabs 為首選，否則維持 VoAI 優先。
         self._preferred_provider = _normalize_provider_name(preferred_provider) or (
             "elevenlabs"
@@ -124,6 +125,8 @@ class AdaptiveTTSFallbackWorker(QObject):
                 signature = inspect.signature(self._elevenlabs_worker_factory)
                 if "pcm_stream_sink" in signature.parameters:
                     worker_kwargs["pcm_stream_sink"] = self._pcm_stream_sink
+                if "model_id" in signature.parameters:
+                    worker_kwargs["model_id"] = self._elevenlabs_model_id
             except (TypeError, ValueError):
                 pass
             worker = self._elevenlabs_worker_factory(**worker_kwargs)

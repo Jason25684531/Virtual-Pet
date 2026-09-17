@@ -137,6 +137,8 @@ class TtsPlaybackMixin:
                 worker_kwargs["resolved_tts_mode"] = resolved_mode
             if "pcm_stream_sink" in signature.parameters:
                 worker_kwargs["pcm_stream_sink"] = self._audio_worker
+            if "model_id" in signature.parameters:
+                worker_kwargs["model_id"] = config.get_elevenlabs_model_id_for_character(current_character_id)
         except (TypeError, ValueError):
             pass
 

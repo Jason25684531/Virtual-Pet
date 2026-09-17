@@ -72,6 +72,13 @@ BUILTIN_CHARACTER_ELEVENLABS_VOICE_IDS: dict[str, str] = {
     "char-Zenni": "2Zlm5u8veOiqFWNIOc0K",
 }
 
+# 角色專屬 ElevenLabs 語音模型；未列名的角色回退到全域 ELEVENLABS_MODEL_ID。
+# Adol 改用 eleven_v3（情緒表現較好，但延遲高於 flash，見 openspec/changes/
+# per-character-tts-model/design.md 的 smoke 測試結果）。
+BUILTIN_CHARACTER_ELEVENLABS_MODEL_IDS: dict[str, str] = {
+    "char-Adol": "eleven_v3",
+}
+
 
 def _read_first_non_empty_env(*names: str, default: str = "") -> str:
     for name in names:
@@ -84,6 +91,11 @@ def _read_first_non_empty_env(*names: str, default: str = "") -> str:
 def character_voice_env_key(character_id: str) -> str:
     """內建角色的 per-character 覆寫鍵：ELEVENLABS_{ID 大寫、- 轉 _}_VOICE_ID。"""
     return f"ELEVENLABS_{character_id.upper().replace('-', '_')}_VOICE_ID"
+
+
+def character_model_env_key(character_id: str) -> str:
+    """內建角色的 per-character 語音模型覆寫鍵：ELEVENLABS_{ID 大寫、- 轉 _}_MODEL_ID。"""
+    return f"ELEVENLABS_{character_id.upper().replace('-', '_')}_MODEL_ID"
 
 
 def _build_character_elevenlabs_voice_ids() -> dict[str, str]:
@@ -103,6 +115,20 @@ def _build_character_elevenlabs_voice_ids() -> dict[str, str]:
 
 # 各角色專屬 ElevenLabs 聲線映射（從 .env 解析，缺少時回退全域預設）
 CHARACTER_VOICE_IDS: dict[str, str] = _build_character_elevenlabs_voice_ids()
+
+
+def _build_character_elevenlabs_model_ids() -> dict[str, str]:
+    resolved: dict[str, str] = {}
+    for character_id, model_id in BUILTIN_CHARACTER_ELEVENLABS_MODEL_IDS.items():
+        resolved[character_id] = _read_first_non_empty_env(
+            character_model_env_key(character_id),
+            default=model_id,
+        )
+    return resolved
+
+
+# 各角色專屬 ElevenLabs 語音模型映射（從 .env 解析，缺少時回退全域預設）
+CHARACTER_MODEL_IDS: dict[str, str] = _build_character_elevenlabs_model_ids()
 
 # VoAI 角色聲音設定
 _DEFAULT_VOAI_CONFIG: dict = {
@@ -366,6 +392,20 @@ def get_elevenlabs_voice_id_for_character(character_id: str | None) -> str:
     from character_library import CharacterLibrary
     voice_key = {"F": "miku", "M": "Choppr"}.get(CharacterLibrary().get_voice_gender(cid), "")
     return CHARACTER_VOICE_IDS.get(voice_key) or ELEVENLABS_VOICE_ID
+
+
+def get_elevenlabs_model_id_for_character(character_id: str | None) -> str:
+    """回傳角色對應的 ElevenLabs 語音模型 id。
+
+    優先順序：per-character env → 內建專屬映射 → 全域 ELEVENLABS_MODEL_ID → DEFAULT_TTS_MODEL_ID。
+    """
+    cid = str(character_id or "").strip()
+    if cid in CHARACTER_MODEL_IDS:
+        return CHARACTER_MODEL_IDS[cid]
+    return (
+        os.getenv("ELEVENLABS_MODEL_ID", DEFAULT_TTS_MODEL_ID).strip()
+        or DEFAULT_TTS_MODEL_ID
+    )
 
 
 def get_voai_config_for_character(character_id: str | None) -> dict:

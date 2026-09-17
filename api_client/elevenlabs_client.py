@@ -17,8 +17,38 @@ from PyQt5.QtCore import QThread, pyqtSignal
 import config
 from audio_playback import is_raw_pcm_content_type
 
+# 沿用 voai_client.py 已經在用的模式:共用一個 Session 讓 TCP/TLS 連線可以重用,
+# 不必每個句段都重新握手(實測單次 TCP+TLS 建立約 0.4-1.4 秒)。原本這裡用的是
+# requests.post 模組函式,每次呼叫都會開一個新的 Session、新的連線。
+_ELEVENLABS_HTTP_SESSION = requests.Session()
+
+
 def _sanitize_stream_tts_text(text: str) -> str:
     return str(text or "").strip()
+
+
+# 各 ElevenLabs 模型的請求限制；未列出的鍵視為無限制，沿用全域環境變數原值。
+# - eleven_v3 拒絕 optimize_streaming_latency(400 unsupported_model),之前所有角色
+#   都因此 400、全部 fallback 到 VoAI 的共用預設聲線,才會聽起來像同一人。
+# - eleven_flash_v2_5 的 speed 合法範圍是 0.7-1.2,超出會 400 invalid_voice_settings。
+# 兩點皆由 openspec/changes/per-character-tts-model/design.md 的 smoke 測試實測確認。
+MODEL_CAPABILITIES: dict[str, dict] = {
+    "eleven_v3": {"supports_optimize_streaming_latency": False},
+    "eleven_flash_v2_5": {"speed_range": (0.7, 1.2)},
+}
+
+
+def _model_capabilities(model_id: str) -> dict:
+    return MODEL_CAPABILITIES.get(model_id, {})
+
+
+def _clamp_to_model_range(model_id: str, setting_name: str, value: float) -> float:
+    """把某個 voice_settings 值夾進所選模型的合法範圍；沒有範圍限制就原值放行。"""
+    value_range = _model_capabilities(model_id).get(f"{setting_name}_range")
+    if value_range is None:
+        return value
+    low, high = value_range
+    return max(low, min(high, value))
 
 
 class ElevenLabsStreamingTTSWorker(QThread):
@@ -38,6 +68,7 @@ class ElevenLabsStreamingTTSWorker(QThread):
         reply_id: str | None = None,
         trace_id: str | None = None,
         voice_id: str | None = None,
+        model_id: str | None = None,
         pcm_stream_sink=None,
         requests_post=None,
         parent=None,
@@ -47,8 +78,9 @@ class ElevenLabsStreamingTTSWorker(QThread):
         self._reply_id = (reply_id or uuid4().hex).strip()
         self._trace_id = (trace_id or "").strip()
         self._voice_id = (voice_id or "").strip()
+        self._model_id = (model_id or "").strip()
         self._pcm_stream_sink = pcm_stream_sink
-        self._requests_post = requests_post or requests.post
+        self._requests_post = requests_post or _ELEVENLABS_HTTP_SESSION.post
 
     def run(self):
         speech_text = _sanitize_stream_tts_text(self._text)
@@ -68,7 +100,7 @@ class ElevenLabsStreamingTTSWorker(QThread):
             "Accept": "audio/pcm" if self._pcm_stream_sink is not None else "audio/mpeg",
             "Content-Type": "application/json",
         }
-        model_id = (
+        model_id = self._model_id or (
             os.getenv("ELEVENLABS_MODEL_ID", config.DEFAULT_TTS_MODEL_ID).strip()
             or config.DEFAULT_TTS_MODEL_ID
         )
@@ -81,7 +113,9 @@ class ElevenLabsStreamingTTSWorker(QThread):
                 "use_speaker_boost": os.getenv("ELEVENLABS_USE_SPEAKER_BOOST", "false").strip().lower()
                 not in {"0", "false", "no", "off"},
                 "style": float(os.getenv("ELEVENLABS_STYLE", "0.0")),
-                "speed": float(os.getenv("ELEVENLABS_SPEED", "1.15")),
+                "speed": _clamp_to_model_range(
+                    model_id, "speed", float(os.getenv("ELEVENLABS_SPEED", "1.15"))
+                ),
             },
         }
 
@@ -94,9 +128,7 @@ class ElevenLabsStreamingTTSWorker(QThread):
             params = {
                 "output_format": f"pcm_{config.TTS_PCM_SAMPLE_RATE}" if self._pcm_stream_sink is not None else os.getenv("ELEVENLABS_OUTPUT_FORMAT", "mp3_22050_32"),
             }
-            # eleven_v3 拒絕 optimize_streaming_latency(400 unsupported_model),之前所有角色
-            # 都因此 400、全部 fallback 到 VoAI 的共用預設聲線,才會聽起來像同一人。
-            if model_id != "eleven_v3":
+            if _model_capabilities(model_id).get("supports_optimize_streaming_latency", True):
                 params["optimize_streaming_latency"] = os.getenv("ELEVENLABS_OPTIMIZE_STREAMING_LATENCY", "3")
             response = self._requests_post(
                 url,

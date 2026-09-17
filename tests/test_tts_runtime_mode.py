@@ -1,5 +1,7 @@
 """Unit tests for TTS runtime mode resolution and worker behavior."""
 
+from unittest.mock import MagicMock
+
 import pytest
 
 
@@ -126,6 +128,55 @@ class TestAdaptiveTTSFallbackWorker:
         assert AdaptiveTTSFallbackWorker(
             text="test", voice_id="char-Adol", preferred_provider="voai"
         )._preferred_provider == "voai"
+
+    def test_worker_resolves_elevenlabs_model_id_per_character(self):
+        """per-character-tts-model 3.3:Adol 用 v3,其他角色維持全域預設。"""
+        from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
+
+        adol_worker = AdaptiveTTSFallbackWorker(text="test", voice_id="char-Adol")
+        other_worker = AdaptiveTTSFallbackWorker(text="test", voice_id="char-Jack")
+
+        assert adol_worker._elevenlabs_model_id == "eleven_v3"
+        assert other_worker._elevenlabs_model_id == "eleven_flash_v2_5"
+
+    def test_elevenlabs_factory_receives_resolved_model_id(self):
+        """Adaptive worker 手上握有 character_id,解析出的 model_id 要傳給 ElevenLabs factory。"""
+        from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
+
+        captured = {}
+
+        def factory(text, reply_id, trace_id, voice_id, model_id=None, parent=None):
+            captured.update(
+                text=text, reply_id=reply_id, trace_id=trace_id,
+                voice_id=voice_id, model_id=model_id, parent=parent,
+            )
+            return MagicMock()
+
+        worker = AdaptiveTTSFallbackWorker(
+            text="test", voice_id="char-Adol", elevenlabs_worker_factory=factory,
+        )
+        worker.start()
+
+        assert captured["model_id"] == "eleven_v3"
+
+    def test_elevenlabs_factory_without_model_id_param_is_not_passed_it(self):
+        """既有的 signature 守門:factory 不吃 model_id 時不應該傳,避免打壞舊 factory。"""
+        from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
+
+        captured = {}
+
+        def factory(text, reply_id, trace_id, voice_id, parent=None):
+            captured.update(
+                text=text, reply_id=reply_id, trace_id=trace_id, voice_id=voice_id, parent=parent
+            )
+            return MagicMock()
+
+        worker = AdaptiveTTSFallbackWorker(
+            text="test", voice_id="char-Adol", elevenlabs_worker_factory=factory,
+        )
+        worker.start()
+
+        assert "model_id" not in captured
 
     def test_elevenlabs_initial_failure_falls_back_to_voai(self):
         from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker

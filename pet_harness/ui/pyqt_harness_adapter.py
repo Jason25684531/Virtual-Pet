@@ -736,7 +736,7 @@ class PyQtHarnessAdapter:
                 "status": dto.tts_primary_status,
                 "configured": dto.tts_primary_status != "configured_missing_runtime",
                 "implemented": dto.tts_primary_status != "configured_missing_runtime",
-                "required_env": ["ELEVENLABS_API_KEY", "ELEVENLABS_*_VOICE_ID", "ELEVENLABS_MODEL_ID"],
+                "required_env": ["ELEVENLABS_API_KEY", "ELEVENLABS_*_VOICE_ID", "ELEVENLABS_MODEL_ID", "ELEVENLABS_*_MODEL_ID"],
                 "message": dto.tts_primary_status,
             },
             "tts_fallback": {
