@@ -70,6 +70,39 @@ def test_explicit_manifest_actions_take_precedence_over_motion_fallback(tmp_path
     assert library.resolve_action_tag("miku", "idle") is None
 
 
+def test_has_declared_motion_true_only_for_manifest_declared_keys(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+    _write_manifest(tmp_path, "char-lei-jie", ["idle", "laugh"])
+
+    assert library.has_declared_motion("char-lei-jie", "idle") is True
+    assert library.has_declared_motion("char-lei-jie", "laugh") is True
+    assert library.has_declared_motion("char-lei-jie", "report_news") is False
+    assert library.has_declared_motion("char-lei-jie", "") is False
+    assert library.has_declared_motion("char-lei-jie", None) is False
+
+
+def test_has_declared_motion_ignores_undeclared_files_on_disk(tmp_path, monkeypatch):
+    """Regression: Choppr/miku 磁碟上仍留著 align-preset-character-interaction
+    移除 manifest 宣告後的舊檔（如 Play_Music.webm）。get_motion_path() 的檔案
+    系統猜測分支在 Windows 上會因不分大小寫而誤判成「有素材」；
+    has_declared_motion() 必須只認 manifest，不能被這類殘留檔案騙過。"""
+    library = _library(tmp_path, monkeypatch)
+    _write_manifest(tmp_path, "Choppr", ["idle", "laugh"])
+    stray_file = tmp_path / "assets" / "characters" / "Choppr" / "motions" / "play_music.webm"
+    stray_file.write_bytes(b"webm")
+
+    # get_motion_path() 的猜檔名分支確實會找到這個殘留檔案……
+    assert library.get_motion_path("Choppr", "play_music") is not None
+    # ……但 has_declared_motion() 不能被它騙過，manifest 沒宣告就是沒有。
+    assert library.has_declared_motion("Choppr", "play_music") is False
+
+
+def test_has_declared_motion_missing_character_returns_false(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+
+    assert library.has_declared_motion("no-such-character", "idle") is False
+
+
 def test_validated_character_persists_and_reads_voice_gender(tmp_path, monkeypatch):
     library = _library(tmp_path, monkeypatch)
     source = tmp_path / "source.png"

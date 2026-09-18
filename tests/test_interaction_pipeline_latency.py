@@ -6,10 +6,15 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from pet_harness.character import generation as character_generation
-from pet_harness.latency import TurnTimeline, summarize
+from pet_harness.engine.harness_engine import PetHarnessEngine
+from pet_harness.latency import TurnTimeline, create_turn, summarize
+from tests.conftest import FakeProvider
+from tests.test_harness_per_character import harness_env  # noqa: F401  (reused fixture)
 
 CONTEXT = {"character_id": "char-Adol", "route_kind": "deterministic", "skill_name": None, "streaming": True, "slow_tool": False}
 
@@ -123,3 +128,43 @@ def test_unmeasurable_and_cancelled_turns_count_as_failures_not_as_good_numbers(
 
 def test_summarize_returns_nothing_for_no_samples():
     assert summarize([]) == []
+
+
+def test_slow_tool_turn_still_logs_latency_when_audio_finished_before_context_is_set(harness_env, caplog):
+    """fix-media-action-motion-dispatch: post-LLM 的 slow tool（如 play_music）
+    可能讓 turn_complete 遠遠晚於語音已經起播（甚至播畢）；audio_worker 稍早呼叫
+    log_current() 時 context 還是空的，靜默略過。handle_event() 必須在
+    set_context() 之後自行補記，否則這類回合完全沒有 [TURN LATENCY] 紀錄。"""
+    tmp_path, agentic_root = harness_env
+    engine = PetHarnessEngine(
+        FakeProvider(), agentic_root=agentic_root, db_path=tmp_path / "state.db",
+        snapshot_path=tmp_path / "debug" / "latest_pet_event.json", character_id="Choppr",
+    )
+    turn_id = "turn-slow-tool-early-audio"
+    timeline = create_turn(turn_id, "text")
+    timeline.mark("audio_play_started")  # 模擬語音已經在 turn_complete 之前就起播（甚至播畢）
+
+    with caplog.at_level(logging.INFO, logger="pet_harness.latency"):
+        engine.handle_event({"text": "totally unmatched text xyz", "metadata": {"turn_id": turn_id}})
+
+    records = [r for r in caplog.records if r.getMessage().startswith("[TURN LATENCY]")]
+    assert len(records) == 1
+    assert f"'turn_id': '{turn_id}'" in records[0].getMessage()
+
+
+def test_normal_turn_without_early_audio_is_not_double_logged(harness_env, caplog):
+    """對照組：audio_play_started 尚未起播（一般情形）時，handle_event() 不搶著
+    補記，避免和 audio_worker 稍後的 log_current() 重複記錄同一輪。"""
+    tmp_path, agentic_root = harness_env
+    engine = PetHarnessEngine(
+        FakeProvider(), agentic_root=agentic_root, db_path=tmp_path / "state.db",
+        snapshot_path=tmp_path / "debug" / "latest_pet_event.json", character_id="Choppr",
+    )
+    turn_id = "turn-normal-no-early-audio"
+    create_turn(turn_id, "text")  # audio_play_started 未標記
+
+    with caplog.at_level(logging.INFO, logger="pet_harness.latency"):
+        engine.handle_event({"text": "totally unmatched text xyz", "metadata": {"turn_id": turn_id}})
+
+    records = [r for r in caplog.records if r.getMessage().startswith("[TURN LATENCY]")]
+    assert len(records) == 0

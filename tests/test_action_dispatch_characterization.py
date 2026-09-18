@@ -193,3 +193,51 @@ def test_timeout_promoted_and_critical_failure_log_distinct_suppression_messages
         assert timeout_message != critical_message
     finally:
         dispatcher.shutdown(wait_ms=100)
+
+
+def test_preload_does_not_duplicate_the_missing_motion_warning(caplog):
+    """fix-media-action-motion-dispatch: 一次 dispatch 裡 _preload_binding_motion()
+    與 _play_binding_motion() 都會呼叫 _resolve_action_motion_path()，同一個缺
+    素材的 motion_key 過去會被記錄兩次「找不到動作檔案」，誤導 log 判讀。"""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._find_motion_path = (
+            lambda motion_key: None if motion_key == "report_news" else f"assets/{motion_key}.webm"
+        )
+        dispatcher._window.preload_motion = MagicMock()
+        binding = dispatcher._bindings["report_news"]
+
+        with caplog.at_level(logging.WARNING, logger="action_dispatcher"):
+            dispatcher._preload_binding_motion(binding)
+            dispatcher._play_binding_motion(binding)
+
+        warnings = [record for record in caplog.records if "找不到動作檔案" in record.message]
+        assert len(warnings) == 1
+        assert "report_news" in warnings[0].message
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_has_finished_speech_for_trace_true_only_after_synthesis_and_playback_drain():
+    """fix-media-action-motion-dispatch: 一個晚到的動作標記要判斷「這個 trace
+    的語音是否已經播完」,不能只看「有沒有排過語音」——合成佇列與 audio worker
+    都要清空,且不在串流中,才算真正播完。"""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        assert dispatcher.has_finished_speech_for_trace("trace-1") is False  # 從未有過語音
+
+        dispatcher._trace_pending_tts_counts["trace-1"] = 1
+        assert dispatcher.has_finished_speech_for_trace("trace-1") is False  # 還有句段在合成中
+
+        dispatcher._trace_pending_tts_counts.pop("trace-1")
+        dispatcher._completed_tts_traces.add("trace-1")
+        dispatcher._audio_worker.is_busy = MagicMock(return_value=True)
+        assert dispatcher.has_finished_speech_for_trace("trace-1") is False  # 佇列清空但音訊還在播
+
+        dispatcher._audio_worker.is_busy = MagicMock(return_value=False)
+        assert dispatcher.has_finished_speech_for_trace("trace-1") is True  # 合成與播放都結束
+
+        dispatcher._streaming_traces.add("trace-1")
+        assert dispatcher.has_finished_speech_for_trace("trace-1") is False  # 仍在串流中,可能還有句段要來
+    finally:
+        dispatcher.shutdown(wait_ms=100)

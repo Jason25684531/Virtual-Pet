@@ -92,19 +92,23 @@ class TestSkillThenFallbackSequence:
         assert manager.store.get_behavior_state() == "idle"
 
 
+def _build_choppr_engine(harness_env) -> PetHarnessEngine:
+    tmp_path, agentic_root = harness_env
+    return PetHarnessEngine(
+        FakeProvider(),
+        agentic_root=agentic_root,
+        db_path=tmp_path / "state.db",
+        snapshot_path=tmp_path / "debug" / "latest_pet_event.json",
+        character_id="Choppr",
+    )
+
+
 class TestPetEventMirrorsBehaviorEvent:
     """UI 使用的 behavior 必須與 domain 決定結果一致:PetEvent.behavior_id/webm_key
     直接來自本輪 BehaviorEvent,以 skill 與 fallback 兩個實際互動路徑驗證。"""
 
     def _build_engine(self, harness_env) -> PetHarnessEngine:
-        tmp_path, agentic_root = harness_env
-        return PetHarnessEngine(
-            FakeProvider(),
-            agentic_root=agentic_root,
-            db_path=tmp_path / "state.db",
-            snapshot_path=tmp_path / "debug" / "latest_pet_event.json",
-            character_id="Choppr",
-        )
+        return _build_choppr_engine(harness_env)
 
     def test_skill_path_pet_event_matches_behavior_event(self, harness_env):
         engine = self._build_engine(harness_env)
@@ -196,6 +200,72 @@ class TestPetEventMirrorsBehaviorEvent:
         resolved, _ = engine._resolve_behavior(None, "laugh")
 
         assert resolved["action_tag"] == "laugh"
+
+
+class TestSkillWebmKeyFallsBackToValidatedActionWhenCharacterLacksAsset:
+    """fix-media-action-motion-dispatch: BehaviorManager.resolve() 在
+    matched_skill 存在時無條件採用 matched_skill.behavior,忽略已驗證過的
+    action_motion_key。這裡驗證 _resolve_behavior() 補上的 override:技能宣告
+    的 webm_key 在目前角色沒有對應素材時,改用同一回合已驗證、播得出來的動作,
+    但 behavior_id 維持技能宣告的值不變。"""
+
+    def _build_engine(self, harness_env) -> PetHarnessEngine:
+        return _build_choppr_engine(harness_env)
+
+    @staticmethod
+    def _skill(behavior: str) -> Skill:
+        return Skill(name="report_skill", description="d", triggers=["news"], behavior=behavior, xp_reward=1)
+
+    def test_falls_back_to_validated_action_when_skill_webm_key_has_no_asset(self, harness_env, monkeypatch):
+        engine = self._build_engine(harness_env)
+        engine.behavior_manager.behavior_map["report_news"] = {"webm_key": "report_news"}
+        monkeypatch.setattr(engine.character_library, "list_action_tags", lambda _cid: ["wave_response"])
+        monkeypatch.setattr(
+            engine.character_library,
+            "resolve_action_tag",
+            lambda _cid, tag: {"action_tag": tag, "motion_key": tag, "path": f"{tag}.webm"},
+        )
+        monkeypatch.setattr(
+            engine.character_library,
+            "has_declared_motion",
+            lambda _cid, key: key == "wave_response",
+        )
+
+        resolved, behavior = engine._resolve_behavior(self._skill("report_news"), "wave_response")
+
+        assert resolved["motion_key"] == "wave_response"
+        assert behavior.webm_key == "wave_response"
+        assert behavior.behavior_id == "report_news"  # 不受影響:仍是技能宣告的 behavior_id
+        assert behavior.reason == "skill"
+
+    def test_does_not_override_when_skill_webm_key_already_has_an_asset(self, harness_env, monkeypatch):
+        engine = self._build_engine(harness_env)
+        engine.behavior_manager.behavior_map["laugh"] = {"webm_key": "laugh"}
+        monkeypatch.setattr(engine.character_library, "list_action_tags", lambda _cid: ["laugh"])
+        monkeypatch.setattr(
+            engine.character_library,
+            "resolve_action_tag",
+            lambda _cid, tag: {"action_tag": tag, "motion_key": tag, "path": f"{tag}.webm"},
+        )
+        monkeypatch.setattr(engine.character_library, "has_declared_motion", lambda _cid, key: True)
+
+        resolved, behavior = engine._resolve_behavior(self._skill("laugh"), "laugh")
+
+        assert resolved["motion_key"] == "laugh"
+        assert behavior.webm_key == "laugh"
+        assert behavior.behavior_id == "laugh"
+
+    def test_keeps_original_webm_key_when_no_validated_action_is_available(self, harness_env, monkeypatch):
+        engine = self._build_engine(harness_env)
+        engine.behavior_manager.behavior_map["report_news"] = {"webm_key": "report_news"}
+        monkeypatch.setattr(engine.character_library, "list_action_tags", lambda _cid: [])
+        monkeypatch.setattr(engine.character_library, "has_declared_motion", lambda _cid, key: False)
+
+        resolved, behavior = engine._resolve_behavior(self._skill("report_news"))
+
+        assert resolved is None
+        assert behavior.webm_key == "report_news"  # 沒有可退回的候選,維持原值(播放層自行退回 idle)
+        assert behavior.behavior_id == "report_news"
 
 
 if __name__ == "__main__":

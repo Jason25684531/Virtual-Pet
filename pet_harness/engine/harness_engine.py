@@ -750,6 +750,14 @@ class PetHarnessEngine:
             tool_status=(tool_result_payload or {}).get("status"),
         )
         pet_event.metadata["latency"] = timeline.report(**timeline.context)
+        if timeline.checkpoints.get("audio_play_started") is not None:
+            # 音訊在這裡之前就已經起播(甚至播畢)——例如 post-LLM 的 slow tool
+            # 把 turn_complete 拖到語音都播完之後(見 play_music)。audio_worker
+            # 稍早呼叫 log_current() 時 context 還是空的,靜默略過了；這是唯一
+            # 還能補記這筆 [TURN LATENCY] 的機會(fix-media-action-motion-
+            # dispatch design.md 決策 5)。context 尚未設定前就起播的正常情形
+            # (audio_play_started 為 None)不受影響,仍由 audio_worker 照舊記錄。
+            timeline.log_current()
 
         self._spoken_chunks.pop(timeline.turn_id, None)
         self._persist_and_snapshot(user_event, pet_event)
@@ -1019,6 +1027,19 @@ class PetHarnessEngine:
             else:
                 self._last_action_tag = action_tag
         behavior = self.behavior_manager.resolve(skill, action_motion_key=resolved_action["motion_key"] if resolved_action else None)
+        if (
+            skill is not None
+            and resolved_action is not None
+            and not self.character_library.has_declared_motion(self._character_id, behavior.webm_key)
+        ):
+            # BehaviorManager.resolve() 在 matched_skill 存在時無條件採用
+            # matched_skill.behavior,不看上面已經驗證過的 resolved_action——
+            # 技能宣告的動作(例如 report_news/play_music)在目前角色沒有對應
+            # 素材時就會播不出來、退回 idle。改用同一回合已驗證、這個角色播
+            # 得出來的動作候選;behavior_id/reason/source_skill 不變,獎勵解鎖
+            # 與素材生成請求的行為因此不受影響(見 fix-media-action-motion-
+            # dispatch design.md 決策 1)。
+            behavior = replace(behavior, webm_key=resolved_action["motion_key"])
         return resolved_action, behavior
 
     def _run_tool_fallback(

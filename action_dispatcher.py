@@ -278,6 +278,28 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             or normalized_trace_id == self._active_action_trace_id
         )
 
+    def has_finished_speech_for_trace(self, trace_id: str | None) -> bool:
+        """該 trace 的語音是否已經完整播放完畢(合成佇列已清空、audio worker
+        不忙碌、且不在串流中)。用於判斷一個晚到才抵達的動作標記是否還有意義
+        ——語音都播完了才抵達的動作，對著已經安靜的畫面播出沒有意義（見
+        voice-motion-sync 新增的「動作標記晚於語音播畢才產生」情境）。判定條件
+        沿用 `_maybe_close_trace_audio_session()`/`_finish_loop_action_if_tts_idle()`
+        既有的「這個 trace 的語音真的播完了」判斷，不新增狀態機。"""
+        normalized_trace_id = str(trace_id or "").strip()
+        if not normalized_trace_id:
+            return False
+        if normalized_trace_id in self._streaming_traces:
+            return False
+        if self._trace_pending_tts_counts.get(normalized_trace_id, 0) > 0:
+            return False
+        if normalized_trace_id not in self._completed_tts_traces:
+            return False
+        return (
+            self._pending_tts_chunks.empty()
+            and self._active_tts_worker is None
+            and not self._audio_worker.is_busy()
+        )
+
     @property
     def audio_worker(self) -> AudioStreamWorker:
         return self._audio_worker
@@ -693,7 +715,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         preload = getattr(self._window, "preload_motion", None)
         if not callable(preload):
             return
-        motion_path, motion_kind = self._resolve_action_motion_path(binding.motion_key)
+        motion_path, motion_kind = self._resolve_action_motion_path(binding.motion_key, log_missing=False)
         if motion_path and motion_kind != "idle":
             preload(motion_path)
 
@@ -802,7 +824,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._window.start_motion_loop(motion_path, 300)
         return True
 
-    def _resolve_action_motion_path(self, motion_key: str) -> tuple[str | None, str]:
+    def _resolve_action_motion_path(self, motion_key: str, log_missing: bool = True) -> tuple[str | None, str]:
         """回傳 (path, kind)。kind 為 "exact"（角色自己的動作）或 "idle"
         （角色沒有對應動作，退回 idle，不是 loop action）。
 
@@ -814,7 +836,8 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             return motion_path, "exact"
 
         idle_path = self._find_motion_path("idle")
-        LOGGER.warning("[ECHOES] 找不到動作檔案: motion_key=%s, 退回 Idle", motion_key)
+        if log_missing:
+            LOGGER.warning("[ECHOES] 找不到動作檔案: motion_key=%s, 退回 Idle", motion_key)
         return idle_path, "idle"
 
     def _find_motion_path(self, motion_key: str) -> str | None:

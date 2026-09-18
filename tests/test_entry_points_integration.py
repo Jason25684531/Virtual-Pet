@@ -155,3 +155,62 @@ def test_streaming_result_dispatches_its_final_action_when_no_stream_action_star
     assert [call for call in calls if call[0] == "action"] == [
         ("action", ("[ACTION:laugh]",), {"trace_id": calls[0][1][0], "allow_tts": True, "wait_for_tts_start": True})
     ]
+
+
+def test_streaming_result_skips_a_late_action_once_its_speech_already_finished():
+    """fix-media-action-motion-dispatch: 一個 provider-routed 技能命中後才決定
+    的動作標記,若在該 trace 的語音都已經播完之後才抵達,不該再補播——那是對著
+    已經安靜的畫面播動作,違反 voice-motion-sync 的起播對齊要求。"""
+    calls = []
+    window = SimpleNamespace(
+        _latest_agentic_event=None,
+        _latency_tracker=None,
+        _motion_coordinator=SimpleNamespace(
+            has_motion_for_trace=lambda _trace_id: False,
+            has_finished_speech_for_trace=lambda _trace_id: True,
+        ),
+        _validated_event_motion_key=lambda _payload: "play_music",
+        begin_conversation_turn=lambda *args: calls.append(("begin", args)),
+        set_conversation_assistant=lambda *args: calls.append(("reply", args)),
+        finish_conversation_turn=lambda *args: calls.append(("finish", args)),
+        dispatch_action=lambda *args, **kwargs: calls.append(("action", args, kwargs)),
+        speak_text=lambda *args, **kwargs: calls.append(("speak", args, kwargs)),
+        refresh_agentic_ui=lambda **kwargs: calls.append(("refresh", kwargs)),
+    )
+
+    TransparentWindow.consume_interaction_result(
+        window,
+        {"reply": "來點音樂", "metadata": {"agentic": {"streaming": True}}, "webm_key": "play_music"},
+    )
+
+    assert [call for call in calls if call[0] == "action"] == []
+
+
+def test_streaming_result_still_dispatches_a_late_action_while_speech_is_ongoing():
+    """對照組:語音仍在進行中(串流未結束)時抵達的動作標記照常派送,4.1 的攔截
+    不誤傷這個情況。"""
+    calls = []
+    window = SimpleNamespace(
+        _latest_agentic_event=None,
+        _latency_tracker=None,
+        _motion_coordinator=SimpleNamespace(
+            has_motion_for_trace=lambda _trace_id: False,
+            has_finished_speech_for_trace=lambda _trace_id: False,
+        ),
+        _validated_event_motion_key=lambda _payload: "play_music",
+        begin_conversation_turn=lambda *args: calls.append(("begin", args)),
+        set_conversation_assistant=lambda *args: calls.append(("reply", args)),
+        finish_conversation_turn=lambda *args: calls.append(("finish", args)),
+        dispatch_action=lambda *args, **kwargs: calls.append(("action", args, kwargs)),
+        speak_text=lambda *args, **kwargs: calls.append(("speak", args, kwargs)),
+        refresh_agentic_ui=lambda **kwargs: calls.append(("refresh", kwargs)),
+    )
+
+    TransparentWindow.consume_interaction_result(
+        window,
+        {"reply": "來點音樂", "metadata": {"agentic": {"streaming": True}}, "webm_key": "play_music"},
+    )
+
+    assert [call for call in calls if call[0] == "action"] == [
+        ("action", ("[ACTION:play_music]",), {"trace_id": calls[0][1][0], "allow_tts": True, "wait_for_tts_start": True})
+    ]

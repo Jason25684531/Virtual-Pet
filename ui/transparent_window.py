@@ -1378,7 +1378,9 @@ class TransparentWindow(QMainWindow):
         if streaming and webm_key:
             coordinator = self._motion_coordinator
             has_motion = getattr(coordinator, "has_motion_for_trace", None)
-            if not callable(has_motion) or has_motion(trace_id) is not True:
+            has_finished_speech = getattr(coordinator, "has_finished_speech_for_trace", None)
+            speech_already_finished = callable(has_finished_speech) and has_finished_speech(trace_id) is True
+            if not speech_already_finished and (not callable(has_motion) or has_motion(trace_id) is not True):
                 self.dispatch_action(
                     f"[ACTION:{webm_key}]",
                     trace_id=trace_id,

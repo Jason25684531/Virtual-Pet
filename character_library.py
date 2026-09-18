@@ -254,6 +254,20 @@ class CharacterLibrary:
                 return str(og_flat)
         return None
 
+    def has_declared_motion(self, character_id: str | None, motion_key: str | None) -> bool:
+        """`motion_key` 是否為該角色 manifest 明確宣告的動作，不透過
+        `get_motion_path()` 的檔案系統猜測分支判斷。
+
+        `get_motion_path()` 有一段不檢查 manifest 授權、只看 `motions_dir` 底下
+        是否存在同名檔案的後備分支；NTFS 對檔名不分大小寫，會讓它誤判磁碟上
+        殘留的舊檔（例如 Choppr/miku 的 `Play_Music.webm`）為「這個角色有這支
+        動作」。凡是要判斷「這個角色是否真的宣告了這個動作」都必須走這裡，
+        不能用 get_motion_path() 是否回傳路徑代替。"""
+        manifest = self.get_character(character_id)
+        motions = manifest.get("motions") if manifest else None
+        normalized_key = str(motion_key or "").strip()
+        return bool(normalized_key) and isinstance(motions, dict) and normalized_key in motions
+
     def list_variant_inventory(self, character_id: str) -> list[dict[str, object]]:
         manifest = self.get_character(character_id)
         if not manifest:
