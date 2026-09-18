@@ -11,6 +11,7 @@ import queue
 import inspect
 from collections import deque
 from dataclasses import dataclass, replace
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 from PyQt5.QtCore import QCoreApplication, QObject, QTimer, pyqtSignal
@@ -123,6 +124,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._spoken_reply_ids: set[str] = set()
         self._trace_pending_tts_counts: dict[str, int] = {}
         self._completed_tts_traces: set[str] = set()
+        self._trace_speech_completed_at: dict[str, float] = {}
         self._streaming_traces: set[str] = set()
         self._deferred_dispatches: deque[DeferredDispatch] = deque()
         self._active_action_trace_id: str | None = None
@@ -278,27 +280,36 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             or normalized_trace_id == self._active_action_trace_id
         )
 
+    # 動作標記在語音播完之後抵達,超過這個緩衝時間才視為「太晚，不補播」。一般
+    # 回合從語音播完到動作標記抵達(技能路由/行為解析/跨執行緒轉發)通常在
+    # 1 秒內；9 秒級的落後(見 play_music 案例)才是這裡要攔的對象。
+    # ponytail: 固定門檻，若未來需要依回合類型調整，改成可設定值。
+    LATE_ACTION_GRACE_S = 2.5
+
     def has_finished_speech_for_trace(self, trace_id: str | None) -> bool:
-        """該 trace 的語音是否已經完整播放完畢(合成佇列已清空、audio worker
-        不忙碌、且不在串流中)。用於判斷一個晚到才抵達的動作標記是否還有意義
-        ——語音都播完了才抵達的動作，對著已經安靜的畫面播出沒有意義（見
-        voice-motion-sync 新增的「動作標記晚於語音播畢才產生」情境）。判定條件
-        沿用 `_maybe_close_trace_audio_session()`/`_finish_loop_action_if_tts_idle()`
-        既有的「這個 trace 的語音真的播完了」判斷，不新增狀態機。"""
+        """該 trace 的語音是否已經播完，且已經播完超過 `LATE_ACTION_GRACE_S`。
+
+        用於判斷一個晚到才抵達的動作標記是否還有意義——語音都播完了才抵達的
+        動作，對著已經安靜的畫面播出沒有意義（見 voice-motion-sync 新增的
+        「動作標記晚於語音播畢才產生」情境）。用「播完後過了多久」而不是單純
+        「有沒有播完」，是為了不誤傷正常回合：一般回合從語音播完到動作標記
+        真正抵達 `consume_interaction_result()`，中間的路由/序列化/跨執行緒轉發
+        本身就有零點幾秒的正常延遲，這段時間不該被當成「太晚」。"""
         normalized_trace_id = str(trace_id or "").strip()
         if not normalized_trace_id:
             return False
-        if normalized_trace_id in self._streaming_traces:
-            return False
         if self._trace_pending_tts_counts.get(normalized_trace_id, 0) > 0:
             return False
-        if normalized_trace_id not in self._completed_tts_traces:
+        completed_at = self._trace_speech_completed_at.get(normalized_trace_id)
+        if completed_at is None:
             return False
-        return (
+        if not (
             self._pending_tts_chunks.empty()
             and self._active_tts_worker is None
             and not self._audio_worker.is_busy()
-        )
+        ):
+            return False
+        return (perf_counter() - completed_at) >= self.LATE_ACTION_GRACE_S
 
     @property
     def audio_worker(self) -> AudioStreamWorker:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import queue
 import re
+from time import perf_counter
 from uuid import uuid4
 
 
@@ -351,6 +352,7 @@ class TtsPlaybackMixin:
         self._spoken_reply_ids.clear()
         self._trace_pending_tts_counts.clear()
         self._completed_tts_traces.clear()
+        self._trace_speech_completed_at.clear()
         self._streaming_traces.clear()
         self._deferred_dispatches.clear()
         while not self._pending_tts_chunks.empty():
@@ -394,6 +396,7 @@ class TtsPlaybackMixin:
             # queue_drained，讓角色動作回到 idle。
             if self._trace_pending_tts_counts.get(normalized_trace_id, 0) == 0:
                 self._completed_tts_traces.add(normalized_trace_id)
+                self._trace_speech_completed_at[normalized_trace_id] = perf_counter()
         if normalized_trace_id in self._suppressed_traces and reply_id not in self._driver_started_replies and not skipped_by_design:
             success = False
             if "抑制" not in message:
@@ -486,6 +489,7 @@ class TtsPlaybackMixin:
         self._spoken_reply_ids.clear()
         self._trace_pending_tts_counts.clear()
         self._completed_tts_traces.clear()
+        self._trace_speech_completed_at.clear()
         self._streaming_traces.clear()
         self._deferred_dispatches.clear()
         while not self._pending_tts_chunks.empty():

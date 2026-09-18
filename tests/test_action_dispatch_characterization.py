@@ -1,6 +1,7 @@
 """P0 baseline: legacy action binding and deferred-dispatch semantics stay stable."""
 
 import logging
+from time import perf_counter
 from unittest.mock import MagicMock
 
 from action_dispatcher import MotionCoordinator
@@ -218,10 +219,11 @@ def test_preload_does_not_duplicate_the_missing_motion_warning(caplog):
         dispatcher.shutdown(wait_ms=100)
 
 
-def test_has_finished_speech_for_trace_true_only_after_synthesis_and_playback_drain():
+def test_has_finished_speech_for_trace_requires_the_full_grace_period_to_pass():
     """fix-media-action-motion-dispatch: 一個晚到的動作標記要判斷「這個 trace
-    的語音是否已經播完」,不能只看「有沒有排過語音」——合成佇列與 audio worker
-    都要清空,且不在串流中,才算真正播完。"""
+    的語音播完後過了多久」,不能只看「有沒有播完」——一般回合從語音播完到
+    動作標記真正抵達，本身就有零點幾秒的正常延遲，不該被當成「太晚」；只有
+    像 play_music 那種秒級以上的落後才算數(見 LATE_ACTION_GRACE_S)。"""
     dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
     try:
         assert dispatcher.has_finished_speech_for_trace("trace-1") is False  # 從未有過語音
@@ -230,14 +232,33 @@ def test_has_finished_speech_for_trace_true_only_after_synthesis_and_playback_dr
         assert dispatcher.has_finished_speech_for_trace("trace-1") is False  # 還有句段在合成中
 
         dispatcher._trace_pending_tts_counts.pop("trace-1")
-        dispatcher._completed_tts_traces.add("trace-1")
         dispatcher._audio_worker.is_busy = MagicMock(return_value=True)
+        dispatcher._trace_speech_completed_at["trace-1"] = perf_counter()
         assert dispatcher.has_finished_speech_for_trace("trace-1") is False  # 佇列清空但音訊還在播
 
         dispatcher._audio_worker.is_busy = MagicMock(return_value=False)
-        assert dispatcher.has_finished_speech_for_trace("trace-1") is True  # 合成與播放都結束
+        dispatcher._trace_speech_completed_at["trace-1"] = perf_counter()
+        assert dispatcher.has_finished_speech_for_trace("trace-1") is False  # 剛播完，還在緩衝時間內
 
-        dispatcher._streaming_traces.add("trace-1")
-        assert dispatcher.has_finished_speech_for_trace("trace-1") is False  # 仍在串流中,可能還有句段要來
+        dispatcher._trace_speech_completed_at["trace-1"] = perf_counter() - dispatcher.LATE_ACTION_GRACE_S - 0.1
+        assert dispatcher.has_finished_speech_for_trace("trace-1") is True  # 播完後已經超過緩衝時間
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_has_finished_speech_for_trace_is_not_blocked_by_the_still_pending_streaming_flag():
+    """Regression: consume_interaction_result() 呼叫這個函式的當下，
+    finish_streaming_trace() 一定還沒執行(它被 QTimer.singleShot(0, ...) 延到
+    下一個事件循環才清掉 _streaming_traces)，trace 因此在真實呼叫點上永遠還
+    留在 _streaming_traces 裡。舊版判斷式把這個仍在 _streaming_traces 的狀態
+    當成「還在串流、可能有更多句段」而直接回傳 False，導致這個函式在唯一的
+    呼叫點上等於永遠不會生效。判斷式不應該再依賴這個時機上必然過期的旗標。"""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._streaming_traces.add("trace-1")  # 模擬 finish_streaming_trace() 尚未執行的真實時機
+        dispatcher._audio_worker.is_busy = MagicMock(return_value=False)
+        dispatcher._trace_speech_completed_at["trace-1"] = perf_counter() - dispatcher.LATE_ACTION_GRACE_S - 0.1
+
+        assert dispatcher.has_finished_speech_for_trace("trace-1") is True
     finally:
         dispatcher.shutdown(wait_ms=100)
