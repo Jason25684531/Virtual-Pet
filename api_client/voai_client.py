@@ -15,6 +15,8 @@ from time import perf_counter
 from uuid import uuid4
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 from PyQt5.QtCore import QThread, pyqtSignal
 
 import config
@@ -22,7 +24,11 @@ from api_client.tts_contract import TtsRequest
 from audio_playback import FfplayPcmAudioPlayer, PlaybackStartSuppressed, is_raw_pcm_content_type
 
 _VOAI_TTS_URL = "https://connect.voai.ai/TTS/Speech"
+# 連線層重試(DNS 解析失敗/連線被拒)只重試 1 次、退避 0.2 秒:與
+# elevenlabs_client.py 同一套理由——短暫 DNS 抖動重試就會恢復,不必馬上判定
+# provider 失敗。HTTP 狀態碼錯誤不重試,交給既有 fast-fail 分類處理。
 _VOAI_HTTP_SESSION = requests.Session()
+_VOAI_HTTP_SESSION.mount("https://", HTTPAdapter(max_retries=Retry(total=1, connect=1, backoff_factor=0.2)))
 _DEFAULT_STYLE = "預設"
 _DEFAULT_SPEED = 1.2
 _DEFAULT_STYLE_WEIGHT = 0.0

@@ -12,6 +12,8 @@ import os
 from uuid import uuid4
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 from PyQt5.QtCore import QThread, pyqtSignal
 
 import config
@@ -21,7 +23,12 @@ from audio_playback import is_raw_pcm_content_type
 # 沿用 voai_client.py 已經在用的模式:共用一個 Session 讓 TCP/TLS 連線可以重用,
 # 不必每個句段都重新握手(實測單次 TCP+TLS 建立約 0.4-1.4 秒)。原本這裡用的是
 # requests.post 模組函式,每次呼叫都會開一個新的 Session、新的連線。
+# 連線層重試(DNS 解析失敗/連線被拒)只重試 1 次、退避 0.2 秒:實測中 DNS 短暫
+# 抖動(getaddrinfo 失敗)幾百毫秒後重試就會恢復,不值得直接判定 provider 失敗
+# 並切到下一個供應商。HTTP 狀態碼錯誤不在重試範圍內,交給既有 fallback 鏈處理。
+_RETRY_ADAPTER = HTTPAdapter(max_retries=Retry(total=1, connect=1, backoff_factor=0.2))
 _ELEVENLABS_HTTP_SESSION = requests.Session()
+_ELEVENLABS_HTTP_SESSION.mount("https://", _RETRY_ADAPTER)
 
 
 def _sanitize_stream_tts_text(text: str) -> str:
