@@ -8,7 +8,6 @@ from __future__ import annotations
 import logging
 import os
 import queue
-import random
 import inspect
 from collections import deque
 from dataclasses import dataclass, replace
@@ -36,9 +35,6 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 REPLY_STATUS_LABEL = "正在回覆"
-# report_news/play_music 沒有專屬 webm 的角色（如 char-Adol）改隨機挑一般反應動作，
-# 而不是整段都播 idle。
-_NO_DEDICATED_ASSET_FALLBACK_POOL = ("wave_response", "laugh", "angry", "awkward", "speechless", "listen")
 
 
 @dataclass(frozen=True)
@@ -792,11 +788,8 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             self._loop_action_service_pending = False
             return bool(self._window.play_resolved_motion(binding.motion_key, motion_path, loop=True))
 
-        # "exact"（角色自己的動作）與 "substitute"（缺資產時代打的一般反應
-        # 動作）都是真正的 loop action，走同一套收尾生命週期
-        # （queue_drained → _finish_loop_action_if_tts_idle → _finish_loop_action）；
-        # 代打動作過去被誤判成「不是 loop action」卻仍以 loop=True 播放，
-        # 導致沒有人收尾、動畫永遠卡住不回 idle。
+        # "exact"（角色自己的動作）是真正的 loop action，走同一套收尾生命週期
+        # （queue_drained → _finish_loop_action_if_tts_idle → _finish_loop_action）。
         self._current_loop_action_key = binding.motion_key
         self._current_loop_binding = binding
         self._loop_action_tts_queued = False
@@ -810,24 +803,15 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         return True
 
     def _resolve_action_motion_path(self, motion_key: str) -> tuple[str | None, str]:
-        """回傳 (path, kind)。kind 為 "exact"（角色自己的動作）、"substitute"
-        （缺資產時代打的一般反應動作，仍是真正的 loop action）或 "idle"
-        （連代打都找不到，真的退回 idle，不是 loop action）。"""
+        """回傳 (path, kind)。kind 為 "exact"（角色自己的動作）或 "idle"
+        （角色沒有對應動作，退回 idle，不是 loop action）。
+
+        缺素材時一律回 idle，不代打其他反應動作：見 voice-motion-sync 的
+        「動作影片缺失時角色動作維持閒置」要求，以及九隻預設角色在媒體
+        動作缺素材時必須表現一致（align-preset-character-interaction 決策 4）。"""
         motion_path = self._find_motion_path(motion_key)
         if motion_path:
             return motion_path, "exact"
-
-        if motion_key in ("report_news", "play_music"):
-            pool = list(_NO_DEDICATED_ASSET_FALLBACK_POOL)
-            random.shuffle(pool)
-            for candidate_key in pool:
-                candidate_path = self._find_motion_path(candidate_key)
-                if candidate_path:
-                    LOGGER.warning(
-                        "[ECHOES] 找不到動作檔案: motion_key=%s, 隨機改播 %s",
-                        motion_key, candidate_key,
-                    )
-                    return candidate_path, "substitute"
 
         idle_path = self._find_motion_path("idle")
         LOGGER.warning("[ECHOES] 找不到動作檔案: motion_key=%s, 退回 Idle", motion_key)

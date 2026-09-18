@@ -1,8 +1,11 @@
 """Unit tests for TTS runtime mode resolution and worker behavior."""
 
-from unittest.mock import MagicMock
+import dataclasses
 
 import pytest
+from PyQt5.QtCore import QObject, pyqtSignal
+
+from api_client.tts_contract import TtsRequest, build_tts_provider_chain
 
 
 class TestTTSRuntimeMode:
@@ -61,145 +64,146 @@ class TestTTSRuntimeMode:
         assert result == ""
 
 
+class _StubStreamingWorker(QObject):
+    """只實作 StreamingTTSWorker 契約,不做真正的網路呼叫;測試以
+    `_handle_result` 直接驅動 AdaptiveTTSFallbackWorker 的備援決策。"""
+
+    finished_signal = pyqtSignal(bool, str, object)
+    progress_signal = pyqtSignal(str, object)
+    audio_ready_signal = pyqtSignal(object, str, str)
+    finished = pyqtSignal()
+
+    def __init__(self, request: TtsRequest, parent=None):
+        super().__init__(parent)
+
+    def start(self):
+        pass
+
+    def isRunning(self):
+        return False
+
+    def quit(self):
+        pass
+
+    def wait(self, timeout_ms: int = 5000) -> bool:
+        return True
+
+
+def _stub_chain(character_id: str, preferred_provider: str | None = None):
+    """沿用 build_tts_provider_chain 真正的順序與備援判斷規則,只把
+    factory 換成不打真網路的 stub,方便測試備援決策而不需要 mock HTTP。"""
+    return tuple(
+        dataclasses.replace(provider, factory=_StubStreamingWorker)
+        for provider in build_tts_provider_chain(character_id, preferred_provider)
+    )
+
+
+def _make_worker(character_id="char-RO", preferred_provider=None, resolved_tts_mode="voai_first"):
+    from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
+
+    chain = _stub_chain(character_id, preferred_provider)
+    request = TtsRequest(
+        text="test", reply_id="test_001", trace_id="trace_001",
+        character_id=character_id, voice_id="v", model_id="m",
+        preferred_provider=preferred_provider or "", resolved_tts_mode=resolved_tts_mode,
+    )
+    return AdaptiveTTSFallbackWorker(request, chain=chain)
+
+
 class TestAdaptiveTTSFallbackWorker:
-    """Test AdaptiveTTSFallbackWorker payload structure."""
+    """Test AdaptiveTTSFallbackWorker payload structure and fallback decisions."""
 
-    def test_worker_initialization_with_resolved_mode(self):
-        """Test that worker accepts and stores resolved_tts_mode parameter."""
-        from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
+    def test_worker_initialization_starts_with_empty_chain_state(self):
+        worker = _make_worker(resolved_tts_mode="voai_first")
 
-        worker = AdaptiveTTSFallbackWorker(
-            text="test",
-            reply_id="test_001",
-            trace_id="trace_001",
-            voice_id="Miku",
-            resolved_tts_mode="voai_first"
-        )
-
-        assert worker._resolved_tts_mode == "voai_first"
+        assert worker._request.resolved_tts_mode == "voai_first"
         assert worker._provider_chain == []
         assert worker._fallback_reasons == []
 
-    def test_worker_fallback_reasons_tracking(self):
-        """Test that worker tracks fallback reasons."""
+    def test_worker_without_explicit_chain_defaults_to_build_tts_provider_chain(self):
         from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
 
-        worker = AdaptiveTTSFallbackWorker(
-            text="test",
-            reply_id="test_001",
-            trace_id="trace_001",
-            voice_id="Miku",
-            resolved_tts_mode="voai_first"
+        request = TtsRequest(
+            text="test", reply_id="r1", trace_id="t1", character_id="char-Adol",
+            voice_id="v", model_id="m",
         )
+        worker = AdaptiveTTSFallbackWorker(request)
 
-        assert isinstance(worker._fallback_reasons, list)
-        assert len(worker._fallback_reasons) == 0
+        assert [p.name for p in worker._chain] == [p.name for p in build_tts_provider_chain("char-Adol")]
 
-    def test_worker_payload_includes_resolved_mode(self):
-        """Test that worker result payload includes resolved_mode and attempted_providers."""
-        from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
+    def test_worker_payload_includes_resolved_mode_and_attempted_providers(self):
+        worker = _make_worker(character_id="char-RO", resolved_tts_mode="fallback_enabled")
+        results = []
+        worker.finished_signal.connect(lambda success, message, payload: results.append(payload))
+        worker._running = True
+        worker._chain_index = 0
+        worker._provider_chain = ["voai"]
 
-        worker = AdaptiveTTSFallbackWorker(
-            text="test",
-            reply_id="test_001",
-            trace_id="trace_001",
-            voice_id="Miku",
-            resolved_tts_mode="fallback_enabled"
-        )
+        worker._handle_result(True, "ok", {}, "voai")
 
-        payload = {"status": "test"}
-        normalized = dict(payload)
-        normalized.setdefault("resolved_mode", worker._resolved_tts_mode)
-        normalized.setdefault("attempted_providers", list(worker._provider_chain))
-
-        assert normalized["resolved_mode"] == "fallback_enabled"
-        assert normalized["attempted_providers"] == []
+        assert results[0]["resolved_mode"] == "fallback_enabled"
+        assert results[0]["attempted_providers"] == ["voai"]
 
     def test_dedicated_voice_character_prefers_elevenlabs(self):
         import config
-        from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
 
         assert "char-Adol" in config.BUILTIN_CHARACTER_ELEVENLABS_VOICE_IDS
-        worker = AdaptiveTTSFallbackWorker(text="test", voice_id="char-Adol")
-        assert worker._preferred_provider == "elevenlabs"
+        assert _make_worker("char-Adol")._chain[0].name == "elevenlabs"
 
         # 無專屬聲線的角色維持 VoAI 優先；顯式指定時以指定值為準。
-        assert AdaptiveTTSFallbackWorker(text="test", voice_id="char-RO")._preferred_provider == "voai"
-        assert AdaptiveTTSFallbackWorker(
-            text="test", voice_id="char-Adol", preferred_provider="voai"
-        )._preferred_provider == "voai"
-
-    def test_worker_resolves_elevenlabs_model_id_per_character(self):
-        """per-character-tts-model 3.3:Adol 用 v3,其他角色維持全域預設。"""
-        from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
-
-        adol_worker = AdaptiveTTSFallbackWorker(text="test", voice_id="char-Adol")
-        other_worker = AdaptiveTTSFallbackWorker(text="test", voice_id="char-Jack")
-
-        assert adol_worker._elevenlabs_model_id == "eleven_v3"
-        assert other_worker._elevenlabs_model_id == "eleven_flash_v2_5"
-
-    def test_elevenlabs_factory_receives_resolved_model_id(self):
-        """Adaptive worker 手上握有 character_id,解析出的 model_id 要傳給 ElevenLabs factory。"""
-        from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
-
-        captured = {}
-
-        def factory(text, reply_id, trace_id, voice_id, model_id=None, parent=None):
-            captured.update(
-                text=text, reply_id=reply_id, trace_id=trace_id,
-                voice_id=voice_id, model_id=model_id, parent=parent,
-            )
-            return MagicMock()
-
-        worker = AdaptiveTTSFallbackWorker(
-            text="test", voice_id="char-Adol", elevenlabs_worker_factory=factory,
-        )
-        worker.start()
-
-        assert captured["model_id"] == "eleven_v3"
-
-    def test_elevenlabs_factory_without_model_id_param_is_not_passed_it(self):
-        """既有的 signature 守門:factory 不吃 model_id 時不應該傳,避免打壞舊 factory。"""
-        from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
-
-        captured = {}
-
-        def factory(text, reply_id, trace_id, voice_id, parent=None):
-            captured.update(
-                text=text, reply_id=reply_id, trace_id=trace_id, voice_id=voice_id, parent=parent
-            )
-            return MagicMock()
-
-        worker = AdaptiveTTSFallbackWorker(
-            text="test", voice_id="char-Adol", elevenlabs_worker_factory=factory,
-        )
-        worker.start()
-
-        assert "model_id" not in captured
+        assert _make_worker("char-RO")._chain[0].name == "voai"
+        assert _make_worker("char-Adol", preferred_provider="voai")._chain[0].name == "voai"
 
     def test_elevenlabs_initial_failure_falls_back_to_voai(self):
-        from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
-
-        worker = AdaptiveTTSFallbackWorker(text="test", voice_id="char-Adol")
-        started = []
-        worker._start_provider = lambda provider, *, reason: started.append((provider, reason))
+        """char-Adol 有專屬 ElevenLabs 聲線,首選 elevenlabs;失敗一律換 voai
+        (ElevenLabs 不像 VoAI 有 fast_fail 門檻,任何失敗都無條件換下一個)。"""
+        worker = _make_worker("char-Adol")
+        assert [p.name for p in worker._chain] == ["elevenlabs", "voai"]
+        advanced = []
+        worker._advance = lambda *, reason: advanced.append(reason)
+        worker._chain_index = 0
         worker._provider_chain = ["elevenlabs"]
 
         worker._handle_result(False, "quota exceeded", {}, "elevenlabs")
 
-        assert started == [("voai", "elevenlabs_failed")]
+        assert advanced == ["quota exceeded"]
         assert worker._fallback_reasons == [("elevenlabs", "quota exceeded")]
 
-    def test_elevenlabs_failure_does_not_retry_a_provider(self):
-        from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
+    def test_voai_failure_without_fast_fail_does_not_try_elevenlabs(self):
+        """VoAI 只在 fast_fail(缺 key、4xx/5xx、連線層錯誤)時才換下一個供應商;
+        串流中途的非定性錯誤視為終局失敗,不嘗試 ElevenLabs。"""
+        worker = _make_worker("char-RO")
+        assert [p.name for p in worker._chain] == ["voai", "elevenlabs"]
+        advanced = []
+        worker._advance = lambda *, reason: advanced.append(reason)
+        worker._running = True
+        worker._chain_index = 0
+        worker._provider_chain = ["voai"]
+        results = []
+        worker.finished_signal.connect(lambda success, message, payload: results.append(payload))
 
-        worker = AdaptiveTTSFallbackWorker(text="test", preferred_provider="voai")
+        worker._handle_result(False, "connection lost after first chunk", {}, "voai")
+
+        assert advanced == []
+        assert results[0]["outcome"] == "provider_failed"
+        assert "critical_tts_failure" not in results[0]
+
+    def test_failure_at_end_of_chain_marks_critical_failure_and_does_not_advance_again(self):
+        worker = _make_worker("char-RO")
+        advanced = []
+        worker._advance = lambda *, reason: advanced.append(reason)
+        worker._running = True
+        worker._chain_index = 1
         worker._provider_chain = ["voai", "elevenlabs"]
+        results = []
+        worker.finished_signal.connect(lambda success, message, payload: results.append(payload))
 
         worker._handle_result(False, "connection lost after first chunk", {"stream_started": True}, "elevenlabs")
 
+        assert advanced == []
         assert worker._provider_chain == ["voai", "elevenlabs"]
+        assert results[0]["critical_tts_failure"] is True
+        assert results[0]["outcome"] == "all_providers_failed"
 
 
 def test_elevenlabs_pcm_chunks_are_handed_to_the_pcm_sink(monkeypatch):
@@ -219,21 +223,22 @@ def test_elevenlabs_pcm_chunks_are_handed_to_the_pcm_sink(monkeypatch):
 
     monkeypatch.setenv("ELEVENLABS_API_KEY", "key")
     sink = Sink()
-    request = {}
+    captured_request = {}
     def post(*args, **kwargs):
-        request.update(kwargs)
+        captured_request.update(kwargs)
         return Response()
 
-    worker = ElevenLabsStreamingTTSWorker(
-        "hello", reply_id="reply", trace_id="trace", voice_id="voice",
-        pcm_stream_sink=sink, requests_post=post,
+    request = TtsRequest(
+        text="hello", reply_id="reply", trace_id="trace", character_id="voice",
+        voice_id="voice", model_id="", pcm_stream_sink=sink,
     )
+    worker = ElevenLabsStreamingTTSWorker(request, requests_post=post)
     worker.run()
 
     assert sink.chunks == [(b"one", "reply", "trace", 24000), (b"two", "reply", "trace", 24000)]
     assert sink.finished == [("reply", "trace")]
-    assert request["headers"]["Accept"] == "audio/pcm"
-    assert request["params"]["output_format"] == "pcm_24000"
+    assert captured_request["headers"]["Accept"] == "audio/pcm"
+    assert captured_request["params"]["output_format"] == "pcm_24000"
 
 
 class TestVoAIFastFailClassification:
@@ -276,7 +281,11 @@ class TestVoAIFastFailClassification:
         monkeypatch.delenv("VOAI_API_KEY", raising=False)
         monkeypatch.delenv("VoAI_API_KEY", raising=False)
 
-        worker = VoAIStreamingTTSWorker(text="hello", reply_id="r1", trace_id="t1", voice_id="Miku")
+        request = TtsRequest(
+            text="hello", reply_id="r1", trace_id="t1", character_id="Miku",
+            voice_id="", model_id="",
+        )
+        worker = VoAIStreamingTTSWorker(request)
         captured = {}
         worker.finished_signal.connect(lambda success, message, payload: captured.update(payload or {}))
         worker.run()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from threading import Event
-from typing import Any, Iterator, Protocol
+from typing import Any, Iterator, Protocol, runtime_checkable
 
 from pet_harness.models.events import UserEvent
 from pet_harness.models.provider import ProviderStatus
@@ -20,6 +20,7 @@ class ProviderReply:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@runtime_checkable
 class LLMProviderAdapter(Protocol):
     def generate_reply(
         self,

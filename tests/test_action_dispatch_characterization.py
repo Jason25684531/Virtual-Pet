@@ -129,7 +129,9 @@ def test_same_trace_repeated_action_tag_is_deduped_not_deferred():
         dispatcher.shutdown(wait_ms=100)
 
 
-def test_missing_motion_asset_logs_a_warning_instead_of_printing(caplog):
+def test_missing_motion_asset_falls_back_to_idle_without_substituting(caplog):
+    """缺素材一律回 idle,不隨機代打其他反應動作(align-preset-character-interaction
+    決策 4;與 voice-motion-sync 的「動作影片缺失時維持閒置」要求一致)。"""
     dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
     try:
         dispatcher._find_motion_path = (
@@ -139,7 +141,8 @@ def test_missing_motion_asset_logs_a_warning_instead_of_printing(caplog):
         with caplog.at_level(logging.WARNING, logger="action_dispatcher"):
             path, kind = dispatcher._resolve_action_motion_path("report_news")
 
-        assert kind == "substitute" and path
+        assert kind == "idle"
+        assert path == "assets/idle.webm"
         assert any(
             "找不到動作檔案" in record.message and "report_news" in record.message
             for record in caplog.records

@@ -33,14 +33,8 @@
     "news_idle": {
       "webm_key": "news_idle"
     },
-    "break_idle": {
-      "webm_key": "break_idle"
-    },
     "gacha_idle": {
       "webm_key": "gacha_idle"
-    },
-    "monitor_idle": {
-      "webm_key": "monitor_idle"
     }
   }
 }

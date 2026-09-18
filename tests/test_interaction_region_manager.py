@@ -10,11 +10,9 @@ from ui.interaction_region_manager import InteractionRegionManager
 def test_hit_test_and_empty_regions_fail_open():
     manager = InteractionRegionManager()
 
-    assert manager.region_count == 0
     assert manager.hit_test(QPoint(999, 999)) is True
 
     manager.update_regions([QRect(10, 20, 30, 40)])
-    assert manager.region_count == 1
     assert manager.hit_test(QPoint(10, 20)) is True
     assert manager.hit_test(QPoint(50, 60)) is False
 
@@ -34,7 +32,6 @@ def test_invalid_payload_is_ignored_with_fail_open():
 
     HarnessUiBridge.update_hit_regions(bridge, "not json")
 
-    assert manager.region_count == 0
     assert manager.hit_test(QPoint(0, 0)) is True
 
 

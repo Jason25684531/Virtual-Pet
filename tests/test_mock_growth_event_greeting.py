@@ -396,7 +396,9 @@ def test_transparent_window_wires_busy_property_as_callback(monkeypatch):
         app.processEvents()
 
 
-def test_proactive_greeting_adds_chat_turn_and_dispatches_wave():
+def test_proactive_greeting_adds_chat_turn_and_speaks_without_action_tag():
+    """主動發話不綁定固定動作(specs/proactive-conversation)：不送出任何
+    [ACTION:...] 指令，動作決策與一般回合相同(閒置)，語句與對話紀錄寫入不變。"""
     pytest.importorskip("PyQt5")
     from ui.transparent_window import TransparentWindow
 
@@ -412,5 +414,6 @@ def test_proactive_greeting_adds_chat_turn_and_dispatches_wave():
     TransparentWindow._speak_proactive_greeting(window, "嗨，今天好嗎？")
 
     window.show_synthetic_conversation_turn.assert_called_once_with("主動打招呼", "", "嗨，今天好嗎？")
-    assert "[ACTION:wave_response]" in window.dispatch_action.call_args.args[0]
-    window.speak_text.assert_not_called()
+    window.dispatch_action.assert_not_called()
+    window.speak_text.assert_called_once()
+    assert window.speak_text.call_args.args[0] == "嗨，今天好嗎？"

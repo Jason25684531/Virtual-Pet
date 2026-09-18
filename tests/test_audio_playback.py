@@ -88,6 +88,7 @@ def test_elevenlabs_requests_the_shared_sample_rate():
     """ElevenLabs 的 PCM 格式是固定清單，共同值必須是它支援的那幾個之一。"""
     import config
     from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
+    from api_client.tts_contract import TtsRequest
 
     captured = {}
 
@@ -95,10 +96,11 @@ def test_elevenlabs_requests_the_shared_sample_rate():
         captured.update(params or {})
         raise RuntimeError("stop after capturing the request")
 
-    worker = ElevenLabsStreamingTTSWorker(
-        text="測試", reply_id="reply-1", trace_id="trace-1", voice_id="voice",
-        pcm_stream_sink=MagicMock(), requests_post=fake_post,
+    request = TtsRequest(
+        text="測試", reply_id="reply-1", trace_id="trace-1", character_id="voice",
+        voice_id="voice", model_id="", pcm_stream_sink=MagicMock(),
     )
+    worker = ElevenLabsStreamingTTSWorker(request, requests_post=fake_post)
     worker.run()
 
     assert captured["output_format"] == f"pcm_{config.TTS_PCM_SAMPLE_RATE}"

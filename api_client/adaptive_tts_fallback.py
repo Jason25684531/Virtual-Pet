@@ -1,31 +1,25 @@
 """
 Adaptive multi-provider TTS orchestration for ECHOES.
+
+編排層本身不認識任何具體供應商:它只依序走過一份 TtsProvider 鏈,每個供應商
+自己的名字、失敗後要不要換下一個、換下一個的原因怎麼取,都是鏈上每個
+TtsProvider 描述帶的資料(見 api_client/tts_contract.py)。新增或移除一個
+供應商只需要改 build_tts_provider_chain,這個檔案不需要跟著動。
 """
 
 from __future__ import annotations
 
-import inspect
 import logging
-from typing import Callable
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
-import config
-from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
-from api_client.voai_client import VoAIStreamingTTSWorker
+from api_client.tts_contract import TtsProvider, TtsRequest, build_tts_provider_chain
 
 LOGGER = logging.getLogger(__name__)
 
 
-def _normalize_provider_name(value: str | None) -> str:
-    normalized = str(value or "").strip().lower()
-    if normalized in {"voai", "elevenlabs"}:
-        return normalized
-    return ""
-
-
 class AdaptiveTTSFallbackWorker(QObject):
-    """Wrap VoAI primary + ElevenLabs fallback behind one worker contract."""
+    """依序嘗試一份供應商鏈,直到成功或全數失敗，統一封裝在單一 worker 契約下。"""
 
     finished_signal = pyqtSignal(bool, str, object)
     progress_signal = pyqtSignal(str, object)
@@ -34,42 +28,18 @@ class AdaptiveTTSFallbackWorker(QObject):
 
     def __init__(
         self,
-        text: str,
-        reply_id: str | None = None,
-        trace_id: str | None = None,
-        voice_id: str | None = None,
-        fallback_voice_id: str | None = None,
-        preferred_provider: str | None = None,
-        playback_guard=None,
-        pcm_stream_sink=None,
-        voai_worker_factory: Callable[..., object] | None = None,
-        elevenlabs_worker_factory: Callable[..., object] | None = None,
-        resolved_tts_mode: str | None = None,
+        request: TtsRequest,
         parent=None,
+        *,
+        chain: tuple[TtsProvider, ...] | None = None,
     ):
         super().__init__(parent)
-        self._text = str(text or "").strip()
-        self._reply_id = str(reply_id or "").strip()
-        self._trace_id = str(trace_id or "").strip()
-        self._character_id = str(voice_id or "").strip()
-        self._fallback_voice_id = (
-            str(fallback_voice_id or "").strip()
-            or config.get_elevenlabs_voice_id_for_character(self._character_id)
+        self._request = request
+        self._chain = tuple(chain) if chain is not None else build_tts_provider_chain(
+            request.character_id, request.preferred_provider
         )
-        self._elevenlabs_model_id = config.get_elevenlabs_model_id_for_character(self._character_id)
-        # 具專屬 ElevenLabs 聲線的角色以 ElevenLabs 為首選，否則維持 VoAI 優先。
-        self._preferred_provider = _normalize_provider_name(preferred_provider) or (
-            "elevenlabs"
-            if self._character_id in config.BUILTIN_CHARACTER_ELEVENLABS_VOICE_IDS
-            else "voai"
-        )
-        self._playback_guard = playback_guard
-        self._pcm_stream_sink = pcm_stream_sink
-        self._voai_worker_factory = voai_worker_factory or VoAIStreamingTTSWorker
-        self._elevenlabs_worker_factory = elevenlabs_worker_factory or ElevenLabsStreamingTTSWorker
-        self._resolved_tts_mode = str(resolved_tts_mode or "voai_first").strip()
         self._running = False
-        self._active_provider = ""
+        self._chain_index = -1
         self._active_worker = None
         self._workers: list[object] = []
         self._provider_chain: list[str] = []
@@ -80,7 +50,7 @@ class AdaptiveTTSFallbackWorker(QObject):
         if self._running:
             return
         self._running = True
-        self._start_provider(self._preferred_provider, reason="initial")
+        self._advance(reason="initial")
 
     def isRunning(self):  # noqa: N802 - 保持與 QThread 介面相容
         return self._running
@@ -102,57 +72,24 @@ class AdaptiveTTSFallbackWorker(QObject):
             return bool(wait_method(timeout_ms))
         return not self._running
 
-    def _start_provider(self, provider: str, *, reason: str):
-        normalized_provider = _normalize_provider_name(provider) or "voai"
-        self._active_provider = normalized_provider
-        self._provider_chain.append(normalized_provider)
+    def _advance(self, *, reason: str):
+        self._chain_index += 1
+        provider = self._chain[self._chain_index]
+        self._provider_chain.append(provider.name)
         self.progress_signal.emit(
             "provider_selected",
             {
-                "reply_id": self._reply_id,
-                "trace_id": self._trace_id,
-                "provider": normalized_provider,
+                "reply_id": self._request.reply_id,
+                "trace_id": self._request.trace_id,
+                "provider": provider.name,
                 "reason": reason,
-                "fallback_locked": normalized_provider == "elevenlabs" and reason != "initial",
+                "fallback_locked": provider.needs_fallback_timeout_grace and reason != "initial",
             },
         )
-        if normalized_provider == "elevenlabs":
-            worker_kwargs = {
-                "text": self._text,
-                "reply_id": self._reply_id,
-                "trace_id": self._trace_id,
-                "voice_id": self._fallback_voice_id,
-                "parent": self,
-            }
-            try:
-                signature = inspect.signature(self._elevenlabs_worker_factory)
-                if "pcm_stream_sink" in signature.parameters:
-                    worker_kwargs["pcm_stream_sink"] = self._pcm_stream_sink
-                if "model_id" in signature.parameters:
-                    worker_kwargs["model_id"] = self._elevenlabs_model_id
-            except (TypeError, ValueError):
-                pass
-            worker = self._elevenlabs_worker_factory(**worker_kwargs)
-        else:
-            worker_kwargs = {
-                "text": self._text,
-                "reply_id": self._reply_id,
-                "trace_id": self._trace_id,
-                "voice_id": self._character_id,
-                "playback_guard": self._playback_guard,
-                "adaptive_fallback_enabled": True,
-                "parent": self,
-            }
-            try:
-                signature = inspect.signature(self._voai_worker_factory)
-                if "pcm_stream_sink" in signature.parameters:
-                    worker_kwargs["pcm_stream_sink"] = self._pcm_stream_sink
-            except (TypeError, ValueError):
-                pass
-            worker = self._voai_worker_factory(**worker_kwargs)
+        worker = provider.factory(self._request, parent=self)
         self._active_worker = worker
         self._workers.append(worker)
-        self._wire_worker(worker, normalized_provider)
+        self._wire_worker(worker, provider.name)
         worker.start()
 
     def _wire_worker(self, worker, provider: str):
@@ -186,12 +123,12 @@ class AdaptiveTTSFallbackWorker(QObject):
 
     def _handle_result(self, success: bool, message: str, payload: object, provider: str):
         normalized_payload = dict(payload) if isinstance(payload, dict) else {}
-        normalized_payload.setdefault("reply_id", self._reply_id)
-        normalized_payload.setdefault("trace_id", self._trace_id)
+        normalized_payload.setdefault("reply_id", self._request.reply_id)
+        normalized_payload.setdefault("trace_id", self._request.trace_id)
         normalized_payload.setdefault("provider", provider)
         normalized_payload.setdefault("selected_provider", provider)
-        normalized_payload.setdefault("requested_mode", self._preferred_provider)
-        normalized_payload.setdefault("resolved_mode", self._resolved_tts_mode)
+        normalized_payload.setdefault("requested_mode", self._chain[0].name)
+        normalized_payload.setdefault("resolved_mode", self._request.resolved_tts_mode)
         normalized_payload.setdefault("attempted_providers", list(self._provider_chain))
 
         if success:
@@ -199,58 +136,42 @@ class AdaptiveTTSFallbackWorker(QObject):
             self._finish(success, message, normalized_payload)
             return
 
-        if (
-            provider == "voai"
-            and normalized_payload.get("fast_fail")
-            and "elevenlabs" not in self._provider_chain
-        ):
-            fallback_reason = normalized_payload.get("fast_fail", "unknown")
-            self._fallback_reasons.append(("voai", str(fallback_reason)))
+        current_provider = self._chain[self._chain_index]
+        has_next = self._chain_index + 1 < len(self._chain)
+        should_advance = has_next and current_provider.should_advance_on_failure(normalized_payload)
+
+        if should_advance:
+            next_provider = self._chain[self._chain_index + 1]
+            fallback_reason = current_provider.fallback_reason(message, normalized_payload)
+            self._fallback_reasons.append((provider, fallback_reason))
             fallback_payload = dict(normalized_payload)
             fallback_payload.update(
                 {
-                    "from_provider": "voai",
-                    "to_provider": "elevenlabs",
+                    "from_provider": provider,
+                    "to_provider": next_provider.name,
                     "fallback_reason": fallback_reason,
-                    "fallback_reasons": self._fallback_reasons,
+                    "fallback_reasons": list(self._fallback_reasons),
                 }
             )
             self.progress_signal.emit("fallback_triggered", fallback_payload)
-            self._start_provider("elevenlabs", reason="fast_fail")
-            return
-
-        if provider == "elevenlabs" and "voai" not in self._provider_chain:
-            # ElevenLabs 首選失敗時回退 VoAI，鏡射 voai→elevenlabs 的既有路徑。
-            fallback_reason = str(message or "elevenlabs_failed")
             LOGGER.warning(
-                "[ECHOES] ElevenLabs 失敗改用 VoAI：character=%s voice_id=%s reason=%s text_len=%d text=%r",
-                self._character_id,
-                self._fallback_voice_id,
+                "[ECHOES] %s 失敗改用 %s：character=%s reason=%s text_len=%d",
+                provider,
+                next_provider.name,
+                self._request.character_id,
                 fallback_reason,
-                len(self._text),
-                self._text[:80],
+                len(self._request.text),
             )
-            self._fallback_reasons.append(("elevenlabs", fallback_reason))
-            fallback_payload = dict(normalized_payload)
-            fallback_payload.update(
-                {
-                    "from_provider": "elevenlabs",
-                    "to_provider": "voai",
-                    "fallback_reason": fallback_reason,
-                    "fallback_reasons": self._fallback_reasons,
-                }
-            )
-            self.progress_signal.emit("fallback_triggered", fallback_payload)
-            self._start_provider("voai", reason="elevenlabs_failed")
+            self._advance(reason=fallback_reason)
             return
 
-        if "voai" in self._provider_chain and "elevenlabs" in self._provider_chain:
+        if len(self._provider_chain) > 1:
             normalized_payload.update(
                 {
                     "critical_tts_failure": True,
                     "text_only": True,
                     "provider_chain": list(self._provider_chain),
-                    "fallback_reasons": self._fallback_reasons,
+                    "fallback_reasons": list(self._fallback_reasons),
                     "outcome": "all_providers_failed",
                 }
             )

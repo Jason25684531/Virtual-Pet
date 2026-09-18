@@ -22,10 +22,6 @@ class InteractionRegionManager:
     def set_fallback_interactive(self, interactive: bool) -> None:
         self._fallback_interactive = bool(interactive)
 
-    @property
-    def region_count(self) -> int:
-        return len(self._regions)
-
     @staticmethod
     def native_to_css(value: int, device_pixel_ratio: float) -> int:
         """Convert a native Windows coordinate to Qt/WebEngine CSS pixels."""

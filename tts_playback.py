@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import logging
 import queue
 import re
@@ -11,6 +10,7 @@ from uuid import uuid4
 
 import config
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
+from api_client.tts_contract import TtsRequest
 from pet_harness.app.commands import ACTION_DIRECTIVE_PATTERN
 
 LOGGER = logging.getLogger(__name__)
@@ -110,39 +110,23 @@ class TtsPlaybackMixin:
             return
 
         current_character_id = self._current_character_id()
-        factory_name = getattr(self._tts_worker_factory, "__name__", "")
         preferred_provider = self._trace_tts_providers.get(normalized_trace_id, "")
-        if factory_name in {"VoAIStreamingTTSWorker", "AdaptiveTTSFallbackWorker"}:
-            voice_id = current_character_id or ""
-        else:
-            voice_id = config.get_elevenlabs_voice_id_for_character(current_character_id)
+        resolved_mode, _ = config.resolve_tts_runtime_mode()
 
-        worker_kwargs = {
-            "text": speech_text,
-            "reply_id": reply_id,
-            "trace_id": trace_id,
-            "voice_id": voice_id,
-            "parent": self,
-        }
-        try:
-            signature = inspect.signature(self._tts_worker_factory)
-            if "playback_guard" in signature.parameters:
-                worker_kwargs["playback_guard"] = self._can_start_trace_audio
-            if "fallback_voice_id" in signature.parameters:
-                worker_kwargs["fallback_voice_id"] = config.get_elevenlabs_voice_id_for_character(current_character_id)
-            if "preferred_provider" in signature.parameters and preferred_provider:
-                worker_kwargs["preferred_provider"] = preferred_provider
-            if "resolved_tts_mode" in signature.parameters:
-                resolved_mode, _ = config.resolve_tts_runtime_mode()
-                worker_kwargs["resolved_tts_mode"] = resolved_mode
-            if "pcm_stream_sink" in signature.parameters:
-                worker_kwargs["pcm_stream_sink"] = self._audio_worker
-            if "model_id" in signature.parameters:
-                worker_kwargs["model_id"] = config.get_elevenlabs_model_id_for_character(current_character_id)
-        except (TypeError, ValueError):
-            pass
+        request = TtsRequest(
+            text=speech_text,
+            reply_id=reply_id,
+            trace_id=str(trace_id or ""),
+            character_id=current_character_id or "",
+            voice_id=config.get_elevenlabs_voice_id_for_character(current_character_id),
+            model_id=config.get_elevenlabs_model_id_for_character(current_character_id),
+            preferred_provider=preferred_provider,
+            resolved_tts_mode=resolved_mode,
+            pcm_stream_sink=self._audio_worker,
+            playback_guard=self._can_start_trace_audio,
+        )
 
-        worker = self._tts_worker_factory(**worker_kwargs)
+        worker = self._tts_worker_factory(request, parent=self)
         self._active_tts_worker = worker
         self._workers.append(worker)
 
@@ -170,11 +154,10 @@ class TtsPlaybackMixin:
             self._start_next_tts_worker()
             self._finish_loop_action_if_tts_idle()
 
-        if hasattr(worker, "audio_ready_signal"):
-            worker.audio_ready_signal.connect(handle_audio_ready)
+        # StreamingTTSWorker 契約保證四個訊號都存在,不再用 hasattr 防禦。
+        worker.audio_ready_signal.connect(handle_audio_ready)
         worker.finished_signal.connect(handle_result)
-        if hasattr(worker, "progress_signal"):
-            worker.progress_signal.connect(handle_progress)
+        worker.progress_signal.connect(handle_progress)
         worker.finished.connect(on_thread_finished)
         worker.start()
 

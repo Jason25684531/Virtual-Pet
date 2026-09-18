@@ -309,3 +309,39 @@ def test_variant_inventory_uses_newest_png_as_thumbnail(tmp_path, monkeypatch):
     }), encoding="utf-8")
 
     assert library.list_variant_inventory("miku")[0]["thumb"].endswith("new.png")
+
+
+def test_panel_motion_requires_manifest_authorized_action_key(tmp_path, monkeypatch):
+    """manifest 是面板影片的唯一授權來源(見 align-preset-character-interaction 決策 3):
+    即使 motions_dir 底下真的有面板檔案,角色沒有宣告該動作鍵就不得播放。"""
+    library = _library(tmp_path, monkeypatch)
+    character_dir = tmp_path / "assets" / "characters" / "no-music-key"
+    motion_dir = character_dir / "motions"
+    motion_dir.mkdir(parents=True)
+    (motion_dir / "Play_Music_Panel.webm").write_bytes(b"webm")
+    (character_dir / "manifest.json").write_text(json.dumps({
+        "id": "no-music-key", "motions_dir": "assets/characters/no-music-key/motions",
+        "motions": {"idle": "assets/characters/no-music-key/motions/idle.webm"},
+    }), encoding="utf-8")
+
+    assert library.get_panel_motion_path("no-music-key", "play_music") is None
+
+
+def test_panel_motion_resolves_when_action_key_is_declared(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+    character_dir = tmp_path / "assets" / "characters" / "has-music-key"
+    motion_dir = character_dir / "motions"
+    motion_dir.mkdir(parents=True)
+    (motion_dir / "Play_Music_Panel.webm").write_bytes(b"webm")
+    (character_dir / "manifest.json").write_text(json.dumps({
+        "id": "has-music-key", "motions_dir": "assets/characters/has-music-key/motions",
+        "motions": {
+            "idle": "assets/characters/has-music-key/motions/idle.webm",
+            "play_music": "assets/characters/has-music-key/motions/play_music.webm",
+        },
+    }), encoding="utf-8")
+
+    path = library.get_panel_motion_path("has-music-key", "play_music")
+
+    assert path is not None
+    assert path.endswith("Play_Music_Panel.webm")

@@ -13,9 +13,17 @@ from unittest.mock import MagicMock
 import pytest
 
 import config
+from api_client.tts_contract import TtsRequest
 from audio_playback import FfplayPcmAudioPlayer, detect_audio_container, is_raw_pcm_content_type
 from audio_worker import AudioStreamWorker
 from pet_harness.character import generation as character_generation
+
+
+def _elevenlabs_request(*, model_id: str = "", pcm_stream_sink=None):
+    return TtsRequest(
+        text="測試", reply_id="reply-1", trace_id="trace-1", character_id="voice",
+        voice_id="voice", model_id=model_id, pcm_stream_sink=pcm_stream_sink,
+    )
 
 
 class _RecordingPlayer:
@@ -103,8 +111,7 @@ def test_elevenlabs_rejects_mp3_when_it_asked_for_pcm():
     sink = MagicMock()
     results: list[tuple] = []
     worker = ElevenLabsStreamingTTSWorker(
-        text="測試", reply_id="reply-1", trace_id="trace-1", voice_id="voice",
-        pcm_stream_sink=sink, requests_post=fake_post,
+        _elevenlabs_request(pcm_stream_sink=sink), requests_post=fake_post,
     )
     worker.finished_signal.connect(lambda ok, message, payload: results.append((ok, message)))
     worker.run()
@@ -133,8 +140,7 @@ def test_explicit_model_id_is_sent_instead_of_global_env(monkeypatch):
     monkeypatch.setenv("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5")
     captured: dict = {}
     worker = ElevenLabsStreamingTTSWorker(
-        text="測試", reply_id="reply-1", trace_id="trace-1", voice_id="voice",
-        model_id="eleven_v3", requests_post=_fake_pcm_post(captured),
+        _elevenlabs_request(model_id="eleven_v3"), requests_post=_fake_pcm_post(captured),
     )
     worker.run()
 
@@ -147,8 +153,7 @@ def test_omitted_model_id_falls_back_to_global_env(monkeypatch):
     monkeypatch.setenv("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5")
     captured: dict = {}
     worker = ElevenLabsStreamingTTSWorker(
-        text="測試", reply_id="reply-1", trace_id="trace-1", voice_id="voice",
-        requests_post=_fake_pcm_post(captured),
+        _elevenlabs_request(), requests_post=_fake_pcm_post(captured),
     )
     worker.run()
 
@@ -161,8 +166,7 @@ def test_eleven_v3_request_omits_optimize_streaming_latency(monkeypatch):
 
     captured: dict = {}
     worker = ElevenLabsStreamingTTSWorker(
-        text="測試", reply_id="reply-1", trace_id="trace-1", voice_id="voice",
-        model_id="eleven_v3", requests_post=_fake_pcm_post(captured),
+        _elevenlabs_request(model_id="eleven_v3"), requests_post=_fake_pcm_post(captured),
     )
     worker.run()
 
@@ -174,8 +178,7 @@ def test_flash_request_keeps_optimize_streaming_latency(monkeypatch):
 
     captured: dict = {}
     worker = ElevenLabsStreamingTTSWorker(
-        text="測試", reply_id="reply-1", trace_id="trace-1", voice_id="voice",
-        model_id="eleven_flash_v2_5", requests_post=_fake_pcm_post(captured),
+        _elevenlabs_request(model_id="eleven_flash_v2_5"), requests_post=_fake_pcm_post(captured),
     )
     worker.run()
 
@@ -189,8 +192,7 @@ def test_flash_speed_is_clamped_to_its_valid_range(monkeypatch):
     monkeypatch.setenv("ELEVENLABS_SPEED", "1.3")
     captured: dict = {}
     worker = ElevenLabsStreamingTTSWorker(
-        text="測試", reply_id="reply-1", trace_id="trace-1", voice_id="voice",
-        model_id="eleven_flash_v2_5", requests_post=_fake_pcm_post(captured),
+        _elevenlabs_request(model_id="eleven_flash_v2_5"), requests_post=_fake_pcm_post(captured),
     )
     worker.run()
 
@@ -204,8 +206,7 @@ def test_v3_speed_is_not_clamped(monkeypatch):
     monkeypatch.setenv("ELEVENLABS_SPEED", "1.3")
     captured: dict = {}
     worker = ElevenLabsStreamingTTSWorker(
-        text="測試", reply_id="reply-1", trace_id="trace-1", voice_id="voice",
-        model_id="eleven_v3", requests_post=_fake_pcm_post(captured),
+        _elevenlabs_request(model_id="eleven_v3"), requests_post=_fake_pcm_post(captured),
     )
     worker.run()
 

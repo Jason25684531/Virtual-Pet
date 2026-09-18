@@ -32,14 +32,12 @@ def test_loop_cleanup_restores_idle_and_drains_one_deferred_dispatch():
         coordinator.shutdown(wait_ms=100)
 
 
-def test_substitute_motion_for_missing_asset_is_tracked_as_a_real_loop_action():
-    """design D3 / fix-play-music-ack-audio-and-idle-restore task 4.2.6: a
-    character missing report_news.webm gets a substitute motion (one of the
-    general reaction webms). Before the fix this was misclassified the same
-    as a true idle fallback, which cleared _current_loop_action_key to None —
-    so nothing was ever able to call _finish_loop_action() again and the
-    substitute motion looped forever."""
-    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+def test_missing_asset_falls_back_to_idle_and_is_not_tracked_as_a_loop_action():
+    """align-preset-character-interaction 決策 4：缺素材不再代打其他反應動作，
+    一律退回 idle。idle 本來就無限循環、不需要任何人收尾，因此正確地不被
+    當成 loop action —— 不會卡在等待一個永遠不會來的 _finish_loop_action()。"""
+    window = MagicMock()
+    dispatcher = MotionCoordinator(window, MagicMock(), tts_enabled=False)
     try:
         dispatcher._find_motion_path = (
             lambda motion_key: None if motion_key == "report_news" else f"assets/{motion_key}.webm"
@@ -47,21 +45,23 @@ def test_substitute_motion_for_missing_asset_is_tracked_as_a_real_loop_action():
         binding = dispatcher._bindings["report_news"]
 
         path, kind = dispatcher._resolve_action_motion_path("report_news")
-        assert kind == "substitute" and path
+        assert kind == "idle" and path == "assets/idle.webm"
 
         motion_found = dispatcher._play_binding_motion(binding)
 
         assert motion_found is True
-        assert dispatcher._current_loop_action_key is not None
-        assert dispatcher._current_loop_binding is binding
+        window.play_resolved_motion.assert_called_once_with("report_news", "assets/idle.webm", loop=True)
+        assert dispatcher._current_loop_action_key is None
+        assert dispatcher._current_loop_binding is None
     finally:
         dispatcher.shutdown(wait_ms=100)
 
 
 def test_true_idle_fallback_is_still_not_tracked_as_a_loop_action():
-    """Regression guard: a genuine idle fallback (no dedicated asset AND no
-    substitute pool candidate available either) must keep its established
-    behaviour untouched — it is not a loop action and loops forever by design."""
+    """Regression guard: a genuine idle fallback (no dedicated asset for this
+    key) must keep its established behaviour untouched — it is not a loop
+    action and loops forever by design. No candidate is ever substituted in
+    its place (align-preset-character-interaction 決策 4)."""
     dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
     try:
         dispatcher._find_motion_path = (
@@ -80,13 +80,13 @@ def test_true_idle_fallback_is_still_not_tracked_as_a_loop_action():
         dispatcher.shutdown(wait_ms=100)
 
 
-def test_substitute_motion_returns_to_idle_once_its_trace_speech_finishes():
+def test_exact_motion_returns_to_idle_once_its_trace_speech_finishes():
+    """代打機制已移除(決策 4);改用 report_news 自己有專屬素材的 stub，
+    保留原本要保護的行為：TTS 驅動的 loop action 在語音結束後正確回 idle。"""
     window = MagicMock()
     dispatcher = MotionCoordinator(window, MagicMock(), tts_enabled=False)
     try:
-        dispatcher._find_motion_path = (
-            lambda motion_key: None if motion_key == "report_news" else f"assets/{motion_key}.webm"
-        )
+        dispatcher._find_motion_path = lambda motion_key: f"assets/{motion_key}.webm"
         dispatcher.start_streaming_trace("trace-1")
         dispatcher._trace_pending_tts_counts["trace-1"] = 1
 
@@ -108,19 +108,17 @@ def test_substitute_motion_returns_to_idle_once_its_trace_speech_finishes():
         dispatcher.shutdown(wait_ms=100)
 
 
-def test_substitute_motion_without_any_speech_still_schedules_protective_cleanup():
-    """A substitute motion dispatched with no speech at all (e.g. a menu/hotkey
-    trigger, no trace) must still get a protective cleanup timer scheduled —
-    otherwise, with no TTS to ever drain, it loops forever with nobody to call
-    restore_idle_video()."""
+def test_exact_motion_without_any_speech_still_schedules_protective_cleanup():
+    """代打機制已移除(決策 4);改用 report_news 自己有專屬素材的 stub。
+    一支沒有任何語音的 loop action(例如選單/快捷鍵觸發、沒有 trace)仍必須排定
+    保護性清理計時器：否則沒有 TTS 可以排空，會永遠循環、沒人呼叫
+    restore_idle_video()。"""
     from PyQt5.QtWidgets import QApplication
 
     _app = QApplication.instance() or QApplication([])  # noqa: F841 - keep alive, else QTimer.start() is a no-op
     dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
     try:
-        dispatcher._find_motion_path = (
-            lambda motion_key: None if motion_key == "report_news" else f"assets/{motion_key}.webm"
-        )
+        dispatcher._find_motion_path = lambda motion_key: f"assets/{motion_key}.webm"
 
         ok = dispatcher.dispatch("[ACTION:report_news]", trace_id=None)
 

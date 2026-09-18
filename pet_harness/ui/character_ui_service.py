@@ -90,13 +90,35 @@ class CharacterUiService:
         self._on_motion_offer_ready = callback if callable(callback) else None
 
     def list_characters(self) -> list[dict[str, Any]]:
-        items = {profile.character_id: self._summarize(profile) for profile in self._registry.list_characters()}
+        return self._list_characters(self._summarize)
+
+    def list_presets_fast(self) -> list[dict[str, Any]]:
+        """建立角色分頁初次繪製用:只用 manifest 既有欄位,不開 SQLite、不做
+        資產世代解析,避免畫面切換的同步路徑卡在慢查詢上(fix-create-screen-stall
+        決策 2)。完整摘要由 enrich_preset_summaries() 在背景算完後以
+        hydratePresetSummaries 補上。"""
+        return [item for item in self._list_characters(self._summarize_fast) if item["is_preset"]]
+
+    def enrich_preset_summaries(self, character_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """計算指定角色的完整摘要(xp/playtime/missing_assets);呼叫端負責
+        不在 UI 執行緒上執行這個方法本身,本方法自己不做執行緒安排。"""
+        result: dict[str, dict[str, Any]] = {}
+        for character_id in character_ids:
+            try:
+                profile, _ = self._router.load_profile(character_id)
+            except Exception:  # noqa: BLE001 - 單一角色失敗不影響其餘角色的補齊
+                continue
+            result[character_id] = self._summarize(profile)
+        return result
+
+    def _list_characters(self, summarize) -> list[dict[str, Any]]:
+        items = {profile.character_id: summarize(profile) for profile in self._registry.list_characters()}
         # 上傳生成的角色(library)不在 registry;經 router 的統一解析補進清單。
         for manifest in CharacterLibrary().list_characters():
             character_id = str(manifest.get("id") or "")
             if character_id and character_id not in items:
                 profile, _ = self._router.load_profile(character_id)
-                items[character_id] = self._summarize(profile)
+                items[character_id] = summarize(profile)
         return self._apply_default_roster_order(items)
 
     @staticmethod
@@ -469,6 +491,25 @@ class CharacterUiService:
 
     def preview_skill_match(self, character_id: str, text: str) -> dict[str, Any]:
         return self._customization.preview_skill_match(character_id, text)
+
+    def _summarize_fast(self, profile: CharacterProfile) -> dict[str, Any]:
+        """`_summarize()` 的廉價子集:只用 manifest 已有欄位,不開 SQLite、不做
+        `_missing_assets()` 的資產世代解析(那條路徑重覆建構 SQLiteStore 又觸發
+        大量 Windows 路徑解析,單次可達數百毫秒,見 design.md Context 的 cProfile
+        紀錄)。`asset_status: "pending"` 讓前端在完整資料補上前,維持與
+        "incomplete" 相同的保守處理(Select 按鈕停用),而不是預設可用。"""
+        return {
+            "character_id": profile.character_id,
+            "name": profile.name,
+            "is_preset": profile.is_preset,
+            "xp_total": 0,
+            "level": _level_for_xp(0),
+            "background_image": profile.background_image,
+            "playtime_seconds": 0,
+            "last_played_at": None,
+            "missing_assets": None,
+            "asset_status": "pending",
+        }
 
     def _summarize(self, profile: CharacterProfile) -> dict[str, Any]:
         store = SQLiteStore(profile.sqlite_path)

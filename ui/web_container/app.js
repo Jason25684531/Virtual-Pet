@@ -659,6 +659,38 @@
         }
     }
 
+    // ── 畫面切換計時(fix-create-screen-stall)─────────────────────
+    // 量測「使用者觸發切換」到「下一幀實際完成繪製」之間的時間;只有超過
+    // 門檻才輸出紀錄,正常路徑不增加可感知延遲。同時記錄該段期間發出的橋接
+    // 呼叫,讓卡頓可以被指認是哪一個跨層呼叫佔用時間,而不是被推測。
+    var SCREEN_SWITCH_STALL_THRESHOLD_MS = 300;
+    var activeSwitchTrace = null;
+
+    function beginScreenSwitchTrace(source) {
+        activeSwitchTrace = { source: source, startedAt: performance.now(), calls: [] };
+    }
+
+    function recordSwitchTraceBridgeCall(name, durationMs) {
+        if (activeSwitchTrace) activeSwitchTrace.calls.push(name + ':' + Math.round(durationMs) + 'ms');
+    }
+
+    function finishScreenSwitchTrace() {
+        var trace = activeSwitchTrace;
+        activeSwitchTrace = null;
+        if (!trace) return;
+        // rAF 才是「使用者實際看到」的時間點:Qt 主執行緒被同步工作阻塞時,
+        // 這一幀會被延後,量到的延遲因此包含主執行緒阻塞造成的未繪製時間。
+        window.requestAnimationFrame(function () {
+            var elapsedMs = performance.now() - trace.startedAt;
+            if (elapsedMs <= SCREEN_SWITCH_STALL_THRESHOLD_MS) return;
+            console.warn(
+                '[ECHOES SCREEN SWITCH STALL] source=' + trace.source +
+                ' elapsed_ms=' + Math.round(elapsedMs) +
+                ' bridge_calls=[' + trace.calls.join(', ') + ']'
+            );
+        });
+    }
+
     // ── Bridge 呼叫 ───────────────────────────────────────────
 
     function callBridge(method) {
@@ -669,7 +701,10 @@
             setStatus('Bridge unavailable. Check qwebchannel.js.', 'error', 0);
             return;
         }
-        return harnessBridge[method].apply(harnessBridge, args);
+        var startedAt = performance.now();
+        var result = harnessBridge[method].apply(harnessBridge, args);
+        recordSwitchTraceBridgeCall('harnessBridge.' + method, performance.now() - startedAt);
+        return result;
     }
 
     var hitRegionFrame = null;
@@ -714,12 +749,16 @@
 
     function callCharacterBridge(method) {
         var args = Array.prototype.slice.call(arguments, 1);
+        var startedAt = performance.now();
         return new Promise(function (resolve, reject) {
             if (!characterBridge || typeof characterBridge[method] !== 'function') {
                 reject(new Error('characterBridge not ready — cannot call: ' + method));
                 return;
             }
             var callArgs = args.concat([function (resultJson) {
+                // 這個 callback 何時被呼叫,就是這次跨層呼叫的真實耗時 ——
+                // 包含 Python 端同步執行的時間(如 listPresets 逐一開 SQLite)。
+                recordSwitchTraceBridgeCall('characterBridge.' + method, performance.now() - startedAt);
                 var parsed;
                 try {
                     parsed = JSON.parse(resultJson);
@@ -824,6 +863,7 @@
     }
 
     function routeToScreen(screenId) {
+        beginScreenSwitchTrace('routeToScreen:' + screenId);
         var mappedId = screenId === 'screen-preset-select' ? 'screen-create-character' : screenId;
         uiRoute.screen = mappedId;
         uiRoute.hud = null;
@@ -837,6 +877,7 @@
         if (mappedId === 'screen-main-menu') refreshMainMenu();
         if (mappedId === 'screen-load-save') loadSaveGrid();
         renderRoute();
+        finishScreenSwitchTrace();
     }
 
     function openHud(hudId) {
@@ -1035,13 +1076,15 @@
         var total = presetList.length;
         var current = total ? presetList[presetIndex] : null;
         setText(presetCarouselIndex, (total ? presetIndex + 1 : 0) + ' / ' + total);
-        // 缺資產的角色保留卡片但明示原因並擋住 Select:靜靜讓人選進去只會在舞台上
-        // 看到黑畫面或不動的角色,不知道是哪個檔案沒生出來。
+        // pending(完整摘要還在背景算)與 incomplete(已確認缺資產)都先擋住
+        // Select——安全預設值相同,但顯示文字不同,pending 不能講得像已經確定壞掉。
+        var pending = Boolean(current && current.asset_status === 'pending');
         var unavailable = Boolean(current && current.asset_status && current.asset_status !== 'ok');
         setText(presetName, current ? current.name : '尚無預設角色');
         setText(
             presetPersona,
             !current ? '[ 個性 / 簡介 ]'
+                : pending ? '載入中…'
                 : unavailable ? '此角色缺少必要資產：' + (current.missing_assets || []).join('、')
                 : (current.persona_description || '')
         );
@@ -1053,7 +1096,9 @@
     for (var i = 0; i < 9; i++) {
                 var preset = presetList[i];
                 if (preset) {
-                    var broken = preset.asset_status && preset.asset_status !== 'ok' ? ' is-unavailable' : '';
+                    // 縮圖的「不可用」樣式只給已確認的 incomplete,pending 不套用,
+                    // 避免資料還沒到齊就先閃一次「壞掉」的視覺。
+                    var broken = preset.asset_status && preset.asset_status !== 'ok' && preset.asset_status !== 'pending' ? ' is-unavailable' : '';
                     slots.push(
                         '<button type="button" class="preset-thumb' + (i === presetIndex ? ' is-active' : '') + broken + '" data-preset-index="' + i + '">' +
                         String(i + 1) + '</button>'
@@ -1066,6 +1111,21 @@
         }
     }
 
+    // Python 端背景算完完整摘要(xp/playtime/missing_assets)後推回來;依
+    // character_id 就地合併,不重新排序、不改變卡片數量,避免版面跳動
+    // (fix-create-screen-stall 決策 2 / task 2.3)。
+    window.hydratePresetSummaries = function (summaries) {
+        if (!summaries || typeof summaries !== 'object') return;
+        var changed = false;
+        presetList = presetList.map(function (preset) {
+            var patch = preset && summaries[preset.character_id];
+            if (!patch) return preset;
+            changed = true;
+            return Object.assign({}, preset, patch);
+        });
+        if (changed) renderPresetCarousel();
+    };
+
     function loadPresetCarousel() {
         callCharacterBridge('listPresets').then(function (presets) {
             presetList = Array.isArray(presets) ? presets : [];
@@ -1075,6 +1135,9 @@
             console.warn('[ECHOES UI] listPresets failed:', err.message);
             presetList = [];
             renderPresetCarousel();
+            // 畫面本身已經切換完成(routeToScreen 早就跑完),這裡只是清單資料
+            // 沒拿到;明示原因,使用者仍可用 Back 離開,不需要整個畫面卡住。
+            setStatus('無法取得角色清單：' + err.message, 'error', 4800);
         });
     }
 
@@ -1219,10 +1282,12 @@
         var presetTab = document.getElementById('tab-preset');
         var customizeTab = document.getElementById('tab-customize');
         function switchCreateTab(customize) {
+            beginScreenSwitchTrace('switchCreateTab:' + (customize ? 'customize' : 'preset'));
             if (presetTab) presetTab.hidden = customize;
             if (customizeTab) customizeTab.hidden = !customize;
             if (presetTabButton) presetTabButton.classList.toggle('is-active', !customize);
             if (customizeTabButton) customizeTabButton.classList.toggle('is-active', customize);
+            finishScreenSwitchTrace();
         }
         if (presetTabButton) presetTabButton.addEventListener('click', function () { switchCreateTab(false); });
         if (customizeTabButton) customizeTabButton.addEventListener('click', function () { switchCreateTab(true); });

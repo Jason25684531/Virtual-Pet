@@ -571,6 +571,11 @@ class CharacterLibrary:
         manifest = self.get_character(character_id)
         if not manifest:
             return None
+        motions = manifest.get("motions")
+        if not isinstance(motions, dict) or action_key not in motions:
+            # manifest 是唯一授權來源:角色沒有宣告這個動作鍵,即使 motions_dir
+            # 底下真的有對應的面板檔案,也不得播放。
+            return None
         filename = manifest.get("panel_motions", {}).get(action_key) or self._PANEL_MOTION_FILENAMES.get(action_key)
         if not filename:
             return None

@@ -1,4 +1,5 @@
 import ast
+import inspect
 from pathlib import Path
 
 
@@ -85,3 +86,104 @@ def test_router_and_application_layers_do_not_import_pyqt():
     root = Path(__file__).parents[1] / "pet_harness"
     for relative in ("character/router.py", "app/application_coordinator.py"):
         assert "PyQt" not in (root / relative).read_text(encoding="utf-8")
+
+
+def _contract_param_names(func) -> tuple[str, ...]:
+    return tuple(param.name for param in inspect.signature(func).parameters.values() if param.name != "self")
+
+
+def _declares_contract(contract: type, implementation: type) -> bool:
+    """Nominal (not structural) "does this implementation declare the contract" check.
+
+    `@runtime_checkable` Protocols make `issubclass()` purely structural: it
+    returns True for any class that happens to have matching method names,
+    regardless of whether that class ever declared the Protocol as a base —
+    exactly the implicit-compatibility gap this guard exists to close. For a
+    Protocol contract we therefore check `contract in implementation.__mro__`
+    (true only for explicit subclassing). For a plain ABC like
+    `BackgroundExecutor`, `issubclass()` stays nominal on its own (respects
+    real inheritance and explicit `.register()`), so it is used directly.
+    """
+    if getattr(contract, "_is_protocol", False):
+        return contract in implementation.__mro__
+    return issubclass(implementation, contract)
+
+
+def test_replaceable_boundary_contracts_are_declared_by_every_implementation():
+    """runtime-maintainability:「分層替換保持執行契約」——每個宣告為可替換的邊界,
+    其正式實作都必須真的宣告符合該契約,且方法簽名不得偏離契約。只有測試替身遵守、
+    正式實作靠隱式相容(結構相符但未宣告)通過,是這條規格明確禁止的狀態。"""
+    from pet_harness.agent.api_provider import APIProvider
+    from pet_harness.agent.ollama_provider import OllamaProvider
+    from pet_harness.agent.provider_adapter import LLMProviderAdapter
+    from pet_harness.app.ports import BackgroundExecutor
+    from pet_harness.memory.fastembed_reranker import FastembedReranker
+    from pet_harness.memory.reranker import Reranker
+    from pet_harness.runtime.qt_background_executor import QtBackgroundExecutor
+
+    contracts = (
+        (BackgroundExecutor, ("submit",), (QtBackgroundExecutor,)),
+        (Reranker, ("rerank",), (FastembedReranker,)),
+        (LLMProviderAdapter, ("generate_reply", "generate_reply_stream"), (APIProvider, OllamaProvider)),
+    )
+
+    violations = []
+    for contract, members, implementations in contracts:
+        for implementation in implementations:
+            if not _declares_contract(contract, implementation):
+                violations.append(f"{implementation.__name__} does not declare {contract.__name__}")
+                continue
+            for member in members:
+                contract_params = _contract_param_names(getattr(contract, member))
+                impl_params = _contract_param_names(getattr(implementation, member))
+                if contract_params != impl_params:
+                    violations.append(
+                        f"{implementation.__name__}.{member} signature {impl_params} "
+                        f"diverges from {contract.__name__}.{member} {contract_params}"
+                    )
+    assert not violations, "Replaceable-boundary contract drift: " + "; ".join(violations)
+
+
+def test_streaming_tts_worker_implementations_declare_the_full_contract():
+    """StreamingTTSWorker 的訊號是類別層級的資料屬性,typing.Protocol 對含
+    非方法成員的 protocol 不支援 issubclass();三個 worker 又是 QThread/QObject,
+    無法像上面三個契約一樣直接繼承 Protocol(同一個 sip metaclass 衝突)。改以
+    hasattr 逐一檢查 STREAMING_TTS_WORKER_MEMBERS,作為這個契約可行的自動化驗證。"""
+    from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
+    from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
+    from api_client.tts_contract import STREAMING_TTS_WORKER_MEMBERS
+    from api_client.voai_client import VoAIStreamingTTSWorker
+
+    violations = []
+    for implementation in (ElevenLabsStreamingTTSWorker, VoAIStreamingTTSWorker, AdaptiveTTSFallbackWorker):
+        missing = [member for member in STREAMING_TTS_WORKER_MEMBERS if not hasattr(implementation, member)]
+        if missing:
+            violations.append(f"{implementation.__name__} missing {missing}")
+    assert not violations, "StreamingTTSWorker contract drift: " + "; ".join(violations)
+
+
+def test_tts_orchestration_layer_has_no_provider_identity_branching():
+    """runtime-maintainability:「語音供應商的增減不得修改編排層」——編排層
+    (adaptive_tts_fallback.py、tts_playback.py)不得依供應商名稱字串、實作類別
+    名稱或參數探測結果做分支。供應商名稱字面值只允許出現在 tts_contract.py
+    (組鏈的資料層,不是編排層的控制流),那裡不受這條規則檢查。"""
+    root = Path(__file__).parents[1]
+    orchestration_files = (root / "api_client" / "adaptive_tts_fallback.py", root / "tts_playback.py")
+    provider_literals = {"voai", "elevenlabs"}
+
+    violations = []
+    for path in orchestration_files:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Compare):
+                literal_operands = [
+                    operand.value for operand in (node.left, *node.comparators)
+                    if isinstance(operand, ast.Constant) and isinstance(operand.value, str)
+                ]
+                if any(value in provider_literals for value in literal_operands):
+                    violations.append(f"{path}:{node.lineno} compares against provider name literal")
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "signature":
+                violations.append(f"{path}:{node.lineno} calls inspect.signature")
+            elif isinstance(node, ast.Attribute) and node.attr == "__name__":
+                violations.append(f"{path}:{node.lineno} reads factory.__name__")
+    assert not violations, "TTS orchestration layer branches on provider identity: " + "; ".join(violations)

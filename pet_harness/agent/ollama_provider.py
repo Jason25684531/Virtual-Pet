@@ -6,13 +6,13 @@ from typing import Any, Callable, Iterator
 
 import requests
 
-from pet_harness.agent.provider_adapter import ProviderReply
+from pet_harness.agent.provider_adapter import LLMProviderAdapter, ProviderReply
 from pet_harness.models.events import UserEvent
 from pet_harness.models.provider import ProviderConfig, ProviderStatus, ProviderType
 from pet_harness.models.skill import Skill
 
 
-class OllamaProvider:
+class OllamaProvider(LLMProviderAdapter):
     def __init__(self, config: ProviderConfig, request_fn: Callable[..., Any] | None = None) -> None:
         self.config = config
         self.request_fn = request_fn or self._default_request

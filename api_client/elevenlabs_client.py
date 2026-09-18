@@ -15,6 +15,7 @@ import requests
 from PyQt5.QtCore import QThread, pyqtSignal
 
 import config
+from api_client.tts_contract import TtsRequest
 from audio_playback import is_raw_pcm_content_type
 
 # 沿用 voai_client.py 已經在用的模式:共用一個 Session 讓 TCP/TLS 連線可以重用,
@@ -64,22 +65,18 @@ class ElevenLabsStreamingTTSWorker(QThread):
 
     def __init__(
         self,
-        text: str,
-        reply_id: str | None = None,
-        trace_id: str | None = None,
-        voice_id: str | None = None,
-        model_id: str | None = None,
-        pcm_stream_sink=None,
-        requests_post=None,
+        request: TtsRequest,
         parent=None,
+        *,
+        requests_post=None,
     ):
         super().__init__(parent)
-        self._text = text
-        self._reply_id = (reply_id or uuid4().hex).strip()
-        self._trace_id = (trace_id or "").strip()
-        self._voice_id = (voice_id or "").strip()
-        self._model_id = (model_id or "").strip()
-        self._pcm_stream_sink = pcm_stream_sink
+        self._text = request.text
+        self._reply_id = (request.reply_id or uuid4().hex).strip()
+        self._trace_id = (request.trace_id or "").strip()
+        self._voice_id = (request.voice_id or "").strip()
+        self._model_id = (request.model_id or "").strip()
+        self._pcm_stream_sink = request.pcm_stream_sink
         self._requests_post = requests_post or _ELEVENLABS_HTTP_SESSION.post
 
     def run(self):

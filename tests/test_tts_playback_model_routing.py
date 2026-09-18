@@ -1,17 +1,26 @@
-"""per-character-tts-model 3.4:tts_playback.py 直連 ElevenLabs factory 路徑的 model_id 傳遞。"""
+"""per-character-tts-model 3.4 / unify-tts-provider-contract:
+tts_playback._start_next_tts_worker 建構的 TtsRequest 攜帶已解析完成的 model_id。
+
+改寫前這裡測的是「factory 簽名不吃 model_id 時不傳」的 inspect.signature 探測
+行為;契約統一後不再有選擇性傳參——TtsRequest 一律攜帶已解析的 model_id,factory
+要不要用是它自己的事,不需要 tts_playback 猜。"""
 
 from __future__ import annotations
 
 import queue
 from unittest.mock import MagicMock
 
+from PyQt5.QtCore import QObject
+
+from api_client.tts_contract import TtsRequest
 from tts_playback import TtsPlaybackMixin
 
 
-class _FakeCoordinator(TtsPlaybackMixin):
+class _FakeCoordinator(TtsPlaybackMixin, QObject):
     """只餵 `_start_next_tts_worker` 需要的最小狀態,不牽動真正的 MotionCoordinator。"""
 
     def __init__(self, tts_worker_factory, character_id):
+        super().__init__()
         self._tts_worker_factory = tts_worker_factory
         self._character_id = character_id
         self._active_tts_worker = None
@@ -39,45 +48,42 @@ class _FakeCoordinator(TtsPlaybackMixin):
         pass
 
 
-def _direct_elevenlabs_factory(captured: dict):
-    def factory(text, reply_id, trace_id, voice_id, model_id=None, parent=None):
-        captured.update(text=text, voice_id=voice_id, model_id=model_id)
+def _capturing_factory(captured: dict):
+    def factory(request: TtsRequest, parent=None):
+        captured["request"] = request
         return MagicMock()
 
     return factory
 
 
-def test_direct_elevenlabs_factory_receives_resolved_model_id():
+def test_direct_factory_receives_resolved_model_id_for_dedicated_character():
     captured: dict = {}
-    coordinator = _FakeCoordinator(_direct_elevenlabs_factory(captured), "char-Adol")
+    coordinator = _FakeCoordinator(_capturing_factory(captured), "char-Adol")
     coordinator._pending_tts_chunks.put(("reply-1", "hello", "trace-1"))
 
     coordinator._start_next_tts_worker()
 
-    assert captured["model_id"] == "eleven_v3"
+    assert captured["request"].model_id == "eleven_v3"
 
 
-def test_direct_elevenlabs_factory_uses_global_model_for_other_characters():
+def test_direct_factory_uses_global_model_for_other_characters():
     captured: dict = {}
-    coordinator = _FakeCoordinator(_direct_elevenlabs_factory(captured), "char-Jack")
+    coordinator = _FakeCoordinator(_capturing_factory(captured), "char-Jack")
     coordinator._pending_tts_chunks.put(("reply-1", "hello", "trace-1"))
 
     coordinator._start_next_tts_worker()
 
-    assert captured["model_id"] == "eleven_flash_v2_5"
+    assert captured["request"].model_id == "eleven_flash_v2_5"
 
 
-def test_factory_without_model_id_param_is_not_passed_it():
-    """既有的 signature 守門:factory 不吃 model_id 時不應該傳。"""
+def test_request_text_and_reply_id_flow_through_unchanged():
     captured: dict = {}
-
-    def factory(text, reply_id, trace_id, voice_id, parent=None):
-        captured.update(text=text, voice_id=voice_id)
-        return MagicMock()
-
-    coordinator = _FakeCoordinator(factory, "char-Adol")
+    coordinator = _FakeCoordinator(_capturing_factory(captured), "char-Adol")
     coordinator._pending_tts_chunks.put(("reply-1", "hello", "trace-1"))
 
     coordinator._start_next_tts_worker()
 
-    assert "model_id" not in captured
+    request = captured["request"]
+    assert request.text == "hello"
+    assert request.reply_id == "reply-1"
+    assert request.trace_id == "trace-1"
