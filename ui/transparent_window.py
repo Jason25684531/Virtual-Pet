@@ -1603,14 +1603,15 @@ class TransparentWindow(QMainWindow):
         self.set_action_status("已重置，等待下一次互動。", tone="idle", timeout_ms=2400)
 
     def _speak_proactive_greeting(self, message: str) -> None:
-        """主動發話不帶動作標記：與一般回合相同的動作決策(閒置)，不強制播放
-        任何一支動作影片，九隻角色的表現因此一致(見 proactive-conversation
-        的「主動發話不綁定固定動作」要求)。"""
         self._proactive_greeting_active = True
         trace_id = f"greeting-{uuid4().hex}"
         self.show_synthetic_conversation_turn("主動打招呼", "", message)
         self._log_assistant_utterance(message)
-        self.speak_text(message, trace_id=trace_id)
+        if not self.dispatch_action(
+            f"[ACTION:wave_response] {message}", trace_id=trace_id,
+            allow_tts=True, wait_for_tts_start=True,
+        ):
+            self.speak_text(message, trace_id=trace_id)
         self._proactive_greeting_release_timer.start()
 
     def _log_assistant_utterance(self, message: str) -> None:
