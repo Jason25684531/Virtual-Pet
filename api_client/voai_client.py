@@ -15,18 +15,25 @@ from time import perf_counter
 from uuid import uuid4
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 from PyQt5.QtCore import QThread, pyqtSignal
 
 import config
-from audio_playback import FfplayPcmAudioPlayer, PlaybackStartSuppressed
+from api_client.tts_contract import TtsRequest
+from audio_playback import FfplayPcmAudioPlayer, PlaybackStartSuppressed, is_raw_pcm_content_type
 
 _VOAI_TTS_URL = "https://connect.voai.ai/TTS/Speech"
+# 連線層重試(DNS 解析失敗/連線被拒)只重試 1 次、退避 0.2 秒:與
+# elevenlabs_client.py 同一套理由——短暫 DNS 抖動重試就會恢復,不必馬上判定
+# provider 失敗。HTTP 狀態碼錯誤不重試,交給既有 fast-fail 分類處理。
 _VOAI_HTTP_SESSION = requests.Session()
+_VOAI_HTTP_SESSION.mount("https://", HTTPAdapter(max_retries=Retry(total=1, connect=1, backoff_factor=0.2)))
 _DEFAULT_STYLE = "預設"
 _DEFAULT_SPEED = 1.2
 _DEFAULT_STYLE_WEIGHT = 0.0
 _DEFAULT_BREATH_PAUSE = 0.0
-_PCM_SAMPLE_RATE = 32000
+_PCM_SAMPLE_RATE = config.TTS_PCM_SAMPLE_RATE
 _DEFAULT_TRANSPORT_MODE = "http"
 _WARNED_DEPRECATED_TRANSPORT_MODES: set[str] = set()
 LOGGER = logging.getLogger(__name__)
@@ -62,9 +69,9 @@ def _normalize_transport_mode(value: str | None) -> str:
 class VoAIStreamingTTSWorker(QThread):
     """呼叫 VoAI TTS API，優先 PCM 即時播放，必要時回退 MP3 佇列播放。
 
-    介面與 ElevenLabsStreamingTTSWorker 相容：
-      - 相同建構子參數：text, reply_id, trace_id, voice_id, parent
-      - 相同 signals：finished_signal, progress_signal, audio_ready_signal
+    與 ElevenLabsStreamingTTSWorker 共用 `api_client.tts_contract.StreamingTTSWorker`
+    契約：相同建構慣例 `__init__(request: TtsRequest, parent=None, **kwargs)`、
+    相同訊號 finished_signal / progress_signal / audio_ready_signal / finished。
     """
 
     finished_signal = pyqtSignal(bool, str, object)
@@ -74,35 +81,29 @@ class VoAIStreamingTTSWorker(QThread):
 
     def __init__(
         self,
-        text: str,
-        reply_id: str | None = None,
-        trace_id: str | None = None,
-        voice_id: str | None = None,
+        request: TtsRequest,
+        parent=None,
+        *,
         requests_post=None,
         pcm_player_factory=None,
-        playback_guard=None,
-        adaptive_fallback_enabled: bool = False,
         transport_mode: str | None = None,
         transport_session_factory=None,
-        pcm_stream_sink=None,
-        parent=None,
     ):
         super().__init__(parent)
-        self._text = str(text or "").strip()
-        self._reply_id = (reply_id or uuid4().hex).strip()
-        self._trace_id = (trace_id or "").strip()
-        self._voice_id = (voice_id or "").strip()
+        self._text = str(request.text or "").strip()
+        self._reply_id = (request.reply_id or uuid4().hex).strip()
+        self._trace_id = (request.trace_id or "").strip()
+        self._voice_id = (request.character_id or "").strip()
         self._requests_post = requests_post or _VOAI_HTTP_SESSION.post
         self._pcm_player_factory = pcm_player_factory or (
             lambda: FfplayPcmAudioPlayer(sample_rate=_PCM_SAMPLE_RATE, channels=1)
         )
-        self._playback_guard = playback_guard
-        self._adaptive_fallback_enabled = bool(adaptive_fallback_enabled)
+        self._playback_guard = request.playback_guard
         self._transport_mode = _normalize_transport_mode(
             transport_mode or os.getenv("VOAI_TRANSPORT_MODE", _DEFAULT_TRANSPORT_MODE)
         )
         self._transport_session_factory = transport_session_factory
-        self._pcm_stream_sink = pcm_stream_sink
+        self._pcm_stream_sink = request.pcm_stream_sink
 
     def run(self):
         if not self._text:
@@ -130,7 +131,7 @@ class VoAIStreamingTTSWorker(QThread):
             ok, fallback_reason, result_payload = self._try_pcm_stream(api_key, payload)
             if ok:
                 return
-            if isinstance(result_payload, dict) and result_payload.get("fast_fail") and self._adaptive_fallback_enabled:
+            if isinstance(result_payload, dict) and result_payload.get("fast_fail"):
                 self.finished_signal.emit(False, fallback_reason, result_payload)
                 return
             LOGGER.warning("[ECHOES] VoAI PCM 串流不可用，改用 MP3 fallback。%s", fallback_reason)
@@ -212,8 +213,10 @@ class VoAIStreamingTTSWorker(QThread):
             )
             response.raise_for_status()
             content_type = str(response.headers.get("content-type", "") or "").lower()
-            if "audio" not in content_type and "octet-stream" not in content_type:
-                return False, f"VoAI PCM 回傳非音訊格式：{content_type}", None
+            # 這裡要的是 x-output-format: pcm。拿到 audio/mpeg 之類的容器就當作 PCM
+            # 嘗試失敗,交給下面的 MP3 fallback 正確解碼,而不是灌進 raw PCM 播成雜訊。
+            if not is_raw_pcm_content_type(content_type):
+                return False, f"VoAI PCM 回傳非 raw PCM 格式：{content_type}", None
 
             def iter_chunks():
                 nonlocal bytes_forwarded
@@ -346,7 +349,8 @@ class VoAIStreamingTTSWorker(QThread):
                         },
                     )
                     return False, "suppressed"
-            self._pcm_stream_sink.enqueue_pcm_chunk(chunk, self._reply_id, self._trace_id)
+            # 明確帶上取樣率,同回合 fallback 到另一個 provider 時 session guard 才擋得住。
+            self._pcm_stream_sink.enqueue_pcm_chunk(chunk, self._reply_id, self._trace_id, sample_rate=_PCM_SAMPLE_RATE)
         if first_chunk_seen:
             self._pcm_stream_sink.finish_pcm_segment(self._reply_id, self._trace_id)
         return True, ""
@@ -435,7 +439,7 @@ class VoAIStreamingTTSWorker(QThread):
                 # Best effort only: HTTP error reporting must not mask the original failure.
                 LOGGER.debug("could not read VoAI error body", exc_info=True)
             reason_code, detail, definitive = _classify_fast_fail(exc)
-            if definitive and self._adaptive_fallback_enabled:
+            if definitive:
                 self.finished_signal.emit(
                     False,
                     f"VoAI API 請求失敗 ({exc}): {body}",
@@ -455,7 +459,7 @@ class VoAIStreamingTTSWorker(QThread):
             )
         except requests.RequestException as exc:
             reason_code, detail, definitive = _classify_fast_fail(exc)
-            if definitive and self._adaptive_fallback_enabled:
+            if definitive:
                 self.finished_signal.emit(
                     False,
                     f"VoAI 網路錯誤: {exc}",

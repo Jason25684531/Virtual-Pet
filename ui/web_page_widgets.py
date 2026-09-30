@@ -1,4 +1,4 @@
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWebEngineWidgets import QWebEnginePage
 from PyQt5.QtWidgets import QLineEdit
 
@@ -14,6 +14,9 @@ class EchoesWebPage(QWebEnginePage):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # 頁面底色預設是不透明白色，會蓋掉 WA_TranslucentBackground。設在建構子而非
+        # setPage() 之後，避免再次發生「設定在稍後被丟棄的舊 page 上」的順序性失效。
+        self.setBackgroundColor(Qt.transparent)
         self.panel_ended_callback = None
         self.main_video_ended_callback = None
         self.room_audio_ended_callback = None

@@ -36,7 +36,7 @@ class FakeClient:
         return b"png"
 
 
-def _worker(tmp_path, monkeypatch, history):
+def _worker(tmp_path, monkeypatch, history, on_motion_offer_ready=None):
     monkeypatch.setattr(library_module, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(library_module, "CHARACTER_LIBRARY_DIR", tmp_path / "assets" / "characters")
     monkeypatch.setattr(library_module, "LEGACY_CHARACTER_LIBRARY_DIR", tmp_path / "assets" / "webm" / "characters")
@@ -52,7 +52,7 @@ def _worker(tmp_path, monkeypatch, history):
         max_retries=1, validation_template=ROOT / "AIA_2026_character validation_260811_API.json",
         background_template=ROOT / "AIA_2026_background_gen_260728.json",
     )
-    return orchestrator, AssetJobWorker(orchestrator.repository, orchestrator, FakeClient(history), library), source
+    return orchestrator, AssetJobWorker(orchestrator.repository, orchestrator, FakeClient(history), library, on_motion_offer_ready), source
 
 
 def test_timed_out_job_retries_until_its_limit(tmp_path, monkeypatch):
@@ -189,6 +189,21 @@ def test_variant_png_completion_writes_pending_motion_offer_without_motion_set(t
     assert offer["variant"] == "development"
     assert offer["job_id"] == job.job_id
     assert Path(offer["source_png"]).is_file()
+
+
+def test_variant_png_completion_notifies_ui_after_motion_offer_is_persisted(tmp_path, monkeypatch):
+    notifications = []
+    orchestrator, worker, source = _worker(
+        tmp_path,
+        monkeypatch,
+        {"outputs": {"467": {"images": [{"filename": "variant.png"}]}}},
+        lambda: notifications.append(orchestrator.repository.store.get_setting("asset_pending_motion_offer")),
+    )
+    job = orchestrator.create_variant_png_job("char-1", str(source), "development", "event-1")
+
+    assert worker.run_once() is True
+    assert len(notifications) == 1
+    assert notifications[0]["job_id"] == job.job_id
 
 
 def test_recover_and_run_once_share_the_same_store_lock(tmp_path, monkeypatch):

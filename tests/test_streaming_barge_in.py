@@ -1,6 +1,5 @@
 import json
 import threading
-from pathlib import Path
 
 import pytest
 
@@ -46,6 +45,18 @@ def test_sentence_splitter_strips_only_the_first_action_tag():
     assert splitter.actions == ["laugh"]
     assert splitter.feed(" Second") == []
     assert splitter.flush() == ["Second"]
+
+
+def test_sentence_splitter_force_breaks_long_unpunctuated_news_list():
+    splitter = _SentenceSplitter()
+    # 模擬新聞條目全用逗號串接、沒有句號的長段落
+    long_text = "，".join([f"《遊戲{i}》推出新更新內容囉" for i in range(10)]) + "。"
+
+    sentences = splitter.feed(long_text) + splitter.flush()
+
+    assert len(sentences) > 1
+    assert all(len(sentence) <= 90 for sentence in sentences)
+    assert "".join(sentences) == long_text
 
 
 def test_streaming_reply_extractor_sends_only_json_reply_to_tts():
@@ -125,17 +136,40 @@ class _CancelingProvider(FakeProvider):
         yield "Never spoken."
 
 
-def test_cancelled_stream_without_spoken_chunk_is_stale(streaming_env):
+def test_cancelled_stream_without_spoken_chunk_still_keeps_the_user_text(streaming_env):
+    """被打斷的回合仍要進 event_log：recent_events 是 prompt 短期歷史的唯一來源，
+    掉一筆就等於使用者問過的問題從上下文蒸發（specs/conversation-continuity）。"""
     tmp_path, agentic_root = streaming_env
     engine = PetHarnessEngine(
         provider=_CancelingProvider(), agentic_root=agentic_root,
         snapshot_path=tmp_path / "debug" / "stale.json", character_id="Choppr",
     )
-    event = engine.handle_event({"text": "interrupt"}, stream_callback=lambda _chunk: None)
+    engine.memory_store.save_turn = MagicMock()
+
+    event = engine.handle_event({"text": "英雄聯盟改版"}, stream_callback=lambda _chunk: None)
 
     assert event.metadata["stale_turn"] is True
-    assert event.saved_to_db is False
-    assert engine.recent_events() == []
+    assert event.saved_to_db is True
+    logged = engine.recent_events()
+    assert [row["input_payload"]["text"] for row in logged] == ["英雄聯盟改版"]
+    assert logged[0]["output_payload"]["reply"] == ""
+    # 空回覆不值得長期記憶，寫進向量庫只是噪音
+    engine.memory_store.save_turn.assert_not_called()
+    assert event.xp_delta == 0
+
+
+def test_interrupted_turn_stays_in_the_next_turns_history(streaming_env):
+    """被打斷後的追問要知道剛才在聊什麼（#14）。"""
+    tmp_path, agentic_root = streaming_env
+    engine = PetHarnessEngine(
+        provider=_CancelingProvider(), agentic_root=agentic_root,
+        snapshot_path=tmp_path / "debug" / "followup.json", character_id="Choppr",
+    )
+    engine.handle_event({"text": "英雄聯盟改版怎麼樣"}, stream_callback=lambda _chunk: None)
+
+    history = [row["input_payload"]["text"] for row in engine.store.recent_events(limit=6)]
+
+    assert "英雄聯盟改版怎麼樣" in history
 
 
 def test_cancelled_stream_with_spoken_chunk_persists_only_spoken_text(streaming_env):
@@ -145,13 +179,33 @@ def test_cancelled_stream_with_spoken_chunk_persists_only_spoken_text(streaming_
         snapshot_path=tmp_path / "debug" / "spoken.json", character_id="Choppr",
     )
     event = engine.handle_event(
-        {"text": "interrupt"},
-        stream_callback=lambda chunk: engine.mark_spoken_chunk(chunk),
+        {"text": "interrupt", "event_id": "t1"},
+        stream_callback=lambda chunk: engine.mark_spoken_chunk(chunk, "t1"),
     )
 
     assert event.saved_to_db is True
     assert event.reply == "First sentence."
     assert "Never spoken." not in engine.recent_events()[0]["output_payload"]["reply"]
+
+
+def test_cancelled_stream_does_not_leak_a_previous_turns_spoken_text(streaming_env):
+    """Regression: _spoken_chunks used to be one shared list, so a turn cancelled before
+    speaking anything of its own could fall back to a DIFFERENT (earlier) turn's leftover
+    text instead of its own — producing byte-identical replies across unrelated turns."""
+    tmp_path, agentic_root = streaming_env
+    engine = PetHarnessEngine(
+        provider=_CancelingProvider(), agentic_root=agentic_root,
+        snapshot_path=tmp_path / "debug" / "leak.json", character_id="Choppr",
+    )
+    engine.memory_store.save_turn = MagicMock()
+    engine.mark_spoken_chunk("上一輪殘留的內容", "prev-turn")
+
+    event = engine.handle_event(
+        {"text": "英雄聯盟改版", "event_id": "t2"}, stream_callback=lambda _chunk: None,
+    )
+
+    assert event.reply == ""
+    assert event.metadata["stale_turn"] is True
 
 
 def test_interrupt_trace_suppresses_audio_and_clears_active_motion():
@@ -193,20 +247,6 @@ def test_interrupt_all_suppresses_completed_tts_trace_and_restores_idle():
         assert dispatcher._wait_for_room_audio_ended is False
         assert dispatcher._loop_action_service_pending is False
         window.restore_idle_video.assert_called()
-    finally:
-        dispatcher.shutdown(wait_ms=100)
-
-
-def test_interrupt_all_stops_delayed_news_action():
-    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
-    try:
-        news_timer = MagicMock()
-        dispatcher._news_audio_delay_timer = news_timer
-
-        dispatcher.interrupt_all()
-
-        news_timer.stop.assert_called_once()
-        assert dispatcher._news_audio_delay_timer is None
     finally:
         dispatcher.shutdown(wait_ms=100)
 
@@ -373,6 +413,81 @@ class _Conversation:
             lambda: None,
             lambda: (cancel.set(), self.cancelled.append(text)),
         )
+
+
+def test_sentence_gap_during_streaming_does_not_close_the_audio_session():
+    """Regression: 句與句之間 TTS worker 短暫歸零時,若 trace 仍在
+    _streaming_traces 中(LLM 還在吐下一句),音訊 session MUST NOT 被關閉,
+    否則遲到的分塊會被靜默丟棄或改開第二個 ffplay,造成聽感斷點。"""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._audio_worker.close_trace_session = MagicMock()
+        dispatcher._streaming_traces.add("trace-1")
+        dispatcher._trace_pending_tts_counts["trace-1"] = 1
+
+        dispatcher._on_tts_finished(
+            "reply-1", True, "queued", {"trace_id": "trace-1", "queued_playback": True},
+        )
+
+        dispatcher._audio_worker.close_trace_session.assert_not_called()
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_stream_finishing_after_tts_already_done_closes_the_session():
+    """串流先結束、TTS 後結束:finish_streaming_trace() 時仍有待完成 TTS,
+    不應關閉;該筆 TTS 完成後才關閉一次。"""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._audio_worker.close_trace_session = MagicMock()
+        dispatcher._streaming_traces.add("trace-1")
+        dispatcher._trace_pending_tts_counts["trace-1"] = 1
+
+        dispatcher.finish_streaming_trace("trace-1")
+        dispatcher._audio_worker.close_trace_session.assert_not_called()
+
+        dispatcher._on_tts_finished(
+            "reply-1", True, "queued", {"trace_id": "trace-1", "queued_playback": True},
+        )
+        dispatcher._audio_worker.close_trace_session.assert_called_once_with("trace-1")
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_tts_finishing_before_stream_ends_closes_session_only_once_stream_finishes():
+    """TTS 先結束、串流後結束:TTS 全數完成時不關閉(仍在 _streaming_traces
+    中),finish_streaming_trace() 觸發時才關閉。"""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._audio_worker.close_trace_session = MagicMock()
+        dispatcher._streaming_traces.add("trace-1")
+        dispatcher._trace_pending_tts_counts["trace-1"] = 1
+
+        dispatcher._on_tts_finished(
+            "reply-1", True, "queued", {"trace_id": "trace-1", "queued_playback": True},
+        )
+        dispatcher._audio_worker.close_trace_session.assert_not_called()
+
+        dispatcher.finish_streaming_trace("trace-1")
+        dispatcher._audio_worker.close_trace_session.assert_called_once_with("trace-1")
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_barge_in_interrupts_audio_immediately_even_mid_stream():
+    """barge-in 不受本次修改延後:trace 仍在 _streaming_traces 中(串流尚未
+    宣告結束)時,interrupt_trace() 仍要立即中止音訊,不能等串流結束。"""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._audio_worker.suppress_trace = MagicMock()
+        dispatcher._streaming_traces.add("trace-1")
+
+        dispatcher.interrupt_trace("trace-1")
+
+        dispatcher._audio_worker.suppress_trace.assert_called_once_with("trace-1")
+        assert "trace-1" not in dispatcher._streaming_traces
+    finally:
+        dispatcher.shutdown(wait_ms=100)
 
 
 def test_barge_in_cancels_old_handler_completion_and_accepts_new_turn():

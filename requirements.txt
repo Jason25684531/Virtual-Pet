@@ -10,6 +10,7 @@ playwright>=1.55
 beautifulsoup4>=4.13
 feedparser>=6.0
 qdrant-client>=1.13
+pyyaml>=6.0  # 解析 Retriveal_doc 語料 chunk 的 yaml metadata fence
 openpyxl>=3.1  # 回填桌寵AI測試評估基準_計分表.xlsx
 fastembed>=0.5
 jieba>=0.42

@@ -70,6 +70,39 @@ def test_explicit_manifest_actions_take_precedence_over_motion_fallback(tmp_path
     assert library.resolve_action_tag("miku", "idle") is None
 
 
+def test_has_declared_motion_true_only_for_manifest_declared_keys(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+    _write_manifest(tmp_path, "char-lei-jie", ["idle", "laugh"])
+
+    assert library.has_declared_motion("char-lei-jie", "idle") is True
+    assert library.has_declared_motion("char-lei-jie", "laugh") is True
+    assert library.has_declared_motion("char-lei-jie", "report_news") is False
+    assert library.has_declared_motion("char-lei-jie", "") is False
+    assert library.has_declared_motion("char-lei-jie", None) is False
+
+
+def test_has_declared_motion_ignores_undeclared_files_on_disk(tmp_path, monkeypatch):
+    """Regression: Choppr/miku 磁碟上仍留著 align-preset-character-interaction
+    移除 manifest 宣告後的舊檔（如 Play_Music.webm）。get_motion_path() 的檔案
+    系統猜測分支在 Windows 上會因不分大小寫而誤判成「有素材」；
+    has_declared_motion() 必須只認 manifest，不能被這類殘留檔案騙過。"""
+    library = _library(tmp_path, monkeypatch)
+    _write_manifest(tmp_path, "Choppr", ["idle", "laugh"])
+    stray_file = tmp_path / "assets" / "characters" / "Choppr" / "motions" / "play_music.webm"
+    stray_file.write_bytes(b"webm")
+
+    # get_motion_path() 的猜檔名分支確實會找到這個殘留檔案……
+    assert library.get_motion_path("Choppr", "play_music") is not None
+    # ……但 has_declared_motion() 不能被它騙過，manifest 沒宣告就是沒有。
+    assert library.has_declared_motion("Choppr", "play_music") is False
+
+
+def test_has_declared_motion_missing_character_returns_false(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+
+    assert library.has_declared_motion("no-such-character", "idle") is False
+
+
 def test_validated_character_persists_and_reads_voice_gender(tmp_path, monkeypatch):
     library = _library(tmp_path, monkeypatch)
     source = tmp_path / "source.png"
@@ -103,6 +136,29 @@ def test_variant_inventory_uses_png_preview_until_idle_motion_is_ready(tmp_path,
     (character_dir / "motions" / "event" / "idle.webm").write_bytes(b"webm")
     assert library.get_motion_path("miku", "idle").endswith("motions\\event\\idle.webm")
     assert library.list_variant_inventory("miku")[0]["state"] == "ready"
+
+
+def test_variant_inventory_resolves_thumb_by_filename_in_shared_development_folder(tmp_path, monkeypatch):
+    """char-Adol 等角色的 development_a/development_b 來源圖共放在 images/development/ 一個資料夾裡,
+    檔名才是變體名,不是資料夾名——thumb 解析要靠檔名 fallback,不能只看 images/{variant}/ 資料夾。"""
+    library = _library(tmp_path, monkeypatch)
+    character_dir = tmp_path / "assets" / "characters" / "char-Adol"
+    (character_dir / "images" / "development").mkdir(parents=True)
+    (character_dir / "images" / "development" / "development_a.png").write_bytes(b"a")
+    (character_dir / "images" / "development" / "development_b.png").write_bytes(b"b")
+    for variant in ("development_a", "development_b"):
+        (character_dir / "motions" / variant).mkdir(parents=True)
+        (character_dir / "motions" / variant / "idle.webm").write_bytes(variant.encode())
+    (character_dir / "manifest.json").write_text(json.dumps({
+        "id": "char-Adol", "motions_dir": "assets/characters/char-Adol/motions",
+        "motions": {}, "active_variant": "development_a", "selected_generations": {},
+    }), encoding="utf-8")
+
+    items = {item["variant"]: item for item in library.list_variant_inventory("char-Adol")}
+
+    assert items["development_a"]["thumb"].endswith("development_a.png")
+    assert items["development_b"]["thumb"].endswith("development_b.png")
+    assert items["development_a"]["state"] == "ready"
 
 
 def test_motion_resolution_prefers_active_then_flat_manifest_then_og(tmp_path, monkeypatch):
@@ -233,6 +289,44 @@ def test_list_background_scenes_reports_available_variant_backgrounds(tmp_path, 
     assert scenes["event"]["is_current"] is False
 
 
+def test_list_background_scenes_maps_legacy_development_png_to_development_a(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+    character_dir = tmp_path / "assets" / "characters" / "omni"
+    bg_dir = character_dir / "images" / "bg"
+    bg_dir.mkdir(parents=True)
+    (bg_dir / "og.png").write_bytes(b"og")
+    (bg_dir / "development.png").write_bytes(b"legacy")
+    (character_dir / "manifest.json").write_text(json.dumps({
+        "id": "omni", "motions_dir": "assets/characters/omni/motions", "motions": {},
+        "active_variant": "og", "background_image": "",
+    }), encoding="utf-8")
+
+    scenes = {item["scene_id"]: item for item in library.list_background_scenes("omni")}
+
+    # 舊制單張 development.png 沒有 development_a 檔名可用,故以 scene_id="development" 後援列出
+    # (零遷移),而不是被略過或誤判成獨立的第五格。
+    assert set(scenes) == {"og", "development"}
+
+
+def test_list_background_scenes_never_leaks_generation_suffixed_filename_as_its_own_scene(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+    character_dir = tmp_path / "assets" / "characters" / "miku"
+    bg_dir = character_dir / "images" / "bg"
+    bg_dir.mkdir(parents=True)
+    (bg_dir / "og.png").write_bytes(b"og")
+    (bg_dir / "development_a-g02.png").write_bytes(b"regenerated, not yet registered as a generation")
+    (character_dir / "manifest.json").write_text(json.dumps({
+        "id": "miku", "motions_dir": "assets/characters/miku/motions", "motions": {},
+        "active_variant": "og", "background_image": "",
+    }), encoding="utf-8")
+
+    scenes = {item["scene_id"]: item for item in library.list_background_scenes("miku")}
+
+    # 舊實作對 bg/*.png 做 glob,檔名 stem 直接當 scene_id,會把重生檔案的 "development_a-g02"
+    # 誤判成獨立第五格。改走 variant_background_path 後只認四個固定變體,不會漏出裸檔名。
+    assert set(scenes) == {"og"}
+
+
 def test_variant_inventory_uses_newest_png_as_thumbnail(tmp_path, monkeypatch):
     library = _library(tmp_path, monkeypatch)
     character_dir = tmp_path / "assets" / "characters" / "miku"
@@ -248,3 +342,39 @@ def test_variant_inventory_uses_newest_png_as_thumbnail(tmp_path, monkeypatch):
     }), encoding="utf-8")
 
     assert library.list_variant_inventory("miku")[0]["thumb"].endswith("new.png")
+
+
+def test_panel_motion_requires_manifest_authorized_action_key(tmp_path, monkeypatch):
+    """manifest 是面板影片的唯一授權來源(見 align-preset-character-interaction 決策 3):
+    即使 motions_dir 底下真的有面板檔案,角色沒有宣告該動作鍵就不得播放。"""
+    library = _library(tmp_path, monkeypatch)
+    character_dir = tmp_path / "assets" / "characters" / "no-music-key"
+    motion_dir = character_dir / "motions"
+    motion_dir.mkdir(parents=True)
+    (motion_dir / "Play_Music_Panel.webm").write_bytes(b"webm")
+    (character_dir / "manifest.json").write_text(json.dumps({
+        "id": "no-music-key", "motions_dir": "assets/characters/no-music-key/motions",
+        "motions": {"idle": "assets/characters/no-music-key/motions/idle.webm"},
+    }), encoding="utf-8")
+
+    assert library.get_panel_motion_path("no-music-key", "play_music") is None
+
+
+def test_panel_motion_resolves_when_action_key_is_declared(tmp_path, monkeypatch):
+    library = _library(tmp_path, monkeypatch)
+    character_dir = tmp_path / "assets" / "characters" / "has-music-key"
+    motion_dir = character_dir / "motions"
+    motion_dir.mkdir(parents=True)
+    (motion_dir / "Play_Music_Panel.webm").write_bytes(b"webm")
+    (character_dir / "manifest.json").write_text(json.dumps({
+        "id": "has-music-key", "motions_dir": "assets/characters/has-music-key/motions",
+        "motions": {
+            "idle": "assets/characters/has-music-key/motions/idle.webm",
+            "play_music": "assets/characters/has-music-key/motions/play_music.webm",
+        },
+    }), encoding="utf-8")
+
+    path = library.get_panel_motion_path("has-music-key", "play_music")
+
+    assert path is not None
+    assert path.endswith("Play_Music_Panel.webm")

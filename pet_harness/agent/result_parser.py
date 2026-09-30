@@ -70,6 +70,9 @@ class ResultParser:
         if parsed_ok:
             if isinstance(payload, dict):
                 return self._from_payload(payload, raw_text, normalized_provider, "parsed_json")
+            reply_only = self._reply_field_only_result(raw_text, normalized_provider, "root_not_object")
+            if reply_only is not None:
+                return reply_only
             return self._build_fallback(
                 raw_text,
                 normalized_provider,
@@ -81,18 +84,24 @@ class ResultParser:
         fenced_payload = self._parse_fenced_json(raw_text)
         if fenced_payload is not None:
             return self._from_payload(fenced_payload, raw_text, normalized_provider, "parsed_fenced_json")
-        reply_only = self._extract_reply_field(raw_text)
+        reply_only = self._reply_field_only_result(raw_text, normalized_provider, "outer_json_malformed")
         if reply_only is not None:
-            return AgentResult(
-                reply=reply_only,
-                raw_text=raw_text,
-                parser_status="parsed_reply_field_only",
-                provider_type=normalized_provider,
-                fallback_used=True,
-                metadata={"reason": "outer_json_malformed"},
-            )
+            return reply_only
         return self._build_fallback(
             raw_text, normalized_provider, fallback_reply, "fallback_invalid_json", "invalid_json"
+        )
+
+    def _reply_field_only_result(self, raw_text: str, provider_type: str, reason: str) -> AgentResult | None:
+        reply_only = self._extract_reply_field(raw_text)
+        if reply_only is None:
+            return None
+        return AgentResult(
+            reply=reply_only,
+            raw_text=raw_text,
+            parser_status="parsed_reply_field_only",
+            provider_type=provider_type,
+            fallback_used=True,
+            metadata={"reason": reason},
         )
 
     def _parse_fenced_json(self, raw_text: str) -> dict | None:
@@ -265,13 +274,24 @@ class ResultParser:
     ) -> AgentResult:
         self._log_fallback(raw_text, parser_status, reason)
         return AgentResult(
-            reply=fallback_reply or self.default_reply,
+            reply=self._safe_fallback_reply(fallback_reply),
             raw_text=raw_text,
             parser_status=parser_status,
             provider_type=provider_type,
             fallback_used=True,
             metadata={"reason": reason},
         )
+
+    def _safe_fallback_reply(self, fallback_reply: str | None) -> str:
+        """reply contract 的最後一道防線(見 `_normalize_reply` docstring)。JSON 解析
+        徹底失敗時,呼叫端傳入的 fallback_reply 往往就是 provider 的原始輸出本身
+        (例如 Ollama 的 raw completion,本來就預期是 JSON)——原樣顯示等於把 JSON
+        包裝直接洩漏給使用者(回報:前端偶爾看到一整包 JSON)。原始文字長得像
+        JSON/程式碼區塊就不採信,退回通用訊息;非 JSON provider 的一般文字
+        fallback 不受影響。"""
+        if fallback_reply and fallback_reply.strip().startswith(("{", "[", "```")):
+            return self.default_reply
+        return fallback_reply or self.default_reply
 
     @staticmethod
     def _digest(raw_text: str) -> str:

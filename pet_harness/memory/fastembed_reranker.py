@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pet_harness.memory.memory_models import RetrievalCandidate
+from pet_harness.memory.reranker import Reranker
 
 
-class FastembedReranker:
+class FastembedReranker(Reranker):
     """Cross-encoder relevance gate with lazy model loading."""
 
     def __init__(self, model: str | None = None, threshold: float | None = None) -> None:

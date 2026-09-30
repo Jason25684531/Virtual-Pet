@@ -65,7 +65,12 @@ class ContextualMemoryRetriever:
             top = candidates[0] if candidates else None
             top_score = float(top.score) if isinstance(top, RetrievalCandidate) else None
             top_kind = top.fusion if isinstance(top, RetrievalCandidate) else ("rrf" if available else "cosine")
-            threshold = __import__("config").MEMORY_DENSE_MIN_SCORE
+            # A shared knowledge index can use a different dense threshold from
+            # per-character memory. Keep the trace aligned with the index that
+            # actually executed the search instead of reporting the memory default.
+            threshold = getattr(self.index, "_dense_min_score", None)
+            if threshold is None:
+                threshold = __import__("config").MEMORY_DENSE_MIN_SCORE
             trace = RetrievalTrace(
                 bool(reason), reason, tier, query,
                 fused_count=len(candidates), dense_attempted=True, sparse_attempted=available,

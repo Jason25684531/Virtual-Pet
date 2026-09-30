@@ -23,10 +23,53 @@ from pet_harness.storage.sqlite_store import SQLiteStore
 PLAYTIME_SECONDS_KEY = "ui_playtime_seconds"
 LAST_PLAYED_AT_KEY = "ui_last_played_at"
 FESTIVAL_PROMPT_HISTORY_KEY = "asset_event_prompt_history"
+STYLE_UNLOCK_ALL_KEY = "style_unlock_all"
 
 
 def _level_for_xp(xp_total: int) -> int:
     return max(1, (max(0, xp_total) // 100) + 1)
+
+
+def active_pending_motion_offer(store: SQLiteStore) -> dict[str, Any] | None:
+    offer = store.get_setting("asset_pending_motion_offer")
+    if not offer:
+        return None
+    import config
+
+    if offer_expired(offer.get("created_at"), config.PREVIEW_OFFER_TTL_HOURS):
+        store.set_setting("asset_pending_motion_offer", None)
+        return None
+    return offer
+
+
+def _missing_assets(profile: CharacterProfile) -> list[str]:
+    """回報角色缺少哪些必要資產,讓選角卡片可以顯示明確的不可用原因。
+
+    action motion 沿用 CharacterLibrary.list_action_tags() —— 它已經只回傳
+    manifest 宣告且檔案確實存在的 tag,不需要在這裡再寫一份解析。
+    """
+    import config
+
+    missing: list[str] = []
+    if not profile.background_image or not (config.PROJECT_ROOT / profile.background_image).is_file():
+        missing.append("background_image")
+    idle_motion = (profile.motions or {}).get("idle")
+    if not idle_motion or not (config.PROJECT_ROOT / idle_motion).is_file():
+        missing.append("idle_motion")
+    if not CharacterLibrary().list_action_tags(profile.character_id):
+        missing.append("action_motion")
+    if not config.get_elevenlabs_voice_id_for_character(profile.character_id):
+        missing.append("voice_id")
+    return missing
+
+
+def offer_expired(created_at: str | None, ttl_hours: float) -> bool:
+    if not created_at:
+        return False
+    try:
+        return datetime.now(UTC) - datetime.fromisoformat(created_at) > timedelta(hours=ttl_hours)
+    except ValueError:
+        return False
 
 
 class CharacterUiService:
@@ -41,19 +84,76 @@ class CharacterUiService:
         self._customization = customization_service or CharacterCustomizationService(
             registry=registry, router=router
         )
+        self._on_motion_offer_ready = None
+
+    def configure_motion_offer_callback(self, callback) -> None:
+        self._on_motion_offer_ready = callback if callable(callback) else None
 
     def list_characters(self) -> list[dict[str, Any]]:
-        items = {profile.character_id: self._summarize(profile) for profile in self._registry.list_characters()}
+        return self._list_characters(self._summarize)
+
+    def list_presets_fast(self) -> list[dict[str, Any]]:
+        """建立角色分頁初次繪製用:只用 manifest 既有欄位,不開 SQLite、不做
+        資產世代解析,避免畫面切換的同步路徑卡在慢查詢上(fix-create-screen-stall
+        決策 2)。完整摘要由 enrich_preset_summaries() 在背景算完後以
+        hydratePresetSummaries 補上。"""
+        return [item for item in self._list_characters(self._summarize_fast) if item["is_preset"]]
+
+    def enrich_preset_summaries(self, character_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """計算指定角色的完整摘要(xp/playtime/missing_assets);呼叫端負責
+        不在 UI 執行緒上執行這個方法本身,本方法自己不做執行緒安排。"""
+        result: dict[str, dict[str, Any]] = {}
+        for character_id in character_ids:
+            try:
+                profile, _ = self._router.load_profile(character_id)
+            except Exception:  # noqa: BLE001 - 單一角色失敗不影響其餘角色的補齊
+                continue
+            result[character_id] = self._summarize(profile)
+        return result
+
+    def _list_characters(self, summarize) -> list[dict[str, Any]]:
+        items = {profile.character_id: summarize(profile) for profile in self._registry.list_characters()}
         # 上傳生成的角色(library)不在 registry;經 router 的統一解析補進清單。
         for manifest in CharacterLibrary().list_characters():
             character_id = str(manifest.get("id") or "")
             if character_id and character_id not in items:
                 profile, _ = self._router.load_profile(character_id)
-                items[character_id] = self._summarize(profile)
-        return list(items.values())
+                items[character_id] = summarize(profile)
+        return self._apply_default_roster_order(items)
+
+    @staticmethod
+    def _apply_default_roster_order(items: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        """固定六人依 config.DEFAULT_CHARACTER_IDS 排在最前,其餘維持既有順序。
+
+        資產更新會改變 registry 目錄排序與 library 的 updated_at 排序,使用者熟悉的
+        選角版面因此每次都不一樣;固定區獨立於這兩者,但不刪除也不改寫任何角色。
+        """
+        import config
+
+        ordered = [items[cid] for cid in config.DEFAULT_CHARACTER_IDS if cid in items]
+        listed = {item["character_id"] for item in ordered}
+        ordered.extend(item for item in items.values() if item["character_id"] not in listed)
+        return ordered
 
     def list_presets(self) -> list[dict[str, Any]]:
         return [item for item in self.list_characters() if item["is_preset"]]
+
+    def get_style_unlock_all(self, character_id: str) -> bool:
+        profile, _ = self._router.load_profile(character_id)
+        store = SQLiteStore(profile.sqlite_path)
+        store.initialize()
+        return bool(store.get_setting(STYLE_UNLOCK_ALL_KEY, False))
+
+    def set_style_unlock_all(self, character_id: str, enabled: bool) -> bool:
+        profile, _ = self._router.load_profile(character_id)
+        store = SQLiteStore(profile.sqlite_path)
+        store.initialize()
+        value = bool(enabled)
+        store.set_setting(STYLE_UNLOCK_ALL_KEY, value)
+        return value
+
+    def reset_style_state(self, character_id: str) -> dict[str, object]:
+        return CharacterLibrary().reset_style_state(character_id)
 
     def create_from_preset(self, preset_id: str, name: str | None = None) -> dict[str, Any]:
         # Select 直接切換成 preset 本體並開始遊玩，不再複製出 {preset_id}_{n} 分身。
@@ -123,7 +223,7 @@ class CharacterUiService:
                 for skill in engine.skills
             ],
             "pending_offer": engine.store.get_setting("asset_pending_offer"),
-            "pending_motion_offer": self._active_pending_motion_offer(engine.store),
+            "pending_motion_offer": active_pending_motion_offer(engine.store),
         }
 
     def list_style_variants(self, character_id: str) -> list[dict[str, object]]:
@@ -144,10 +244,11 @@ class CharacterUiService:
             for job in jobs
             if job["status"] in {"queued", "uploading", "submitted", "running"}
         }
-        motion_offer = self._active_pending_motion_offer(store)
+        motion_offer = active_pending_motion_offer(store)
         if motion_offer:
             generated_variants.add(str(motion_offer["variant"]))
-        items = [item for item in items if item["variant"] == "og" or item["variant"] in generated_variants]
+        if not self.get_style_unlock_all(character_id):
+            items = [item for item in items if item["variant"] == "og" or item["variant"] in generated_variants]
         for item in items:
             # 未落地任何素材的格子不進「生成中」態,避免 HUD 顯示空白預覽的生成中格子。
             if item["variant"] in generating and item["state"] != "empty":
@@ -181,31 +282,11 @@ class CharacterUiService:
     def select_style_generation(self, character_id: str, variant: str, asset_id: str) -> dict[str, object]:
         return CharacterLibrary().select_style_generation(character_id, variant, asset_id)
 
-    def _active_pending_motion_offer(self, store: SQLiteStore) -> dict[str, Any] | None:
-        offer = store.get_setting("asset_pending_motion_offer")
-        if not offer:
-            return None
-        import config
-
-        if self._offer_expired(offer.get("created_at"), config.PREVIEW_OFFER_TTL_HOURS):
-            store.set_setting("asset_pending_motion_offer", None)
-            return None
-        return offer
-
-    @staticmethod
-    def _offer_expired(created_at: str | None, ttl_hours: float) -> bool:
-        if not created_at:
-            return False
-        try:
-            return datetime.now(UTC) - datetime.fromisoformat(created_at) > timedelta(hours=ttl_hours)
-        except ValueError:
-            return False
-
     def confirm_motion_generation(self, character_id: str, accept: bool) -> dict[str, Any]:
         profile, _ = self._router.load_profile(character_id)
         store = SQLiteStore(profile.sqlite_path)
         store.initialize()
-        offer = self._active_pending_motion_offer(store)
+        offer = active_pending_motion_offer(store)
         if not offer:
             return {"accepted": False, "pending": False}
         if not accept:
@@ -226,13 +307,36 @@ class CharacterUiService:
         item = next((item for item in self.list_style_variants(character_id) if item["variant"] == variant), None)
         if item is None or item["state"] != "ready":
             raise ValueError(f"style is not ready: {variant}")
+        background_mode = library.get_background_mode(character_id)
+        current_background = (
+            library.get_background_path(character_id) if background_mode == "follow" else None
+        )
         manifest = library.set_active_variant(character_id, variant)
-        if library.get_background_mode(character_id) == "follow":
-            manifest = library.set_background(character_id, library.variant_background_path(character_id, variant))
+        if background_mode == "follow":
+            library.set_background_mode(character_id, "manual")
+            manifest = library.set_background(character_id, current_background)
         return {"character_id": character_id, "variant": variant, "background_image": manifest.get("background_image", "")}
 
+    @staticmethod
+    def _completed_render_variants(store: SQLiteStore, character_id: str) -> set[str]:
+        """成長/節慶觸發成功落地的變體(D7 契約:存在檔案不算解鎖,須有成功 render job)。"""
+        return {
+            str(job["variant"])
+            for job in store.list_asset_jobs(character_id)
+            if job["workflow_type"] in {"variant_png", "motion_set", "motion_clip"}
+            and job["status"] == "completed"
+            and job.get("metadata", {}).get("output", "preset") is not None
+        }
+
     def list_scene_backgrounds(self, character_id: str) -> list[dict[str, object]]:
-        return CharacterLibrary().list_background_scenes(character_id)
+        scenes = CharacterLibrary().list_background_scenes(character_id)
+        profile, _ = self._router.load_profile(character_id)
+        store = SQLiteStore(profile.sqlite_path)
+        store.initialize()
+        if self.get_style_unlock_all(character_id):
+            return scenes
+        unlocked = self._completed_render_variants(store, character_id)
+        return [scene for scene in scenes if scene["scene_id"] == "og" or scene["scene_id"] in unlocked]
 
     def apply_scene(self, character_id: str, scene_id: str) -> dict[str, object]:
         library = CharacterLibrary()
@@ -241,6 +345,12 @@ class CharacterUiService:
             active_variant = str((library.get_character(character_id) or {}).get("active_variant") or "og")
             manifest = library.set_background(character_id, library.variant_background_path(character_id, active_variant))
             return {"character_id": character_id, "background_mode": "follow", "background_image": manifest.get("background_image", "")}
+        if scene_id != "og":
+            profile, _ = self._router.load_profile(character_id)
+            store = SQLiteStore(profile.sqlite_path)
+            store.initialize()
+            if not self.get_style_unlock_all(character_id) and scene_id not in self._completed_render_variants(store, character_id):
+                raise ValueError(f"scene not unlocked: {scene_id}")
         path = library.variant_background_path(character_id, scene_id)
         if not path:
             raise ValueError(f"scene background not ready: {scene_id}")
@@ -263,7 +373,8 @@ class CharacterUiService:
         metadata.update(dict(offer.get("metadata") or {}))
         if metadata["variant_type"] == "event":
             metadata["event_prompt"] = self._select_festival_prompt(store)
-        response = build_asset_service(store, character_id, CharacterLibrary()).create_asset(AssetRequest(
+        service_kwargs = {"on_motion_offer_ready": self._on_motion_offer_ready} if self._on_motion_offer_ready else {}
+        response = build_asset_service(store, character_id, CharacterLibrary(), **service_kwargs).create_asset(AssetRequest(
             asset_type="variant_png", prompt_params={"generation_context": context},
             source_event_id=str(offer["source_event_id"]),
             metadata=metadata,
@@ -303,9 +414,7 @@ class CharacterUiService:
 
     @staticmethod
     def _active_memory_rows(store: SQLiteStore, character_id: str):
-        now = utc_now()
-        with store.connect() as conn:
-            return conn.execute("SELECT text FROM memory_items WHERE character_id=? AND status='active' AND (expires_at IS NULL OR expires_at>?) ORDER BY created_at DESC", (character_id, now)).fetchall()
+        return store.active_memory_rows(character_id)
 
     def trigger_skill(self, skill_id: str) -> dict[str, Any]:
         profile = self._router.get_active_character()
@@ -383,12 +492,32 @@ class CharacterUiService:
     def preview_skill_match(self, character_id: str, text: str) -> dict[str, Any]:
         return self._customization.preview_skill_match(character_id, text)
 
+    def _summarize_fast(self, profile: CharacterProfile) -> dict[str, Any]:
+        """`_summarize()` 的廉價子集:只用 manifest 已有欄位,不開 SQLite、不做
+        `_missing_assets()` 的資產世代解析(那條路徑重覆建構 SQLiteStore 又觸發
+        大量 Windows 路徑解析,單次可達數百毫秒,見 design.md Context 的 cProfile
+        紀錄)。`asset_status: "pending"` 讓前端在完整資料補上前,維持與
+        "incomplete" 相同的保守處理(Select 按鈕停用),而不是預設可用。"""
+        return {
+            "character_id": profile.character_id,
+            "name": profile.name,
+            "is_preset": profile.is_preset,
+            "xp_total": 0,
+            "level": _level_for_xp(0),
+            "background_image": profile.background_image,
+            "playtime_seconds": 0,
+            "last_played_at": None,
+            "missing_assets": None,
+            "asset_status": "pending",
+        }
+
     def _summarize(self, profile: CharacterProfile) -> dict[str, Any]:
         store = SQLiteStore(profile.sqlite_path)
         store.initialize()
         xp_total = int(store.get_user_progress().get("xp_total", 0))
         playtime_seconds = int(store.get_setting(PLAYTIME_SECONDS_KEY, 0) or 0)
         last_played_at = store.get_setting(LAST_PLAYED_AT_KEY)
+        missing_assets = _missing_assets(profile)
         return {
             "character_id": profile.character_id,
             "name": profile.name,
@@ -398,4 +527,7 @@ class CharacterUiService:
             "background_image": profile.background_image,
             "playtime_seconds": max(0, playtime_seconds),
             "last_played_at": last_played_at,
+            # 缺資產的角色仍保留卡片,由 UI 顯示不可用原因,不以其他角色遞補。
+            "missing_assets": missing_assets,
+            "asset_status": "ok" if not missing_assets else "incomplete",
         }

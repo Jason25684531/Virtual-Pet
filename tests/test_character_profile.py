@@ -29,6 +29,13 @@ class TestLoadChoppr:
 
 
 class TestLoadMiku:
+    # data/characters/miku/* 在 .gitignore 裡,乾淨 checkout 不會有 profile.json。
+    # 沒有 fixture 時是環境缺件,不是產品壞掉 —— 標成 skip 而不是 fail,才不會讓
+    # 一個永遠紅的測試把真正的回歸淹掉。
+    @pytest.mark.skipif(
+        not (profile_module._PROJECT_ROOT / "data" / "characters" / "miku" / "profile.json").is_file(),
+        reason="data/characters/miku/profile.json 未納入版控,此環境沒有這份 fixture",
+    )
     def test_load_miku(self):
         p = CharacterProfile.load("miku")
         assert p.character_id == "miku"

@@ -50,6 +50,16 @@ CHARACTER_ELEVENLABS_VOICE_ENV_KEYS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# 預設選角版面的固定成員與順序；其餘角色仍可正常載入並排在後面。
+DEFAULT_CHARACTER_IDS: tuple[str, ...] = (
+    "char-Adol",
+    "char-Jack",
+    "char-Kai",
+    "char-Luke",
+    "char-Nico",
+    "char-ROG",
+)
+
 #如果要換Voice ID這裡可以改咬
 BUILTIN_CHARACTER_ELEVENLABS_VOICE_IDS: dict[str, str] = {
     "char-Adol": "fUjY9K2nAIwlALOwSiwc",
@@ -60,6 +70,13 @@ BUILTIN_CHARACTER_ELEVENLABS_VOICE_IDS: dict[str, str] = {
     "char-ROG": "RoUNDCtoHQPMwQQoROwA",
     "char-Omni": "pekFz6QhW6VUmG0FJ3RV",
     "char-Zenni": "2Zlm5u8veOiqFWNIOc0K",
+}
+
+# 角色專屬 ElevenLabs 語音模型；未列名的角色回退到全域 ELEVENLABS_MODEL_ID。
+# Adol 改用 eleven_v3（情緒表現較好，但延遲高於 flash，見 openspec/changes/
+# per-character-tts-model/design.md 的 smoke 測試結果）。
+BUILTIN_CHARACTER_ELEVENLABS_MODEL_IDS: dict[str, str] = {
+    "char-Adol": "eleven_v3",
 }
 
 
@@ -74,6 +91,11 @@ def _read_first_non_empty_env(*names: str, default: str = "") -> str:
 def character_voice_env_key(character_id: str) -> str:
     """內建角色的 per-character 覆寫鍵：ELEVENLABS_{ID 大寫、- 轉 _}_VOICE_ID。"""
     return f"ELEVENLABS_{character_id.upper().replace('-', '_')}_VOICE_ID"
+
+
+def character_model_env_key(character_id: str) -> str:
+    """內建角色的 per-character 語音模型覆寫鍵：ELEVENLABS_{ID 大寫、- 轉 _}_MODEL_ID。"""
+    return f"ELEVENLABS_{character_id.upper().replace('-', '_')}_MODEL_ID"
 
 
 def _build_character_elevenlabs_voice_ids() -> dict[str, str]:
@@ -93,6 +115,20 @@ def _build_character_elevenlabs_voice_ids() -> dict[str, str]:
 
 # 各角色專屬 ElevenLabs 聲線映射（從 .env 解析，缺少時回退全域預設）
 CHARACTER_VOICE_IDS: dict[str, str] = _build_character_elevenlabs_voice_ids()
+
+
+def _build_character_elevenlabs_model_ids() -> dict[str, str]:
+    resolved: dict[str, str] = {}
+    for character_id, model_id in BUILTIN_CHARACTER_ELEVENLABS_MODEL_IDS.items():
+        resolved[character_id] = _read_first_non_empty_env(
+            character_model_env_key(character_id),
+            default=model_id,
+        )
+    return resolved
+
+
+# 各角色專屬 ElevenLabs 語音模型映射（從 .env 解析，缺少時回退全域預設）
+CHARACTER_MODEL_IDS: dict[str, str] = _build_character_elevenlabs_model_ids()
 
 # VoAI 角色聲音設定
 _DEFAULT_VOAI_CONFIG: dict = {
@@ -170,13 +206,45 @@ SEMANTIC_ROUTING_MARGIN_THRESHOLD = _read_float_env("SEMANTIC_ROUTING_MARGIN_THR
 QDRANT_MODE = os.getenv("QDRANT_MODE", "local").strip().lower() or "local"
 QDRANT_PATH = os.getenv("QDRANT_PATH", str(PROJECT_ROOT / "runtime_cache" / "qdrant")).strip()
 QDRANT_URL = os.getenv("QDRANT_URL", "").strip()
+
+# 共用遊戲知識語料（Retriveal_doc/）：所有角色共讀同一個 collection，與各角色的
+# 個人記憶庫完全分離。預設關閉，量測延遲通過後才開（見
+# openspec/changes/shared-knowledge-rag/design.md Migration Plan）。
+KNOWLEDGE_RAG_ENABLED = _read_bool_env("KNOWLEDGE_RAG_ENABLED", True)
+KNOWLEDGE_CORPUS_DIR = Path(os.getenv("KNOWLEDGE_CORPUS_DIR", str(PROJECT_ROOT / "Retriveal_doc")))
+KNOWLEDGE_QDRANT_PATH = Path(os.getenv("KNOWLEDGE_QDRANT_PATH", str(PROJECT_ROOT / "data" / "knowledge" / "qdrant")))
+KNOWLEDGE_KEYWORDS_PATH = Path(os.getenv("KNOWLEDGE_KEYWORDS_PATH", str(PROJECT_ROOT / "data" / "knowledge" / "keywords.json")))
+KNOWLEDGE_COLLECTION = os.getenv("KNOWLEDGE_COLLECTION", "knowledge_shared").strip() or "knowledge_shared"
+KNOWLEDGE_RETRIEVE_K = _read_int_env("KNOWLEDGE_RETRIEVE_K", 5)
+KNOWLEDGE_CONTEXT_K = _read_int_env("KNOWLEDGE_CONTEXT_K", 3)
+KNOWLEDGE_DENSE_MIN_SCORE = _read_float_env("KNOWLEDGE_DENSE_MIN_SCORE", 0.30)
+# 知識側 rerank 是最終相關性閘門，不能沿用個人記憶的寬鬆門檻。
+# 0.15 是以現有 34 題遊戲題 / 10 題閒聊題在本機資料庫校準的結果；可由環境變數覆寫。
+KNOWLEDGE_RERANK_MIN_SCORE = _read_float_env("KNOWLEDGE_RERANK_MIN_SCORE", 0.15)
+# 獨立於 MEMORY_RERANK_ENABLED:實測 cross-encoder rerank 對知識庫(407 筆、
+# 長段落)耗時 p50 約 1.2s,關閉後降到 p50 約 55ms,但會失去對跨遊戲雜訊的
+# 過濾。3 秒預算吃緊時可關閉,見 openspec/changes/shared-knowledge-rag。
+KNOWLEDGE_RERANK_ENABLED = _read_bool_env("KNOWLEDGE_RERANK_ENABLED", True)
 PROVIDER_ROUTING_FALLBACK_ENABLED = _read_bool_env("PROVIDER_ROUTING_FALLBACK_ENABLED", True)
 PROVIDER_ROUTING_CONFIDENCE_THRESHOLD = _read_float_env("PROVIDER_ROUTING_CONFIDENCE_THRESHOLD", 0.7)
 BROWSER_SESSION_RECOVERY_ENABLED = _read_bool_env("BROWSER_SESSION_RECOVERY_ENABLED", True)
 BROWSER_SESSION_RECOVERY_MAX_RETRIES = _read_int_env("BROWSER_SESSION_RECOVERY_MAX_RETRIES", 1)
+DESKTOP_COMPANION_MODE = _read_bool_env("DESKTOP_COMPANION_MODE", True)
+# 角色 WebM 常是滿版畫布（如 1920x1080），透明區也會吃掉點擊。左側這條寬度一律讓給
+# 原生桌面，桌面 icon 才點得到；設 0 可關閉。
+DESKTOP_CLICKTHROUGH_LEFT_PX = _read_int_env("DESKTOP_CLICKTHROUGH_LEFT_PX", 200)
+LIVELY_BACKGROUND_ENABLED = _read_bool_env("LIVELY_BACKGROUND_ENABLED", True)
 
 
 ACTION_SYNC_TIMEOUT_MS = _read_int_env("ACTION_SYNC_TIMEOUT_MS", 6000)
+
+# 所有 TTS provider 的 PCM 取樣率必須一致:ffplay 的 -ar 在播放 session 建立時就
+# 鎖死了,同一回合中途 fallback 到取樣率不同的 provider 會變速播放,而且句段結束
+# 時間是用 bytes/秒 反推的,會提早關掉 stdin 把句尾截掉。這是唯一的定義來源,
+# voai_client / elevenlabs_client / AudioStreamWorker 都讀這個值,不要各寫一份。
+# 24000 是兩家的交集:ElevenLabs 的 PCM 格式是固定清單(16000/22050/24000/44100,
+# 沒有 32000);VoAI 的 x-sample-rate 是請求參數,實測四種取樣率都正常且時長一致。
+TTS_PCM_SAMPLE_RATE = _read_int_env("TTS_PCM_SAMPLE_RATE", 24000)
 
 # ComfyUI asset generation is opt-in; the mock service remains the safe default.
 COMFYUI_BASE_URL = os.getenv("COMFYUI_BASE_URL", "http://127.0.0.1:8188").strip().rstrip("/")
@@ -194,17 +262,17 @@ PROACTIVE_GREETING_PHRASES = (
     "想和我聊聊嗎？",
 )
 XP_PER_LEVEL = _read_int_env("XP_PER_LEVEL", 6)
-EVENT_INTERVAL_MINUTES = _read_float_env("EVENT_INTERVAL_MINUTES", 1.0) #時間的設定
+EVENT_INTERVAL_MINUTES = _read_float_env("EVENT_INTERVAL_MINUTES", 150.0) #時間的設定
 FESTIVAL_EVENT_PROMPTS = ("這個角色戴上聖誕帽", "這個角色手上拿春聯", "這個角色手上拿粽子")
 PREVIEW_OFFER_TTL_HOURS = _read_float_env("PREVIEW_OFFER_TTL_HOURS", 24.0)
 # --- Faster Whisper STT（toggle-recording，Week 4） ---
 STT_ENABLED = _read_bool_env("STT_ENABLED", True)
-STT_MODEL = os.getenv("STT_MODEL", "large-v3-turbo").strip() or "large-v3-turbo" #Whisper Model
+STT_MODEL = os.getenv("STT_MODEL", "large-v3-turbo").strip() or "large-v3-turbo" #Whisper Modeljjj
 STT_DEVICE = os.getenv("STT_DEVICE", "cuda").strip() or "cuda"
 STT_COMPUTE_TYPE = os.getenv("STT_COMPUTE_TYPE", "float16").strip() or "float16"
 STT_MODEL_PATH = os.getenv("STT_MODEL_PATH", str(PROJECT_ROOT / "runtime_cache" / "whisper")).strip()
 STT_LANGUAGE = os.getenv("STT_LANGUAGE", "").strip()  # 空字串 = auto detection
-STT_BEAM_SIZE = _read_int_env("STT_BEAM_SIZE", 1)
+STT_BEAM_SIZE = _read_int_env("STT_BEAM_SIZE",1) #文字精準度的判讀
 STT_SAMPLE_RATE = _read_int_env("STT_SAMPLE_RATE", 16000)
 STT_MIN_RECORDING_MS = _read_int_env("STT_MIN_RECORDING_MS", 300)
 STT_MAX_RECORDING_SECONDS = _read_int_env("STT_MAX_RECORDING_SECONDS", 30)
@@ -324,6 +392,20 @@ def get_elevenlabs_voice_id_for_character(character_id: str | None) -> str:
     from character_library import CharacterLibrary
     voice_key = {"F": "miku", "M": "Choppr"}.get(CharacterLibrary().get_voice_gender(cid), "")
     return CHARACTER_VOICE_IDS.get(voice_key) or ELEVENLABS_VOICE_ID
+
+
+def get_elevenlabs_model_id_for_character(character_id: str | None) -> str:
+    """回傳角色對應的 ElevenLabs 語音模型 id。
+
+    優先順序：per-character env → 內建專屬映射 → 全域 ELEVENLABS_MODEL_ID → DEFAULT_TTS_MODEL_ID。
+    """
+    cid = str(character_id or "").strip()
+    if cid in CHARACTER_MODEL_IDS:
+        return CHARACTER_MODEL_IDS[cid]
+    return (
+        os.getenv("ELEVENLABS_MODEL_ID", DEFAULT_TTS_MODEL_ID).strip()
+        or DEFAULT_TTS_MODEL_ID
+    )
 
 
 def get_voai_config_for_character(character_id: str | None) -> dict:

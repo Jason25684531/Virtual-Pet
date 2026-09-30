@@ -19,7 +19,7 @@
 - [角色人設 (Personal)](docs/character_personal.md)
 - [Linux 部署指南](docs/linux_deployment.md)
 
-機台/新機轉移請看 **[MIGRATION.md](MIGRATION.md)**(git 有追蹤;因大量關鍵資產被 gitignore,轉移必須整包複製而非 clone)。
+機台/新機轉移:因大量關鍵資產被 gitignore,轉移必須整包複製而非 clone。
 
 ---
 
@@ -40,7 +40,7 @@
 ### 啟動流程(檔案運行模式)
 
 ```text
-run.bat ──▶ .venv\Scripts\python.exe main.py
+python main.py
              │
              ▼
 main.py(唯一 composition root)
@@ -345,7 +345,7 @@ Virtual-Pet/
 
 技能定義放在 `.agentic/skills/*.md`,使用 frontmatter 描述觸發關鍵字、XP 獎勵、`required_tool`、`tool_policy` 等。`SkillLoader` 在引擎初始化時掃描載入,`SkillRouter` 依 deterministic → semantic(Qdrant,預設 shadow mode 只記錄不生效)→ provider 建議的順序路由。
 
-目前內建技能:`bahamut_daily_news`、`gacha_fortune`、`game_news`、`music_bgm`、`youtube_music_playback`。
+目前內建技能:`bahamut_daily_news`、`gacha_fortune`、`youtube_music_playback`。
 
 ### Tool 系統 (`pet_harness/tools/`)
 
@@ -403,7 +403,7 @@ Host 支援的 action(Harness 對話與快捷動作共用同一份白名單):
 
 ### 1. 建立並啟用虛擬環境
 
-專案慣例使用 `.venv`(`run.bat` 直接呼叫 `.venv\Scripts\python.exe`):
+專案慣例使用 `.venv`:
 
 ```bash
 python -m venv .venv
@@ -490,6 +490,12 @@ STT VAD(語音端點自動停止,預設關閉):
 ```bash
 VOAI_PCM_STREAMING_ENABLED=true
 ELEVENLABS_VOICE_ID=default_elevenlabs_voice_id
+
+# 未指定專屬語音模型的角色一律用這個(預設 eleven_flash_v2_5,低延遲)
+ELEVENLABS_MODEL_ID=eleven_flash_v2_5
+# 角色專屬語音模型覆寫,鍵名規則同 ELEVENLABS_{ID}_VOICE_ID:
+# ELEVENLABS_{character_id 大寫、- 轉 _}_MODEL_ID,優先於內建映射與全域預設
+ELEVENLABS_CHAR_ADOL_MODEL_ID=eleven_v3
 ACTION_SYNC_TIMEOUT_MS=6000
 
 # 資產生成 offer TTL(小時)
@@ -525,8 +531,6 @@ BROWSER_SESSION_RECOVERY_MAX_RETRIES=1
 ## 啟動
 
 ```bash
-run.bat            # Windows,直接用 .venv 的 python
-# 或
 python main.py
 ```
 
@@ -534,7 +538,7 @@ Linux 若遇到 Qt / WebEngine / WebGL 問題,請參考 [linux_deployment.md](do
 
 ---
 
-## 測試與驗證
+## 測試與驗證ㄇ
 
 ### 測試哲學
 
@@ -546,18 +550,18 @@ Linux 若遇到 Qt / WebEngine / WebGL 問題,請參考 [linux_deployment.md](do
 
 ```bash
 # 全跑(未裝 playwright / 未設 COMFYUI_SMOKE 時,相關測試自動 skip)
-.venv/Scripts/python -m pytest -q
+python -m pytest -q
 
 # 只跑快的單元測試(排除會啟動真 Chromium 的 browser 測試)
-.venv/Scripts/python -m pytest -q --ignore=tests/test_cac_ui_browser.py
+python -m pytest -q --ignore=tests/test_cac_ui_browser.py
 
 # 跑特定主題
-.venv/Scripts/python -m pytest tests/test_character_*.py          # 角色系統
-.venv/Scripts/python -m pytest -k "memory or hybrid or retriev"   # 記憶/檢索
-.venv/Scripts/python -m pytest -k "stt or whisper or vad"         # STT
+python -m pytest tests/test_character_*.py          # 角色系統
+python -m pytest -k "memory or hybrid or retriev"   # 記憶/檢索
+python -m pytest -k "stt or whisper or vad"         # STT
 
 # ComfyUI smoke(需 ComfyUI 服務在 127.0.0.1:8188 執行)
-COMFYUI_SMOKE=1 .venv/Scripts/python -m pytest tests/test_comfyui_smoke.py
+COMFYUI_SMOKE=1 python -m pytest tests/test_comfyui_smoke.py
 ```
 
 ### 測試分群(~95 檔,各群數字為約略)

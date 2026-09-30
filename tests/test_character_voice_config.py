@@ -69,3 +69,32 @@ def test_rog_voice_mapping_does_not_apply_to_ro(monkeypatch):
 
     assert config.get_elevenlabs_voice_id_for_character("char-ROG") == "RoUNDCtoHQPMwQQoROwA"
     assert config.get_elevenlabs_voice_id_for_character("char-RO") == config.CHARACTER_VOICE_IDS["miku"]
+
+
+def test_adol_uses_dedicated_elevenlabs_model(monkeypatch):
+    monkeypatch.delenv(config.character_model_env_key("char-Adol"), raising=False)
+    monkeypatch.setattr(config, "CHARACTER_MODEL_IDS", config._build_character_elevenlabs_model_ids())
+
+    assert config.get_elevenlabs_model_id_for_character("char-Adol") == "eleven_v3"
+
+
+def test_other_builtin_characters_use_default_elevenlabs_model(monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5")
+
+    assert config.get_elevenlabs_model_id_for_character("char-Jack") == "eleven_flash_v2_5"
+    assert config.get_elevenlabs_model_id_for_character("char-ROG") == "eleven_flash_v2_5"
+    assert config.get_elevenlabs_model_id_for_character(None) == "eleven_flash_v2_5"
+
+
+def test_character_model_env_override_wins(monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_CHAR_ADOL_MODEL_ID", "eleven_flash_v2_5")
+    monkeypatch.setattr(config, "CHARACTER_MODEL_IDS", config._build_character_elevenlabs_model_ids())
+
+    assert config.get_elevenlabs_model_id_for_character("char-Adol") == "eleven_flash_v2_5"
+
+
+def test_character_model_env_override_empty_falls_back_to_builtin(monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_CHAR_ADOL_MODEL_ID", "")
+    monkeypatch.setattr(config, "CHARACTER_MODEL_IDS", config._build_character_elevenlabs_model_ids())
+
+    assert config.get_elevenlabs_model_id_for_character("char-Adol") == "eleven_v3"

@@ -1,0 +1,7 @@
+{
+  "echoesBackground": {
+    "type": "textbox",
+    "value": "assets/BG_Final.png",
+    "text": "主程式同步背景（自動設定）"
+  }
+}

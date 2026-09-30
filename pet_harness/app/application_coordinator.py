@@ -110,6 +110,7 @@ class ApplicationCoordinator:
                 "asset_last_triggered_level",
                 "asset_last_event_variant_at",
                 "asset_generation_freeze",
+                "style_unlock_all",
             ):
                 store.set_setting(key, None)
             store.clear_style_jobs(character_id)

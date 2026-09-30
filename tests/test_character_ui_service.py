@@ -540,9 +540,10 @@ class TestGetActiveState:
 
         assert ui_service.list_style_variants("Choppr")[0]["state"] == "empty"
 
-    def test_applying_variant_without_background_clears_the_previous_background(self, service, monkeypatch):
+    def test_applying_variant_does_not_bind_background_to_style(self, service, monkeypatch):
         ui_service, router, _registry = service
         manifest = {"background_image": "old-background.png"}
+        calls = []
         profile = router.switch_character("Choppr")
         store = SQLiteStore(profile.sqlite_path)
         store.initialize()
@@ -552,11 +553,14 @@ class TestGetActiveState:
         class Library:
             def list_variant_inventory(self, _character_id):
                 return [{"variant": "event", "state": "ready"}]
+            def get_background_path(self, _character_id):
+                return "assets/characters/Choppr/images/bg/og.png"
             def set_active_variant(self, _character_id, _variant):
                 return manifest
-            def variant_background_path(self, _character_id, _variant):
-                return None
+            def set_background_mode(self, _character_id, mode):
+                calls.append(mode)
             def set_background(self, _character_id, image_path):
+                calls.append(image_path)
                 manifest["background_image"] = image_path or ""
                 return manifest
             def get_background_mode(self, _character_id):
@@ -566,7 +570,8 @@ class TestGetActiveState:
 
         result = ui_service.apply_style("Choppr", "event")
 
-        assert result["background_image"] == ""
+        assert calls == ["manual", "assets/characters/Choppr/images/bg/og.png"]
+        assert result["background_image"] == "assets/characters/Choppr/images/bg/og.png"
 
     def test_applying_variant_in_manual_mode_does_not_touch_background(self, service, monkeypatch):
         ui_service, router, _registry = service
@@ -599,16 +604,63 @@ class TestGetActiveState:
         assert calls == []
         assert result["background_image"] == "manual-background.png"
 
-    def test_list_scene_backgrounds_delegates_to_library(self, service, monkeypatch):
-        ui_service, _router, _registry = service
+    def test_scene_list_hides_variants_without_a_completed_render_job(self, service, monkeypatch):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
         monkeypatch.setattr(character_ui_module.CharacterLibrary, "list_background_scenes", lambda _self, _id: [
             {"scene_id": "og", "thumb": "bg/og.png", "is_current": True},
+            {"scene_id": "development_a", "thumb": "bg/development_a.png", "is_current": False},
+            {"scene_id": "event", "thumb": "bg/event.png", "is_current": False},
         ])
 
-        assert ui_service.list_scene_backgrounds("Choppr") == [{"scene_id": "og", "thumb": "bg/og.png", "is_current": True}]
+        # 只有 og 落地在磁碟上就永遠可用;development_a/event 存在檔案但無成功 render job,MUST 被隱藏。
+        assert [item["scene_id"] for item in ui_service.list_scene_backgrounds("Choppr")] == ["og"]
+
+        job = AssetRepository(store).create_job(AssetJob("Choppr", "variant_png", "development_a", "growth-3"))
+        AssetRepository(store).update(job.job_id, JobStatus.COMPLETED)
+
+        assert [item["scene_id"] for item in ui_service.list_scene_backgrounds("Choppr")] == ["og", "development_a"]
+
+    def test_scene_list_stays_locked_when_render_job_output_is_null(self, service, monkeypatch):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        monkeypatch.setattr(character_ui_module.CharacterLibrary, "list_background_scenes", lambda _self, _id: [
+            {"scene_id": "og", "thumb": "bg/og.png", "is_current": True},
+            {"scene_id": "development_b", "thumb": "bg/development_b.png", "is_current": False},
+        ])
+        # 互動滿 9 的 null 產出(無新造型):job 完成但 output=None,MUST NOT 解鎖。
+        job = AssetRepository(store).create_job(AssetJob(
+            "Choppr", "variant_png", "development_b", "growth-9", metadata={"output": None},
+        ))
+        AssetRepository(store).update(job.job_id, JobStatus.COMPLETED)
+
+        assert [item["scene_id"] for item in ui_service.list_scene_backgrounds("Choppr")] == ["og"]
+
+    def test_scene_list_unlocks_legacy_development_png_via_bare_variant_job(self, service, monkeypatch):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        monkeypatch.setattr(character_ui_module.CharacterLibrary, "list_background_scenes", lambda _self, _id: [
+            {"scene_id": "og", "thumb": "bg/og.png", "is_current": True},
+            {"scene_id": "development", "thumb": "bg/development.png", "is_current": False},
+        ])
+        job = AssetRepository(store).create_job(AssetJob("Choppr", "motion_set", "development", "growth-legacy"))
+        AssetRepository(store).update(job.job_id, JobStatus.COMPLETED)
+
+        assert [item["scene_id"] for item in ui_service.list_scene_backgrounds("Choppr")] == ["og", "development"]
 
     def test_apply_scene_sets_manual_mode_and_background(self, service, monkeypatch):
-        ui_service, _router, _registry = service
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        job = AssetRepository(store).create_job(AssetJob("Choppr", "variant_png", "event", "festival-f"))
+        AssetRepository(store).update(job.job_id, JobStatus.COMPLETED)
         manifest = {"background_image": ""}
         calls = []
 
@@ -630,6 +682,32 @@ class TestGetActiveState:
         assert calls == ["manual"]
         assert result["background_mode"] == "manual"
         assert result["background_image"] == "assets/characters/Choppr/images/bg/event.png"
+
+    def test_apply_scene_rejects_variant_without_a_completed_render_job(self, service, monkeypatch):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+
+        class Library:
+            def variant_background_path(self, _character_id, variant):
+                return f"assets/characters/Choppr/images/bg/{variant}.png"
+
+        monkeypatch.setattr(character_ui_module, "CharacterLibrary", Library)
+
+        with pytest.raises(ValueError, match="not unlocked"):
+            ui_service.apply_scene("Choppr", "development_b")
+
+    def test_scene_relocks_after_reset_all_clears_render_jobs(self, service):
+        _ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        job = AssetRepository(store).create_job(AssetJob("Choppr", "variant_png", "event", "festival-f"))
+        AssetRepository(store).update(job.job_id, JobStatus.COMPLETED)
+        assert CharacterUiService._completed_render_variants(store, "Choppr") == {"event"}
+
+        store.clear_style_jobs("Choppr")
+
+        assert CharacterUiService._completed_render_variants(store, "Choppr") == set()
 
     def test_apply_scene_follow_restores_active_variant_background(self, service, monkeypatch):
         ui_service, _router, _registry = service

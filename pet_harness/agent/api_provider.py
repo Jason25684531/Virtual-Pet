@@ -7,7 +7,7 @@ from typing import Any, Callable, Iterator
 
 import requests
 
-from pet_harness.agent.provider_adapter import ProviderReply
+from pet_harness.agent.provider_adapter import LLMProviderAdapter, ProviderReply
 from pet_harness.models.events import UserEvent
 from pet_harness.models.provider import ProviderConfig, ProviderStatus, ProviderType
 from pet_harness.models.skill import Skill
@@ -18,7 +18,7 @@ from pet_harness.models.skill import Skill
 _API_HTTP_SESSION = requests.Session()
 
 
-class APIProvider:
+class APIProvider(LLMProviderAdapter):
     def __init__(
         self,
         config: ProviderConfig,

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from pet_harness.memory.base_memory_store import MemoryHit
+from pet_harness.memory.memory_models import MemoryItem
 from pet_harness.models.events import UserEvent
 from pet_harness.models.skill import Skill
 from pet_harness.tools.tool_models import ToolResult
@@ -17,6 +18,15 @@ ACTION_TAG_GUIDANCE = {
     "waving": "觸發：初次見面、重新回來、早安晚安或主動開話題；避免：對話持續中的一般回覆。",
     "annoy": "觸發：多次重複、持續挑釁或反覆要求不可能事項後；避免：第一次質疑、正常追問或澄清需求。",
     "listen": "觸發：使用者需要被傾聽、傾訴或表達感受時；避免：需要明確回應或執行任務時。",
+}
+
+# 路由判定媒體意圖不夠明確時不執行工具,但回覆必須把缺的那一項問出來,
+# 否則使用者只會收到一句無關痛癢的閒聊,不知道自己還要補什麼。
+MEDIA_CLARIFICATION_GUIDANCE = {
+    "missing_music_query": "使用者想聽音樂但沒有指定歌曲或類型；本輪不要宣稱已經播放，請直接問他想聽哪一首或哪種風格。",
+    "conflict": "使用者同時要求新聞和音樂但沒有指定順序；本輪不要開始任何一項，請問他要先做哪一個。",
+    "negated": "使用者明確表示不要執行該媒體操作；本輪不得播放或播報，正常回應即可。",
+    "no_media_session": "目前沒有可控制的播放工作階段（可能已切換角色或重新啟動）；請說明沒有正在播放的內容，不要假裝暫停成功。",
 }
 
 
@@ -45,7 +55,9 @@ class PromptBuilder:
         conversation_history: list[dict] | None = None,
         memory_hits: list[MemoryHit] | None = None,
         retrieval_result=None,
+        knowledge_evidence: list[MemoryItem] | None = None,
         ack_emitted: bool = False,
+        media_clarification: str | None = None,
     ) -> PromptBuildResult:
         warnings: list[str] = []
         soul_text = self._read_optional(self.agentic_root / "soul.md", "Soul context unavailable.", warnings)
@@ -68,6 +80,7 @@ class PromptBuilder:
         skills_text = "\n".join(skill_lines) if skill_lines else "- none"
         history_text = self._conversation_history_text(conversation_history)
         memory_text = self._memory_hits_text(retrieval_result.evidence if retrieval_result else memory_hits)
+        knowledge_text = self._knowledge_text(knowledge_evidence)
         tool_result_text = self._tool_result_text(tool_result)
         has_persona = bool(persona and persona.strip())
         #Prompt Setting  可以在這裡做設置
@@ -92,9 +105,9 @@ class PromptBuilder:
                 "",
                 "## Character Persona",
                 persona.strip() if persona else "No persona configured.",
-                "This persona is your only current identity/setting. If it conflicts with anything in "
-                "Conversation History or Retrieval Evidence below, the persona always wins — those sections "
-                "are past interaction logs, not your current identity.",
+                "This persona defines your current character identity and voice. Global Response Rules below "
+                "override persona instructions about safety, honesty, factual certainty, and source attribution. "
+                "Conversation History and Retrieval Evidence are past user interaction records, not your identity.",
                 "",
                 "## Available Skills",
                 skills_text,
@@ -116,13 +129,57 @@ class PromptBuilder:
                 "Conversation History and Retrieval Evidence are factual records of what the user told you.",
                 "These are factual records of what the user told you. If the user asks about something "
                 "they told you earlier, answer from those sections. Never reply that you cannot access "
+                # ponytail: 正面框架取代「Do not use user facts…」禁令。實測 gemma3:12b、
+                # 問句「那你可以跟我說 我喜歡什麼嗎?」——禁令版 6/55 命中,正面版 28/55;
+                # 禁令句被句首的「你」觸發,連帶封鎖了整個 Retrieval Evidence。
+                # 代價:ECHOES 自身行程題的使用者事實外洩 0/20 -> 2/20(仍歸屬給使用者)。
                 "the user's information when it appears here. In the current user message, I/my refers "
-                "to the user and you/your refers to ECHOES. Do not use user facts to answer questions "
-                "about ECHOES's own plans, identity, preferences, or state.",
+                "to the user and you/your refers to ECHOES. When the user asks what they themselves "
+                "said, like, or did, answer from Retrieval Evidence. When the question is about ECHOES "
+                "itself, answer from the Character Persona.",
+                # ponytail: 這條必須貼著 history_text。實測 gemma3:12b 在使用者連續追問
+                # 同一主題時（「什麼可愛小故事?」→「還有其他小故事嗎?」）會把上一輪的
+                # Assistant 句子幾乎逐字改寫後再送一次；放到末端的 Global Response Rules
+                # 隔了 4 個區塊就管不到。同一個 adjacency 教訓見上面 Conversation History 註解。
+                "The Assistant lines below are what you have ALREADY said. Each new reply must contain "
+                "new content: never repeat or reword an Assistant line from the history. If the user asks "
+                "for more on the same topic, give specifics you have not said yet. If you have nothing new "
+                "on that topic, say so plainly in one sentence instead of restating your last reply.",
+                # ponytail: response_rules.md 的「不空轉」規則管不到這裡——隔了 Retrieval
+                # Evidence/Knowledge Reference/User Text 三個區塊,同一個 adjacency 教訓見上面。
+                # 使用者問自己說過的喜好/事實時,gemma3:12b 常無視 History 改用「你喜歡什麼呢?」
+                # 反問,即使規則已經存在只是離內容太遠。
+                "If the user asks about a preference or fact they already stated above (in History or "
+                "Retrieval Evidence), answer with that specific content directly. Do not ask them what "
+                "they like/mean/want when the answer is already given above.",
                 history_text,
                 "",
                 "## Retrieval Evidence",
                 memory_text,
+                "",
+                # ponytail: 指示句緊貼內容,同一個 adjacency 教訓見上面 Conversation
+                # History 段的註解。這裡的關鍵是把知識和 Retrieval Evidence 分開
+                # 講清楚——知識是外部參考資料,不是使用者說過的話(design D5,
+                # ADR-0005 Evidence Isolation 的延伸)。
+                #
+                # ponytail: 額外一句是實測補的。Global Response Rules 的「不空轉」
+                # 規則(被追問細節要給還沒講過的具體內容,同一話題最多反問一次)離
+                # 這裡隔了 User Text/Tool Result/Interaction State 三個區塊——
+                # gemma3:12b 在有知識可用時仍一路用「你想從哪開始?」把問題丟回去,
+                # 完全沒有引用已注入的內容。同一個 adjacency 教訓,把「有內容就要
+                # 講」貼在內容旁邊,而不是依賴遠處的全域規則。
+                "## Knowledge Reference",
+                "The content below is reference material from a game-knowledge corpus, not something "
+                "the user told you and not something you already know outside this section. If this section "
+                "is none or does not answer the question, say that you have no reliable information instead "
+                "of guessing or inventing specifics. If a "
+                "note says a topic is version-sensitive, give the general principle and say the exact "
+                "number depends on the current game version rather than stating one. When this section has "
+                "content and the user is asking about the same topic again (including a follow-up like "
+                "\"what else\" or \"tell me more\"), your reply must state at least one concrete fact from "
+                "it that you have not already said — never respond with only a clarifying question when "
+                "this section already has an answer.",
+                knowledge_text,
                 "",
                 "## User Text",
                 event.text,
@@ -133,9 +190,17 @@ class PromptBuilder:
                 "## Interaction State",
                 "A deterministic acknowledgement was already spoken; do not repeat or paraphrase it."
                 if ack_emitted else "No acknowledgement has been spoken.",
+                MEDIA_CLARIFICATION_GUIDANCE.get(media_clarification or "", ""),
                 "",
                 "## Global Response Rules",
                 response_rules_text,
+                "",
+                # ponytail: 貼著 Output Contract 放,同一個 adjacency 教訓見上面
+                # Conversation History/Knowledge Reference 段的註解——這是模型生成
+                # JSON 前讀到的最後一段內容,比埋在 Global Response Rules 清單中段的
+                # 「準確」規則更接近生成點,不確定就說不確定的優先權放在這裡最高。
+                "If nothing above resolves a fact, spec, number, or model you are asked about, say "
+                "plainly that you are not sure — never state it with confidence.",
                 "",
                 "## Output Contract",
                 'Return JSON only with keys: "reply", "matched_skill", "action_tag", "confidence", "tool_request", and either "notes" or "reasoning_summary".',
@@ -152,6 +217,7 @@ class PromptBuilder:
         section_sizes = {
             "soul": len(soul_text), "agentic": len(agentic_text), "persona": len(persona or ""),
             "skills": len(skills_text), "history": len(history_text), "memory": len(memory_text),
+            "knowledge": len(knowledge_text),
             "tool_result": len(tool_result_text), "user_text": len(event.text),
             "response_rules": len(response_rules_text), "total": len(prompt),
         }
@@ -189,6 +255,12 @@ class PromptBuilder:
             attribute = key.split(".")[1] if len(key.split(".")) > 1 else "記憶"
             lines.append(f"- [{attribute}] {hit.text[:200]}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _knowledge_text(items: list[MemoryItem] | None) -> str:
+        if not items:
+            return "none"
+        return "\n".join(f"- [{item.memory_type}] {item.text}" for item in items)
 
     @staticmethod
     def _tool_result_text(result: ToolResult | None) -> str:

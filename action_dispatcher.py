@@ -5,12 +5,13 @@ ECHOES — Centralized action binding dispatcher
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import inspect
 from collections import deque
-from uuid import uuid4
 from dataclasses import dataclass, replace
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 from PyQt5.QtCore import QCoreApplication, QObject, QTimer, pyqtSignal
@@ -18,7 +19,6 @@ from PyQt5.QtCore import QCoreApplication, QObject, QTimer, pyqtSignal
 from action_services import (
     FixedIntentReplyWorker,
     MusicSelectionWorker,
-    NewsFetchWorker,
     resolve_fixed_intent_source_label,
 )
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
@@ -34,10 +34,8 @@ if TYPE_CHECKING:
     from character_library import CharacterLibrary
     from ui.transparent_window import TransparentWindow
 
+LOGGER = logging.getLogger(__name__)
 REPLY_STATUS_LABEL = "正在回覆"
-#為了兼顧 VOAI 和 ElevenLabs 的 TTS 響應時間，並給予角色動作足夠的播放時間，設定新聞播報的語音觸發延遲為 2.5 秒。這樣可以確保在大多數情況下，角色的新聞播報動作能夠先行展現，提升互動的自然感。
-REPORT_NEWS_AUDIO_TRIGGER_DELAY_SECONDS = 2.5
-REPORT_NEWS_DELAY_CHARACTER_ID = "miku"
 
 
 @dataclass(frozen=True)
@@ -84,7 +82,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         window: "TransparentWindow",
         library: "CharacterLibrary",
         tts_worker_factory=AdaptiveTTSFallbackWorker,
-        news_worker_factory=NewsFetchWorker,
         music_worker_factory=MusicSelectionWorker,
         fixed_intent_worker_factory=FixedIntentReplyWorker,
         motion_path_resolver=None,
@@ -103,9 +100,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._tts_worker_factory = (
             tts_worker_factory if callable(tts_worker_factory) else AdaptiveTTSFallbackWorker
         )
-        self._news_worker_factory = (
-            news_worker_factory if callable(news_worker_factory) else NewsFetchWorker
-        )
         self._music_worker_factory = (
             music_worker_factory if callable(music_worker_factory) else MusicSelectionWorker
         )
@@ -118,7 +112,9 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._active_tts_worker: object | None = None
         self._pending_tts_chunks: "queue.Queue[tuple[str, str, str | None]]" = queue.Queue()
         self._pending_actions: dict[str, PendingActionState] = {}
-        self._suppressed_traces: set[str] = set()
+        # trace_id -> 抑制原因(如 "skip_tts_sync"/"timeout_promoted"/"critical_tts_failure"/
+        # "barge_in"),供 tts_playback.py 組出反映真實成因的訊息,不再一律寫 timeout_promoted。
+        self._suppressed_traces: dict[str, str] = {}
         self._tts_not_expected_traces: set[str] = set()
         self._driver_started_replies: set[str] = set()
         self._driver_started_pairs: set[tuple[str, str]] = set()
@@ -128,6 +124,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._spoken_reply_ids: set[str] = set()
         self._trace_pending_tts_counts: dict[str, int] = {}
         self._completed_tts_traces: set[str] = set()
+        self._trace_speech_completed_at: dict[str, float] = {}
         self._streaming_traces: set[str] = set()
         self._deferred_dispatches: deque[DeferredDispatch] = deque()
         self._active_action_trace_id: str | None = None
@@ -137,8 +134,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._current_loop_binding: ActionBinding | None = None
         self._loop_action_tts_queued: bool = False
         self._loop_cleanup_timer: QTimer | None = None
-        self._news_audio_delay_timer: QTimer | None = None
-        self._news_audio_trigger_delay_ms = max(0, int(REPORT_NEWS_AUDIO_TRIGGER_DELAY_SECONDS * 1000))
         self._panel_video_ended: bool = False
         self._panel_video_started: bool = False
         self._wait_for_main_video_ended: bool = False
@@ -155,10 +150,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
                 name="report_news",
                 motion_key="report_news",
                 status_label=REPLY_STATUS_LABEL,
-                handler_name="_handle_report_news",
-                skip_tts_sync=True,
-                panel_loop=True,
-                finish_event="room_audio",
+                handler_name="_handle_motion_only",
                 non_repeatable=True,
                 blocks_following_dispatch=True,
             ),
@@ -260,6 +252,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         if not normalized_trace_id:
             return
         self._streaming_traces.discard(normalized_trace_id)
+        self._maybe_close_trace_audio_session(normalized_trace_id)
         self._finish_loop_action_if_tts_idle()
 
     def _enqueue_stream_chunk(self, text: str, trace_id: str) -> None:
@@ -267,6 +260,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             timeline = get_turn(trace_id)
             if timeline is not None:
                 timeline.mark("tts_request_started")
+            self._window.append_conversation_assistant(trace_id, text)
             self.speak_text(text, trace_id=trace_id, has_action=False)
 
     def _dispatch_stream_action(self, action: str, trace_id: str) -> None:
@@ -285,6 +279,37 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             normalized_trace_id in self._pending_actions
             or normalized_trace_id == self._active_action_trace_id
         )
+
+    # 動作標記在語音播完之後抵達,超過這個緩衝時間才視為「太晚，不補播」。一般
+    # 回合從語音播完到動作標記抵達(技能路由/行為解析/跨執行緒轉發)通常在
+    # 1 秒內；9 秒級的落後(見 play_music 案例)才是這裡要攔的對象。
+    # ponytail: 固定門檻，若未來需要依回合類型調整，改成可設定值。
+    LATE_ACTION_GRACE_S = 2.5
+
+    def has_finished_speech_for_trace(self, trace_id: str | None) -> bool:
+        """該 trace 的語音是否已經播完，且已經播完超過 `LATE_ACTION_GRACE_S`。
+
+        用於判斷一個晚到才抵達的動作標記是否還有意義——語音都播完了才抵達的
+        動作，對著已經安靜的畫面播出沒有意義（見 voice-motion-sync 新增的
+        「動作標記晚於語音播畢才產生」情境）。用「播完後過了多久」而不是單純
+        「有沒有播完」，是為了不誤傷正常回合：一般回合從語音播完到動作標記
+        真正抵達 `consume_interaction_result()`，中間的路由/序列化/跨執行緒轉發
+        本身就有零點幾秒的正常延遲，這段時間不該被當成「太晚」。"""
+        normalized_trace_id = str(trace_id or "").strip()
+        if not normalized_trace_id:
+            return False
+        if self._trace_pending_tts_counts.get(normalized_trace_id, 0) > 0:
+            return False
+        completed_at = self._trace_speech_completed_at.get(normalized_trace_id)
+        if completed_at is None:
+            return False
+        if not (
+            self._pending_tts_chunks.empty()
+            and self._active_tts_worker is None
+            and not self._audio_worker.is_busy()
+        ):
+            return False
+        return (perf_counter() - completed_at) >= self.LATE_ACTION_GRACE_S
 
     @property
     def audio_worker(self) -> AudioStreamWorker:
@@ -393,11 +418,18 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             print(f"[ECHOES] 警告: action `{action_name}` 尚未綁定。")
             self._window.restore_idle_video()
             return False
-        harness_reply = bool(normalized_trace_id and (display_message or not allow_tts))
+        # 串流回合把文字與 action tag 拆成兩次呼叫(見 consume_interaction_result
+        # 的 streaming 分支/_dispatch_stream_action),action tag 常常不夾帶文字;
+        # 這時仍是 harness 擁有這個回合，不能只靠「這次 dispatch 有沒有夾帶文字」
+        # 反推,否則會把 harness 自己排好的語音當成別人的殘留音訊抑制掉。
+        harness_reply = bool(
+            normalized_trace_id
+            and (display_message or not allow_tts or normalized_trace_id in self._streaming_traces)
+        )
         if harness_reply and binding.skip_tts_sync:
             # The harness has already run the tool and supplied the reply.  Do not
             # replace it with this binding's legacy service audio or suppress TTS.
-            binding = replace(binding, handler_name="_handle_motion_only", skip_tts_sync=False)
+            binding = replace(binding, handler_name="_handle_motion_only", skip_tts_sync=False, finish_event="default")
         if self._is_duplicate_loop_action(binding, normalized_trace_id):
             print(f"[ECHOES] 提示: action `{binding.name}` 已在進行中，略過重複觸發。")
             return True
@@ -426,17 +458,21 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
                 wait_for_tts_start=wait_for_tts_start,
             )
             motion_found = True
-            if binding.skip_tts_sync and normalized_trace_id:
+            if (
+                binding.skip_tts_sync
+                and normalized_trace_id
+                and not self._trace_has_own_speech(normalized_trace_id)
+            ):
                 motion_found = self._activate_pending_action(normalized_trace_id, promoted=False)
                 if motion_found:
-                    self._suppressed_traces.add(normalized_trace_id)
+                    self._suppressed_traces[normalized_trace_id] = "skip_tts_sync"
                     self._tts_not_expected_traces.add(normalized_trace_id)
                     self._audio_worker.suppress_trace(normalized_trace_id)
                     intentional_tts_suppression = True
         else:
             motion_found = self._play_binding_motion(binding)
             if not motion_found:
-                print(f"[ECHOES] 警告: action {action_name} 缺少對應動作，改以安全狀態執行。")
+                LOGGER.warning("[ECHOES] action=%s 缺少對應動作，改以安全狀態執行。", action_name)
                 self._window.restore_idle_video()
 
         getattr(self, binding.handler_name)(binding, motion_found)
@@ -501,7 +537,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         normalized = str(trace_id or "").strip()
         if not normalized:
             return
-        self._suppressed_traces.add(normalized)
+        self._suppressed_traces[normalized] = "barge_in"
         self._streaming_traces.discard(normalized)
         self._audio_worker.suppress_trace(normalized)
         self._clear_pending_action(normalized)
@@ -523,8 +559,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             self._current_loop_action_key = None
             self._current_loop_binding = None
             self._loop_action_tts_queued = False
-            if hasattr(self._window, "stop_motion_loop"):
-                self._window.stop_motion_loop()
+            self._window.stop_motion_loop()
             self._window.restore_idle_video()
 
     def interrupt_all(self) -> None:
@@ -546,21 +581,13 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         if self._loop_cleanup_timer is not None:
             self._loop_cleanup_timer.stop()
             self._loop_cleanup_timer = None
-        for timer_name in ("_news_audio_delay_timer",):
-            timer = getattr(self, timer_name)
-            if timer is not None:
-                timer.stop()
-                setattr(self, timer_name, None)
         self._panel_video_started = False
         self._panel_video_ended = False
         self._wait_for_room_audio_ended = False
         self._loop_action_service_pending = False
-        if hasattr(self._window, "stop_motion_loop"):
-            self._window.stop_motion_loop()
-        if hasattr(self._window, "stop_music"):
-            self._window.stop_music()
-        if hasattr(self._window, "clear_panel_video"):
-            self._window.clear_panel_video()
+        self._window.stop_motion_loop()
+        self._window.stop_music()
+        self._window.clear_panel_video()
         self._window.restore_idle_video()
 
     @staticmethod
@@ -571,6 +598,14 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         if normalized.startswith(("錯誤:", "[error]", "error:")):
             return "error"
         return "working" if has_action else "idle"
+
+    def _trace_has_own_speech(self, trace_id: str) -> bool:
+        """該 trace 是否已經有(或曾經有)自己的語音在排隊/播放。skip_tts_sync 的
+        快速路徑本意是消掉"別的回合"殘留音訊,不是消掉自己剛排好的 ack。"""
+        return (
+            self._trace_pending_tts_counts.get(trace_id, 0) > 0
+            or trace_id in self._completed_tts_traces
+        )
 
     def _is_duplicate_loop_action(self, binding: ActionBinding, trace_id: str | None = None) -> bool:
         normalized_trace_id = str(trace_id or "").strip()
@@ -614,40 +649,13 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             return False
         return True
 
-    def _handle_report_news(self, binding: ActionBinding, motion_found: bool):
-        self._loop_action_service_pending = True
-        current_character_id = self._current_character_id()
-        if current_character_id:
-            panel_path = self._call_library_method("get_panel_motion_path", current_character_id, "report_news")
-            if panel_path and hasattr(self._window, "play_panel_video"):
-                self._panel_video_started = True
-                self._panel_video_ended = False
-                self._window.play_panel_video(panel_path, muted=binding.panel_muted, loop=binding.panel_loop)
-        worker = self._create_service_worker(
-            self._news_worker_factory,
-            parent=self,
-            character_id=current_character_id,
-        )
-        self._start_worker(
-            worker,
-            lambda success, message, payload: self._on_news_finished(
-                binding,
-                motion_found,
-                current_character_id,
-                success,
-                message,
-                payload,
-            ),
-        )
-
     def _handle_play_music(self, binding: ActionBinding, motion_found: bool):
-        if hasattr(self._window, "stop_music"):
-            self._window.stop_music()
+        self._window.stop_music()
         current_character_id = self._current_character_id()
         panel_path = None
         if current_character_id:
             panel_path = self._call_library_method("get_panel_motion_path", current_character_id, "play_music")
-        if panel_path and hasattr(self._window, "play_panel_video"):
+        if panel_path:
             self._panel_video_started = True
             self._panel_video_ended = False
             self._window.play_panel_video(panel_path, muted=binding.panel_muted, loop=binding.panel_loop)
@@ -659,49 +667,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._loop_action_service_pending = True
         worker = self._music_worker_factory(parent=self)
         self._start_worker(worker, lambda success, message, payload: self._on_music_finished(binding, motion_found, success, message, payload))
-
-    def _schedule_report_news_audio_playback(
-        self,
-        binding: ActionBinding,
-        audio_path: str,
-        title: str,
-        character_id: str | None,
-    ):
-        if self._news_audio_delay_timer is not None:
-            self._news_audio_delay_timer.stop()
-        delay_ms = self._report_news_audio_delay_ms_for_character(character_id)
-        if delay_ms <= 0 or QCoreApplication.instance() is None:
-            self._start_report_news_audio_playback(binding, audio_path, title)
-            return
-        timer = QTimer(self)
-        timer.setSingleShot(True)
-        timer.timeout.connect(
-            lambda: self._start_report_news_audio_playback(
-                binding,
-                audio_path,
-                title,
-            )
-        )
-        timer.start(delay_ms)
-        self._news_audio_delay_timer = timer
-
-    def _report_news_audio_delay_ms_for_character(self, character_id: str | None) -> int:
-        normalized_character_id = str(character_id or "").strip().lower()
-        if normalized_character_id != REPORT_NEWS_DELAY_CHARACTER_ID:
-            return 0
-        return self._news_audio_trigger_delay_ms
-
-    def _start_report_news_audio_playback(
-        self,
-        binding: ActionBinding,
-        audio_path: str,
-        title: str,
-    ):
-        self._news_audio_delay_timer = None
-        if self._window.play_music(audio_path, title, update_status=False):
-            self._arm_room_audio_wait()
-            return
-        self._schedule_non_tts_loop_cleanup(binding)
 
     def _handle_motion_only(self, binding: ActionBinding, motion_found: bool):
         if not motion_found:
@@ -718,11 +683,10 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         if not normalized_trace_id:
             return
         self._clear_pending_action(normalized_trace_id)
-        self._suppressed_traces.discard(normalized_trace_id)
+        self._suppressed_traces.pop(normalized_trace_id, None)
         self._tts_not_expected_traces.discard(normalized_trace_id)
         self._audio_worker.clear_suppressed_trace(normalized_trace_id)
-        if hasattr(self._window, "stop_motion_loop"):
-            self._window.stop_motion_loop()
+        self._window.stop_motion_loop()
         # 不在此處呼叫 restore_idle_video()：這一刻還不知道新動作最終會不會
         # 找到 webm，若在這裡先把 <video> 重新導回 idle 來源，緊接著
         # start_motion_loop() 又立刻把它導回動作來源，QWebEngine(Chromium 83)
@@ -736,6 +700,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             wait_for_tts_start=wait_for_tts_start,
         )
         self._pending_actions[normalized_trace_id] = state
+        self._preload_binding_motion(binding)
         if any(trace == normalized_trace_id for _, trace in self._driver_started_pairs):
             state.has_tts = True
             self._activate_pending_action(normalized_trace_id)
@@ -749,6 +714,21 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         timer.timeout.connect(lambda current_trace_id=normalized_trace_id: self._promote_pending_action(current_trace_id))
         timer.start(self._action_sync_timeout_ms)
         state.timeout_timer = timer
+
+    def _preload_binding_motion(self, binding: ActionBinding) -> None:
+        """action tag 一到就先載 webm。此刻 TTS 還在做 HTTP + 合成，這段時間本來
+        是閒著的；不先載，webm 的冷啟動載入就會整段疊在語音起播之後。
+
+        只在會走 start_motion_loop 的情境預載：play_once 與 idle fallback 都由
+        play_resolved_motion 自己換 src，預載對它們沒有幫助。"""
+        if binding.play_once:
+            return
+        preload = getattr(self._window, "preload_motion", None)
+        if not callable(preload):
+            return
+        motion_path, motion_kind = self._resolve_action_motion_path(binding.motion_key, log_missing=False)
+        if motion_path and motion_kind != "idle":
+            preload(motion_path)
 
     def _clear_pending_action(self, trace_id: str | None):
         normalized_trace_id = str(trace_id or "").strip()
@@ -775,7 +755,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._active_action_trace_id = normalized_trace_id
         motion_found = self._play_binding_motion(state.binding)
         if not motion_found:
-            print(f"[ECHOES] 警告: action {state.binding.name} 缺少對應動作，改以安全狀態執行。")
+            LOGGER.warning("[ECHOES] action=%s 缺少對應動作，改以安全狀態執行。", state.binding.name)
             self._window.restore_idle_video()
             self._clear_pending_action(normalized_trace_id)
             return False
@@ -792,7 +772,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         if promoted:
             if self._latency_tracker is not None:
                 self._latency_tracker.mark_timeout_promoted(normalized_trace_id, state.binding.name)
-            self._suppressed_traces.add(normalized_trace_id)
+            self._suppressed_traces[normalized_trace_id] = "timeout_promoted"
             self._audio_worker.suppress_trace(normalized_trace_id)
             self._schedule_loop_cleanup(2200)
         return True
@@ -819,23 +799,10 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._schedule_loop_cleanup(12000 if self._wait_for_main_video_ended else 3000)
 
     def _render_synthetic_turn(self, source_label: str, assistant_text: str):
-        show_synthetic_turn = getattr(self._window, "show_synthetic_conversation_turn", None)
-        if callable(show_synthetic_turn):
-            show_synthetic_turn("Dev Query", source_label, assistant_text)
-            return
-        trace_id = uuid4().hex
-        begin_turn = getattr(self._window, "begin_conversation_turn", None)
-        set_assistant = getattr(self._window, "set_conversation_assistant", None)
-        finish_turn = getattr(self._window, "finish_conversation_turn", None)
-        if callable(begin_turn):
-            begin_turn(trace_id, "Dev Query", source_label)
-        if callable(set_assistant):
-            set_assistant(trace_id, assistant_text)
-        if callable(finish_turn):
-            finish_turn(trace_id)
+        self._window.show_synthetic_conversation_turn("Dev Query", source_label, assistant_text)
 
     def _play_binding_motion(self, binding: ActionBinding) -> bool:
-        motion_path, used_idle_fallback = self._resolve_action_motion_path(binding.motion_key)
+        motion_path, motion_kind = self._resolve_action_motion_path(binding.motion_key)
         if not motion_path:
             self._current_loop_action_key = None
             self._current_loop_binding = None
@@ -844,20 +811,18 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             self._loop_action_service_pending = False
             return False
 
-        if used_idle_fallback:
-            # 找不到對應動作，退回 idle，不視為 loop action
+        if motion_kind == "idle":
+            # 連代打的一般反應動作都找不到，真的退回 idle：idle 本來就該無限
+            # 循環、不需要任何人收尾，不視為 loop action。
             self._current_loop_action_key = None
             self._current_loop_binding = None
             self._wait_for_main_video_ended = False
             self._wait_for_room_audio_ended = False
             self._loop_action_service_pending = False
-            if hasattr(self._window, "play_resolved_motion"):
-                return bool(self._window.play_resolved_motion(binding.motion_key, motion_path, loop=True))
-            if hasattr(self._window, "change_video"):
-                return bool(self._window.change_video(motion_path, loop=True))
-            return bool(self._window.play_action_motion(binding.motion_key))
+            return bool(self._window.play_resolved_motion(binding.motion_key, motion_path, loop=True))
 
-        # 所有真實動作統一使用 start_motion_loop（循環到明確停止為止）
+        # "exact"（角色自己的動作）是真正的 loop action，走同一套收尾生命週期
+        # （queue_drained → _finish_loop_action_if_tts_idle → _finish_loop_action）。
         self._current_loop_action_key = binding.motion_key
         self._current_loop_binding = binding
         self._loop_action_tts_queued = False
@@ -865,28 +830,26 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._wait_for_room_audio_ended = False
         self._panel_video_started = False
         self._panel_video_ended = False
-        if binding.play_once and hasattr(self._window, "play_resolved_motion"):
+        if binding.play_once:
             return bool(self._window.play_resolved_motion(binding.motion_key, motion_path, loop=False))
-        if binding.play_once and hasattr(self._window, "change_video"):
-            return bool(self._window.change_video(motion_path, loop=False))
-        if hasattr(self._window, "start_motion_loop"):
-            self._window.start_motion_loop(motion_path, 300)
-            return True
-        # fallback
-        if hasattr(self._window, "play_resolved_motion"):
-            return bool(self._window.play_resolved_motion(binding.motion_key, motion_path, loop=True))
-        if hasattr(self._window, "change_video"):
-            return bool(self._window.change_video(motion_path, loop=True))
-        return bool(self._window.play_action_motion(binding.motion_key))
+        self._window.start_motion_loop(motion_path, 300)
+        return True
 
-    def _resolve_action_motion_path(self, motion_key: str) -> tuple[str | None, bool]:
+    def _resolve_action_motion_path(self, motion_key: str, log_missing: bool = True) -> tuple[str | None, str]:
+        """回傳 (path, kind)。kind 為 "exact"（角色自己的動作）或 "idle"
+        （角色沒有對應動作，退回 idle，不是 loop action）。
+
+        缺素材時一律回 idle，不代打其他反應動作：見 voice-motion-sync 的
+        「動作影片缺失時角色動作維持閒置」要求，以及九隻預設角色在媒體
+        動作缺素材時必須表現一致（align-preset-character-interaction 決策 4）。"""
         motion_path = self._find_motion_path(motion_key)
         if motion_path:
-            return motion_path, False
+            return motion_path, "exact"
 
         idle_path = self._find_motion_path("idle")
-        print(f"[ECHOES WARNING] 找不到動作檔案: {motion_key}, 退回 Idle")
-        return idle_path, True
+        if log_missing:
+            LOGGER.warning("[ECHOES] 找不到動作檔案: motion_key=%s, 退回 Idle", motion_key)
+        return idle_path, "idle"
 
     def _find_motion_path(self, motion_key: str) -> str | None:
         resolver_path = self._resolve_via_injected_resolver(motion_key)
@@ -929,10 +892,8 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         return self._resolve_existing_webm_path(candidate)
 
     def _build_demo_motion_path(self, motion_key: str) -> str | None:
-        mapping = getattr(self._window, "DEMO_MOTION_MAPPING", None)
-        animations_dir = getattr(self._window, "DEMO_ANIMATIONS_DIR", None)
-        if not isinstance(mapping, dict) or not animations_dir:
-            return None
+        mapping = self._window.DEMO_MOTION_MAPPING
+        animations_dir = self._window.DEMO_ANIMATIONS_DIR
 
         demo_filename = mapping.get(motion_key)
         if not demo_filename:
@@ -941,11 +902,8 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
 
     def _current_character_id(self) -> str | None:
         """active character 唯一來源是 window 背後的 router snapshot,不讀持久化 UI 狀態。"""
-        getter = getattr(self._window, "get_current_character_id", None)
-        if not callable(getter):
-            return None
         try:
-            return getter()
+            return self._window.get_current_character_id()
         except Exception as exc:  # noqa: BLE001 - 與 _call_library_method 相同的防禦策略
             print(f"[ECHOES] 警告: 取得 active character 失敗: {exc}")
             return None
@@ -1012,31 +970,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         except (TypeError, ValueError):
             return factory(parent=kwargs.get("parent"))
 
-    def _on_news_finished(
-        self,
-        binding: ActionBinding,
-        motion_found: bool,
-        character_id: str | None,
-        success: bool,
-        message: str,
-        payload: object,
-    ):
-        self._loop_action_service_pending = False
-        if success:
-            if isinstance(payload, dict) and payload.get("path"):
-                title = str(payload.get("title") or "固定新聞播報")
-                self._schedule_report_news_audio_playback(
-                    binding,
-                    str(payload.get("path") or ""),
-                    title,
-                    character_id,
-                )
-                return
-            self._schedule_non_tts_loop_cleanup(binding)
-            return
-
-        self._handle_failure(binding, motion_found, message)
-
     def _on_music_finished(
         self,
         binding: ActionBinding,
@@ -1055,7 +988,7 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
 
         if not has_audio:
             self._window.stop_music()
-            if self._panel_video_started and hasattr(self._window, "set_panel_video_muted"):
+            if self._panel_video_started:
                 self._window.set_panel_video_muted(False)
                 fallback_title = payload.get("title") if isinstance(payload, dict) else ""
                 if fallback_title:
@@ -1140,9 +1073,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         if self._loop_cleanup_timer is not None:
             self._loop_cleanup_timer.stop()
             self._loop_cleanup_timer = None
-        if self._news_audio_delay_timer is not None:
-            self._news_audio_delay_timer.stop()
-            self._news_audio_delay_timer = None
         self._current_loop_action_key = None
         self._current_loop_binding = None
         self._loop_action_tts_queued = False
@@ -1153,14 +1083,12 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
         self._panel_video_ended = False
         if self._active_action_trace_id:
             self._clear_pending_action(self._active_action_trace_id)
-            self._suppressed_traces.discard(self._active_action_trace_id)
+            self._suppressed_traces.pop(self._active_action_trace_id, None)
             self._tts_not_expected_traces.discard(self._active_action_trace_id)
             self._audio_worker.clear_suppressed_trace(self._active_action_trace_id)
             self._active_action_trace_id = None
-        if hasattr(self._window, "stop_motion_loop"):
-            self._window.stop_motion_loop()
-        if hasattr(self._window, "clear_panel_video"):
-            self._window.clear_panel_video()
+        self._window.stop_motion_loop()
+        self._window.clear_panel_video()
         self._window.restore_idle_video()
         self._drain_deferred_dispatches()
 

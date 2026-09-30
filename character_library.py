@@ -136,18 +136,27 @@ class CharacterLibrary:
         self._save_manifest(character_id, manifest)
         return manifest
 
+    # ponytail: 唯一已知的舊命名是單張 development.png(char-Omni),故只映射這一格,不做通用別名表
+    _SCENE_VARIANTS = ("og", "development_a", "development_b", "event")
+    _SCENE_LEGACY_FALLBACK = {"development_a": "development"}
+
     def list_background_scenes(self, character_id: str) -> list[dict[str, object]]:
         manifest = self.get_character(character_id)
         if not manifest:
             return []
-        background_root = self._manifest_path(character_id).parent / "images" / "bg"
-        if not background_root.is_dir():
-            return []
         current = manifest.get("background_image") or ""
-        return [
-            {"scene_id": path.stem, "thumb": self._to_relative(path), "is_current": self._to_relative(path) == current}
-            for path in sorted(background_root.glob("*.png"))
-        ]
+        items = []
+        for variant in self._SCENE_VARIANTS:
+            source = variant
+            path = self.variant_background_path(character_id, source)
+            if not path and variant in self._SCENE_LEGACY_FALLBACK:
+                source = self._SCENE_LEGACY_FALLBACK[variant]
+                path = self.variant_background_path(character_id, source)
+            if not path:
+                continue
+            relative = self._to_relative(Path(path))
+            items.append({"scene_id": source, "thumb": relative, "is_current": relative == current})
+        return items
 
     def set_background(self, character_id: str, image_path: str) -> dict:
         manifest = self.get_character(character_id)
@@ -195,6 +204,9 @@ class CharacterLibrary:
             raise FileNotFoundError(f"character not found: {character_id}")
         manifest["active_variant"] = "og"
         manifest["selected_generations"] = {}
+        manifest["background_mode"] = "follow"
+        background_path = self.variant_background_path(character_id, "og")
+        manifest["background_image"] = self._to_relative(Path(background_path)) if background_path else ""
         manifest["updated_at"] = _now_iso()
         self._save_manifest(character_id, manifest)
         return manifest
@@ -226,6 +238,9 @@ class CharacterLibrary:
             candidate = PROJECT_ROOT / str(motions_dir) / f"{motion_key}.webm"
             if candidate.is_file():
                 return str(candidate)
+            candidate = PROJECT_ROOT / str(motions_dir) / variant / f"{motion_key}.webm"
+            if candidate.is_file():
+                return str(candidate)
         # A missing key never searches another revision. OG is the only
         # cross-variant fallback allowed by the contract.
         og_generation = self._selected_wearable_generation(character_id, "og")
@@ -238,6 +253,20 @@ class CharacterLibrary:
             if og_flat.is_file():
                 return str(og_flat)
         return None
+
+    def has_declared_motion(self, character_id: str | None, motion_key: str | None) -> bool:
+        """`motion_key` 是否為該角色 manifest 明確宣告的動作，不透過
+        `get_motion_path()` 的檔案系統猜測分支判斷。
+
+        `get_motion_path()` 有一段不檢查 manifest 授權、只看 `motions_dir` 底下
+        是否存在同名檔案的後備分支；NTFS 對檔名不分大小寫，會讓它誤判磁碟上
+        殘留的舊檔（例如 Choppr/miku 的 `Play_Music.webm`）為「這個角色有這支
+        動作」。凡是要判斷「這個角色是否真的宣告了這個動作」都必須走這裡，
+        不能用 get_motion_path() 是否回傳路徑代替。"""
+        manifest = self.get_character(character_id)
+        motions = manifest.get("motions") if manifest else None
+        normalized_key = str(motion_key or "").strip()
+        return bool(normalized_key) and isinstance(motions, dict) and normalized_key in motions
 
     def list_variant_inventory(self, character_id: str) -> list[dict[str, object]]:
         manifest = self.get_character(character_id)
@@ -262,6 +291,11 @@ class CharacterLibrary:
             revisions = self._revision_inventory(character_id, variant)
             wearable = [item for item in revisions if item["wearable"]]
             images = sorted((images_root / variant).glob("*.png"), key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
+            if not images:
+                # ponytail: development_a/development_b 共用 images/development/ 一個資料夾,靠檔名(不是資料夾名)分辨
+                shared = images_root / "development" / f"{variant}.png"
+                if shared.is_file():
+                    images = [shared]
             item = {
                 "variant": variant,
                 "state": "ready" if wearable or variant == "og" and self.get_motion_path(character_id, "idle") else "generating" if images else "empty",
@@ -550,6 +584,11 @@ class CharacterLibrary:
     def get_panel_motion_path(self, character_id: str, action_key: str) -> str | None:
         manifest = self.get_character(character_id)
         if not manifest:
+            return None
+        motions = manifest.get("motions")
+        if not isinstance(motions, dict) or action_key not in motions:
+            # manifest 是唯一授權來源:角色沒有宣告這個動作鍵,即使 motions_dir
+            # 底下真的有對應的面板檔案,也不得播放。
             return None
         filename = manifest.get("panel_motions", {}).get(action_key) or self._PANEL_MOTION_FILENAMES.get(action_key)
         if not filename:

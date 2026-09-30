@@ -85,11 +85,6 @@ class ComfyUIClient:
         response.raise_for_status()
         return response.content
 
-    def cancel_prompt(self, prompt_id: str) -> None:
-        response = self.session.post(f"{self.base_url}/queue", json={"delete": [prompt_id]}, timeout=self.timeout_sec)
-        if response.status_code >= 400:
-            self.session.post(f"{self.base_url}/interrupt", timeout=self.timeout_sec).raise_for_status()
-
     def health_check(self) -> bool:
         try:
             return self.session.get(f"{self.base_url}/system_stats", timeout=5).ok

@@ -7,7 +7,7 @@ from typing import Any, Callable, Iterator
 
 import requests
 
-from pet_harness.agent.provider_adapter import ProviderReply
+from pet_harness.agent.provider_adapter import LLMProviderAdapter, ProviderReply
 from pet_harness.models.events import UserEvent
 from pet_harness.models.provider import ProviderConfig, ProviderStatus, ProviderType
 from pet_harness.models.skill import Skill
@@ -20,7 +20,7 @@ _KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
 _NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
 
 
-class OllamaProvider:
+class OllamaProvider(LLMProviderAdapter):
     def __init__(self, config: ProviderConfig, request_fn: Callable[..., Any] | None = None) -> None:
         self.config = config
         self.request_fn = request_fn or self._default_request

@@ -173,7 +173,7 @@ class SttController(QObject):
     def _run_session(self, session_id: int, stop_event: threading.Event) -> None:
         try:
             self._execute_session(session_id, stop_event)
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             LOGGER.exception("[STT] session %s 發生未預期例外", session_id)
             try:
                 self._recorder.stop()

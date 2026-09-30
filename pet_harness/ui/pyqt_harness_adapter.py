@@ -20,7 +20,7 @@ from pet_harness.runtime.provider_runtime import ProviderRuntime
 from pet_harness.storage.sqlite_store import SQLiteStore
 from pet_harness.tools.registry import ToolRegistry
 from pet_harness.tools.tool_models import ToolDefinition, ToolExecutionClass, ToolRiskLevel
-from pet_harness.ui.character_ui_service import CharacterUiService
+from pet_harness.ui.character_ui_service import CharacterUiService, active_pending_motion_offer
 from pet_harness.app.secret_masking import SecretMasker, load_project_env
 from pet_harness.app.provider_config_service import ProviderConfigService
 from pet_harness.app.ports import PreparedTurn
@@ -46,10 +46,15 @@ LOGGER = logging.getLogger(__name__)
 def _qdrant_memory_store_factory(character_id: str, profile) -> object:
     """Desktop-only memory adapter; the domain receives this as an injected factory."""
     from pet_harness.memory.hybrid_qdrant_memory_store import HybridQdrantMemoryStore
+    from pet_harness.memory.shared_encoders import get_dense_encoder, get_sparse_encoder
 
+    # 共用 encoder 單例:每次切換角色都會呼叫本工廠建立新 store,若各自載入
+    # 一份 embedding 模型,切換角色就會重複觸發模型載入(design D8)。
     return HybridQdrantMemoryStore(
         character_id=character_id,
         path=f"data/characters/{character_id}/qdrant",
+        dense_encoder=get_dense_encoder(),
+        sparse_encoder=get_sparse_encoder(),
     )
 
 
@@ -96,6 +101,7 @@ class PyQtHarnessAdapter:
         if self.router.get_active_engine() is None:
             self.router.switch_character(default_character_id)
         self.character_service = CharacterUiService(router=self.router, registry=self._character_registry)
+        self._check_time_trigger()
         self._brain_mode = str(brain_mode or "harness")
         self._background_resolver = background_resolver or BackgroundResolver(project_root=self._project_root)
         self._voice_status_adapter = voice_status_adapter or VoiceRuntimeStatusAdapter()
@@ -150,6 +156,7 @@ class PyQtHarnessAdapter:
 
     def switch_character(self, character_id: str):
         profile = self.router.switch_character(character_id)
+        self._check_time_trigger()
         self._refresh_runtime()
         return profile
 
@@ -192,6 +199,17 @@ class PyQtHarnessAdapter:
     def configure_streaming(self, chunk_callback=None, action_callback=None) -> None:
         self._stream_chunk_callback = chunk_callback
         self._stream_action_callback = action_callback
+
+    def configure_motion_offer_callback(self, callback) -> None:
+        self.character_service.configure_motion_offer_callback(callback)
+
+    def _check_time_trigger(self) -> None:
+        engine = self.router.get_active_engine()
+        trigger = getattr(engine, "growth_trigger", None)
+        check = getattr(trigger, "check_time_trigger", None)
+        if callable(check):
+            character_id = getattr(engine, "_character_id", "unknown")
+            check(f"startup-{character_id}-{time.time_ns()}")
 
     def register_voice_turn_timing(self, is_vad_endpoint: bool, vad_endpoint_ts: float, stt_started_ts: float, stt_done_ts: float) -> None:
         """Owns the pet_harness.latency object creation for voice turns; sensors/stt_controller.py
@@ -306,6 +324,8 @@ class PyQtHarnessAdapter:
         )
         return {
             "xp": xp_state,
+            "pending_offer": self.store.get_setting("asset_pending_offer"),
+            "pending_motion_offer": active_pending_motion_offer(self.store),
             "provider_config": self._mask_payload(provider_config),
             "provider_status": self._mask_payload(provider_status),
             "provider_diagnostics": self._build_provider_diagnostics(provider_config, provider_status),
@@ -726,7 +746,7 @@ class PyQtHarnessAdapter:
                 "status": dto.tts_primary_status,
                 "configured": dto.tts_primary_status != "configured_missing_runtime",
                 "implemented": dto.tts_primary_status != "configured_missing_runtime",
-                "required_env": ["ELEVENLABS_API_KEY", "ELEVENLABS_*_VOICE_ID", "ELEVENLABS_MODEL_ID"],
+                "required_env": ["ELEVENLABS_API_KEY", "ELEVENLABS_*_VOICE_ID", "ELEVENLABS_MODEL_ID", "ELEVENLABS_*_MODEL_ID"],
                 "message": dto.tts_primary_status,
             },
             "tts_fallback": {

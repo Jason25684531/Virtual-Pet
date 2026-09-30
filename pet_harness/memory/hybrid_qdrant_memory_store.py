@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 import logging
@@ -22,17 +23,42 @@ class HybridQdrantMemoryStore(BaseMemoryStore):
         client: Any | None = None,
         dense_encoder=None,
         sparse_encoder: JiebaBm25SparseEncoder | None = None,
+        collection: str | None = None,
+        dense_min_score: float | None = None,
     ) -> None:
         self.character_id = character_id
-        self.collection = f"{character_id}_memory_hybrid"
+        # collection/dense_min_score 可覆寫，供共用知識庫沿用同一套檢索堆疊
+        # （見 openspec/changes/shared-knowledge-rag/design.md D1）；未指定時維持
+        # 既有的每角色記憶行為與門檻不變。
+        self.collection = collection or f"{character_id}_memory_hybrid"
+        self._dense_min_score = dense_min_score
         self._client = client
         self._dense_encoder = dense_encoder
         self.sparse_encoder = sparse_encoder or JiebaBm25SparseEncoder()
-        try:
-            self._ensure_ready(path)
-            self._status = MemoryStoreStatus("ready")
-        except Exception as exc:
-            self._status = MemoryStoreStatus("degraded", str(exc) or type(exc).__name__)
+        # ponytail: 撞到間歇性的 DLL 載入封鎖（如 Windows 應用程式控制原則擋
+        # cygrpc）時，同一個 process 內重試往往就會成功；固定重試 3 次、每次
+        # 間隔 0.5 秒，仍失敗才真的降級。次數固定寫死，之後若要依環境調整再抽成參數。
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                self._ensure_ready(path)
+                self._status = MemoryStoreStatus("ready")
+                break
+            except Exception as exc:
+                reason = str(exc) or type(exc).__name__
+                if attempt < attempts:
+                    LOGGER.warning(
+                        "memory store init failed (attempt %d/%d), retrying: character_id=%s collection=%s reason=%s",
+                        attempt, attempts, character_id, self.collection, reason,
+                    )
+                    time.sleep(0.5)
+                    continue
+                self._status = MemoryStoreStatus("degraded", reason)
+                LOGGER.error(
+                    "memory store degraded at init; search() will return no results for this process: "
+                    "character_id=%s collection=%s reason=%s",
+                    character_id, self.collection, reason,
+                )
 
     def _ensure_ready(self, path: str | Path) -> None:
         from qdrant_client import QdrantClient, models
@@ -117,8 +143,11 @@ class HybridQdrantMemoryStore(BaseMemoryStore):
         from qdrant_client import models
 
         active = models.Filter(must=[models.FieldCondition(key="status", match=models.MatchValue(value="active"))])
-        import config
-        threshold = config.MEMORY_DENSE_MIN_SCORE or None
+        if self._dense_min_score is not None:
+            threshold = self._dense_min_score or None
+        else:
+            import config
+            threshold = config.MEMORY_DENSE_MIN_SCORE or None
         if not sparse:
             kwargs = dict(collection_name=self.collection, query=dense, using="dense", query_filter=active, limit=top_k, with_payload=True)
             if threshold is not None:

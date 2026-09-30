@@ -4,11 +4,13 @@ Application entrypoint for the ECHOES desktop host runtime.
 
 from __future__ import annotations
 
+import logging
+import logging.handlers
 import os
 import signal
 import sys
 import threading
-import logging
+from pathlib import Path
 
 
 def _configure_sigint_timer(app):
@@ -219,7 +221,18 @@ def _preload_onnx_runtime():
 
 
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    log_dir = Path(__file__).resolve().parent / "logs"
+    log_dir.mkdir(exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.handlers.RotatingFileHandler(
+                log_dir / "echoes.log", maxBytes=5_000_000, backupCount=3, encoding="utf-8"
+            ),
+        ],
+    )
     print("[ECHOES] brain mode: harness")
     _preload_onnx_runtime()
     stt_provider = _preload_stt_provider()

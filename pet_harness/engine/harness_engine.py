@@ -18,6 +18,7 @@ from pet_harness.agent.result_parser import ResultParser
 from pet_harness.asset.factory import build_asset_service
 from pet_harness.asset.mock_asset_service import MockAssetService
 from pet_harness.behavior.behavior_manager import BehaviorManager
+from pet_harness.character import generation as character_generation
 from pet_harness.character.profile import CharacterProfile
 from pet_harness.memory.base_memory_store import BaseMemoryStore, NullMemoryStore
 from pet_harness.models.events import PetEvent, ToolRequestEvent, UserEvent
@@ -46,6 +47,11 @@ class _SentenceSplitter:
 
     _ACTION = re.compile(r"^\s*\[ACTION:([A-Za-z0-9_-]+)\]\s*", re.IGNORECASE)
     _END = set(".!?。！？\n")
+    _SOFT_BREAK = set("，,、；;")
+    # 新聞類回覆常以逗號連接多則條目、沒有句號，若整段不切開會變成一次超長
+    # TTS 請求，部分 provider 對過長文字只合成/播放前半段。超過門檻就在逗號
+    # 處強制斷句，避免單一 TTS chunk 過長被截斷。
+    _MAX_CHUNK_CHARS = 80
 
     def __init__(self) -> None:
         self._buffer = ""
@@ -63,9 +69,15 @@ class _SentenceSplitter:
         sentences: list[str] = []
         start = 0
         for index, char in enumerate(self._buffer):
-            if char not in self._END:
-                continue
-            if char == "." and index + 1 < len(self._buffer) and self._buffer[index + 1].isdigit():
+            is_end = char in self._END
+            if is_end and char == "." and index + 1 < len(self._buffer) and self._buffer[index + 1].isdigit():
+                is_end = False
+            is_soft_break = (
+                not is_end
+                and char in self._SOFT_BREAK
+                and index + 1 - start >= self._MAX_CHUNK_CHARS
+            )
+            if not (is_end or is_soft_break):
                 continue
             sentences.append(self._buffer[start:index + 1].strip())
             start = index + 1
@@ -197,6 +209,8 @@ class PetHarnessEngine:
         profile_loader: Callable[[], CharacterProfile] | None = None,
         memory_store: BaseMemoryStore | None = None,
         memory_retriever=None,
+        knowledge_retriever=None,
+        knowledge_keywords: frozenset[str] | None = None,
         semantic_index_enabled: bool = False,
     ) -> None:
         self.agentic_root = Path(agentic_root)
@@ -204,6 +218,17 @@ class PetHarnessEngine:
         self.memory_store = memory_store or NullMemoryStore()
         self.memory_retriever = memory_retriever
         self._semantic_index_enabled = semantic_index_enabled
+
+        # 共用知識庫:未注入時走行程內單例(切換角色不重建,見 design D2/D8)；
+        # KNOWLEDGE_RAG_ENABLED=False 時單例回傳 None,以下所有知識檢索路徑
+        # 直接以 None 短路,不建立向量庫、不載入模型、不執行檢索(task 4.6)。
+        if knowledge_retriever is None:
+            from pet_harness.knowledge.shared_index import get_knowledge_keywords, get_knowledge_retriever
+            self.knowledge_retriever = get_knowledge_retriever()
+            self._knowledge_keywords = knowledge_keywords if knowledge_keywords is not None else get_knowledge_keywords()
+        else:
+            self.knowledge_retriever = knowledge_retriever
+            self._knowledge_keywords = knowledge_keywords or frozenset()
 
         self._character_id = character_id
         self._profile: CharacterProfile | None = character_profile
@@ -283,7 +308,10 @@ class PetHarnessEngine:
                 config.EVENT_INTERVAL_MINUTES,
             )
         self.last_prompt: str | None = None
-        self._spoken_chunks: list[str] = []
+        # ponytail: keyed by turn_id so a cancelled turn can only fall back to its OWN
+        # spoken text, never a different turn's leftovers (was a shared list; async TTS
+        # driver-started callbacks race against handle_event resetting it for the next turn).
+        self._spoken_chunks: dict[str, list[str]] = {}
         self.last_provider_raw_result: str | None = None
         self.last_agent_result: AgentResult | None = None
         self.last_tool_result: ToolResult | None = None
@@ -291,7 +319,6 @@ class PetHarnessEngine:
         self._shutdown = False
         self._background_executor = None
         self._slow_tool_failure_callback = None
-        self._memory_warmup_complete = False
         self._memory_warmup_completed_at: float | None = None
 
     def configure_background_executor(self, executor) -> None:
@@ -303,7 +330,7 @@ class PetHarnessEngine:
 
     @property
     def memory_warmup_complete(self) -> bool:
-        return self._memory_warmup_complete
+        return self._memory_warmup_completed_at is not None
 
     @property
     def memory_warmup_completed_at(self) -> float | None:
@@ -314,7 +341,6 @@ class PetHarnessEngine:
 
     def warmup_memory(self) -> None:
         if self.memory_retriever is None:
-            self._memory_warmup_complete = True
             self._memory_warmup_completed_at = perf_counter()
             return
         started = perf_counter()
@@ -331,7 +357,6 @@ class PetHarnessEngine:
         except Exception:
             LOGGER.exception("[MEMORY WARMUP] failed character_id=%s", self._character_id)
         finally:
-            self._memory_warmup_complete = success
             self._memory_warmup_completed_at = perf_counter() if success else None
             LOGGER.info("[MEMORY WARMUP] done warmup_ms=%s success=%s", round((perf_counter() - started) * 1000), success)
 
@@ -347,13 +372,38 @@ class PetHarnessEngine:
     def character_profile(self) -> CharacterProfile | None:
         return self._profile
 
-    def mark_spoken_chunk(self, text: str) -> None:
+    def mark_spoken_chunk(self, text: str, turn_id: str | None = None) -> None:
         normalized = str(text or "").strip()
         if normalized:
-            self._spoken_chunks.append(normalized)
+            self._spoken_chunks.setdefault(str(turn_id or ""), []).append(normalized)
 
-    def spoken_reply(self) -> str:
-        return " ".join(self._spoken_chunks).strip()
+    def spoken_reply(self, turn_id: str | None = None) -> str:
+        return " ".join(self._spoken_chunks.get(str(turn_id or ""), [])).strip()
+
+    def log_assistant_utterance(self, text: str, source: str = "proactive_greeting") -> None:
+        """記錄角色主動說出的話（無對應使用者輸入）。
+
+        主動打招呼走 motion-only 路徑、不經過 handle()，所以不會進 event_log；
+        不補這一筆，模型就不知道自己剛才說了什麼。刻意不加經驗值、不跑節慶偵測、
+        不寫長期記憶——那些都是「使用者有互動」才該發生的事。"""
+        utterance = str(text or "").strip()
+        if not utterance:
+            return
+        user_event = UserEvent(text="", source=source, event_type="assistant_utterance")
+        pet_event = PetEvent(
+            source_event_id=user_event.event_id,
+            reply=utterance,
+            matched_skill=None,
+            behavior_id="idle",
+            webm_key="idle",
+            xp_delta=0,
+            reward_events=[],
+            tool_request=None,
+            provider_status={},
+            saved_to_db=False,
+            metadata={"assistant_utterance": True, "source": source},
+        )
+        self.store.log_event(user_event.to_dict(), pet_event.to_dict())
 
     def refresh_skill_catalog(self) -> list[Skill]:
         loader = SkillLoader(self.agentic_root / "skills")
@@ -502,7 +552,7 @@ class PetHarnessEngine:
             # Direct/CLI callers have no adapter; keep observability fail-open.
             timeline = create_turn(user_event.event_id, "engine")
         timeline.mark("route_done")
-        self._spoken_chunks = []
+        self._spoken_chunks.pop(timeline.turn_id, None)
         state_before = self.store.state_snapshot()
         active_capabilities = self._active_capabilities()
         deterministic_skill = self._route_deterministic(user_event, active_capabilities)
@@ -528,9 +578,30 @@ class PetHarnessEngine:
             prior_user, prior_assistant, age = previous_turn(conversation_history, datetime.now(UTC))
             retrieval_request = RetrievalRequest(self._character_id or "default", user_event.text, prior_user, prior_assistant, age)
 
+        # 知識檢索前的輕量閘門:本輪文字沒有命中任何已知的遊戲知識關鍵詞/別名就
+        # 整段跳過,不建 future、不跑 embedding/rerank——這是延遲預算(config.
+        # TURN_LATENCY_BUDGET_MS)的主要防線,而不是事後靠並行去追(design 新增)。
+        #
+        # ponytail: 曾經試過把 previous_turn 的上下文也傳給知識檢索(仿記憶檢索
+        # 的 FollowUpDetector),抽測 3 個案例後發現 tier-1 的原始字串串接對
+        # 知識查詢弊多於利——2/3 案例把正確 top-3 命中擠掉,只有 1/3 有改善,
+        # 原因是這個角色人設的回覆本身很長且話題發散,串接後稀釋了關鍵詞訊號。
+        # 已還原為只用當輪文字。若要做,需要比原始字串串接更精準的改寫,而非
+        # 現在就上。
+        knowledge_request = None
+        if self.knowledge_retriever is not None:
+            import config
+            from pet_harness.knowledge.gate import needs_retrieval
+            if needs_retrieval(user_event.text, self._knowledge_keywords):
+                from pet_harness.memory.memory_models import RetrievalRequest as _KnowledgeRetrievalRequest
+                knowledge_request = _KnowledgeRetrievalRequest(self._character_id or "default", user_event.text, top_k=config.KNOWLEDGE_RETRIEVE_K)
+
         pre_llm_started_at = perf_counter()
         retrieval_ms = None
-        if retrieval_request is None:
+        knowledge_result = None
+        knowledge_ms = None
+        parallel_needed = retrieval_request is not None or knowledge_request is not None
+        if not parallel_needed:
             tool_started_at = perf_counter()
             if deterministic_skill and deterministic_skill.required_tool:
                 timeline.mark("tool_started")
@@ -539,28 +610,40 @@ class PetHarnessEngine:
                 timeline.mark("tool_done")
             tool_ms = round((perf_counter() - tool_started_at) * 1000)
         else:
-            # Both results are inputs to the prompt; state updates remain on this thread.
-            with ThreadPoolExecutor(max_workers=2) as executor:
+            # 三項互不依賴,結果都只是 prompt 的輸入;狀態更新仍留在本執行緒。
+            with ThreadPoolExecutor(max_workers=3) as executor:
                 def run_tool_first():
                     if deterministic_skill and deterministic_skill.required_tool:
                         timeline.mark("tool_started")
                     return _measure_call(self._run_tool_first, user_event, deterministic_skill)
 
                 tool_future = executor.submit(run_tool_first)
-                retrieval_future = executor.submit(_measure_call, self.memory_retriever.retrieve, retrieval_request)
+                retrieval_future = executor.submit(_measure_call, self.memory_retriever.retrieve, retrieval_request) if retrieval_request is not None else None
+                knowledge_future = executor.submit(_measure_call, self.knowledge_retriever.retrieve, knowledge_request) if knowledge_request is not None else None
                 (tool_first_event, tool_first_result), tool_ms = tool_future.result()
-                retrieval_result, retrieval_ms = retrieval_future.result()
+                if retrieval_future is not None:
+                    retrieval_result, retrieval_ms = retrieval_future.result()
+                if knowledge_future is not None:
+                    # 知識檢索是唯讀的加分項,任何注入實作拋例外都必須降級而不是
+                    # 中斷整個回合;記憶檢索不受影響(spec: 知識檢索失敗時的降級)。
+                    try:
+                        knowledge_result, knowledge_ms = knowledge_future.result()
+                    except Exception:
+                        LOGGER.exception("[KNOWLEDGE] retrieval failed; degrading to no evidence")
+                        knowledge_result, knowledge_ms = None, None
             if tool_first_event is not None:
                 timeline.mark("tool_done")
             timeline.mark("retrieval_done")
         pre_llm_ms = round((perf_counter() - pre_llm_started_at) * 1000)
         timeline.mark("pre_llm_done")
         pre_llm_trace = {
-            "execution": "parallel" if retrieval_request is not None else "tool_only",
+            "execution": "parallel" if parallel_needed else "tool_only",
             "tool_ms": tool_ms,
             "retrieval_ms": retrieval_ms,
+            "knowledge_gate": knowledge_request is not None,
+            "knowledge_ms": knowledge_ms,
             "pre_llm_ms": pre_llm_ms,
-            "expected_parallel_ms": max(tool_ms, retrieval_ms or 0),
+            "expected_parallel_ms": max(tool_ms, retrieval_ms or 0, knowledge_ms or 0),
         }
         LOGGER.info("[PRE-LLM] %s", pre_llm_trace)
 
@@ -569,8 +652,10 @@ class PetHarnessEngine:
         else:
             memory_hits = self.memory_store.recall(user_event.text, top_k=3)
         memory_status = self.memory_store.status()
+        # rerank 後只取前 KNOWLEDGE_CONTEXT_K 則送進 prompt,避免把 context 塞爆(design D7)。
+        knowledge_evidence = knowledge_result.evidence[:config.KNOWLEDGE_CONTEXT_K] if knowledge_result is not None else []
 
-        prompt_result = self._build_prompt(user_event, state_before, deterministic_skill, tool_first_result, conversation_history, memory_hits, retrieval_result, ack_emitted=timeline.ack_emitted)
+        prompt_result = self._build_prompt(user_event, state_before, deterministic_skill, tool_first_result, conversation_history, memory_hits, retrieval_result, knowledge_evidence, ack_emitted=timeline.ack_emitted)
         LOGGER.info("[PROMPT SIZE] turn_id=%s chars=%s", timeline.turn_id, prompt_result.section_sizes)
         provider_reply, agent_result = self._invoke_provider(
             user_event,
@@ -583,9 +668,11 @@ class PetHarnessEngine:
         )
         stream_cancelled = bool(provider_reply.metadata.get("cancelled")) or bool(cancel is not None and cancel.is_set())
         if stream_cancelled:
-            spoken_reply = self.spoken_reply()
+            timeline.cancel("stream_interrupted")
+            spoken_reply = self.spoken_reply(timeline.turn_id)
+            self._spoken_chunks.pop(timeline.turn_id, None)
             if not spoken_reply:
-                return PetEvent(
+                stale_event = PetEvent(
                     source_event_id=user_event.event_id,
                     reply="",
                     matched_skill=None,
@@ -598,6 +685,12 @@ class PetHarnessEngine:
                     saved_to_db=False,
                     metadata={"stale_turn": True, "spoken_chunks": 0},
                 )
+                # 被打斷的回合仍要留在 event_log,否則使用者問過的問題會從短期
+                # 歷史(recent_events)中蒸發,下一輪的追問就失去上下文。只寫
+                # event_log:空回覆沒有值得長期記憶的內容,寫進向量庫只是噪音。
+                self.store.log_event(user_event.to_dict(), stale_event.to_dict())
+                stale_event.saved_to_db = True
+                return stale_event
             agent_result.reply = spoken_reply
             provider_reply.reply = spoken_reply
         matched_skill, skill_source = self._parse_and_route(user_event, agent_result, active_capabilities)
@@ -652,9 +745,21 @@ class PetHarnessEngine:
             skill_name=matched_skill.name if matched_skill else None,
             streaming=bool(provider_reply.metadata.get("streaming")),
             slow_tool=False,
+            route_source=skill_source,
+            character_generation=character_generation.current(),
+            tool_status=(tool_result_payload or {}).get("status"),
         )
         pet_event.metadata["latency"] = timeline.report(**timeline.context)
+        if timeline.checkpoints.get("audio_play_started") is not None:
+            # 音訊在這裡之前就已經起播(甚至播畢)——例如 post-LLM 的 slow tool
+            # 把 turn_complete 拖到語音都播完之後(見 play_music)。audio_worker
+            # 稍早呼叫 log_current() 時 context 還是空的,靜默略過了；這是唯一
+            # 還能補記這筆 [TURN LATENCY] 的機會(fix-media-action-motion-
+            # dispatch design.md 決策 5)。context 尚未設定前就起播的正常情形
+            # (audio_play_started 為 None)不受影響,仍由 audio_worker 照舊記錄。
+            timeline.log_current()
 
+        self._spoken_chunks.pop(timeline.turn_id, None)
         self._persist_and_snapshot(user_event, pet_event)
         LOGGER.info(
             "[CONVERSATION] character=%s user=%r assistant=%r",
@@ -683,8 +788,15 @@ class PetHarnessEngine:
         )
         timeline.mark("tool_started")
 
+        # 同步路徑的 complete() 在 set_context() 之前跑,非同步路徑在之後;兩邊都要
+        # 拿到真實的工具狀態,所以用一個 cell 讓兩條路都寫得到、讀得到。
+        tool_status: dict[str, str | None] = {"value": None}
+
         def complete(ok: bool, message: str, result) -> None:
             timeline.mark("tool_done")
+            tool_status["value"] = getattr(result, "status", "failed") if ok else "failed"
+            if timeline.context:  # 非同步路徑:context 已由 turn_complete 設好,就地更新
+                timeline.context["tool_status"] = tool_status["value"]
             # ack-only's one [TURN LATENCY] line fires at turn_complete, before this async
             # tool finishes — tool_ms is always None there. Re-log now that tool_done is
             # set, so tool_completion_ms actually surfaces per tool-result-synthesis's
@@ -727,6 +839,9 @@ class PetHarnessEngine:
         timeline.mark("turn_complete")
         timeline.set_context(
             character_id=self._character_id, route_kind="deterministic", skill_name=skill.name, streaming=True, slow_tool=True,
+            # ack-only 的確認語音和工具完成是兩件事:turn_complete 時工具還在跑,
+            # tool_status 留 null,等 complete() 拿到真實結果才填。
+            route_source="deterministic", character_generation=character_generation.current(), tool_status=tool_status["value"],
         )
         pet_event.metadata["latency"] = timeline.report(**timeline.context)
         self._persist_and_snapshot(event, pet_event)
@@ -753,6 +868,7 @@ class PetHarnessEngine:
         history: list[dict[str, Any]],
         memory_hits: list[Any],
         retrieval_result=None,
+        knowledge_evidence: list[Any] | None = None,
         ack_emitted: bool = False,
     ):
         return self.prompt_builder.build(
@@ -773,7 +889,9 @@ class PetHarnessEngine:
             conversation_history=history,
             memory_hits=memory_hits,
             retrieval_result=retrieval_result,
+            knowledge_evidence=knowledge_evidence,
             ack_emitted=ack_emitted,
+            media_clarification=self.router.last_media_intent.reason,
         )
 
     def _run_tool_first(self, event: UserEvent, skill: Skill | None) -> tuple[ToolRequestEvent | None, ToolResult | None]:
@@ -909,6 +1027,19 @@ class PetHarnessEngine:
             else:
                 self._last_action_tag = action_tag
         behavior = self.behavior_manager.resolve(skill, action_motion_key=resolved_action["motion_key"] if resolved_action else None)
+        if (
+            skill is not None
+            and resolved_action is not None
+            and not self.character_library.has_declared_motion(self._character_id, behavior.webm_key)
+        ):
+            # BehaviorManager.resolve() 在 matched_skill 存在時無條件採用
+            # matched_skill.behavior,不看上面已經驗證過的 resolved_action——
+            # 技能宣告的動作(例如 report_news/play_music)在目前角色沒有對應
+            # 素材時就會播不出來、退回 idle。改用同一回合已驗證、這個角色播
+            # 得出來的動作候選;behavior_id/reason/source_skill 不變,獎勵解鎖
+            # 與素材生成請求的行為因此不受影響(見 fix-media-action-motion-
+            # dispatch design.md 決策 1)。
+            behavior = replace(behavior, webm_key=resolved_action["motion_key"])
         return resolved_action, behavior
 
     def _run_tool_fallback(
@@ -947,8 +1078,11 @@ class PetHarnessEngine:
                 if isinstance(self.asset_service, MockAssetService)
                 else self.growth_trigger.on_xp_awarded(self.store.get_user_progress()["xp_total"], event.event_id)
             )
-            if growth is not None:
-                assets = {"pending_offer": growth.to_dict()}
+            check_time_trigger = getattr(self.growth_trigger, "check_time_trigger", None)
+            timed = check_time_trigger(event.event_id) if callable(check_time_trigger) else None
+            offer = timed or growth
+            if offer is not None:
+                assets = {"pending_offer": offer.to_dict()}
         return xp_delta, rewards, assets
 
     def _persist_and_snapshot(self, user_event: UserEvent, pet_event: PetEvent) -> None:
@@ -1080,6 +1214,9 @@ class PetHarnessEngine:
         article_index = self.media_session_context.follow_up_index(user_event.text)
         media_context = self.media_session_context.load()
         articles = media_context.get("articles") or []
+        # 文章序號追問也是新聞能力的一部分:角色停用新聞技能後不得繞過設定抓文章。
+        if article_index and "news" not in {skill.capability for skill in self.skills}:
+            article_index = None
         if article_index and article_index <= len(articles):
             action = "open_article" if "打開" in user_event.text else "get_article_detail"
             return ToolRequest(
@@ -1127,8 +1264,17 @@ class PetHarnessEngine:
         return tool_event, tool_result, tool_result.to_dict(), tool_xp_bonus
 
     def _active_capabilities(self) -> set[str]:
+        """目前角色可被追問控制的能力。
+
+        必須同時滿足「這個角色現在啟用了該技能」與「本次執行真的有工作階段」:
+        停用技能後的「暫停」不得繞過設定,切換角色或重啟後也不得控制舊工作階段
+        (角色隔離來自 per-character store,重啟隔離來自 playback 的 runtime id)。
+        """
         context = self.media_session_context.load()
-        return {"music"} if context.get("playback") else set()
+        if not context.get("playback"):
+            return set()
+        enabled = {skill.capability for skill in self.skills}
+        return {"music"} & enabled
 
     @staticmethod
     def _media_arguments(skill: Skill, text: str) -> dict[str, Any]:
@@ -1141,10 +1287,14 @@ class PetHarnessEngine:
             "暫停": "pause",
             "繼續播放": "resume",
             "停止播放": "stop",
+            "停止音樂": "stop",
             "現在在播放什麼": "get_status",
         }
-        if normalized in actions:
-            return {"action": actions[normalized], "query": ""}
+        # 用「最長命中的控制詞」而不是完全相符:「暫停音樂」本來會落到 search_and_play,
+        # 變成去 YouTube 搜尋一首叫「暫停音樂」的歌。最長優先讓「停止播放」不被「停止」搶走。
+        matched = max((phrase for phrase in actions if phrase in normalized), key=len, default=None)
+        if matched is not None:
+            return {"action": actions[matched], "query": ""}
         query = re.sub(r"^(?:播放|播歌|播|放一首|放|我想聽|想聽)\s*", "", normalized).strip()
         return {"action": "search_and_play", "query": query or normalized}
 

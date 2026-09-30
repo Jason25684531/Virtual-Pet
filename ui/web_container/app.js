@@ -107,11 +107,15 @@
     var motionLoopSource = null;
     var motionLoopActive = false;
     var motionLoopGeneration = 0;
+    var preloadedMotionSource = null;
     var panelVideoGeneration = 0;
     var conversationTurns = new Map();
-    var maxConversationTurns = 3;
+    // 3 輪會讓歷史真的被 removeChild 刪掉，不是捲不到而是不存在。
+    var maxConversationTurns = 50;
+    var pinConversationFrame = null;
     var latestRuntimeState = null;
     var latestHudState = null;
+    var lastRenderedAgentReply = '';
     var currentCharacterSkills = [];
     var hudDeltaTimer = null;
     var resizeObserver = null;
@@ -215,6 +219,9 @@
             console.warn('[ECHOES] invalid video source', source);
             return;
         }
+        // 任何真正換 src 的動作都讓預載失效，否則 startMotionLoop 會拿著舊的
+        // preloadedMotionSource 誤判「已經載好了」而直接 play 到別的片子。
+        preloadedMotionSource = null;
         video.loop = Boolean(shouldLoop);
         video.src = source;
         video.load();
@@ -234,7 +241,22 @@
         }
     }
 
+    // 量測必須在內容變更「之前」（變更後量到的已經是加長後的高度），捲動必須在
+    // 變更「之後」。rAF 讓同一個 tick 的所有同步變更都做完才捲。
+    function pinConversationToBottom() {
+        if (!conversationList || pinConversationFrame !== null) return;
+        var distanceFromBottom = conversationList.scrollHeight
+            - conversationList.scrollTop
+            - conversationList.clientHeight;
+        if (distanceFromBottom >= 40) return;   // 使用者正在看歷史，別把他拉回底部
+        pinConversationFrame = window.requestAnimationFrame(function () {
+            pinConversationFrame = null;
+            conversationList.scrollTop = conversationList.scrollHeight;
+        });
+    }
+
     function ensureConversationTurn(turnId, sourceLabel) {
+        pinConversationToBottom();
         var existing = conversationTurns.get(turnId);
         if (existing) return existing;
 
@@ -273,7 +295,7 @@
         article.appendChild(assistantRow);
         if (conversationList) conversationList.appendChild(article);
 
-        var turn = { root: article, userText: userText, assistantText: assistantText };
+        var turn = { root: article, userRow: userRow, userText: userText, assistantText: assistantText };
         conversationTurns.set(turnId, turn);
         trimConversationTurns();
         return turn;
@@ -637,6 +659,38 @@
         }
     }
 
+    // ── 畫面切換計時(fix-create-screen-stall)─────────────────────
+    // 量測「使用者觸發切換」到「下一幀實際完成繪製」之間的時間;只有超過
+    // 門檻才輸出紀錄,正常路徑不增加可感知延遲。同時記錄該段期間發出的橋接
+    // 呼叫,讓卡頓可以被指認是哪一個跨層呼叫佔用時間,而不是被推測。
+    var SCREEN_SWITCH_STALL_THRESHOLD_MS = 300;
+    var activeSwitchTrace = null;
+
+    function beginScreenSwitchTrace(source) {
+        activeSwitchTrace = { source: source, startedAt: performance.now(), calls: [] };
+    }
+
+    function recordSwitchTraceBridgeCall(name, durationMs) {
+        if (activeSwitchTrace) activeSwitchTrace.calls.push(name + ':' + Math.round(durationMs) + 'ms');
+    }
+
+    function finishScreenSwitchTrace() {
+        var trace = activeSwitchTrace;
+        activeSwitchTrace = null;
+        if (!trace) return;
+        // rAF 才是「使用者實際看到」的時間點:Qt 主執行緒被同步工作阻塞時,
+        // 這一幀會被延後,量到的延遲因此包含主執行緒阻塞造成的未繪製時間。
+        window.requestAnimationFrame(function () {
+            var elapsedMs = performance.now() - trace.startedAt;
+            if (elapsedMs <= SCREEN_SWITCH_STALL_THRESHOLD_MS) return;
+            console.warn(
+                '[ECHOES SCREEN SWITCH STALL] source=' + trace.source +
+                ' elapsed_ms=' + Math.round(elapsedMs) +
+                ' bridge_calls=[' + trace.calls.join(', ') + ']'
+            );
+        });
+    }
+
     // ── Bridge 呼叫 ───────────────────────────────────────────
 
     function callBridge(method) {
@@ -647,19 +701,64 @@
             setStatus('Bridge unavailable. Check qwebchannel.js.', 'error', 0);
             return;
         }
-        return harnessBridge[method].apply(harnessBridge, args);
+        var startedAt = performance.now();
+        var result = harnessBridge[method].apply(harnessBridge, args);
+        recordSwitchTraceBridgeCall('harnessBridge.' + method, performance.now() - startedAt);
+        return result;
     }
+
+    var hitRegionFrame = null;
+
+    function markHitRegions() {
+        ['#hud-chat', '#hud-agent', '#hud-style', '#hud-scene', '.app-screen', '.modal'].forEach(function (selector) {
+            document.querySelectorAll(selector).forEach(function (element) {
+                element.setAttribute('data-hit-region', '');
+            });
+        });
+    }
+
+    function reportHitRegions() {
+        hitRegionFrame = null;
+        if (!harnessBridge || typeof harnessBridge.update_hit_regions !== 'function') return;
+        var regions = Array.prototype.slice.call(document.querySelectorAll(
+            '[data-hit-region], button, input, textarea, select, [contenteditable="true"]'
+        )).filter(function (element) {
+            var style = window.getComputedStyle(element);
+            return !element.hidden && style.display !== 'none' && style.visibility !== 'hidden';
+        }).map(function (element) {
+            var rect = element.getBoundingClientRect();
+            return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        }).filter(function (rect) { return rect.width > 0 && rect.height > 0; });
+        harnessBridge.update_hit_regions(JSON.stringify({
+            regions: regions,
+            devicePixelRatio: window.devicePixelRatio,
+            stageActive: !uiRoute.screen && !uiRoute.modal,
+            // modal 只是蓋在舞台上（角色還在後面），不該中斷進行中的回合；
+            // 真正離開舞台是 route 到別的畫面。兩者granularity 不同，分開回報。
+            screenRouted: Boolean(uiRoute.screen),
+        }));
+    }
+
+    function scheduleHitRegionReport() {
+        if (hitRegionFrame === null) hitRegionFrame = window.requestAnimationFrame(reportHitRegions);
+    }
+
+    window.refreshHitRegions = scheduleHitRegionReport;
 
     // ── Character Bridge 呼叫（async，帶 callback → Promise）─────
 
     function callCharacterBridge(method) {
         var args = Array.prototype.slice.call(arguments, 1);
+        var startedAt = performance.now();
         return new Promise(function (resolve, reject) {
             if (!characterBridge || typeof characterBridge[method] !== 'function') {
                 reject(new Error('characterBridge not ready — cannot call: ' + method));
                 return;
             }
             var callArgs = args.concat([function (resultJson) {
+                // 這個 callback 何時被呼叫,就是這次跨層呼叫的真實耗時 ——
+                // 包含 Python 端同步執行的時間(如 listPresets 逐一開 SQLite)。
+                recordSwitchTraceBridgeCall('characterBridge.' + method, performance.now() - startedAt);
                 var parsed;
                 try {
                     parsed = JSON.parse(resultJson);
@@ -760,9 +859,11 @@
         var modalLayer = document.getElementById('modal-layer');
         Array.prototype.slice.call(document.querySelectorAll('.modal')).forEach(function (modal) { modal.hidden = modal.id !== uiRoute.modal; });
         if (modalLayer) modalLayer.hidden = !uiRoute.modal;
+        scheduleHitRegionReport();
     }
 
     function routeToScreen(screenId) {
+        beginScreenSwitchTrace('routeToScreen:' + screenId);
         var mappedId = screenId === 'screen-preset-select' ? 'screen-create-character' : screenId;
         uiRoute.screen = mappedId;
         uiRoute.hud = null;
@@ -776,6 +877,7 @@
         if (mappedId === 'screen-main-menu') refreshMainMenu();
         if (mappedId === 'screen-load-save') loadSaveGrid();
         renderRoute();
+        finishScreenSwitchTrace();
     }
 
     function openHud(hudId) {
@@ -852,7 +954,7 @@
 
     var styleSlots = [];
     var sceneSlots = { scenes: [] };
-    var SCENE_VARIANT_ORDER = ['og', 'development', 'event'];
+    var SCENE_VARIANT_ORDER = ['og', 'development_a', 'development_b', 'event'];
     var selectedSlots = { style: null, scene: null };
     var pendingCreation = null;
     var activeStyleCharacterId = '';
@@ -884,8 +986,8 @@
             var byId = {};
             (items || []).forEach(function (item) { byId[item.scene_id] = item; });
             sceneSlots.scenes = SCENE_VARIANT_ORDER.map(function (variant) {
-                var item = byId[variant];
-                return { slot_id: variant, state: item ? 'ready' : 'empty', label: variant, thumb: item ? normalizeProjectAssetSource(item.thumb) : '' };
+                var item = variant === 'development_a' ? (byId.development_a || byId.development) : byId[variant];
+                return { slot_id: item ? item.scene_id : variant, state: item ? 'ready' : 'empty', label: variant, thumb: item ? normalizeProjectAssetSource(item.thumb) : '' };
             });
             if (!sceneSlots.scenes.some(function (slot) { return slot.slot_id === selectedSlots.scene && slot.state === 'ready'; })) {
                 selectedSlots.scene = null;
@@ -974,18 +1076,31 @@
         var total = presetList.length;
         var current = total ? presetList[presetIndex] : null;
         setText(presetCarouselIndex, (total ? presetIndex + 1 : 0) + ' / ' + total);
+        // pending(完整摘要還在背景算)與 incomplete(已確認缺資產)都先擋住
+        // Select——安全預設值相同,但顯示文字不同,pending 不能講得像已經確定壞掉。
+        var pending = Boolean(current && current.asset_status === 'pending');
+        var unavailable = Boolean(current && current.asset_status && current.asset_status !== 'ok');
         setText(presetName, current ? current.name : '尚無預設角色');
-        setText(presetPersona, current ? (current.persona_description || '') : '[ 個性 / 簡介 ]');
+        setText(
+            presetPersona,
+            !current ? '[ 個性 / 簡介 ]'
+                : pending ? '載入中…'
+                : unavailable ? '此角色缺少必要資產：' + (current.missing_assets || []).join('、')
+                : (current.persona_description || '')
+        );
         if (presetPortrait) presetPortrait.style.backgroundImage = current && current.background_image ? 'url("' + normalizeProjectAssetSource(current.background_image) + '")' : '';
-        if (presetSelectButton) presetSelectButton.disabled = !current;
+        if (presetSelectButton) presetSelectButton.disabled = !current || unavailable;
 
         if (presetThumbList) {
             var slots = [];
-            for (var i = 0; i < 7; i++) {
+    for (var i = 0; i < 9; i++) {
                 var preset = presetList[i];
                 if (preset) {
+                    // 縮圖的「不可用」樣式只給已確認的 incomplete,pending 不套用,
+                    // 避免資料還沒到齊就先閃一次「壞掉」的視覺。
+                    var broken = preset.asset_status && preset.asset_status !== 'ok' && preset.asset_status !== 'pending' ? ' is-unavailable' : '';
                     slots.push(
-                        '<button type="button" class="preset-thumb' + (i === presetIndex ? ' is-active' : '') + '" data-preset-index="' + i + '">' +
+                        '<button type="button" class="preset-thumb' + (i === presetIndex ? ' is-active' : '') + broken + '" data-preset-index="' + i + '">' +
                         String(i + 1) + '</button>'
                     );
                 } else {
@@ -996,6 +1111,21 @@
         }
     }
 
+    // Python 端背景算完完整摘要(xp/playtime/missing_assets)後推回來;依
+    // character_id 就地合併,不重新排序、不改變卡片數量,避免版面跳動
+    // (fix-create-screen-stall 決策 2 / task 2.3)。
+    window.hydratePresetSummaries = function (summaries) {
+        if (!summaries || typeof summaries !== 'object') return;
+        var changed = false;
+        presetList = presetList.map(function (preset) {
+            var patch = preset && summaries[preset.character_id];
+            if (!patch) return preset;
+            changed = true;
+            return Object.assign({}, preset, patch);
+        });
+        if (changed) renderPresetCarousel();
+    };
+
     function loadPresetCarousel() {
         callCharacterBridge('listPresets').then(function (presets) {
             presetList = Array.isArray(presets) ? presets : [];
@@ -1005,6 +1135,9 @@
             console.warn('[ECHOES UI] listPresets failed:', err.message);
             presetList = [];
             renderPresetCarousel();
+            // 畫面本身已經切換完成(routeToScreen 早就跑完),這裡只是清單資料
+            // 沒拿到;明示原因,使用者仍可用 Back 離開,不需要整個畫面卡住。
+            setStatus('無法取得角色清單：' + err.message, 'error', 4800);
         });
     }
 
@@ -1149,10 +1282,12 @@
         var presetTab = document.getElementById('tab-preset');
         var customizeTab = document.getElementById('tab-customize');
         function switchCreateTab(customize) {
+            beginScreenSwitchTrace('switchCreateTab:' + (customize ? 'customize' : 'preset'));
             if (presetTab) presetTab.hidden = customize;
             if (customizeTab) customizeTab.hidden = !customize;
             if (presetTabButton) presetTabButton.classList.toggle('is-active', !customize);
             if (customizeTabButton) customizeTabButton.classList.toggle('is-active', customize);
+            finishScreenSwitchTrace();
         }
         if (presetTabButton) presetTabButton.addEventListener('click', function () { switchCreateTab(false); });
         if (customizeTabButton) customizeTabButton.addEventListener('click', function () { switchCreateTab(true); });
@@ -1287,27 +1422,54 @@
         setupCompanionDock();
     }
 
+    // startSystemMove() 是 OS 層級的視窗搬移，會完全奪走滑鼠。所以預設不可拖，
+    // 只有明確標記 .window-drag-handle 的區域才拖 —— 白名單式的「除了這些元素以外
+    // 都可以拖」就是捲軸拉不動、整片畫面被拖走的成因。
+    function isDragBlockedBy(element) {
+        return Boolean(element.closest('button, input, a, textarea, select, label, [contenteditable="true"]'));
+    }
+
+    // 捲軸滑塊不是子元素，按在上面時 offsetX/offsetY 會落在 client 區域之外。
+    function isOnScrollbar(element, event) {
+        var rect = element.getBoundingClientRect();
+        return (event.clientX - rect.left) > element.clientWidth
+            || (event.clientY - rect.top) > element.clientHeight;
+    }
+
+    function isScrollableInteraction(handle, target, event) {
+        for (var node = target; node && node !== handle.parentElement; node = node.parentElement) {
+            var scrollable = node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth;
+            if (scrollable && (isOnScrollbar(node, event) || node !== handle)) return true;
+        }
+        return false;
+    }
+
     function setupWindowDragHandles() {
-        var dragStart = null;
+        var petDragStart = null;
         document.addEventListener('mousedown', function (event) {
             if (event.button !== 0) return;
-            var control = event.target.closest('button, input, a, textarea, select, label, [contenteditable="true"]');
-            if (control && control.id !== 'pet-character') return;
-            if (!control) {
-                callBridge('beginWindowDrag');
+            // 桌寵本體是自己的把手：按住拖曳搬移視窗，單純點擊仍然開聊天，
+            // 用 5px 門檻區分。這條按住後移動的路徑只給 #pet-character，
+            // 套用到所有元素就會把捲軸與按鈕都變成半個拖曳把手。
+            if (event.target.closest('#pet-character')) {
+                petDragStart = { x: event.clientX, y: event.clientY };
                 return;
             }
-            dragStart = { x: event.clientX, y: event.clientY };
+            var handle = event.target.closest('.window-drag-handle');
+            if (!handle) return;
+            if (isDragBlockedBy(event.target)) return;
+            if (isScrollableInteraction(handle, event.target, event)) return;
+            callBridge('beginWindowDrag');
         });
         document.addEventListener('mousemove', function (event) {
-            if (!dragStart || !(event.buttons & 1)) return;
-            if (Math.hypot(event.clientX - dragStart.x, event.clientY - dragStart.y) < 5) return;
-            dragStart = null;
+            if (!petDragStart || !(event.buttons & 1)) return;
+            if (Math.hypot(event.clientX - petDragStart.x, event.clientY - petDragStart.y) < 5) return;
+            petDragStart = null;
             event.preventDefault();
             callBridge('beginWindowDrag');
         });
         document.addEventListener('mouseup', function () {
-            dragStart = null;
+            petDragStart = null;
         });
     }
 
@@ -1434,6 +1596,7 @@
             refreshMainMenu();
             routeToScreen('screen-main-menu');
             startHudPolling();
+            scheduleHitRegionReport();
         });
     }
 
@@ -1444,8 +1607,11 @@
         var turn = ensureConversationTurn(String(turnId), sourceLabel || 'User');
         turn.root.dataset.state = 'active';
         turn.userText.textContent = userText || '';
-        turn.assistantText.textContent = 'Waiting for reply...';
-        turn.assistantText.classList.add('conversation-turn__text--muted');
+        turn.userRow.hidden = !String(userText || '').trim();
+        if (!turn.assistantText.textContent || turn.assistantText.classList.contains('conversation-turn__text--muted')) {
+            turn.assistantText.textContent = 'Waiting for reply...';
+            turn.assistantText.classList.add('conversation-turn__text--muted');
+        }
     };
 
     window.appendConversationAssistant = function (turnId, fragment) {
@@ -1536,6 +1702,11 @@
     window.clearRoomBackground = function () {
         var bg = stageBackground ? stageBackground.querySelector('img.room-background') : null;
         if (bg) bg.removeAttribute('src');
+    };
+
+    window.setExternalBackgroundMode = function (enabled) {
+        document.documentElement.classList.toggle('external-background', Boolean(enabled));
+        document.body.classList.toggle('external-background', Boolean(enabled));
     };
 
     window.moveCharacter = function (x, y, scale) {
@@ -1630,7 +1801,19 @@
         motionLoopSource = source;
         motionLoopActive = true;
         // QWebEngine 對部分 WebM 不可靠地觸發原生 loop，改由 ended 事件明確重播。
-        setSource(source, false);
+        // 已預載同一個 source 時絕對不能再 setSource()：同一個 <video> 連續兩次
+        // load() 會讓前一次 play() 被 abort，並讓該元素後續的 ended/watchdog
+        // 偵測失靈，動作只播一次就卡住。
+        if (preloadedMotionSource === source && video.readyState >= 2) {
+            video.loop = false;
+            video.currentTime = 0;
+            video.play().catch(function (err) {
+                console.warn('[ECHOES] preloaded motion playback failed:', err.message);
+            });
+        } else {
+            setSource(source, false);
+        }
+        preloadedMotionSource = null;
         motionLoopTimer = setInterval(function () {
             if (loopGeneration !== motionLoopGeneration) return;
             if (motionLoopActive && motionLoopSource && (video.ended || (video.paused && !video.seeking && video.readyState >= 2))) {
@@ -1648,6 +1831,19 @@
         motionLoopSource = null;
         motionLoopActive = false;
         console.log('[ECHOES] motionLoop stopped');
+    };
+
+    // 動作與語音對齊：action tag 一到就先把 webm 載進來（只 load，不 play），
+    // 等音訊起播時 startMotionLoop 才 play()，省掉冷啟動的載入時間。
+    window.preloadMotion = function (source) {
+        if (!source || typeof source !== 'string' || !video) return;
+        if (preloadedMotionSource === source) return;
+        // 不在這裡 play()/pause()：多一個 pending 的 play promise 只會跟之後
+        // 真正的 play() 互相搶。
+        preloadedMotionSource = source;
+        video.loop = false;
+        video.src = source;
+        video.load();
     };
 
     window.restoreIdleMotion = function (fallbackSource) {
@@ -1809,18 +2005,21 @@
         hudScore.hidden = false;
         if (hudScoreText) hudScoreText.textContent = '★ Score ' + xpTotal;
         if (hudScoreLevel) hudScoreLevel.textContent = '· Lv.' + level;
-        showHudDelta(xpDeltaOverride != null ? xpDeltaOverride : xpState.last_delta);
+        // 不從 state 推導飄字：xp.last_delta 是持久化狀態，當事件用會讓每次重整
+        // 都重播一次。只有呼叫端明確給的本輪 delta 才播。
+        showHudDelta(xpDeltaOverride);
     }
 
+    // AI 回覆只認「本輪真的有 reply」。舊版還會 fallback 到 eventData.message /
+    // summary / 固定字串，於是每次畫面重整都把狀態訊息（"Character switched."、
+    // "節慶事件已由 F 快捷鍵觸發。"）當成角色說的話寫進回覆欄，那就是罐頭訊息的
+    // 來源；沒有 reply 時維持現狀比塞一句假的好。
     function renderLatestAgentEvent(eventPayload, fallbackDelta) {
         var eventData = eventPayload || {};
-        var rewardSummary = eventData.reward_summary || {};
-        var reply = eventData.reply
-            || eventData.message
-            || eventData.summary
-            || rewardSummary.summary
-            || rewardSummary.display
-            || '輸入問題或點選快捷指令。';
+        var reply = String(eventData.reply || '').trim();
+        if (!reply) return;
+        if (reply === lastRenderedAgentReply) return;   // 同一輪回覆不重複輸出
+        lastRenderedAgentReply = reply;
         var delta = eventData.xp_delta;
         if (delta == null) delta = fallbackDelta;
         setAgentResult(reply, delta);
@@ -1830,8 +2029,9 @@
         if (!state) return;
         latestRuntimeState = state;
         renderBackgroundStatus(state.background || null);
-        renderCharacterHud({ active: true, xp: state.xp || {} }, state.xp && state.xp.last_delta);
-        renderLatestAgentEvent(state.latest_event || null, state.xp && state.xp.last_delta);
+        renderCharacterHud({ active: true, xp: state.xp || {} }, 0);
+        // 不從 state.latest_event 渲染回覆：那是上一次「完成的回合」的磁碟快照，
+        // 每 5 秒輪詢與每次重整都會把它重播成新回覆。
     }
 
     function refreshCharacterHud() {
@@ -1840,7 +2040,7 @@
             if (latestRuntimeState && latestRuntimeState.xp) {
                 mergedState.xp = latestRuntimeState.xp;
             }
-            renderCharacterHud(mergedState, latestRuntimeState && latestRuntimeState.xp ? latestRuntimeState.xp.last_delta : 0);
+            renderCharacterHud(mergedState, 0);
             if (mergedState.character_id) activeStyleCharacterId = mergedState.character_id;
             var styleRefresh = activeStyleCharacterId ? refreshStyleSlots(activeStyleCharacterId) : Promise.resolve();
             if (activeStyleCharacterId) refreshRenderProgress(activeStyleCharacterId);
@@ -1872,17 +2072,13 @@
         document.getElementById(prefix + '-description').textContent = '本次' + action + '依據「' + trigger + '」建立。確認後才會開始生成。';
     }
 
-    function pickPrimarySkillForBehavior(items, behavior) {
-        var candidates = items.filter(function (s) { return s.default_behavior === behavior; });
+function pickPrimarySkillForCapability(items, capability) {
+  var candidates = items.filter(function (s) { return s.capability === capability; });
         if (!candidates.length) return null;
         candidates.sort(function (a, b) { return (b.priority || 0) - (a.priority || 0); });
         return candidates[0];
     }
 
-    // ponytail: 開關鈕固定切「該類別優先度最高」的技能（youtube_music_playback／
-    // bahamut_daily_news）。若使用者另外從除錯面板把次要技能（music_bgm／game_news）
-    // 也開啟，實際觸發走 trigger_enabled_skill_for_behavior 的 discovery 順序，
-    // 未必等於這裡認定的「主要技能」——雙開才會有落差，預設情境下不會發生。
     function syncSkillToggleButton(button, skill) {
         if (!button) return;
         if (!skill) { button.hidden = true; return; }
@@ -1893,8 +2089,8 @@
 
     function updateAgentChipAvailability(skills) {
         var items = Array.isArray(skills) ? skills : [];
-        var musicSkill = pickPrimarySkillForBehavior(items, 'music_idle');
-        var newsSkill = pickPrimarySkillForBehavior(items, 'news_idle');
+  var musicSkill = pickPrimarySkillForCapability(items, 'music');
+  var newsSkill = pickPrimarySkillForCapability(items, 'news');
         if (agentChipMusic) agentChipMusic.disabled = !(musicSkill && musicSkill.enabled);
         if (agentChipNews) agentChipNews.disabled = !(newsSkill && newsSkill.enabled);
         syncSkillToggleButton(agentToggleMusic, musicSkill);
@@ -1915,8 +2111,8 @@
             payload.state ? { active: true, xp: payload.state.xp || {}, progress_percent: payload.progress_percent } : null,
             payload.xp_delta
         );
-        var eventData = payload.event || (payload.state && payload.state.latest_event);
-        renderLatestAgentEvent(eventData, payload.xp_delta);
+        // 只吃本輪事件，不再 fallback 到 state.latest_event（磁碟快照 = 上一輪）。
+        renderLatestAgentEvent(payload.event, payload.xp_delta);
         if (payload.state) maybeOpenAssetOfferModal(payload.state);
     };
 
@@ -2000,14 +2196,22 @@
 
     try {
         updateStageScale();
+        markHitRegions();
         if (typeof ResizeObserver !== 'undefined') {
             resizeObserver = new ResizeObserver(function () {
                 updateStageScale();
+                scheduleHitRegionReport();
             });
             resizeObserver.observe(document.documentElement);
         } else {
-            window.addEventListener('resize', updateStageScale);
+            window.addEventListener('resize', function () {
+                updateStageScale();
+                scheduleHitRegionReport();
+            });
         }
+        new MutationObserver(scheduleHitRegionReport).observe(document.body, {
+            attributes: true, childList: true, subtree: true,
+        });
         setupForms();
         wireDynamicActions();
         setupAppScreens();

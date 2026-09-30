@@ -14,8 +14,8 @@ import time
 from uuid import uuid4
 
 import config
-from PyQt5.QtCore import QEvent, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
-from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
+from PyQt5.QtCore import QEvent, QPoint, Qt, QTimer, QUrl, pyqtSignal
+from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter, QRegion
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWidgets import (
     QAction, QApplication, QMainWindow, QMenu, QSystemTrayIcon,
@@ -27,14 +27,87 @@ from interaction_trace import InteractionLatencyTracker
 
 from pet_harness.voice_runtime_status_adapter import VoiceRuntimeStatusAdapter
 from pet_harness.ui.pyqt_harness_adapter import PyQtHarnessAdapter
-from pet_harness.character.router import ActiveCharacterSnapshot
-from pet_harness.character.profile import CharacterProfile
 from ui.background_resolver import BackgroundResolver
 from ui.character_ui_bridge import CharacterUiBridge
 from ui.js_gateway import JsGateway
 from ui.harness_ui_bridge import HarnessUiBridge
+from ui.interaction_region_manager import InteractionRegionManager
 from ui.web_page_widgets import DeveloperInputLineEdit, EchoesWebPage
 from ui.proactive_greeter import ProactiveGreeter
+from ui.lively_wallpaper import LivelyWallpaper
+
+
+def build_style_scene_menu_items(
+    character: dict[str, object] | str,
+    style_items: list[dict[str, object]],
+    scene_items: list[dict[str, object]],
+    background_mode: str,
+    unlocked: bool,
+) -> list[dict[str, object]]:
+    """Build data-only menu entries for one character."""
+    if isinstance(character, dict):
+        character_id = str(character.get("character_id") or character.get("id") or "")
+    else:
+        character_id = str(character)
+
+    entries = [
+        {
+            "kind": "unlock",
+            "title": "解鎖全部造型與場景",
+            "enabled": True,
+            "checked": unlocked,
+            "character_id": character_id,
+        }
+    ]
+    for item in style_items:
+        state = str(item.get("state") or "empty")
+        status = {"ready": "已就緒", "generating": "生成中"}.get(state, "未就緒")
+        variant = str(item.get("variant") or "")
+        entries.append(
+            {
+                "kind": "style",
+                "title": f"造型：{variant}（{status}）",
+                "enabled": state == "ready",
+                "checked": bool(item.get("is_active")),
+                "character_id": character_id,
+                "variant": variant,
+                "state": state,
+            }
+        )
+
+    entries.append({"kind": "separator"})
+    entries.append(
+        {
+            "kind": "follow",
+            "title": "跟隨造型",
+            "enabled": True,
+            "checked": background_mode == "follow",
+            "character_id": character_id,
+            "scene_id": "follow",
+        }
+    )
+    available = {str(item.get("scene_id")): item for item in scene_items}
+    for scene_id in CharacterLibrary._SCENE_VARIANTS:
+        item = available.get(scene_id)
+        action_id = scene_id
+        if item is None:
+            legacy_id = CharacterLibrary._SCENE_LEGACY_FALLBACK.get(scene_id)
+            item = available.get(legacy_id) if legacy_id else None
+            action_id = legacy_id if item is not None else scene_id
+        ready = item is not None
+        status = "已就緒" if ready else ("未就緒" if unlocked else "未解鎖")
+        entries.append(
+            {
+                "kind": "scene",
+                "title": f"場景：{scene_id}（{status}）",
+                "enabled": ready,
+                "checked": bool(item and item.get("is_current")),
+                "character_id": character_id,
+                "scene_id": action_id,
+                "state": "ready" if ready else ("empty" if unlocked else "locked"),
+            }
+        )
+    return entries
 
 
 class TransparentWindow(QMainWindow):
@@ -42,6 +115,7 @@ class TransparentWindow(QMainWindow):
     developer_query_submitted = pyqtSignal(str)
     stt_start_requested = pyqtSignal()
     stt_stop_requested = pyqtSignal()
+    motion_offer_ready = pyqtSignal()
     RAW_JAVASCRIPT_MARKER = "__raw_javascript__"
     # 更換主選單的角色與背景
     MAIN_MENU_BACKGROUND = "assets/webm/characters/Choppr/BG_Final.png"
@@ -80,6 +154,7 @@ class TransparentWindow(QMainWindow):
         adapter: PyQtHarnessAdapter | None = None,
         lifecycle_shutdown=None,
         action_bus=None,
+        interaction_regions: InteractionRegionManager | None = None,
     ):
         super().__init__()
         self._brain_mode = brain_mode
@@ -95,8 +170,15 @@ class TransparentWindow(QMainWindow):
         if lifecycle_shutdown is None:
             raise ValueError("TransparentWindow requires an injected lifecycle shutdown")
         self._adapter = adapter
+        self._lively_wallpaper = LivelyWallpaper(self)
         self._lifecycle_shutdown = lifecycle_shutdown
         self._action_bus = action_bus
+        self._interaction_regions = interaction_regions or InteractionRegionManager()
+        self._desktop_companion_mode = bool(getattr(config, "DESKTOP_COMPANION_MODE", True))
+        self._left_clickthrough_px = max(0, int(getattr(config, "DESKTOP_CLICKTHROUGH_LEFT_PX", 0)))
+        self._stage_active = False
+        self._screen_routed = False
+        self._mask_applied = False
         self._motion_coordinator = None
         self._settings_dialog = None
         self._conversation_pending = False
@@ -116,7 +198,6 @@ class TransparentWindow(QMainWindow):
         self._proactive_greeting_release_timer = QTimer(self)
         self._proactive_greeting_release_timer.setInterval(100)
         self._proactive_greeting_release_timer.timeout.connect(self._clear_finished_greeting)
-        self._latest_agentic_event: dict[str, object] | None = None
         self._spoken_chunks: dict[str, list[str]] = {}
         self._playtime_character_id: str | None = None
         self._playtime_started_at: float | None = None
@@ -126,6 +207,8 @@ class TransparentWindow(QMainWindow):
         self._playtime_timer.start()
         self._init_window()
         self._init_webview()
+        self.motion_offer_ready.connect(self.refresh_agentic_ui)
+        self._adapter.configure_motion_offer_callback(self.motion_offer_ready.emit)
         self._js_gateway = JsGateway(lambda: self.web_view.page(), self.RAW_JAVASCRIPT_MARKER)
         self._init_developer_input()
         self._init_tray()
@@ -135,7 +218,6 @@ class TransparentWindow(QMainWindow):
             list(config.PROACTIVE_GREETING_PHRASES),
             config.PROACTIVE_GREETING_INTERVAL_SEC,
         )
-        self._greeter.start()
 
     def configure_motion(self, coordinator) -> None:
         """Receive the composition-root-owned coordinator and its JS callbacks."""
@@ -149,32 +231,74 @@ class TransparentWindow(QMainWindow):
     # ── 視窗初始化 ──────────────────────────────────────────
 
     def _init_window(self):
-        """設定無邊框、置頂視窗，並填滿主螢幕可用區"""
-        self.setWindowFlags(
-            Qt.FramelessWindowHint
-            | Qt.WindowStaysOnTopHint
-            | Qt.Tool  # 不在工作列顯示圖示
-        )
+        """設定無邊框視窗；rollback 時保留既有置頂行為。"""
+        flags = Qt.FramelessWindowHint | Qt.Tool  # 不在工作列顯示圖示
+        if not self._desktop_companion_mode:
+            flags |= Qt.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setAutoFillBackground(False)
         self.setStyleSheet("background: transparent;")
         # 視窗尺寸就是 CSS 視口尺寸：寫死解析度時視窗會超出螢幕，使用者只看得到畫布
         # 左上角的裁切（角色與底部導覽整個落在畫面外）。availableGeometry 已扣除工作列。
         screen = QApplication.primaryScreen()
         if screen:
             self.setGeometry(screen.availableGeometry())
+        self._apply_left_clickthrough_mask()
+
+    def _apply_left_clickthrough_mask(self) -> None:
+        """左側這條讓給原生桌面（桌面 icon 才點得到）。
+
+        不能用 WM_NCHITTEST 回 HTTRANSPARENT：那只會往同一個執行緒的視窗傳，跨行程無效
+        （實測 nchittest 回 -1，WindowFromPoint 仍是本視窗）。改用視窗遮罩把那條切到視窗
+        之外，實測 WindowFromPoint 才會落到桌面的 SysListView32。"""
+        inset = self._left_clickthrough_px if self._stage_active else 0
+        if inset <= 0:
+            if self._mask_applied:
+                self.clearMask()
+                self._mask_applied = False
+            return
+        self.setMask(QRegion(inset, 0, max(1, self.width() - inset), self.height()))
+        self._mask_applied = True
+
+    def set_stage_active(self, active: bool, screen_routed: bool = False) -> None:
+        """只在角色互動舞台上切掉左側；主選單／讀檔那幾頁要整片可點。
+
+        主動打招呼也綁在這個訊號上：沒進角色（主選單／讀檔／loading／開著 modal）就不該說話。
+
+        `screen_routed` 才代表真正離開舞台（route 到別的畫面）。開 modal 也會讓
+        `active` 為 False，但角色還在 modal 後面，此時中斷會讓自動彈出的素材
+        offer 把正在播的回覆攔腰切斷——那正是我們要修的「語音少一段」。"""
+        active = bool(active)
+        screen_routed = bool(screen_routed)
+        # 只在「剛離開舞台」這個邊緣中斷一次。hit region 每次重報都會呼叫進來，
+        # 不做邊緣偵測會在主選單裡反覆打 JS。
+        if screen_routed and not self._screen_routed:
+            TransparentWindow._interrupt_active_conversation(self)
+        self._screen_routed = screen_routed
+        if active == self._stage_active:
+            return
+        self._stage_active = active
+        self._apply_left_clickthrough_mask()
+        self._greeter.start() if active else self._greeter.stop()
 
     def _init_webview(self):
         """建立 QWebEngineView 並載入本地 HTML 播放器"""
         self.web_view = QWebEngineView(self)
+        self.web_view.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.web_view.setAutoFillBackground(False)
         self.web_view.setStyleSheet("background: transparent;")
-        self.web_view.page().setBackgroundColor(Qt.transparent)
 
         # 停用 Chromium 的任何預設右鍵選單，改由 Qt 視窗層統一處理。
         self.web_view.setContextMenuPolicy(Qt.NoContextMenu)
 
         # 掛上自訂 Page，讓前端 console 訊息可轉印至 Python Terminal。
         self.web_view.setPage(EchoesWebPage(self.web_view))
-        self._bridge = HarnessUiBridge(self)
+        # setPage() 會把 view 的 palette 底色（不透明白）推回 page，蓋掉建構子設的透明底。
+        # 必須在 setPage() 之後再設一次，否則整個視窗會變白底。
+        self.web_view.page().setBackgroundColor(Qt.transparent)
+        self._bridge = HarnessUiBridge(self, self._interaction_regions)
         self._character_bridge = CharacterUiBridge(self._adapter.character_service, self, self._adapter)
         self._channel = QWebChannel(self.web_view.page())
         self._channel.registerObject("harnessBridge", self._bridge)
@@ -330,6 +454,9 @@ class TransparentWindow(QMainWindow):
             self.height() - self.DEV_INPUT_HEIGHT - self.DEV_INPUT_MARGIN_BOTTOM,
         )
         self._developer_input.setGeometry(x, y, available_width, self.DEV_INPUT_HEIGHT)
+        bridge = getattr(self, "_bridge", None)
+        if bridge is not None:
+            bridge.sync_developer_input_region()
 
     def _on_webview_loaded(self, ok: bool):
         if not ok:
@@ -428,6 +555,11 @@ class TransparentWindow(QMainWindow):
         clear_chat_action.triggered.connect(self.clear_chat_history)
         menu.addAction(clear_chat_action)
 
+        style_scene_menu = menu.addMenu("造型與場景")
+        style_scene_menu.aboutToShow.connect(
+            lambda menu=style_scene_menu: self._populate_style_scene_characters(menu)
+        )
+
         reset_action = QAction("完整重置（回到初始狀態）", self)
         reset_action.triggered.connect(self.reset_to_initial_state)
         menu.addAction(reset_action)
@@ -447,6 +579,147 @@ class TransparentWindow(QMainWindow):
         menu.addAction(quit_action)
 
         return menu
+
+    def _populate_style_scene_characters(self, menu: QMenu) -> None:
+        menu.clear()
+        try:
+            characters = self._adapter.character_service.list_characters()
+        except Exception as exc:  # noqa: BLE001
+            self._show_style_scene_error(str(exc))
+            return
+        if not characters:
+            action = QAction("尚無角色", menu)
+            action.setEnabled(False)
+            menu.addAction(action)
+            return
+
+        current_id = self.get_current_character_id()
+        for character in characters:
+            character_id = str(character.get("character_id") or "")
+            name = str(character.get("name") or character_id)
+            title = f"✓ {name}" if character_id == current_id else name
+            character_menu = menu.addMenu(title)
+            character_menu.aboutToShow.connect(
+                lambda menu=character_menu, character_id=character_id: self._populate_style_scene_items(
+                    menu, character_id
+                )
+            )
+
+    def _populate_style_scene_items(self, menu: QMenu, character_id: str) -> None:
+        menu.clear()
+        service = self._adapter.character_service
+        try:
+            styles = service.list_style_variants(character_id)
+            scenes = service.list_scene_backgrounds(character_id)
+            background_mode = self._library.get_background_mode(character_id)
+            unlocked = service.get_style_unlock_all(character_id)
+            entries = build_style_scene_menu_items(
+                character_id, styles, scenes, background_mode, unlocked
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._show_style_scene_error(str(exc))
+            return
+
+        for entry in entries:
+            kind = entry["kind"]
+            if kind == "separator":
+                menu.addSeparator()
+                continue
+            action = QAction(str(entry["title"]), menu)
+            action.setEnabled(bool(entry.get("enabled", True)))
+            action.setCheckable(kind in {"unlock", "style", "scene", "follow"})
+            action.setChecked(bool(entry.get("checked", False)))
+            if kind == "unlock":
+                action.toggled.connect(
+                    lambda checked, character_id=character_id: self._set_style_unlock(
+                        character_id, checked
+                    )
+                )
+            elif kind == "style":
+                action.triggered.connect(
+                    lambda _checked=False, character_id=character_id, variant=str(entry["variant"]): self._apply_quick_style(
+                        character_id, variant
+                    )
+                )
+            elif kind == "scene" or kind == "follow":
+                action.triggered.connect(
+                    lambda _checked=False, character_id=character_id, scene_id=str(entry["scene_id"]): self._apply_quick_scene(
+                        character_id, scene_id
+                    )
+                )
+            menu.addAction(action)
+
+        reset_action = QAction("回復初始造型與場景", menu)
+        reset_action.triggered.connect(
+            lambda _checked=False, character_id=character_id: self._reset_character_style_state(
+                character_id
+            )
+        )
+        menu.addSeparator()
+        menu.addAction(reset_action)
+
+    def _set_style_unlock(self, character_id: str, enabled: bool) -> None:
+        try:
+            self._adapter.character_service.set_style_unlock_all(character_id, enabled)
+        except Exception as exc:  # noqa: BLE001
+            self._show_style_scene_error(str(exc))
+
+    def _reset_character_style_state(self, character_id: str) -> None:
+        try:
+            self._adapter.character_service.reset_style_state(character_id)
+            if self.get_current_character_id() == character_id:
+                self.apply_character(character_id)
+        except Exception as exc:  # noqa: BLE001
+            self._show_style_scene_error(str(exc))
+
+    def _apply_quick_style(self, character_id: str, variant: str) -> None:
+        original_id = self.get_current_character_id()
+        try:
+            if original_id != character_id and not self.apply_character(character_id):
+                if original_id:
+                    self.apply_character(original_id)
+                return
+            if not self._show_style_scene_result(self._character_bridge.applyStyle(character_id, variant)):
+                if original_id and original_id != character_id:
+                    self.apply_character(original_id)
+                    self._show_style_scene_error("套用失敗")
+        except Exception as exc:  # noqa: BLE001
+            if original_id and self.get_current_character_id() != original_id:
+                self.apply_character(original_id)
+            self._show_style_scene_error(str(exc))
+
+    def _apply_quick_scene(self, character_id: str, scene_id: str) -> None:
+        original_id = self.get_current_character_id()
+        try:
+            if original_id != character_id and not self.apply_character(character_id):
+                if original_id:
+                    self.apply_character(original_id)
+                return
+            if not self._show_style_scene_result(self._character_bridge.applyScene(character_id, scene_id)):
+                if original_id and original_id != character_id:
+                    self.apply_character(original_id)
+                    self._show_style_scene_error("套用失敗")
+        except Exception as exc:  # noqa: BLE001
+            if original_id and self.get_current_character_id() != original_id:
+                self.apply_character(original_id)
+            self._show_style_scene_error(str(exc))
+
+    def _show_style_scene_result(self, raw_result: str) -> bool:
+        try:
+            result = json.loads(raw_result)
+        except (TypeError, json.JSONDecodeError):
+            self._show_style_scene_error("套用失敗：無法解析回應")
+            return False
+        if not result.get("ok", False):
+            self._show_style_scene_error(str(result.get("error") or "套用失敗"))
+            return False
+        return True
+
+    def _show_style_scene_error(self, message: str) -> None:
+        self.set_action_status(f"造型／場景套用失敗：{message}", tone="warn", timeout_ms=3200)
+        tray = getattr(self, "tray_icon", None)
+        if tray is not None and hasattr(tray, "showMessage"):
+            tray.showMessage("造型／場景套用失敗", message, QSystemTrayIcon.Warning)
 
     def _request_close_from_tray(self) -> None:
         """Let the web UI honor its persisted Close-confirm preference."""
@@ -502,7 +775,10 @@ class TransparentWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._apply_left_clickthrough_mask()
         self._update_developer_input_geometry()
+        if hasattr(self, "_js_gateway"):
+            self._run_javascript("refreshHitRegions")
 
     def keyPressEvent(self, event):
         if self._handle_cached_intent_shortcut(event):
@@ -555,6 +831,7 @@ class TransparentWindow(QMainWindow):
         self.set_room_character(character_name)
         self.set_action_status(f"{character_name} 已待命", tone="idle", timeout_ms=2200)
         self._apply_resolved_background(self._library.get_background_path(character_id))
+        self._run_javascript("refreshHitRegions")
 
         return True
 
@@ -562,6 +839,12 @@ class TransparentWindow(QMainWindow):
         status, safe_url = self._background_resolver.resolve(configured_path=configured_path)
         self._background_status = status
         self._background_url = safe_url
+        lively = getattr(self, "_lively_wallpaper", None)
+        if getattr(config, "LIVELY_BACKGROUND_ENABLED", False) and lively is not None:
+            lively.sync_background(safe_url)
+            self._run_javascript("setExternalBackgroundMode", True)
+            return
+        self._run_javascript("setExternalBackgroundMode", False)
         if safe_url:
             self._run_javascript("setRoomBackground", safe_url)
             return
@@ -700,10 +983,16 @@ class TransparentWindow(QMainWindow):
         if not normalized_trace_id or not str(text or "").strip():
             return
         self._spoken_chunks.setdefault(normalized_trace_id, []).append(str(text).strip())
+        # 只有目前這個對話回合的語音才回報給 engine。主動打招呼與快捷意圖也會經過
+        # 這裡，把它們也累進 engine._spoken_chunks 的話，下一個回合若在產出任何內容
+        # 前被取消，spoken_reply() 會回傳打招呼的句子並當成該回合的 reply——也就是
+        # 「上一輪的內容被直接 feedback 給前端」。
+        if normalized_trace_id != str(self._conversation_trace_id or "").strip():
+            return
         engine = getattr(self._adapter, "engine", None)
         mark = getattr(engine, "mark_spoken_chunk", None)
         if callable(mark):
-            mark(str(text).strip())
+            mark(str(text).strip(), normalized_trace_id)
 
     def begin_conversation_turn(self, trace_id: str, source_label: str, user_text: str):
         self._run_javascript("beginConversationTurn", trace_id, source_label, user_text)
@@ -729,9 +1018,6 @@ class TransparentWindow(QMainWindow):
         self.set_conversation_assistant(trace_id, assistant_text)
         self.finish_conversation_turn(trace_id)
 
-    def set_stt_listening(self, active: bool):
-        self.set_stt_state("listening" if active else "idle")
-
     def set_stt_state(self, state: str):
         normalized = str(state or "idle").strip().lower()
         if normalized not in {"idle", "starting", "listening", "stopping", "transcribing", "loading", "unavailable"}:
@@ -756,9 +1042,6 @@ class TransparentWindow(QMainWindow):
         self._apply_stt_button_state()
 
     def _handle_stt_button_clicked(self):
-        if getattr(self, "_proactive_greeting_active", False) is True:
-            self.set_action_status("請等我說完再輸入。", tone="warn", timeout_ms=1800)
-            return
         if not self._stt_available:
             self.set_action_status("語音輸入尚未就緒。", tone="warn", timeout_ms=3200)
             return
@@ -768,6 +1051,7 @@ class TransparentWindow(QMainWindow):
             self.stt_stop_requested.emit()
             return
         TransparentWindow._interrupt_active_conversation(self)
+        self._greeter.reset()
         self.stt_start_requested.emit()
 
     def toggle_stt_from_bridge(self) -> None:
@@ -790,26 +1074,24 @@ class TransparentWindow(QMainWindow):
             "news": "report_news",
         }
         resolved = alias_map.get(normalized, normalized)
-        # 技能定義的 behavior 欄位一律是 music_idle/news_idle（見 .agentic/skills/*.md）；
-        # play_music/report_news 是 action_dispatcher 的一次性動作播放鍵，命名空間不同。
         if resolved == "play_music":
-            self.trigger_enabled_skill_for_behavior("music_idle")
+            self.trigger_enabled_skill("youtube_music_playback")
             return
         if resolved == "report_news":
-            self.trigger_enabled_skill_for_behavior("news_idle")
+            self.trigger_enabled_skill("bahamut_daily_news")
             return
         if resolved == "quit":
             QApplication.quit()
             return
         print(f"[ECHOES] Ignored unknown overlay action from web bridge: {action_name}")
 
-    def trigger_enabled_skill_for_behavior(self, behavior: str) -> bool:
+    def trigger_enabled_skill(self, skill_id: str) -> bool:
         """技能快捷入口一律經角色授權與 enabled overlay 後走 Harness。"""
-        target = str(behavior or "").strip()
+        target = str(skill_id or "").strip()
         skill = next(
             (
                 item for item in self._adapter.list_skills()
-                if item.get("enabled") and item.get("default_behavior") == target
+                if item.get("enabled") and item.get("skill_id") == target
             ),
             None,
         )
@@ -824,12 +1106,23 @@ class TransparentWindow(QMainWindow):
         self.consume_interaction_result(result, message="Skill executed.")
         return True
 
-    def begin_window_drag(self) -> None:
+    def begin_window_drag(self) -> bool:
         """視窗拖曳的唯一入口:整個視窗都是 client area、點擊一律交給 QWebEngineView,
-        所以拖曳由前端的 `.window-drag-handle` 明確呼叫這裡。"""
+        所以拖曳由前端的 `.window-drag-handle` 明確呼叫這裡。
+
+        回傳原生搬移是否真的開始。startSystemMove() 可能因平台或視窗狀態而被拒絕,
+        靜靜當成成功會讓「拖不動」這件事完全沒有線索;失敗時留 log 並回傳 False,
+        前端不攔截任何輸入,頁面控制項照常運作。
+        """
         window_handle = self.windowHandle()
-        if window_handle is not None:
-            window_handle.startSystemMove()
+        start_system_move = getattr(window_handle, "startSystemMove", None)
+        if not callable(start_system_move):
+            print("[DRAG] startSystemMove 不可用（視窗尚未建立或 Qt 版本不支援），本次不搬移視窗。")
+            return False
+        started = bool(start_system_move())
+        if not started:
+            print("[DRAG] startSystemMove() 被平台拒絕，視窗未開始搬移。")
+        return started
 
     def _flush_playtime_tick(self) -> None:
         self._flush_playtime(force=False)
@@ -866,6 +1159,9 @@ class TransparentWindow(QMainWindow):
 
     def on_character_switched(self, profile_payload: dict) -> None:
         """建立/切換角色成功後的回呼：套用 WebM 動作來源並重整 Agentic UI（Skills 清單）。"""
+        # 前一個角色的語音／動作與畫面對話紀錄都不該延續到新角色身上。
+        TransparentWindow._interrupt_active_conversation(self)
+        self.clear_conversation_turns()
         character_id = str(profile_payload.get("character_id") or "").strip()
         if character_id:
             self.apply_character(character_id)
@@ -894,9 +1190,9 @@ class TransparentWindow(QMainWindow):
             self._emit_cached_intent_request("share", "share 按鈕觸發")
             return True
         if event.key() == Qt.Key_3:
-            return self.trigger_enabled_skill_for_behavior("play_music")
+            return self.trigger_enabled_skill("youtube_music_playback")
         if event.key() == Qt.Key_4:
-            return self.trigger_enabled_skill_for_behavior("report_news")
+            return self.trigger_enabled_skill("bahamut_daily_news")
         if event.key() == Qt.Key_F:
             self._trigger_festival_event_shortcut()
             return True
@@ -923,18 +1219,21 @@ class TransparentWindow(QMainWindow):
         self._developer_input.raise_()
         self._developer_input.setFocus(Qt.ShortcutFocusReason)
         self._developer_input.selectAll()
+        self._bridge.sync_developer_input_region()
         self.set_action_status("Dev Mode 已開啟，按 Enter 可直接測試大腦與 TTS", tone="working", timeout_ms=2200)
 
     def _hide_developer_input(self):
         if not self._developer_input.isVisible():
             self._developer_input.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             self._developer_input.setEnabled(False)
+            self._bridge.sync_developer_input_region()
             return
 
         self._developer_input.clearFocus()
         self._developer_input.hide()
         self._developer_input.setEnabled(False)
         self._developer_input.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._bridge.sync_developer_input_region()
 
     def _submit_developer_query(self):
         query = self._developer_input.text().strip()
@@ -954,19 +1253,24 @@ class TransparentWindow(QMainWindow):
         if not cleaned:
             self.set_action_status("Please enter text first.", tone="warn", timeout_ms=2200)
             return
-        if getattr(self, "_proactive_greeting_active", False) is True:
-            self.set_action_status("請等我說完再輸入。", tone="warn", timeout_ms=1800)
-            return
-        coordinator = getattr(self, "_motion_coordinator", None)
-        if self._conversation_pending or bool(getattr(coordinator, "has_active_motion", False)) or bool(getattr(coordinator, "is_tts_busy", False)):
+        coordinator = self._motion_coordinator
+        # 使用者輸入優先於主動打招呼：打斷它，不丟棄使用者的字。
+        if (
+            self._proactive_greeting_active
+            or self._conversation_pending
+            or bool(getattr(coordinator, "has_active_motion", False))
+            or bool(getattr(coordinator, "is_tts_busy", False))
+        ):
             TransparentWindow._interrupt_active_conversation(self)
         from pet_harness.app.commands import ActionCommand
-        get_current_character_id = getattr(self, "get_current_character_id", lambda: None)
-        character_id = get_current_character_id()
+        character_id = self.get_current_character_id()
         if not character_id:
             self.set_action_status("No active character.", tone="warn", timeout_ms=2200)
             return
+        # 自動發話改以使用者最後一次送出為基準往後計時（t+30s），而非固定節拍。
+        self._greeter.reset()
         trace_id = f"turn-{uuid4().hex}"
+        self.begin_conversation_turn(trace_id, "Talk", cleaned)
         self._conversation_pending = True
         self._conversation_character_id = character_id
         self._conversation_trace_id = trace_id
@@ -977,6 +1281,9 @@ class TransparentWindow(QMainWindow):
         self.set_action_status("Processing interaction...", tone="working", timeout_ms=0)
         result = self._action_bus.execute(ActionCommand("conversation", cleaned, trace_id=trace_id, source="ui", character_id=character_id))
         if result.status != "ok":
+            self.set_conversation_assistant(trace_id, result.reason or "Interaction rejected.")
+            self.finish_conversation_turn(trace_id)
+            TransparentWindow._finish_streaming_trace(self, trace_id)
             self._conversation_pending = False
             self._conversation_character_id = None
             self._conversation_trace_id = None
@@ -985,35 +1292,38 @@ class TransparentWindow(QMainWindow):
 
     def _interrupt_active_conversation(self) -> None:
         """Cancel the active turn before starting another input source."""
-        action_bus = getattr(self, "_action_bus", None)
+        action_bus = self._action_bus
         cancel = getattr(action_bus, "cancel_conversation", None)
         if callable(cancel):
             cancel()
-        coordinator = getattr(self, "_motion_coordinator", None)
+        coordinator = self._motion_coordinator
         interrupt_all = getattr(coordinator, "interrupt_all", None)
         if callable(interrupt_all):
             interrupt_all()
         else:
-            previous_trace_id = getattr(self, "_conversation_trace_id", None)
+            previous_trace_id = self._conversation_trace_id
             if coordinator is not None and previous_trace_id:
                 coordinator.interrupt_trace(previous_trace_id)
-        for method_name in ("stop_motion_loop", "restore_idle_video"):
-            method = getattr(self, method_name, None)
-            if callable(method):
-                method()
+        self.stop_motion_loop()
+        self.restore_idle_video()
         self._conversation_pending = False
         self._conversation_character_id = None
         self._conversation_trace_id = None
+        # 主動打招呼也是被中斷的對象之一：不在這裡清掉旗標，is_busy 會一直是 True
+        # 直到 _clear_finished_greeting 的 100ms 輪詢跑到，那段空窗會讓剛送出的
+        # 使用者回合被誤判成「還在忙」。
+        self._proactive_greeting_active = False
+        self._proactive_greeting_release_timer.stop()
 
     def _on_action_bus_conversation(self, payload: dict) -> None:
         if not self._is_current_conversation_character(payload.get("character_id")):
             self._finish_conversation_for(payload.get("character_id"))
             return
         self.consume_interaction_result(payload, message="Interaction complete.")
-        coordinator = getattr(self, "_motion_coordinator", None)
-        finish_streaming_trace = getattr(coordinator, "finish_streaming_trace", None)
-        if callable(finish_streaming_trace):
-            QTimer.singleShot(0, lambda current_trace_id=str(payload.get("trace_id") or ""): finish_streaming_trace(current_trace_id))
+        QTimer.singleShot(
+            0,
+            lambda current_trace_id=str(payload.get("trace_id") or ""): TransparentWindow._finish_streaming_trace(self, current_trace_id),
+        )
         self._finish_conversation_for(payload.get("character_id"))
 
     def _on_action_bus_error(self, message: str, character_id: str | None = None) -> None:
@@ -1021,11 +1331,21 @@ class TransparentWindow(QMainWindow):
         if not self._is_current_conversation_character(character_id):
             self._finish_conversation_for(character_id)
             return
+        trace_id = self._conversation_trace_id
+        if trace_id:
+            self.set_conversation_assistant(trace_id, message or "Interaction failed.")
+            self.finish_conversation_turn(trace_id)
+            TransparentWindow._finish_streaming_trace(self, trace_id)
         self._finish_conversation_for(character_id)
         self._on_agentic_error(message)
 
     def _is_current_conversation_character(self, character_id: str | None) -> bool:
         return bool(character_id) and character_id == self.get_current_character_id()
+
+    def _finish_streaming_trace(self, trace_id: str | None) -> None:
+        finish = getattr(self._motion_coordinator, "finish_streaming_trace", None)
+        if callable(finish):
+            finish(trace_id)
 
     def _finish_conversation_for(self, character_id: str | None) -> None:
         if character_id and character_id != self._conversation_character_id:
@@ -1037,7 +1357,6 @@ class TransparentWindow(QMainWindow):
 
     def consume_interaction_result(self, payload: dict, message: str = "Interaction complete.") -> None:
         """所有 Harness 結果（文字互動與立即執行）的唯一 Host 消費流程。"""
-        self._latest_agentic_event = dict(payload or {})
         webm_key = self._validated_event_motion_key(payload)
         reply_text = str(payload.get("reply") or "").strip()
         source_label = "Skill" if payload.get("matched_skill") else "Talk"
@@ -1057,9 +1376,11 @@ class TransparentWindow(QMainWindow):
         metadata = payload.get("metadata") or (payload.get("raw_event") or {}).get("metadata") or {}
         streaming = bool(metadata.get("agentic", {}).get("streaming"))
         if streaming and webm_key:
-            coordinator = getattr(self, "_motion_coordinator", None)
+            coordinator = self._motion_coordinator
             has_motion = getattr(coordinator, "has_motion_for_trace", None)
-            if not callable(has_motion) or has_motion(trace_id) is not True:
+            has_finished_speech = getattr(coordinator, "has_finished_speech_for_trace", None)
+            speech_already_finished = callable(has_finished_speech) and has_finished_speech(trace_id) is True
+            if not speech_already_finished and (not callable(has_motion) or has_motion(trace_id) is not True):
                 self.dispatch_action(
                     f"[ACTION:{webm_key}]",
                     trace_id=trace_id,
@@ -1181,12 +1502,16 @@ class TransparentWindow(QMainWindow):
             "tone": tone,
             "timeoutMs": timeoutMs,
             "runtimeControls": self._build_runtime_controls_state(),
-            "xp_delta": int((event_payload or {}).get("xp_delta", xp_state.get("last_delta", 0)) or 0),
+            # 只有真實回合事件才帶 delta。xp.last_delta 是持久化的狀態欄位，拿它當
+            # 事件會讓每一次畫面重整（動作 offer、角色切換、狀態訊息）都重播一次
+            # 「+N」飄字，看起來像經驗值自己在跳。
+            "xp_delta": int((event_payload or {}).get("xp_delta", 0) or 0),
             "progress_percent": int(xp_state.get("progress_percent", 0) or 0),
         }
-        latest_event = event_payload or self._latest_agentic_event
-        if latest_event:
-            payload["event"] = latest_event
+        # 只有本輪真實事件才帶 event。舊版會 fallback 到上一輪的
+        # _latest_agentic_event，於是每次畫面重整都把上一輪的回覆再送一次給前端。
+        if event_payload:
+            payload["event"] = dict(event_payload)
         self._run_javascript("hydrateAgenticUI", payload)
 
     def _build_runtime_background_state(self, base_background) -> dict:
@@ -1202,18 +1527,6 @@ class TransparentWindow(QMainWindow):
 
     def _set_agentic_busy(self, busy: bool) -> None:
         self._run_javascript("setAgenticBusy", bool(busy))
-
-    def get_render_diagnostics(self) -> dict[str, object]:
-        return {
-            "brain_mode": self._brain_mode,
-            "runtime_contract": dict(self._runtime_contract),
-            "background_status": self._background_status,
-            "background_url": self._background_url,
-            "stt_state": self._stt_state,
-            "stt_available": self._stt_available,
-            "webview_ready": self._js_gateway.ready,
-            "latest_agentic_event": self._latest_agentic_event,
-        }
 
     def set_action_status(self, message: str, tone: str = "idle", timeout_ms: int = 0):
         self._run_javascript("setActionStatus", message, tone, timeout_ms)
@@ -1234,6 +1547,10 @@ class TransparentWindow(QMainWindow):
     def start_motion_loop(self, path: str, interval_ms: int = 1000):
         url = QUrl.fromLocalFile(path).toString()
         self._run_javascript("startMotionLoop", url, interval_ms)
+
+    def preload_motion(self, path: str):
+        """先把 webm 載進 <video>（只 load，不 play），讓起播時不必等冷啟動載入。"""
+        self._run_javascript("preloadMotion", QUrl.fromLocalFile(path).toString())
 
     def stop_motion_loop(self):
         self._run_javascript("stopMotionLoop")
@@ -1266,12 +1583,8 @@ class TransparentWindow(QMainWindow):
 
     def reset_presentation(self):
         self._proactive_greeting_active = False
-        release_timer = getattr(self, "_proactive_greeting_release_timer", None)
-        if release_timer is not None:
-            release_timer.stop()
-        greeter = getattr(self, "_greeter", None)
-        if greeter is not None:
-            greeter.reset()
+        self._proactive_greeting_release_timer.stop()
+        self._greeter.reset()
         if self._stt_state == "listening":
             self.stt_stop_requested.emit()
         self._conversation_pending = False
@@ -1293,12 +1606,24 @@ class TransparentWindow(QMainWindow):
         self._proactive_greeting_active = True
         trace_id = f"greeting-{uuid4().hex}"
         self.show_synthetic_conversation_turn("主動打招呼", "", message)
+        self._log_assistant_utterance(message)
         if not self.dispatch_action(
             f"[ACTION:wave_response] {message}", trace_id=trace_id,
             allow_tts=True, wait_for_tts_start=True,
         ):
             self.speak_text(message, trace_id=trace_id)
         self._proactive_greeting_release_timer.start()
+
+    def _log_assistant_utterance(self, message: str) -> None:
+        """讓模型知道自己主動說過什麼；記錄失敗不能影響打招呼本身。"""
+        engine = getattr(self._adapter, "engine", None)
+        log = getattr(engine, "log_assistant_utterance", None)
+        if not callable(log):
+            return
+        try:
+            log(message)
+        except Exception:  # noqa: BLE001
+            print("[ECHOES] 警告: 主動發話未能寫入對話歷史。")
 
     def _clear_finished_greeting(self) -> None:
         coordinator = self._motion_coordinator
@@ -1312,17 +1637,10 @@ class TransparentWindow(QMainWindow):
         return snapshot.character_id if snapshot else None
 
     def _active_snapshot(self):
-        snapshot = self._adapter.get_active_snapshot()
-        if snapshot is None or isinstance(snapshot, ActiveCharacterSnapshot):
-            return snapshot
-        # Compatibility for legacy test doubles that expose only the nested router.
-        return getattr(self._adapter, "router").get_active_snapshot()
+        return self._adapter.get_active_snapshot()
 
     def _active_character(self):
-        character = self._adapter.get_active_character()
-        if character is None or isinstance(character, CharacterProfile):
-            return character
-        return getattr(self._adapter, "router").get_active_character()
+        return self._adapter.get_active_character()
 
     def apply_character_position(self):
         """套用目前由 Python 管理的角色位移設定。"""
@@ -1332,12 +1650,6 @@ class TransparentWindow(QMainWindow):
             self._character_scale,
             self._character_object_position,
         )
-
-    def set_character_position(self, x_offset: int, y_offset: int):
-        """更新角色位移設定並立即套用。"""
-        self._character_x_offset = x_offset
-        self._character_y_offset = y_offset
-        self.apply_character_position()
 
     def apply_character_layout(self, character_id: str | None = None):
         layout = self._library.get_layout_config(character_id)
@@ -1361,15 +1673,6 @@ class TransparentWindow(QMainWindow):
         )
         self.apply_character_position()
 
-    def move_character_to(self, x_offset: int, y_offset: int):
-        """以左為正 x、以下為正 y 的像素偏移量移動角色。"""
-        self.apply_character_transform(
-            x_offset,
-            y_offset,
-            self._character_scale,
-            self._character_object_position,
-        )
-
     def apply_character_transform(
         self,
         x_offset: int,
@@ -1381,20 +1684,36 @@ class TransparentWindow(QMainWindow):
         self._run_javascript("setCharacterObjectPosition", object_position)
 
     def nativeEvent(self, event_type, message):
-        """整個視窗都是 client area。可點區域一律由前端 UI 決定,Qt 端不再用矩形白名單猜:
-        回 HTCAPTION 會讓 Windows 改送 WM_NCLBUTTONDOWN(視窗管理員接管拖曳),
-        QWebEngineView 就永遠收不到那個點擊。視窗拖曳走前端的 beginWindowDrag()。"""
+        """Only reported UI owns clicks; the rest passes through to the desktop."""
         if sys.platform != "win32":
             return super().nativeEvent(event_type, message)
 
         wm_nchittest = 0x0084
         try:
-            if ctypes.wintypes.MSG.from_address(int(message)).message == wm_nchittest:
-                return True, 1  # HTCLIENT
+            native_message = ctypes.wintypes.MSG.from_address(int(message))
+            if native_message.message == wm_nchittest:
+                if not self._desktop_companion_mode:
+                    return True, 1  # HTCLIENT: rollback behaviour
+                local_pos = self._native_screen_to_local(native_message.pt.x, native_message.pt.y)
+                developer_input_visible = (
+                    self._developer_input.isVisible()
+                    and self._developer_input.geometry().contains(local_pos)
+                )
+                if developer_input_visible or self._interaction_regions.hit_test(local_pos):
+                    return True, 1  # HTCLIENT
+                return True, -1  # HTTRANSPARENT
         except Exception:  # noqa: BLE001
             # Native hit-test is optional; use Qt's default handling when unavailable.
             pass
         return super().nativeEvent(event_type, message)
+
+    def _native_screen_to_local(self, x: int, y: int) -> QPoint:
+        """WM_NCHITTEST uses native pixels; Qt/WebEngine use logical CSS pixels."""
+        ratio = self.devicePixelRatioF() or 1.0
+        return self.mapFromGlobal(QPoint(
+            InteractionRegionManager.native_to_css(x, ratio),
+            InteractionRegionManager.native_to_css(y, ratio),
+        ))
 
     @staticmethod
     def _coerce_int(value, default: int) -> int:
@@ -1449,13 +1768,6 @@ class TransparentWindow(QMainWindow):
 
     def _run_javascript(self, function_name: str, *args):
         self._js_gateway.call(function_name, *args)
-
-    def _flush_pending_javascript_calls(self):
-        self._js_gateway.mark_ready()
-
-    @staticmethod
-    def _build_javascript_bridge_call(function_name: str, *args) -> str:
-        return JsGateway.build_call(function_name, *args)
 
     @staticmethod
     def _build_media_source_url(absolute_path: str) -> str:

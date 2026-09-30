@@ -8,6 +8,7 @@ LOGGER = logging.getLogger(__name__)
 
 from PyQt5.QtCore import QObject, QTimer, pyqtSlot
 
+from pet_harness.runtime.qt_background_executor import QtBackgroundExecutor
 from pet_harness.ui.character_ui_service import CharacterUiService
 
 if TYPE_CHECKING:
@@ -27,6 +28,16 @@ class CharacterUiBridge(QObject):
         self._service = service
         self._window = window
         self._adapter = adapter
+        # listPresets 的完整摘要(xp/playtime/missing_assets)離開同步回傳路徑,
+        # 改在這個背景執行緒上算完再用 hydratePresetSummaries 推回前端;
+        # 避免 Qt 主執行緒被資產世代解析卡住,見 fix-create-screen-stall 決策 2。
+        # ponytail: 靠 Qt parent-child(self→window)的 deleteLater 級聯回收,
+        # 沒有接到 main.py composition root 的 coordinator.lifecycle 關閉清單
+        # (CharacterUiBridge 在 TransparentWindow._init_webview 建構,尚未拿到
+        # lifecycle 參照)。工作本身是快速、唯讀、冪等的摘要計算,關閉時中止
+        # 最壞只印一則 Qt 警告,不影響資料;若未來需要保證關閉時等待收尾,
+        # 把 lifecycle 參照傳進 CharacterUiBridge 建構子再註冊。
+        self._background = QtBackgroundExecutor(self)
 
     def _ok(self, data: Any) -> str:
         return json.dumps({"ok": True, "data": data}, ensure_ascii=False)
@@ -46,10 +57,32 @@ class CharacterUiBridge(QObject):
 
     @pyqtSlot(result=str)
     def listPresets(self) -> str:
+        """回傳廉價摘要立即繪製分頁;完整摘要(xp/playtime/missing_assets)在
+        背景算完後另以 hydratePresetSummaries 推回前端,不佔用這次同步回傳
+        (fix-create-screen-stall 決策 2 —— 真正的熱點在資產世代解析,不在
+        這裡,但只要它還留在這條同步路徑上就一樣會卡住 Qt 主執行緒)。"""
         try:
-            return self._ok(self._service.list_presets())
+            result = self._service.list_presets_fast()
+            character_ids = [str(item.get("character_id") or "") for item in result]
+            self._enrich_presets_async([cid for cid in character_ids if cid])
+            return self._ok(result)
         except Exception as exc:  # noqa: BLE001
             return self._error(exc)
+
+    def _enrich_presets_async(self, character_ids: list[str]) -> None:
+        if not character_ids:
+            return
+
+        def job():
+            return self._service.enrich_preset_summaries(character_ids)
+
+        def on_done(ok: bool, message: str, payload) -> None:
+            if not ok:
+                print(f"[BRIDGE] enrich_preset_summaries ERROR: {message}", flush=True)
+                return
+            self._window._run_javascript("hydratePresetSummaries", payload)
+
+        self._background.submit(job, on_done)
 
     @pyqtSlot(str, str, result=str)
     def createFromPreset(self, preset_id: str, name: str) -> str:
@@ -200,36 +233,6 @@ class CharacterUiBridge(QObject):
         try:
             result = self._service.trigger_skill(skill_id)
             self._window.consume_interaction_result(result, message="Skill executed.")
-            return self._ok(result)
-        except Exception as exc:  # noqa: BLE001
-            return self._error(exc)
-
-    @pyqtSlot(result=str)
-    def getProviderStatus(self) -> str:
-        try:
-            if not self._adapter:
-                raise RuntimeError("adapter not available")
-            result = self._adapter.get_provider_status()
-            return self._ok(result)
-        except Exception as exc:  # noqa: BLE001
-            return self._error(exc)
-
-    @pyqtSlot(str, result=str)
-    def configureProvider(self, provider: str) -> str:
-        """受控 settings 入口:設定全域 Provider(api/ollama);文字提交不得夾帶 Provider。"""
-        try:
-            if not self._adapter:
-                raise RuntimeError("adapter not available")
-            return self._ok(self._adapter.configure_provider(provider))
-        except Exception as exc:  # noqa: BLE001
-            return self._error(exc)
-
-    @pyqtSlot(str, bool, result=str)
-    def setSkillEnabled(self, skill_name: str, enabled: bool) -> str:
-        try:
-            if not self._adapter:
-                raise RuntimeError("adapter not available")
-            result = self._adapter.set_skill_enabled(skill_name, enabled)
             return self._ok(result)
         except Exception as exc:  # noqa: BLE001
             return self._error(exc)

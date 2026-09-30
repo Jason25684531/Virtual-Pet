@@ -286,9 +286,6 @@ def test_motion_loop_does_not_restore_idle_until_host_stops_it():
 def test_motion_loop_replay_does_not_reload_the_same_source():
     app_js = (Path(__file__).parents[1] / "ui" / "web_container" / "app.js").read_text(encoding="utf-8")
 
-    start = app_js.index('window.startMotionLoop')
-    stop = app_js.index('window.stopMotionLoop = function', start)
-    loop_block = app_js[start:stop]
     replay_start = app_js.index('function replayMotionLoop')
     replay_block = app_js[replay_start:app_js.index('window.startMotionLoop', replay_start)]
 

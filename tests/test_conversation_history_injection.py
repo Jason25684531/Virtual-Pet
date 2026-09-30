@@ -26,6 +26,29 @@ def test_second_turn_prompt_includes_first_turn_conversation(harness_env):
     assert "## Conversation History" in engine.last_prompt
 
 
+def test_history_block_forbids_restating_previous_replies(harness_env):
+    """gemma3:12b 在連續追問同一主題時會把上一輪的 Assistant 句子改寫後再送一次。
+    指示必須貼著 history 本身——放到末端的 Global Response Rules 隔太遠就管不到。"""
+    tmp_path, agentic_root = harness_env
+    engine = PetHarnessEngine(
+        FakeProvider(),
+        agentic_root=agentic_root,
+        db_path=tmp_path / "state.db",
+        snapshot_path=tmp_path / "debug" / "latest_pet_event.json",
+        character_id="Choppr",
+    )
+
+    engine.handle_event({"text": "你知道超夢嗎?", "source": "test"})
+    engine.handle_event({"text": "還有其他小故事嗎?", "source": "test"})
+
+    prompt = engine.last_prompt
+    assert "never repeat or reword an Assistant line" in prompt
+    # 必須落在 Conversation History 與 Retrieval Evidence 之間（緊鄰 history）
+    history_at = prompt.index("## Conversation History")
+    evidence_at = prompt.index("## Retrieval Evidence")
+    assert history_at < prompt.index("never repeat or reword an Assistant line") < evidence_at
+
+
 def test_memory_recall_hits_are_injected_into_prompt(harness_env):
     tmp_path, agentic_root = harness_env
 
@@ -62,7 +85,7 @@ def test_persona_instruction_names_the_actual_evidence_section(harness_env):
     engine.handle_event({"text": "你好", "source": "test"})
 
     assert "Relevant Memories" not in engine.last_prompt
-    assert "the persona always wins" in engine.last_prompt
+    assert "Global Response Rules below override persona instructions about safety, honesty, factual certainty, and source attribution" in engine.last_prompt
 
 
 def test_prompt_instructs_the_model_to_use_evidence_and_keeps_persona_priority(harness_env):
@@ -85,11 +108,17 @@ def test_prompt_instructs_the_model_to_use_evidence_and_keeps_persona_priority(h
     assert "Conversation History and Retrieval Evidence are factual records of what the user told you" in prompt
     assert "answer from those sections" in prompt
     assert "cannot access" in prompt
-    assert "the persona always wins" in prompt
+    assert "Global Response Rules below override persona instructions about safety, honesty, factual certainty, and source attribution" in prompt
 
 
 def test_prompt_keeps_user_facts_separate_from_echoes_own_state(harness_env):
-    """使用者記憶不得用來回答 ECHOES 自己的行程或狀態。"""
+    """區分「使用者自己的事」與「ECHOES 自己的事」，且用正面框架而非禁令。
+
+    依據 2026-09-10 A/B 實測(gemma3:12b, N=55/組):禁令句
+    「Do not use user facts to answer questions about ECHOES's own…」
+    會被問句句首的「你」觸發而封鎖整個 Retrieval Evidence,命中率 6/55;
+    改成指路式的正面框架後為 28/55。禁語留在評分端,不留在 prompt。
+    """
     tmp_path, agentic_root = harness_env
     engine = PetHarnessEngine(
         FakeProvider(),
@@ -102,7 +131,10 @@ def test_prompt_keeps_user_facts_separate_from_echoes_own_state(harness_env):
     engine.handle_event({"text": "我要去福岡七天六夜", "source": "test"})
     engine.handle_event({"text": "那你下周要幹嘛？", "source": "test"})
 
-    assert "Do not use user facts to answer questions about ECHOES's own plans" in engine.last_prompt
+    prompt = engine.last_prompt
+    assert "When the user asks what they themselves said, like, or did, answer from Retrieval Evidence" in prompt
+    assert "When the question is about ECHOES itself, answer from the Character Persona" in prompt
+    assert "Do not use user facts" not in prompt
 
 
 if __name__ == "__main__":

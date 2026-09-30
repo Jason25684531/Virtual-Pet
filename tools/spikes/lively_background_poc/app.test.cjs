@@ -1,0 +1,12 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+const image = {src: "", getAttribute() { return this.src; }};
+const context = vm.createContext({document: {getElementById: () => image}});
+vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, "utf8"), context);
+assert.equal(image.src, "assets/BG_Final.png");
+context.livelyPropertyListener("echoesBackground", "assets/1234567890abcdef1234.png");
+assert.equal(image.src, "assets/1234567890abcdef1234.png");
+context.livelyPropertyListener("echoesBackground", "../secret.png");
+assert.equal(image.src, "assets/1234567890abcdef1234.png");
+console.log("Lively background checks: PASS");

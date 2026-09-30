@@ -50,6 +50,8 @@ class ToolExecutionLifecycle:
         self.store.log_tool_result(result, request.to_dict())
         if result.status == "success" and result.tool_name == "web_article_tool":
             self.media_context.save(articles=result.payload.get("articles", []))
-        if result.tool_name == "youtube_music_tool":
+        # partial/failed 代表播放未經驗證(autoplay_blocked 等),此時寫入 playback 會讓
+        # 之後的「暫停」以為有可控工作階段,也會讓回覆宣稱歌曲已播放。
+        if result.tool_name == "youtube_music_tool" and result.status in {"success", "completed"}:
             self.media_context.save(playback=result.payload)
         return result

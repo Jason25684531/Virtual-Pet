@@ -2,19 +2,29 @@
 
 from __future__ import annotations
 
-import inspect
 import logging
 import queue
 import re
+from time import perf_counter
 from uuid import uuid4
 
-from PyQt5.QtCore import QTimer
 
 import config
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
+from api_client.tts_contract import TtsRequest
 from pet_harness.app.commands import ACTION_DIRECTIVE_PATTERN
 
 LOGGER = logging.getLogger(__name__)
+
+# 反映 MotionCoordinator._suppressed_traces 記下的真實抑制原因,不再一律寫
+# timeout_promoted——那只是三種成因之一,barge-in/critical_tts_failure 的
+# 晚到語音被寫成「timeout_promoted」會誤導之後看 log 的人。
+_SUPPRESSION_REASON_MESSAGES = {
+    "timeout_promoted": "因 timeout_promoted 抑制晚到音訊。",
+    "critical_tts_failure": "因語音服務失敗抑制晚到音訊。",
+    "skip_tts_sync": "因 play_music fast path 依設計略過語音。",
+    "barge_in": "因新回合打斷抑制晚到音訊。",
+}
 
 
 class TtsPlaybackMixin:
@@ -101,37 +111,23 @@ class TtsPlaybackMixin:
             return
 
         current_character_id = self._current_character_id()
-        factory_name = getattr(self._tts_worker_factory, "__name__", "")
         preferred_provider = self._trace_tts_providers.get(normalized_trace_id, "")
-        if factory_name in {"VoAIStreamingTTSWorker", "AdaptiveTTSFallbackWorker"}:
-            voice_id = current_character_id or ""
-        else:
-            voice_id = config.get_elevenlabs_voice_id_for_character(current_character_id)
+        resolved_mode, _ = config.resolve_tts_runtime_mode()
 
-        worker_kwargs = {
-            "text": speech_text,
-            "reply_id": reply_id,
-            "trace_id": trace_id,
-            "voice_id": voice_id,
-            "parent": self,
-        }
-        try:
-            signature = inspect.signature(self._tts_worker_factory)
-            if "playback_guard" in signature.parameters:
-                worker_kwargs["playback_guard"] = self._can_start_trace_audio
-            if "fallback_voice_id" in signature.parameters:
-                worker_kwargs["fallback_voice_id"] = config.get_elevenlabs_voice_id_for_character(current_character_id)
-            if "preferred_provider" in signature.parameters and preferred_provider:
-                worker_kwargs["preferred_provider"] = preferred_provider
-            if "resolved_tts_mode" in signature.parameters:
-                resolved_mode, _ = config.resolve_tts_runtime_mode()
-                worker_kwargs["resolved_tts_mode"] = resolved_mode
-            if "pcm_stream_sink" in signature.parameters:
-                worker_kwargs["pcm_stream_sink"] = self._audio_worker
-        except (TypeError, ValueError):
-            pass
+        request = TtsRequest(
+            text=speech_text,
+            reply_id=reply_id,
+            trace_id=str(trace_id or ""),
+            character_id=current_character_id or "",
+            voice_id=config.get_elevenlabs_voice_id_for_character(current_character_id),
+            model_id=config.get_elevenlabs_model_id_for_character(current_character_id),
+            preferred_provider=preferred_provider,
+            resolved_tts_mode=resolved_mode,
+            pcm_stream_sink=self._audio_worker,
+            playback_guard=self._can_start_trace_audio,
+        )
 
-        worker = self._tts_worker_factory(**worker_kwargs)
+        worker = self._tts_worker_factory(request, parent=self)
         self._active_tts_worker = worker
         self._workers.append(worker)
 
@@ -159,11 +155,10 @@ class TtsPlaybackMixin:
             self._start_next_tts_worker()
             self._finish_loop_action_if_tts_idle()
 
-        if hasattr(worker, "audio_ready_signal"):
-            worker.audio_ready_signal.connect(handle_audio_ready)
+        # StreamingTTSWorker 契約保證四個訊號都存在,不再用 hasattr 防禦。
+        worker.audio_ready_signal.connect(handle_audio_ready)
         worker.finished_signal.connect(handle_result)
-        if hasattr(worker, "progress_signal"):
-            worker.progress_signal.connect(handle_progress)
+        worker.progress_signal.connect(handle_progress)
         worker.finished.connect(on_thread_finished)
         worker.start()
 
@@ -176,6 +171,11 @@ class TtsPlaybackMixin:
         if not normalized_trace_id or normalized_trace_id not in self._completed_tts_traces:
             return
         if self._trace_pending_tts_counts.get(normalized_trace_id, 0) > 0:
+            return
+        # 串流回合的句間 TTS 空檔會讓上面兩個條件短暫同時成立(這一句播完了、
+        # 下一句還沒送進來),但回合本身沒結束。串流真正結束後
+        # finish_streaming_trace() 會再呼叫一次這裡把 session 收尾。
+        if normalized_trace_id in self._streaming_traces:
             return
         self._audio_worker.close_trace_session(normalized_trace_id)
 
@@ -352,6 +352,7 @@ class TtsPlaybackMixin:
         self._spoken_reply_ids.clear()
         self._trace_pending_tts_counts.clear()
         self._completed_tts_traces.clear()
+        self._trace_speech_completed_at.clear()
         self._streaming_traces.clear()
         self._deferred_dispatches.clear()
         while not self._pending_tts_chunks.empty():
@@ -395,10 +396,12 @@ class TtsPlaybackMixin:
             # queue_drained，讓角色動作回到 idle。
             if self._trace_pending_tts_counts.get(normalized_trace_id, 0) == 0:
                 self._completed_tts_traces.add(normalized_trace_id)
+                self._trace_speech_completed_at[normalized_trace_id] = perf_counter()
         if normalized_trace_id in self._suppressed_traces and reply_id not in self._driver_started_replies and not skipped_by_design:
             success = False
             if "抑制" not in message:
-                message = "因 timeout_promoted 抑制晚到音訊。"
+                reason = self._suppressed_traces.get(normalized_trace_id, "")
+                message = _SUPPRESSION_REASON_MESSAGES.get(reason, f"因 {reason or '未知原因'} 抑制晚到音訊。")
         if isinstance(payload, dict):
             selected_provider = str(payload.get("selected_provider") or payload.get("provider") or "").strip()
             if normalized_trace_id and selected_provider:
@@ -453,12 +456,12 @@ class TtsPlaybackMixin:
         normalized_trace_id = str(trace_id or "").strip()
         if not normalized_trace_id:
             return
-        self._suppressed_traces.add(normalized_trace_id)
+        self._suppressed_traces[normalized_trace_id] = "critical_tts_failure"
         self._audio_worker.suppress_trace(normalized_trace_id)
         self._clear_pending_action(normalized_trace_id)
         if self._active_action_trace_id == normalized_trace_id and self._current_loop_action_key is not None:
             self._finish_loop_action()
-            self._suppressed_traces.add(normalized_trace_id)
+            self._suppressed_traces[normalized_trace_id] = "critical_tts_failure"
             self._audio_worker.suppress_trace(normalized_trace_id)
         else:
             self._window.restore_idle_video()
@@ -473,9 +476,6 @@ class TtsPlaybackMixin:
         return normalized_trace_id not in self._suppressed_traces
 
     def shutdown(self, wait_ms: int = 5000):
-        if self._news_audio_delay_timer is not None:
-            self._news_audio_delay_timer.stop()
-            self._news_audio_delay_timer = None
         for trace_id in list(self._pending_actions):
             self._clear_pending_action(trace_id)
         self._pending_actions.clear()
@@ -489,6 +489,7 @@ class TtsPlaybackMixin:
         self._spoken_reply_ids.clear()
         self._trace_pending_tts_counts.clear()
         self._completed_tts_traces.clear()
+        self._trace_speech_completed_at.clear()
         self._streaming_traces.clear()
         self._deferred_dispatches.clear()
         while not self._pending_tts_chunks.empty():

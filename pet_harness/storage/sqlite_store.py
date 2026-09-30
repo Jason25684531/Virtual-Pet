@@ -254,6 +254,14 @@ class SQLiteStore:
             row = conn.execute("SELECT value_json FROM settings WHERE key = ?", (key,)).fetchone()
         return json.loads(row["value_json"]) if row else default
 
+    def active_memory_rows(self, character_id: str):
+        now = utc_now()
+        with self.connect() as conn:
+            return conn.execute(
+                "SELECT text FROM memory_items WHERE character_id=? AND status='active' AND (expires_at IS NULL OR expires_at>?) ORDER BY created_at DESC",
+                (character_id, now),
+            ).fetchall()
+
     def log_event(self, input_payload: dict[str, Any], output_payload: dict[str, Any]) -> None:
         with self.connect() as conn:
             conn.execute(

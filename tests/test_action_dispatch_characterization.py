@@ -1,12 +1,14 @@
 """P0 baseline: legacy action binding and deferred-dispatch semantics stay stable."""
 
+import logging
+from time import perf_counter
 from unittest.mock import MagicMock
 
 from action_dispatcher import MotionCoordinator
 
 
 EXPECTED_BINDINGS = {
-    "report_news": ("report_news", "room_audio", True, True),
+    "report_news": ("report_news", "default", True, True),
     "play_music": ("play_music", "panel_video", True, True),
     "wave_response": ("wave_response", "default", False, False),
     "laugh": ("laugh", "default", False, False),
@@ -39,6 +41,75 @@ def test_action_binding_table_and_deferred_dispatch_contract():
         dispatcher.shutdown(wait_ms=100)
 
 
+def test_streaming_ack_action_tag_no_longer_self_suppresses_its_own_speech():
+    """Root cause repro (fix-play-music-ack-audio-and-idle-restore): mirrors
+    ui/transparent_window.py consume_interaction_result's streaming branch —
+    the ack text is queued for TTS first, then the harness-resolved behavior's
+    [ACTION:play_music] is dispatched for the SAME trace with no display_message
+    and wait_for_tts_start=True. harness_reply used to be computed from "did this
+    call carry text", which is False here even though harness owns the turn —
+    so the skip_tts_sync fast path suppressed the turn's own just-queued ack audio.
+    Before the fix this test fails: _suppressed_traces gains "trace-1" and
+    suppress_trace() is called on it."""
+    music_factory = MagicMock()
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False, music_worker_factory=music_factory)
+    try:
+        dispatcher._find_motion_path = MagicMock(return_value="assets/play_music.webm")
+        dispatcher._audio_worker.suppress_trace = MagicMock()
+        dispatcher.start_streaming_trace("trace-1")
+        dispatcher._trace_pending_tts_counts["trace-1"] = 1  # ack TTS already enqueued for this trace
+
+        ok = dispatcher.dispatch(
+            "[ACTION:play_music]", trace_id="trace-1", allow_tts=True, wait_for_tts_start=True
+        )
+
+        assert ok is True
+        assert "trace-1" not in dispatcher._suppressed_traces
+        dispatcher._audio_worker.suppress_trace.assert_not_called()
+        music_factory.assert_not_called()
+        state = dispatcher._pending_actions["trace-1"]
+        assert state.wait_for_tts_start is True
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_non_streaming_play_music_action_still_suppresses_audio_when_it_has_no_speech_of_its_own():
+    """The legacy skip_tts_sync fast path (hotkey/menu play_music, no harness reply
+    text, no streaming trace) must keep suppressing stale audio when the trace truly
+    has no speech of its own — this is not the bug and must not regress."""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._find_motion_path = MagicMock(return_value="assets/play_music.webm")
+        dispatcher._audio_worker.suppress_trace = MagicMock()
+
+        ok = dispatcher.dispatch("[ACTION:play_music]", trace_id="trace-1", allow_tts=True)
+
+        assert ok is True
+        assert "trace-1" in dispatcher._suppressed_traces
+        dispatcher._audio_worker.suppress_trace.assert_called_once_with("trace-1")
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_skip_tts_sync_guard_does_not_leak_into_hotkey_trace_that_already_has_speech():
+    """Defensive guard (design D2): even without _streaming_traces, a trace that
+    already has its own speech queued must not be self-suppressed by a skip_tts_sync
+    binding."""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._find_motion_path = MagicMock(return_value="assets/play_music.webm")
+        dispatcher._audio_worker.suppress_trace = MagicMock()
+        dispatcher._trace_pending_tts_counts["trace-1"] = 1
+
+        ok = dispatcher.dispatch("[ACTION:play_music]", trace_id="trace-1", allow_tts=True)
+
+        assert ok is True
+        assert "trace-1" not in dispatcher._suppressed_traces
+        dispatcher._audio_worker.suppress_trace.assert_not_called()
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
 def test_same_trace_repeated_action_tag_is_deduped_not_deferred():
     """Streamed replies can repeat the same [ACTION:x] tag across sentence chunks.
 
@@ -55,5 +126,139 @@ def test_same_trace_repeated_action_tag_is_deduped_not_deferred():
         assert dispatcher._is_duplicate_loop_action(binding, "turn-1") is True
         assert dispatcher._is_duplicate_loop_action(binding, "turn-2") is False
         assert dispatcher._is_duplicate_loop_action(binding, None) is False
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_missing_motion_asset_falls_back_to_idle_without_substituting(caplog):
+    """缺素材一律回 idle,不隨機代打其他反應動作(align-preset-character-interaction
+    決策 4;與 voice-motion-sync 的「動作影片缺失時維持閒置」要求一致)。"""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._find_motion_path = (
+            lambda motion_key: None if motion_key == "report_news" else f"assets/{motion_key}.webm"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="action_dispatcher"):
+            path, kind = dispatcher._resolve_action_motion_path("report_news")
+
+        assert kind == "idle"
+        assert path == "assets/idle.webm"
+        assert any(
+            "找不到動作檔案" in record.message and "report_news" in record.message
+            for record in caplog.records
+        )
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_timeout_promoted_and_critical_failure_are_stored_as_distinct_reasons():
+    """design D5 (fix-play-music-ack-audio-and-idle-restore 4.2.10):
+    _suppressed_traces 記下真實原因,而不是單一 bool。"""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._find_motion_path = MagicMock(return_value="assets/laugh.webm")
+        binding = dispatcher._bindings["laugh"]
+        dispatcher._start_pending_action("trace-1", binding, wait_for_tts_start=False)
+        dispatcher._promote_pending_action("trace-1")
+
+        assert dispatcher._suppressed_traces["trace-1"] == "timeout_promoted"
+
+        dispatcher._handle_critical_tts_failure("trace-2", "boom")
+
+        assert dispatcher._suppressed_traces["trace-2"] == "critical_tts_failure"
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_timeout_promoted_and_critical_failure_log_distinct_suppression_messages(caplog):
+    """修正前 _on_tts_finished 一律寫死「因 timeout_promoted 抑制晚到音訊」;
+    critical_tts_failure 造成的晚到語音也會被誤報成 timeout_promoted。"""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._suppressed_traces["trace-timeout"] = "timeout_promoted"
+        dispatcher._suppressed_traces["trace-critical"] = "critical_tts_failure"
+
+        with caplog.at_level(logging.WARNING, logger="tts_playback"):
+            dispatcher._on_tts_finished(
+                "reply-1", True, "", {"trace_id": "trace-timeout"},
+            )
+            dispatcher._on_tts_finished(
+                "reply-2", True, "", {"trace_id": "trace-critical"},
+            )
+
+        messages = [record.message for record in caplog.records]
+        timeout_message = next(m for m in messages if "timeout_promoted" in m)
+        critical_message = next(m for m in messages if "語音服務失敗" in m)
+        assert "timeout_promoted" not in critical_message
+        assert timeout_message != critical_message
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_preload_does_not_duplicate_the_missing_motion_warning(caplog):
+    """fix-media-action-motion-dispatch: 一次 dispatch 裡 _preload_binding_motion()
+    與 _play_binding_motion() 都會呼叫 _resolve_action_motion_path()，同一個缺
+    素材的 motion_key 過去會被記錄兩次「找不到動作檔案」，誤導 log 判讀。"""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._find_motion_path = (
+            lambda motion_key: None if motion_key == "report_news" else f"assets/{motion_key}.webm"
+        )
+        dispatcher._window.preload_motion = MagicMock()
+        binding = dispatcher._bindings["report_news"]
+
+        with caplog.at_level(logging.WARNING, logger="action_dispatcher"):
+            dispatcher._preload_binding_motion(binding)
+            dispatcher._play_binding_motion(binding)
+
+        warnings = [record for record in caplog.records if "找不到動作檔案" in record.message]
+        assert len(warnings) == 1
+        assert "report_news" in warnings[0].message
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_has_finished_speech_for_trace_requires_the_full_grace_period_to_pass():
+    """fix-media-action-motion-dispatch: 一個晚到的動作標記要判斷「這個 trace
+    的語音播完後過了多久」,不能只看「有沒有播完」——一般回合從語音播完到
+    動作標記真正抵達，本身就有零點幾秒的正常延遲，不該被當成「太晚」；只有
+    像 play_music 那種秒級以上的落後才算數(見 LATE_ACTION_GRACE_S)。"""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        assert dispatcher.has_finished_speech_for_trace("trace-1") is False  # 從未有過語音
+
+        dispatcher._trace_pending_tts_counts["trace-1"] = 1
+        assert dispatcher.has_finished_speech_for_trace("trace-1") is False  # 還有句段在合成中
+
+        dispatcher._trace_pending_tts_counts.pop("trace-1")
+        dispatcher._audio_worker.is_busy = MagicMock(return_value=True)
+        dispatcher._trace_speech_completed_at["trace-1"] = perf_counter()
+        assert dispatcher.has_finished_speech_for_trace("trace-1") is False  # 佇列清空但音訊還在播
+
+        dispatcher._audio_worker.is_busy = MagicMock(return_value=False)
+        dispatcher._trace_speech_completed_at["trace-1"] = perf_counter()
+        assert dispatcher.has_finished_speech_for_trace("trace-1") is False  # 剛播完，還在緩衝時間內
+
+        dispatcher._trace_speech_completed_at["trace-1"] = perf_counter() - dispatcher.LATE_ACTION_GRACE_S - 0.1
+        assert dispatcher.has_finished_speech_for_trace("trace-1") is True  # 播完後已經超過緩衝時間
+    finally:
+        dispatcher.shutdown(wait_ms=100)
+
+
+def test_has_finished_speech_for_trace_is_not_blocked_by_the_still_pending_streaming_flag():
+    """Regression: consume_interaction_result() 呼叫這個函式的當下，
+    finish_streaming_trace() 一定還沒執行(它被 QTimer.singleShot(0, ...) 延到
+    下一個事件循環才清掉 _streaming_traces)，trace 因此在真實呼叫點上永遠還
+    留在 _streaming_traces 裡。舊版判斷式把這個仍在 _streaming_traces 的狀態
+    當成「還在串流、可能有更多句段」而直接回傳 False，導致這個函式在唯一的
+    呼叫點上等於永遠不會生效。判斷式不應該再依賴這個時機上必然過期的旗標。"""
+    dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
+    try:
+        dispatcher._streaming_traces.add("trace-1")  # 模擬 finish_streaming_trace() 尚未執行的真實時機
+        dispatcher._audio_worker.is_busy = MagicMock(return_value=False)
+        dispatcher._trace_speech_completed_at["trace-1"] = perf_counter() - dispatcher.LATE_ACTION_GRACE_S - 0.1
+
+        assert dispatcher.has_finished_speech_for_trace("trace-1") is True
     finally:
         dispatcher.shutdown(wait_ms=100)

@@ -58,6 +58,22 @@ def test_mock_interaction_thresholds_and_reset(tmp_path, monkeypatch):
     assert growth.on_interaction("event-reset-1") is None
 
 
+def test_mock_interaction_milestone_defers_until_offer_slot_is_free(tmp_path, monkeypatch):
+    monkeypatch.setattr("config.COMFYUI_ENABLED", False)
+    store = SQLiteStore(tmp_path / "state.db")
+    store.initialize()
+    growth = GrowthTriggerService(store, object(), "pet", 6, 3)
+    store.set_setting("interaction_count", 2)
+    store.set_setting("asset_pending_offer", {"busy": True})
+
+    assert growth.on_interaction("event-3") is None
+    store.set_setting("asset_pending_offer", None)
+    offer = growth.on_interaction("event-4")
+
+    assert offer is not None
+    assert offer.metadata["threshold"] == 3
+
+
 def test_mock_interaction_thresholds_name_the_prebuilt_variant_directories(tmp_path, monkeypatch):
     monkeypatch.setattr("config.COMFYUI_ENABLED", False)
     store = SQLiteStore(tmp_path / "state.db")
@@ -283,7 +299,62 @@ def test_proactive_greeter_round_robin_and_busy_skip():
     assert all(spoken[index] != spoken[index + 1] for index in range(5))
     greeter.reset()
     assert not greeter._history
+    assert not greeter._timer.isActive()
     app.processEvents()
+
+
+def test_proactive_greeter_reset_restarts_full_t_plus_interval():
+    pytest.importorskip("PyQt5")
+    from PyQt5.QtCore import QCoreApplication
+    from PyQt5.QtTest import QTest
+
+    from ui.proactive_greeter import ProactiveGreeter
+
+    app = QCoreApplication.instance() or QCoreApplication([])
+    greeter = ProactiveGreeter(lambda _message: None, lambda: False, ["hello"], 0.2)
+    greeter.start()
+    QTest.qWait(80)
+    before_reset = greeter._timer.remainingTime()
+
+    greeter.reset()
+
+    assert greeter._timer.isActive()
+    assert greeter._timer.remainingTime() > before_reset
+    greeter.stop()
+    app.processEvents()
+
+
+def test_proactive_greeting_only_runs_on_character_stage():
+    pytest.importorskip("PyQt5")
+    from ui.transparent_window import TransparentWindow
+
+    greeter = MagicMock()
+    coordinator = MagicMock()
+    window = SimpleNamespace(
+        _stage_active=False,
+        _screen_routed=False,
+        _greeter=greeter,
+        _apply_left_clickthrough_mask=MagicMock(),
+        # route 離開舞台時同時要中斷進行中的回合與語音
+        _action_bus=MagicMock(),
+        _motion_coordinator=coordinator,
+        _conversation_pending=False,
+        _conversation_character_id=None,
+        _conversation_trace_id=None,
+        _proactive_greeting_active=False,
+        _proactive_greeting_release_timer=MagicMock(),
+        stop_motion_loop=MagicMock(),
+        restore_idle_video=MagicMock(),
+    )
+
+    TransparentWindow.set_stage_active(window, False)
+    greeter.start.assert_not_called()
+    TransparentWindow.set_stage_active(window, True)
+    greeter.start.assert_called_once()
+    coordinator.interrupt_all.assert_not_called()
+    TransparentWindow.set_stage_active(window, False, True)
+    greeter.stop.assert_called_once()
+    coordinator.interrupt_all.assert_called_once()
 
 
 def test_transparent_window_wires_busy_property_as_callback(monkeypatch):
@@ -333,6 +404,7 @@ def test_proactive_greeting_adds_chat_turn_and_dispatches_wave():
         _proactive_greeting_active=False,
         _proactive_greeting_release_timer=MagicMock(),
         show_synthetic_conversation_turn=MagicMock(),
+        _log_assistant_utterance=MagicMock(),
         dispatch_action=MagicMock(return_value=True),
         speak_text=MagicMock(),
     )
@@ -340,5 +412,11 @@ def test_proactive_greeting_adds_chat_turn_and_dispatches_wave():
     TransparentWindow._speak_proactive_greeting(window, "嗨，今天好嗎？")
 
     window.show_synthetic_conversation_turn.assert_called_once_with("主動打招呼", "", "嗨，今天好嗎？")
-    assert "[ACTION:wave_response]" in window.dispatch_action.call_args.args[0]
+    window.dispatch_action.assert_called_once()
+    args, kwargs = window.dispatch_action.call_args
+    assert args == ("[ACTION:wave_response] 嗨，今天好嗎？",)
+    assert set(kwargs) == {"trace_id", "allow_tts", "wait_for_tts_start"}
+    assert kwargs["trace_id"].startswith("greeting-")
+    assert kwargs["allow_tts"] is True
+    assert kwargs["wait_for_tts_start"] is True
     window.speak_text.assert_not_called()

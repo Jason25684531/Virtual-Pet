@@ -1,5 +1,6 @@
 """互動流暢性回歸測試：讀取路徑不得在同一輪互動內重複觸發全量 runtime 重建。"""
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 from pet_harness.ui.pyqt_harness_adapter import PyQtHarnessAdapter
@@ -20,6 +21,42 @@ def test_get_current_state_does_not_rebuild_runtime(harness_env):
     with patch.object(PyQtHarnessAdapter, "_refresh_runtime") as mocked_refresh:
         adapter.get_current_state()
         mocked_refresh.assert_not_called()
+
+
+def test_get_current_state_includes_pending_asset_offers(harness_env):
+    _tmp_path, agentic_root = harness_env
+    adapter = PyQtHarnessAdapter(
+        default_character_id="Choppr",
+        agentic_root=str(agentic_root),
+        provider_runtime=ProviderRuntime(provider=FakeProvider()),
+    )
+    growth_offer = {"variant": "event", "reason": "shortcut_f"}
+    motion_offer = {"variant": "development", "reason": "level_up"}
+    adapter.store.set_setting("asset_pending_offer", growth_offer)
+    adapter.store.set_setting("asset_pending_motion_offer", motion_offer)
+
+    state = adapter.get_current_state()
+
+    assert state["pending_offer"] == growth_offer
+    assert state["pending_motion_offer"] == motion_offer
+
+
+def test_get_current_state_discards_expired_motion_offer(harness_env):
+    _tmp_path, agentic_root = harness_env
+    adapter = PyQtHarnessAdapter(
+        default_character_id="Choppr",
+        agentic_root=str(agentic_root),
+        provider_runtime=ProviderRuntime(provider=FakeProvider()),
+    )
+    adapter.store.set_setting(
+        "asset_pending_motion_offer",
+        {"variant": "development", "created_at": (datetime.now(UTC) - timedelta(days=2)).isoformat()},
+    )
+
+    state = adapter.get_current_state()
+
+    assert state["pending_motion_offer"] is None
+    assert adapter.store.get_setting("asset_pending_motion_offer") is None
 
 
 def test_get_provider_status_does_not_rebuild_runtime(harness_env):
