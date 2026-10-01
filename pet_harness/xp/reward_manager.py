@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from pet_harness import protected_resources
 from pet_harness.models.events import RewardEvent
 from pet_harness.models.reward import RewardRule
 from pet_harness.storage.sqlite_store import SQLiteStore
@@ -14,9 +15,9 @@ class RewardManager:
         self.rules_path = Path(rules_path)
 
     def load_rules(self) -> list[RewardRule]:
-        if not self.rules_path.exists():
+        if not protected_resources.exists(self.rules_path):
             return []
-        payload = json.loads(self.rules_path.read_text(encoding="utf-8"))
+        payload = json.loads(protected_resources.read_text(self.rules_path))
         raw_rules = payload.get("rewards", payload if isinstance(payload, list) else [])
         return [RewardRule.from_dict(rule) for rule in raw_rules]
 

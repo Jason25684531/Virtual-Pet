@@ -87,3 +87,7 @@ CONTEXT-*.md
 AIA_2026_*Only.json
 outputs/*
 Retriveal_doc/*
+# Release build output
+build/
+VirtualPet_Release/
+!.env.example

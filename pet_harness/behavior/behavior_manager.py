@@ -4,6 +4,7 @@ import json
 import logging
 from pathlib import Path
 
+from pet_harness import protected_resources
 from pet_harness.models.events import BehaviorEvent
 from pet_harness.models.skill import Skill
 from pet_harness.storage.sqlite_store import SQLiteStore
@@ -58,7 +59,7 @@ class BehaviorManager:
         return "idle", str(idle.get("webm_key", "idle"))
 
     def _load_behavior_map(self) -> dict[str, dict[str, str]]:
-        if not self.behavior_map_path.exists():
+        if not protected_resources.exists(self.behavior_map_path):
             return {"idle": {"webm_key": "idle"}}
-        payload = json.loads(self.behavior_map_path.read_text(encoding="utf-8"))
+        payload = json.loads(protected_resources.read_text(self.behavior_map_path))
         return payload.get("behaviors", payload)

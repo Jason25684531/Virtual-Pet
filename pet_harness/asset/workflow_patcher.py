@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from pet_harness import protected_resources
+
 
 class WorkflowPatchError(ValueError):
     pass
@@ -15,7 +17,7 @@ class WorkflowPatchError(ValueError):
 class WorkflowPatcher:
     def __init__(self, template: str | Path) -> None:
         self.template = Path(template)
-        self._source = json.loads(self.template.read_text(encoding="utf-8"))
+        self._source = json.loads(protected_resources.read_text(self.template))
 
     def fresh(self) -> dict[str, Any]:
         return copy.deepcopy(self._source)

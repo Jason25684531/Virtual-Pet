@@ -244,4 +244,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # .agentic、data/runtime 等是相對 CWD 的路徑；從捷徑或其他目錄啟動 Release EXE 時也要落在 App 根目錄。
+    _app_root = Path(__file__).resolve().parent
+    os.chdir(_app_root)
+    # Release 內附 ffmpeg/ffplay.exe 時優先使用，新機不需另外安裝。
+    if (_app_root / "ffmpeg" / "ffplay.exe").is_file():
+        os.environ["PATH"] = str(_app_root / "ffmpeg") + os.pathsep + os.environ.get("PATH", "")
     main()
