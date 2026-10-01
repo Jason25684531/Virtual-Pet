@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 from threading import Event
 from typing import Any, Callable, Iterator
 
 import requests
 
+import config
 from pet_harness.agent.provider_adapter import LLMProviderAdapter, ProviderReply
 from pet_harness.models.events import UserEvent
 from pet_harness.models.provider import ProviderConfig, ProviderStatus, ProviderType
 from pet_harness.models.skill import Skill
+
+LOGGER = logging.getLogger(__name__)
 
 
 class OllamaProvider(LLMProviderAdapter):
@@ -30,6 +35,7 @@ class OllamaProvider(LLMProviderAdapter):
                 "model": self.config.model_name,
                 "prompt": prompt,
                 "stream": False,
+                "keep_alive": config.ollama_keep_alive_value(),
             }
             payload.update({key: self.config.metadata[key] for key in ("format", "options") if key in self.config.metadata})
             response = self.request_fn(
@@ -64,6 +70,23 @@ class OllamaProvider(LLMProviderAdapter):
             prompt_text=prompt,
         )
 
+    def preload(self) -> bool:
+        """不帶 prompt 的 /api/generate 只載入模型不產生 token;失敗只記 warning,首輪回落成冷啟動。"""
+        started = time.perf_counter()
+        success = False
+        try:
+            response = self.request_fn(
+                "POST",
+                f"{self.config.base_url or 'http://localhost:11434'}/api/generate",
+                timeout=self.config.timeout_seconds,
+                json={"model": self.config.model_name, "keep_alive": config.ollama_keep_alive_value()},
+            )
+            success = getattr(response, "status_code", 500) < 400
+        except Exception as exc:  # noqa: BLE001 - 預載失敗不得影響啟動
+            LOGGER.warning("[LLM PRELOAD] failed: %s", exc)
+        LOGGER.info("[LLM PRELOAD] done preload_ms=%s success=%s", round((time.perf_counter() - started) * 1000), success)
+        return success
+
     def generate_reply_stream(
         self,
         event: UserEvent,
@@ -77,7 +100,7 @@ class OllamaProvider(LLMProviderAdapter):
             "POST",
             f"{base_url}/api/generate",
             timeout=self.config.timeout_seconds,
-            json={"model": self.config.model_name, "prompt": prompt, "stream": True},
+            json={"model": self.config.model_name, "prompt": prompt, "stream": True, "keep_alive": config.ollama_keep_alive_value()},
             stream=True,
         )
         if getattr(response, "status_code", 500) >= 400:

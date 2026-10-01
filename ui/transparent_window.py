@@ -1165,6 +1165,7 @@ class TransparentWindow(QMainWindow):
         character_id = str(profile_payload.get("character_id") or "").strip()
         if character_id:
             self.apply_character(character_id)
+        self._adapter.warm_active_engine()
         self.refresh_agentic_ui(message="Character switched.", tone="idle", timeoutMs=2200)
 
     def closeEvent(self, event) -> None:

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import logging
 import queue
+import dataclasses
 import re
+import unicodedata
 from time import perf_counter
 from uuid import uuid4
 
 
 import config
+from api_client import greeting_audio_cache
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
 from api_client.tts_contract import TtsRequest
 from pet_harness.app.commands import ACTION_DIRECTIVE_PATTERN
@@ -27,12 +30,23 @@ _SUPPRESSION_REASON_MESSAGES = {
 }
 
 
+_EMOJI_JOINERS = {0xFE0F, 0x200D}  # VS16 與 ZWJ
+
+
+def _speakable(text: str) -> str:
+    """去掉 TTS 念不出來的 emoji/符號(So 類別、VS16、ZWJ);沒有任何文字或數字就回傳空字串。
+    句尾的獨立 `😊` 曾因此觸發 ElevenLabs 400 → VoAI 空音訊 → MP3 fallback。"""
+    kept = "".join(c for c in text if unicodedata.category(c) != "So" and ord(c) not in _EMOJI_JOINERS)
+    kept = re.sub(r"\s+", " ", kept).strip()
+    return kept if any(c.isalnum() for c in kept) else ""
+
+
 class TtsPlaybackMixin:
     def _synthesize_tts(self, message: str, tone: str, trace_id: str | None = None):
         if not self._tts_enabled or tone in {"warn", "error"}:
             return
 
-        speech_text = re.sub(r"\s+", " ", ACTION_DIRECTIVE_PATTERN.sub("", message or "")).strip()
+        speech_text = _speakable(ACTION_DIRECTIVE_PATTERN.sub("", message or ""))
         if not speech_text:
             return
 
@@ -127,7 +141,16 @@ class TtsPlaybackMixin:
             playback_guard=self._can_start_trace_audio,
         )
 
-        worker = self._tts_worker_factory(request, parent=self)
+        recorder = None
+        is_greeting = greeting_audio_cache.is_greeting(request)
+        cached = greeting_audio_cache.load(request) if is_greeting else None
+        if cached is not None:
+            worker = greeting_audio_cache.CachedGreetingWorker(request, cached, parent=self)
+        else:
+            if is_greeting:
+                recorder = greeting_audio_cache.RecordingSink(request.pcm_stream_sink)
+                request = dataclasses.replace(request, pcm_stream_sink=recorder)
+            worker = self._tts_worker_factory(request, parent=self)
         self._active_tts_worker = worker
         self._workers.append(worker)
 
@@ -138,6 +161,8 @@ class TtsPlaybackMixin:
             self._audio_worker.enqueue(audio_bytes, r_id, t_id)
 
         def handle_result(success: bool, result_message: str, payload: object, current_reply_id=reply_id):
+            if recorder is not None:
+                recorder.store_if_clean(request, success, payload, normalized_trace_id in self._suppressed_traces)
             self._on_tts_finished(current_reply_id, success, result_message, payload)
 
         def handle_progress(event_name: str, payload: object):

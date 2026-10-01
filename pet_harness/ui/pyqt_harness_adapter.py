@@ -234,7 +234,22 @@ class PyQtHarnessAdapter:
             lambda turn_id, text: self._stream_chunk_callback(text, turn_id)
             if callable(self._stream_chunk_callback) else None
         )
-        executor.submit(engine.warmup_memory, lambda ok, message, _payload: LOGGER.warning("[MEMORY WARMUP] executor error=%s", message) if not ok else None)
+        self._submit_warmups(engine)
+        preload = getattr(engine.provider, "preload", None)
+        if callable(preload):
+            executor.submit(preload, lambda ok, message, _payload: LOGGER.warning("[LLM PRELOAD] executor error=%s", message) if not ok else None)
+
+    def warm_active_engine(self) -> None:
+        """切換角色會新建 engine,啟動時的預熱只暖到舊 engine;UI 切換完成後呼叫這裡補暖。"""
+        engine = self.router.get_active_engine()
+        if self._background_executor is not None and engine is not None:
+            self._submit_warmups(engine)
+
+    def _submit_warmups(self, engine) -> None:
+        self._background_executor.submit(
+            engine.warmup_memory,
+            lambda ok, message, _payload: LOGGER.warning("[MEMORY WARMUP] executor error=%s", message) if not ok else None,
+        )
 
     def prepare_turn(self, text: str, source: str, character_id: str, trace_id: str | None = None) -> PreparedTurn:
         cleaned = str(text or "").strip()

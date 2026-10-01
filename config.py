@@ -186,6 +186,17 @@ def _read_float_env(name: str, default: float) -> float:
         return float(default)
 
 
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "").strip() or "-1"
+
+
+def ollama_keep_alive_value() -> int | str:
+    """Ollama 的 keep_alive：整數秒(-1=常駐)要送 int,"10m" 這類 duration 才送字串;"-1" 字串會被拒。"""
+    try:
+        return int(OLLAMA_KEEP_ALIVE)
+    except ValueError:
+        return OLLAMA_KEEP_ALIVE
+
+
 POINTWISE_OLLAMA_MODEL = os.getenv("POINTWISE_OLLAMA_MODEL", "gemma3:12b-it-qat").strip() or "gemma3:12b-it-qat"
 POINTWISE_OLLAMA_BASE_URL = os.getenv("POINTWISE_OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip().rstrip("/")
 POINTWISE_OLLAMA_TIMEOUT_SEC = _read_float_env("POINTWISE_OLLAMA_TIMEOUT_SEC", 120.0)
