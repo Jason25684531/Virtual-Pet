@@ -17,7 +17,7 @@ from pet_harness.engine.tool_execution_lifecycle import ToolExecutionLifecycle
 from pet_harness.models.skill import Skill
 from pet_harness.skills.intent_normalizer import normalize
 from pet_harness.skills.skill_loader import SkillLoader
-from pet_harness.skills.skill_router import SkillRouter, resolve_media_intent
+from pet_harness.skills.skill_router import MediaIntent, SkillRouter, resolve_media_intent
 from pet_harness.tools.tool_models import ToolRequest, ToolResult
 
 # 讀的是產品實際的 .agentic/skills 與六個角色 manifest,不是複製出來的 fixture。
@@ -230,3 +230,20 @@ def test_playback_session_is_per_character_store():
     adol, jack = _run_music("success"), _FakeStore()
     assert MediaSessionContext(adol).load().get("playback") is not None
     assert MediaSessionContext(jack).load().get("playback") is None
+
+
+@pytest.mark.parametrize("text", [
+    "那你可以幫我播放一首放鬆的音樂嗎?",
+    "那你可以幫我播放ㄧ首放鬆的音樂嗎?",
+    "你可以幫我放首放鬆的歌嗎",
+    "欸那幫我播個輕鬆的音樂吧",
+    "誒,請幫我播個輕鬆的音樂吧",
+    "那能不能幫我播放周杰倫的晴天",
+], ids=range(6))
+def test_conversational_lead_in_still_routes_to_music(text):
+    assert resolve_media_intent(normalize(text).stripped_text, {"music", "news"}) == MediaIntent("music", "matched")
+
+
+@pytest.mark.parametrize("text", ["那首歌很好聽", "你覺得音樂有什麼魔力", "那你喜歡什麼音樂"], ids=range(3))
+def test_lead_in_stripping_does_not_turn_music_chat_into_a_request(text):
+    assert not resolve_media_intent(normalize(text).stripped_text, {"music", "news"}).capability

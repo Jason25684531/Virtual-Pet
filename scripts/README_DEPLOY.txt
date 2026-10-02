@@ -5,6 +5,10 @@ VirtualPet Release 部署說明
   1. 把整個 VirtualPet_Release 資料夾複製到新電腦（任意可寫入的路徑，中文或空白都可以；
      不要放在 C:\Program Files 這類唯讀位置）。
   2. 把 config\.env.example 複製為 config\.env，填入 API Key 與 Ollama / ComfyUI 位址。
+     第一次啟動時，App 會自動把它加密成 config\.env.secure 並刪除明文 .env（用 Windows DPAPI，
+     綁定這台電腦與這個登入帳號；記事本打開只會看到亂碼）。之後不需要任何操作。
+     要更換 key：重新放一份明文 config\.env，下次啟動會覆蓋加密檔。
+     搬到另一台電腦：不要帶 .env.secure（在別台電腦解不開），在新機重新填一份 .env。
   3. （選用）從舊機複製 runtime data，沒複製就是全新開始：
        data\pet_state.db、data\characters\、data\saves\、data\runtime\
      （data\characters\ 會連同 personal.json 一起覆蓋；舊機改過的角色個性會一起帶過來）

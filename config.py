@@ -10,19 +10,23 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-try:
-    from dotenv import load_dotenv
-except ModuleNotFoundError:  # pragma: no cover - 允許在依賴尚未安裝時安全匯入
-    def load_dotenv(*_args, **_kwargs):  # type: ignore[override]
-        return False
-
+import secure_env
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-# Release 把設定放在 config/.env；開發機沿用根目錄 .env。
-ENV_PATH = PROJECT_ROOT / "config" / ".env"
-if not ENV_PATH.is_file():
-    ENV_PATH = PROJECT_ROOT / ".env"
-load_dotenv(ENV_PATH, override=False)
+# Release 把設定放在 config/.env（首次啟動會被加密成 .env.secure）；開發機沿用根目錄 .env。
+ENV_PATH = secure_env.resolve(PROJECT_ROOT)
+_env_text = secure_env.read_text(ENV_PATH)
+if _env_text:
+    try:
+        import io
+
+        from dotenv import dotenv_values
+
+        for _key, _value in dotenv_values(stream=io.StringIO(_env_text)).items():
+            if _value is not None:
+                os.environ.setdefault(_key, _value)  # 與原 load_dotenv(override=False) 相同：環境變數優先
+    except ModuleNotFoundError:  # pragma: no cover - 允許在依賴尚未安裝時安全匯入
+        pass
 
 # Release 內附 models/ 與 ms-playwright/ 時預設使用它們並禁止下載；環境變數與 .env 仍可覆寫（setdefault）。
 BUNDLED_MODELS_DIR = PROJECT_ROOT / "models"

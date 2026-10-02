@@ -32,12 +32,13 @@ GCC_DIR = LOCAL / "Nuitka/Nuitka/Cache/downloads/gcc/x86_64/15.2.0posix-13.0.0-m
 FIRST_PARTY_PACKAGES = ("pet_harness", "ui", "sensors", "api_client")
 FIRST_PARTY_TOP_MODULES = (
     "main", "config", "action_dispatcher", "action_services", "audio_playback", "audio_worker",
-    "character_library", "interaction_trace", "tts_playback", "release_bootstrap",
+    "character_library", "interaction_trace", "tts_playback", "release_bootstrap", "secure_env",
 )
 # 核心邏輯：設定 / prompt / skills 路由 / 記憶 / engine / 行為 / 成長 / workflow 組裝。
 # __init__.py 一律留給 Nuitka（package 本體做成 .pyd 會讓 Nuitka 找不到子模組）。
 CYTHON_GLOBS = (
     "config.py",
+    "secure_env.py",  # 含 DPAPI entropy，編成 .pyd
     "pet_harness/agent/*.py",
     "pet_harness/skills/*.py",
     "pet_harness/memory/*.py",
@@ -381,7 +382,7 @@ def verify() -> None:
             leaked.append(str(rel))
         if path.suffix.lower() in {".safetensors", ".ckpt", ".gguf"}:
             external_models.append(str(rel))
-        if path.name == ".env":
+        if path.name in {".env", ".env.secure"}:
             secret_hits.append(str(rel))
         # ponytail: 只掃 < 64MB（目前超過的只有模型權重與 CUDA DLL）；若素材影片超過 64MB，改成分塊串流掃描。
         if secrets and path.stat().st_size < 64 * 1024 * 1024:

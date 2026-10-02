@@ -7,13 +7,15 @@ import re
 from pathlib import Path
 from typing import Any
 
+import secure_env
+
 
 def load_project_env(path: str | Path) -> dict[str, str]:
     loaded: dict[str, str] = {}
-    env_path = Path(path)
-    if not env_path.exists():
+    text = secure_env.read_text(path)
+    if text is None:
         return loaded
-    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+    for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue

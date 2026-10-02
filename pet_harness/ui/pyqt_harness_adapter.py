@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import config
+import secure_env
 from pet_harness.character.registry import CharacterRegistry
 from pet_harness.character.router import CharacterRouter
 from pet_harness.engine.harness_engine import PetHarnessEngine
@@ -983,5 +984,4 @@ class PyQtHarnessAdapter:
         return SecretMasker(self._project_env).payload(value)
 
     def _load_project_env(self) -> dict[str, str]:
-        env_path = self._project_root / "config" / ".env"  # 與 config.ENV_PATH 同一規則：config/.env 優先
-        return load_project_env(env_path if env_path.is_file() else self._project_root / ".env")
+        return load_project_env(secure_env.resolve(self._project_root))  # 與 config.ENV_PATH 同一規則
