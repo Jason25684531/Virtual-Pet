@@ -87,6 +87,7 @@ def _build_stt_controller(window, provider=None):
         vad = SileroVad(
             silence_ms=config.STT_VAD_SILENCE_MS,
             threshold=config.STT_VAD_THRESHOLD,
+            cache_dir=Path(config.STT_VAD_MODEL_DIR),
         )
         silence_source = "env" if os.getenv("STT_VAD_SILENCE_MS") is not None else "default"
         print(
@@ -221,6 +222,10 @@ def _preload_onnx_runtime():
 
 
 def main():
+    # 必須在 _preload_onnx_runtime 匯入 qdrant_client→huggingface_hub 之前：config 會設定
+    # HF_HUB_OFFLINE / FASTEMBED_CACHE_PATH，而 huggingface_hub 只在 import 當下讀一次。
+    import config  # noqa: F401
+
     log_dir = Path(__file__).resolve().parent / "logs"
     log_dir.mkdir(exist_ok=True)
     logging.basicConfig(
@@ -244,10 +249,19 @@ def main():
 
 
 if __name__ == "__main__":
+    # Release 的 stdout/stderr 被導向 logs/*.log：預設用系統 ANSI 編碼（如 cp1252）會在印中文時崩潰；
+    # 預設是區塊緩衝，PyQt 遇到未處理例外會 abort，緩衝中的 traceback 會跟著消失，所以逐行寫入。
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
     # .agentic、data/runtime 等是相對 CWD 的路徑；從捷徑或其他目錄啟動 Release EXE 時也要落在 App 根目錄。
     _app_root = Path(__file__).resolve().parent
     os.chdir(_app_root)
-    # Release 內附 ffmpeg/ffplay.exe 時優先使用，新機不需另外安裝。
-    if (_app_root / "ffmpeg" / "ffplay.exe").is_file():
-        os.environ["PATH"] = str(_app_root / "ffmpeg") + os.pathsep + os.environ.get("PATH", "")
+    # Release 內附 ffmpeg/ffplay.exe 與 CUDA DLL（nvidia/*/bin）時優先使用，新機不需另外安裝。
+    # nvidia.* 是沒有程式碼的 namespace package，Nuitka 不會帶，faster_whisper_stt 找不到時改由這裡補 PATH。
+    _bundled_bins = [_app_root / "ffmpeg", *sorted((_app_root / "nvidia").glob("*/bin"))]
+    os.environ["PATH"] = os.pathsep.join([*(str(p) for p in _bundled_bins if p.is_dir()), os.environ.get("PATH", "")])
+    import release_bootstrap
+
+    release_bootstrap.start(_app_root)  # 背景準備 Lively / Ollama / ComfyUI，不延遲主視窗
     main()

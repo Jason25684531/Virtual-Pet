@@ -91,3 +91,4 @@ Retriveal_doc/*
 build/
 VirtualPet_Release/
 !.env.example
+scripts/vendor/

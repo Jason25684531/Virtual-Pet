@@ -7,7 +7,9 @@ import re
 from pathlib import Path
 from typing import Any
 
-from pet_harness import protected_resources
+
+# AIA_2026_video_gen 的 CRTLoadLastMedia / AutoMotionSequenceOpen 節點寫死了製作機的 ComfyUI 根目錄。
+_WORKFLOW_COMFYUI_ROOT = r"C:\ComfyUI_windows_portable_260701"
 
 
 class WorkflowPatchError(ValueError):
@@ -17,7 +19,14 @@ class WorkflowPatchError(ValueError):
 class WorkflowPatcher:
     def __init__(self, template: str | Path) -> None:
         self.template = Path(template)
-        self._source = json.loads(protected_resources.read_text(self.template))
+        self._source = json.loads(self.template.read_text(encoding="utf-8"))
+        comfyui_path = os.getenv("COMFYUI_PATH", "").strip().rstrip("\\/")
+        if comfyui_path:
+            for node in self._source.values():
+                inputs = node.get("inputs", {}) if isinstance(node, dict) else {}
+                for key, value in inputs.items():
+                    if isinstance(value, str) and value.startswith(_WORKFLOW_COMFYUI_ROOT):
+                        inputs[key] = comfyui_path + value[len(_WORKFLOW_COMFYUI_ROOT):]
 
     def fresh(self) -> dict[str, Any]:
         return copy.deepcopy(self._source)

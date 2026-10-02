@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from pathlib import Path
 import config
 import main
 
@@ -97,7 +98,7 @@ def test_vad_enabled_creates_and_injects_vad(monkeypatch):
 
     main._build_stt_controller(_fake_window())
 
-    vad_ctor.assert_called_once_with(silence_ms=800, threshold=0.5)
+    vad_ctor.assert_called_once_with(silence_ms=800, threshold=0.5, cache_dir=Path(config.STT_VAD_MODEL_DIR))
     assert controller_ctor.call_args.kwargs["vad"] is fake_vad
 
 

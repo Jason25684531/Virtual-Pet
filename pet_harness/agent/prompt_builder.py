@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pet_harness import protected_resources
 from pet_harness.memory.base_memory_store import MemoryHit
 from pet_harness.memory.memory_models import MemoryItem
 from pet_harness.models.events import UserEvent
@@ -287,7 +286,7 @@ class PromptBuilder:
         )
 
     def _read_optional(self, path: Path, fallback: str, warnings: list[str]) -> str:
-        if not protected_resources.exists(path):
+        if not path.exists():
             warnings.append(f"Missing context file: {path.name}")
             return fallback
-        return protected_resources.read_text(path).strip()
+        return path.read_text(encoding="utf-8").strip()

@@ -129,22 +129,6 @@ class TransparentWindow(QMainWindow):
     DEFAULT_CHARACTER_Y_OFFSET = 0
     DEFAULT_CHARACTER_SCALE = 1.0
     DEFAULT_CHARACTER_OBJECT_POSITION = "center bottom"
-    DEMO_ANIMATIONS_DIR = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "assets",
-        "animations",
-    )
-    DEMO_MOTION_MAPPING = {
-        "idle": "Idle.webm",
-        "report_news": "report_news.webm",
-        "play_music": "play_music.webm",
-        "wave_response": "running_forward.webm",
-        "laugh": "雀躍大笑.webm",
-        "angry": "薄怒嘟嘴.webm",
-        "awkward": "尷尬擺手.webm",
-        "speechless": "無言微翻白眼.webm",
-        "listen": "專心聆聽.webm",
-    }
 
     def __init__(
         self,
@@ -885,13 +869,6 @@ class TransparentWindow(QMainWindow):
             self.restore_idle_video()
             return False
 
-        demo_filename = self.DEMO_MOTION_MAPPING.get(motion_key)
-        if demo_filename:
-            demo_path = os.path.join(self.DEMO_ANIMATIONS_DIR, demo_filename)
-            if os.path.isfile(demo_path):
-                print(f"[ECHOES] 播放示範動作 `{motion_key}`: {demo_path}")
-                return self.change_video(demo_path, loop=should_loop)
-
         print(f"[ECHOES] 警告: 找不到可播放的 action 動作 {motion_key}。")
         return False
 
@@ -925,13 +902,6 @@ class TransparentWindow(QMainWindow):
                 return True
 
         self._run_javascript("setIdleMotionCandidates", [])
-
-        demo_idle_path = os.path.join(
-            self.DEMO_ANIMATIONS_DIR,
-            self.DEMO_MOTION_MAPPING["idle"],
-        )
-        if os.path.isfile(demo_idle_path):
-            return self.change_video(demo_idle_path, loop=True)
 
         fallback_idle = os.path.join(ASSETS_WEBM_DIR, "idle.webm")
         if os.path.isfile(fallback_idle):
@@ -1788,13 +1758,6 @@ class TransparentWindow(QMainWindow):
         )
         if os.path.isfile(root_relative):
             return self._normalize_absolute_path(root_relative)
-
-        demo_relative = os.path.join(
-            self.DEMO_ANIMATIONS_DIR,
-            os.path.basename(filename),
-        )
-        if os.path.isfile(demo_relative):
-            return self._normalize_absolute_path(demo_relative)
 
         legacy_relative = os.path.join(ASSETS_WEBM_DIR, filename)
         return self._normalize_absolute_path(legacy_relative)

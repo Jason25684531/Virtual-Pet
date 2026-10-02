@@ -18,12 +18,24 @@ except ModuleNotFoundError:  # pragma: no cover - 允許在依賴尚未安裝時
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-ENV_PATH = PROJECT_ROOT / ".env"
+# Release 把設定放在 config/.env；開發機沿用根目錄 .env。
+ENV_PATH = PROJECT_ROOT / "config" / ".env"
+if not ENV_PATH.is_file():
+    ENV_PATH = PROJECT_ROOT / ".env"
 load_dotenv(ENV_PATH, override=False)
+
+# Release 內附 models/ 與 ms-playwright/ 時預設使用它們並禁止下載；環境變數與 .env 仍可覆寫（setdefault）。
+BUNDLED_MODELS_DIR = PROJECT_ROOT / "models"
+if BUNDLED_MODELS_DIR.is_dir():
+    os.environ.setdefault("FASTEMBED_CACHE_PATH", str(BUNDLED_MODELS_DIR / "fastembed"))
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+if (PROJECT_ROOT / "ms-playwright").is_dir():
+    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(PROJECT_ROOT / "ms-playwright"))
+_MODEL_ROOT = BUNDLED_MODELS_DIR if BUNDLED_MODELS_DIR.is_dir() else PROJECT_ROOT / "runtime_cache"
 
 DEFAULT_PERSONA_KEY = "default"
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
-DEFAULT_OLLAMA_MODEL = "gemma3:12b-it-qat"
+DEFAULT_OLLAMA_MODEL = "gemma3:12b"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_ELEVENLABS_VOICE_ID = "zENt0ljwLXypGqHDsdzz"
 DEFAULT_TTS_MODEL_ID = "eleven_flash_v2_5"
@@ -60,7 +72,7 @@ DEFAULT_CHARACTER_IDS: tuple[str, ...] = (
     "char-ROG",
 )
 
-#如果要換Voice ID這裡可以改咬
+#如果要換Evanlab_sVoice ID這裡可以改咬
 BUILTIN_CHARACTER_ELEVENLABS_VOICE_IDS: dict[str, str] = {
     "char-Adol": "fUjY9K2nAIwlALOwSiwc",
     "char-Jack": "1iu1W6qkEusxMp5pZvus",
@@ -264,6 +276,8 @@ COMFYUI_TIMEOUT_SEC = _read_int_env("COMFYUI_TIMEOUT_SEC", 300)
 COMFYUI_VIDEO_TIMEOUT_SEC = _read_int_env("COMFYUI_VIDEO_TIMEOUT_SEC", 900)
 COMFYUI_MAX_RETRIES = _read_int_env("COMFYUI_MAX_RETRIES", 2)
 COMFYUI_ENABLED = _read_bool_env("COMFYUI_ENABLED", False)
+# Demo PC 的 ComfyUI 安裝根目錄；workflow 內寫死的製作機路徑會被換成這裡（見 workflow_patcher）。
+COMFYUI_PATH = os.getenv("COMFYUI_PATH", "").strip()
 INTERACTION_TRIGGER_THRESHOLDS = (3, 6, 9)
 MOCK_RENDER_DURATION_SEC = _read_float_env("MOCK_RENDER_DURATION_SEC", 8.0)
 PROACTIVE_GREETING_INTERVAL_SEC = _read_float_env("PROACTIVE_GREETING_INTERVAL_SEC", 30.0)
@@ -281,7 +295,7 @@ STT_ENABLED = _read_bool_env("STT_ENABLED", True)
 STT_MODEL = os.getenv("STT_MODEL", "large-v3-turbo").strip() or "large-v3-turbo" #Whisper Modeljjj
 STT_DEVICE = os.getenv("STT_DEVICE", "cuda").strip() or "cuda"
 STT_COMPUTE_TYPE = os.getenv("STT_COMPUTE_TYPE", "float16").strip() or "float16"
-STT_MODEL_PATH = os.getenv("STT_MODEL_PATH", str(PROJECT_ROOT / "runtime_cache" / "whisper")).strip()
+STT_MODEL_PATH = os.getenv("STT_MODEL_PATH", str(_MODEL_ROOT / "whisper")).strip()
 STT_LANGUAGE = os.getenv("STT_LANGUAGE", "").strip()  # 空字串 = auto detection
 STT_BEAM_SIZE = _read_int_env("STT_BEAM_SIZE",1) #文字精準度的判讀
 STT_SAMPLE_RATE = _read_int_env("STT_SAMPLE_RATE", 16000)
@@ -290,6 +304,7 @@ STT_MAX_RECORDING_SECONDS = _read_int_env("STT_MAX_RECORDING_SECONDS", 30)
 STT_VAD_ENABLED = _read_bool_env("STT_VAD_ENABLED", False)
 STT_VAD_SILENCE_MS = _read_int_env("STT_VAD_SILENCE_MS", 500)
 STT_VAD_THRESHOLD = _read_float_env("STT_VAD_THRESHOLD", 0.5)
+STT_VAD_MODEL_DIR = os.getenv("STT_VAD_MODEL_DIR", str(_MODEL_ROOT / "vad")).strip()
 TURN_LATENCY_BUDGET_MS = _read_int_env("TURN_LATENCY_BUDGET_MS", 3000)
 
 LOW_LATENCY_REPLY_POLICY = (

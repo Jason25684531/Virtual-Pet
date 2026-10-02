@@ -21,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _SKIP_DIRS = {
     "venv", "__pycache__", ".git", "outputs", "runtime_cache", "openspec",
     "debug", "data", "assets", "FinalReport", "ComfyUI_Json", "node_modules",
+    "build", "VirtualPet_Release",  # build_release 產物：Nuitka 生成的 C 原始碼與 7GB Release，掃描會卡死
 }
 _CORPUS_PATTERNS = ("*.py", "*.md", "*.json", "*.js", "*.html", "*.ini", "*.txt")
 # 獨立的研究 spike:有自己的 __main__,靠 docs/spikes/ 的紀錄存在,不是產品執行路徑。

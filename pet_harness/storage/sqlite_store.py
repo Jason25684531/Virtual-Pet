@@ -14,6 +14,7 @@ from pet_harness.tools.tool_models import ToolResult
 
 
 DEFAULT_USER_ID = "default"
+APP_ROOT = Path(__file__).resolve().parents[2]
 
 #DB儲存邏輯
 
@@ -370,7 +371,7 @@ class SQLiteStore:
                 "asset_type": row["asset_type"],
                 "status": row["status"],
                 "asset_id": row["asset_id"],
-                "file_path": row["file_path"],
+                "file_path": SQLiteStore._rebase(row["file_path"]),
                 "webm_key": row["webm_key"],
                 "request": json.loads(row["request_json"] or "{}"),
                 "response": json.loads(row["response_json"] or "{}"),
@@ -487,7 +488,7 @@ class SQLiteStore:
         query = "SELECT * FROM character_assets WHERE " + " AND ".join(filters) + " ORDER BY generation_index ASC, created_at ASC"
         with self.connect() as conn:
             rows = conn.execute(query, params).fetchall()
-        return [dict(row) | {"active": bool(row["active"])} for row in rows]
+        return [dict(row) | {"active": bool(row["active"]), "file_path": self._rebase(row["file_path"])} for row in rows]
 
     def allocate_generation(self, character_id: str, variant: str, asset_root: str | Path | None = None) -> int:
         with self.connect() as conn:
@@ -503,7 +504,7 @@ class SQLiteStore:
                 return int(row["generation_index"])
             rows = conn.execute("SELECT file_path, generation_index FROM character_assets").fetchall()
         for row in rows:
-            if str(Path(row["file_path"]).resolve()) == normalized:
+            if str(Path(self._rebase(row["file_path"])).resolve()) == normalized:
                 return int(row["generation_index"])
         return None
 
@@ -533,7 +534,7 @@ class SQLiteStore:
             existing = next(
                 (
                     row for row in existing_rows
-                    if Path(str(row["file_path"])).resolve() == normalized_path
+                    if Path(str(self._rebase(row["file_path"]))).resolve() == normalized_path
                 ),
                 None,
             )
@@ -570,8 +571,19 @@ class SQLiteStore:
             return self._ensure_flat_revision(conn, character_id, variant, Path(asset_root))
 
     def _default_asset_root(self, character_id: str) -> Path:
-        repo_root = Path(__file__).resolve().parents[2]
-        return repo_root / "assets" / "characters" / character_id
+        return APP_ROOT / "assets" / "characters" / character_id
+
+    @staticmethod
+    def _rebase(file_path: str | None) -> str | None:
+        """DB 存的是寫入當下的絕對路徑；整包搬到別的資料夾或新機後，把 assets/ 之後接到目前的 APP_ROOT。
+        只改讀出的值、不改 DB；找不到對應檔案就原樣回傳，讓呼叫方走既有的 fallback。"""
+        if not file_path:
+            return file_path
+        path = Path(file_path)
+        if not path.is_absolute() or path.exists() or "assets" not in path.parts:
+            return file_path
+        rebased = APP_ROOT.joinpath(*path.parts[path.parts.index("assets"):])
+        return str(rebased) if rebased.exists() else file_path
 
     def _asset_root(self, file_path: str | Path, character_id: str) -> Path:
         path = Path(file_path)

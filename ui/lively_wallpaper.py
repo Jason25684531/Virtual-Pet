@@ -28,6 +28,27 @@ def store_executable() -> str:
     return str(Path(location) / "Build" / "Lively.exe") if location else ""
 
 
+def lively_data_roots() -> list[Path]:
+    """安裝版與 Store 版 Lively 的資料根目錄（WallpaperLayout.json、Library/wallpapers 所在處）。"""
+    local = Path(os.environ.get("LOCALAPPDATA", ""))
+    return [local / "Lively Wallpaper", *(local / "Packages").glob("*LivelyWallpaper*/LocalCache/Local/Lively Wallpaper")]
+
+
+def find_lively_executable() -> str:
+    """LIVELY_EXE → PATH → Store 版 / 安裝版常見位置；找不到回傳空字串。"""
+    local = Path(os.environ.get("LOCALAPPDATA", ""))
+    executable = os.environ.get("LIVELY_EXE") or shutil.which("Lively.exe")
+    if not executable:
+        candidates = list(Path(os.environ.get("ProgramFiles", "C:/Program Files")).glob(
+            "WindowsApps/*LivelyWallpaper*/Build/Lively.exe"))
+        candidates.extend(local.glob("Programs/Lively Wallpaper/Lively.exe"))
+        try:
+            executable = str(next((p for p in candidates if p.is_file()), "")) or store_executable()
+        except (OSError, subprocess.SubprocessError):
+            executable = ""
+    return executable if executable and Path(executable).is_file() else ""
+
+
 def _wallpaper_folder(root: Path, value: str) -> Path:
     folder = Path(value)
     if folder.is_dir():
@@ -43,10 +64,7 @@ def prepare_command(
     suffixes: tuple[str, ...] = (".webm",),
 ) -> list[str] | None:
     """Build a setprop command only for the matching active wallpaper."""
-    local = Path(os.environ.get("LOCALAPPDATA", ""))
-    roots = [local / "Lively Wallpaper"]
-    roots.extend((local / "Packages").glob("*LivelyWallpaper*/LocalCache/Local/Lively Wallpaper"))
-    for root in roots:
+    for root in lively_data_roots():
         layout = root / "WallpaperLayout.json"
         if not layout.is_file():
             continue
@@ -57,13 +75,8 @@ def prepare_command(
             if info.get("Title") != title or property_name not in properties:
                 continue
 
-            executable = os.environ.get("LIVELY_EXE") or shutil.which("Lively.exe")
+            executable = find_lively_executable()
             if not executable:
-                candidates = list(Path(os.environ.get("ProgramFiles", "C:/Program Files")).glob(
-                    "WindowsApps/*LivelyWallpaper*/Build/Lively.exe"))
-                candidates.extend(local.glob("Programs/Lively Wallpaper/Lively.exe"))
-                executable = str(next((p for p in candidates if p.is_file()), "")) or store_executable()
-            if not executable or not Path(executable).is_file():
                 raise FileNotFoundError("Lively.exe not found; set LIVELY_EXE")
 
             value = ""

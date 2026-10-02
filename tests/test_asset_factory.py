@@ -63,3 +63,25 @@ def test_comfy_service_forwards_trigger_reason_to_variant_job(monkeypatch):
     ))
 
     assert orchestrator.kwargs["trigger_reason"] == "level_up"
+
+
+def test_missing_workflow_files_fall_back_to_mock(tmp_path, monkeypatch, caplog):
+    class HealthyClient:
+        def __init__(self, *args):
+            pass
+
+        def health_check(self):
+            return True
+
+    store = SQLiteStore(tmp_path / "state.db")
+    store.initialize()
+    monkeypatch.setattr(factory.config, "COMFYUI_ENABLED", True)
+    monkeypatch.setattr(factory, "ComfyUIClient", HealthyClient)
+    real_is_file = factory.Path.is_file
+    monkeypatch.setattr(factory.Path, "is_file", lambda self: False if self.parent.name == "ComfyUI_Json" else real_is_file(self))
+
+    with caplog.at_level(logging.WARNING, logger=factory.__name__):
+        service = factory.build_asset_service(store, None, CharacterLibrary())
+
+    assert isinstance(service, MockAssetService)
+    assert "workflow missing" in caplog.text

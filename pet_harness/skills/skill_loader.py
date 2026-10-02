@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from pet_harness import protected_resources
 from pet_harness.models.skill import Skill
 
 LOGGER = logging.getLogger(__name__)
@@ -15,13 +14,12 @@ class SkillLoader:
         self.load_errors: dict[str, str] = {}
 
     def load_skills(self) -> list[Skill]:
-        paths = protected_resources.rglob(self.skills_dir, ".md")
-        if not paths and not self.skills_dir.exists():
+        if not self.skills_dir.exists():
             LOGGER.warning("Skill directory does not exist: %s", self.skills_dir)
             return []
 
         skills: list[Skill] = []
-        for path in paths:
+        for path in sorted(self.skills_dir.rglob("*.md")):
             try:
                 metadata = self._parse_metadata(path)
                 skills.append(Skill.from_metadata(metadata, file_path=path))
@@ -32,7 +30,7 @@ class SkillLoader:
 
     def _parse_metadata(self, path: Path) -> dict[str, str]:
         metadata: dict[str, str] = {}
-        for line in protected_resources.read_text(path).splitlines():
+        for line in path.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue

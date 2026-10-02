@@ -262,3 +262,24 @@ def test_has_finished_speech_for_trace_is_not_blocked_by_the_still_pending_strea
         assert dispatcher.has_finished_speech_for_trace("trace-1") is True
     finally:
         dispatcher.shutdown(wait_ms=100)
+
+
+def test_motion_path_lookup_only_uses_window_attributes_that_exist(tmp_path):
+    """MagicMock 視窗會吞掉任何屬性存取；用 spec 限定為真實 TransparentWindow 的屬性，
+    否則像 DEMO_MOTION_MAPPING 被移除後的 AttributeError 只會在實機播動作時才閃退。"""
+    from ui.transparent_window import TransparentWindow
+
+    motion = tmp_path / "wave_response.webm"
+    motion.write_bytes(b"webm")
+    window = MagicMock(spec=TransparentWindow)
+    library = MagicMock()
+    library.get_action_motion_path.return_value = str(motion)
+    dispatcher = MotionCoordinator(window, library, tts_enabled=False)
+    try:
+        dispatcher._current_character_id = lambda: "char-Adol"
+        assert dispatcher._find_motion_path("wave_response") == str(motion)
+        library.get_action_motion_path.return_value = None
+        library.get_motion_path.return_value = None
+        assert dispatcher._find_motion_path("wave_response") is None
+    finally:
+        dispatcher.shutdown()

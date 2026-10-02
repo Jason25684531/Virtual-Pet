@@ -983,4 +983,5 @@ class PyQtHarnessAdapter:
         return SecretMasker(self._project_env).payload(value)
 
     def _load_project_env(self) -> dict[str, str]:
-        return load_project_env(self._project_root / ".env")
+        env_path = self._project_root / "config" / ".env"  # 與 config.ENV_PATH 同一規則：config/.env 優先
+        return load_project_env(env_path if env_path.is_file() else self._project_root / ".env")

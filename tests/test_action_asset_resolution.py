@@ -27,8 +27,6 @@ def _fake_window(character_id, action_path=None, motion_path=None):
     fake._library.get_action_motion_path.return_value = action_path
     fake._library.get_motion_path.return_value = motion_path
     fake.change_video.return_value = True
-    fake.DEMO_MOTION_MAPPING = TransparentWindow.DEMO_MOTION_MAPPING
-    fake.DEMO_ANIMATIONS_DIR = TransparentWindow.DEMO_ANIMATIONS_DIR
     return fake
 
 

@@ -62,3 +62,13 @@ def test_provider_runtime_preload_delegates_to_current_adapter():
 
     assert ProviderRuntime(provider=NS(preload=lambda: True)).preload() is True
     assert ProviderRuntime(provider=NS()).preload() is False  # 無預載能力(如 API provider)
+
+
+def test_404_names_the_missing_model_and_the_fix():
+    provider = _provider(lambda *a, **k: SimpleNamespace(status_code=404))
+    assert "ollama pull m" in provider._http_error(404)
+    assert provider._http_error(500) == "Ollama returned status 500."
+
+
+def test_default_ollama_model_is_the_one_actually_pulled():
+    assert config.DEFAULT_OLLAMA_MODEL == "gemma3:12b"

@@ -18,6 +18,11 @@ LOGGER = logging.getLogger(__name__)
 
 
 class OllamaProvider(LLMProviderAdapter):
+    def _http_error(self, status_code: int) -> str:
+        if status_code == 404:  # Ollama 對不存在的模型回 404
+            return f"Ollama returned status 404: model '{self.config.model_name}' not found (run: ollama pull {self.config.model_name})."
+        return f"Ollama returned status {status_code}."
+
     def __init__(self, config: ProviderConfig, request_fn: Callable[..., Any] | None = None) -> None:
         self.config = config
         self.request_fn = request_fn or self._default_request
@@ -47,7 +52,7 @@ class OllamaProvider(LLMProviderAdapter):
             if getattr(response, "status_code", 500) >= 400:
                 return self._unavailable_reply(
                     prompt, "ollama_http_error",
-                    f"Ollama returned status {response.status_code}.",
+                    self._http_error(response.status_code),
                 )
             payload = response.json()
         except Exception as exc:  # noqa: BLE001 - fail-closed,不偽造回覆
@@ -104,7 +109,7 @@ class OllamaProvider(LLMProviderAdapter):
             stream=True,
         )
         if getattr(response, "status_code", 500) >= 400:
-            raise RuntimeError(f"Ollama returned status {response.status_code}.")
+            raise RuntimeError(self._http_error(response.status_code))
         try:
             for line in response.iter_lines():
                 if cancel is not None and cancel.is_set():
