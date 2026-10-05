@@ -100,12 +100,16 @@ def _normalize_provider_name(value: str | None) -> str:
 def build_tts_provider_chain(
     character_id: str | None,
     preferred_provider: str | None = None,
+    text: str = "",
 ) -> tuple[TtsProvider, ...]:
     """依角色與(選填的)明確偏好,決定這次合成要依序嘗試哪些供應商。
 
     未明確指定偏好時,有專屬 ElevenLabs 聲線的角色以 ElevenLabs 為首選,
     否則維持 VoAI 優先——與改寫前 AdaptiveTTSFallbackWorker.__init__ 的規則相同。
+    文字為英文時一律 ElevenLabs 優先(VoAI 的 speaker 是中文聲線);中文行為不變。
     """
+    from pet_harness.agent.reply_language import detect_reply_language
+
     import config
     from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
     from api_client.voai_client import VoAIStreamingTTSWorker
@@ -113,7 +117,8 @@ def build_tts_provider_chain(
     normalized_character_id = str(character_id or "").strip()
     normalized = _normalize_provider_name(preferred_provider) or (
         "elevenlabs"
-        if normalized_character_id in config.BUILTIN_CHARACTER_ELEVENLABS_VOICE_IDS
+        if detect_reply_language(text) == "en"
+        or normalized_character_id in config.BUILTIN_CHARACTER_ELEVENLABS_VOICE_IDS
         else "voai"
     )
 

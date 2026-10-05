@@ -48,8 +48,8 @@ def _reference_corpus() -> str:
     blobs = []
     for pattern in _CORPUS_PATTERNS:
         for path in PROJECT_ROOT.rglob(pattern):
-            if any(part in _SCAN_SKIP_DIRS for part in path.relative_to(PROJECT_ROOT).parts):
-                continue
+            if any(part in _SCAN_SKIP_DIRS | {"tests"} for part in path.relative_to(PROJECT_ROOT).parts):
+                continue  # tests/ 不算呼叫者:只有測試在用的 production API 一樣是死碼
             # 保留清單本身寫了這些名字;把自己算進語料會讓每一項都「看起來有引用」。
             if path.resolve() == Path(__file__).resolve():
                 continue
@@ -97,12 +97,17 @@ def test_retention_list_does_not_rot():
 
 
 def test_removed_dead_code_stays_removed():
-    """本次變更移除的兩個無入口 CRUD 方法;重新出現代表又有人加了沒有呼叫者的程式碼。"""
+    """歷次清理移除的無入口方法;重新出現代表又有人加了沒有呼叫者的程式碼。"""
     from pet_harness.asset.comfyui_client import ComfyUIClient
     from pet_harness.character.registry import CharacterRegistry
+    from pet_harness.character.router import CharacterRouter
 
     assert not hasattr(ComfyUIClient, "cancel_prompt")
     assert not hasattr(CharacterRegistry, "update_profile")
+    for name in ("create_character", "update_manifest", "set_active", "get_active"):
+        assert not hasattr(CharacterRegistry, name), name
+    for name in ("get_active_motions", "get_voice_id_env_key"):
+        assert not hasattr(CharacterRouter, name), name
 
 
 def test_dynamic_entry_points_still_resolve():

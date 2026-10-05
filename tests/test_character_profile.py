@@ -5,7 +5,8 @@ import time
 import pytest
 
 import pet_harness.character.profile as profile_module
-from pet_harness.character import CharacterProfile, InvalidCharacterIdError
+from pet_harness.character.exceptions import InvalidCharacterIdError
+from pet_harness.character.profile import CharacterProfile
 
 pytestmark = pytest.mark.uses_repo_cwd
 
@@ -116,28 +117,6 @@ class TestSave:
         # 還原
         p.persona_description = original_desc
         p.save()
-
-
-class TestSerializationRoundtrip:
-    def test_roundtrip(self):
-        p = CharacterProfile.load("Choppr")
-        json_str = p.to_json()
-        p2 = CharacterProfile.from_json(json_str)
-
-        assert p.character_id == p2.character_id
-        assert p.name == p2.name
-        assert p.background_image == p2.background_image
-        assert p.motions_dir == p2.motions_dir
-        assert p.motions == p2.motions
-        assert p.idle_pool == p2.idle_pool
-        assert p.voice_id_env_key == p2.voice_id_env_key
-        assert p.layout == p2.layout
-        assert p.persona_description == p2.persona_description
-        assert p.skill_config == p2.skill_config
-        assert p.sqlite_path == p2.sqlite_path
-        assert p.qdrant_collection == p2.qdrant_collection
-        assert p.is_preset == p2.is_preset
-        assert p2.is_preset is True
 
 
 class TestInvalidCharacterId:

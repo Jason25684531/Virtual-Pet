@@ -276,6 +276,7 @@ def copy_runtime_tools() -> None:
         shutil.copy2(source, RELEASE / "lively" / ("LICENSE.txt" if source.name == "lively_LICENSE" else source.name))
     wallpaper = RELEASE / "lively" / "echoes_background"
     _copy_dir(ROOT / "tools" / "spikes" / "lively_background_poc", wallpaper, ignore=shutil.ignore_patterns("*.test.cjs", "README.md"))
+    (wallpaper / "assets").mkdir(exist_ok=True)  # 原始碼端沒有 assets/;兩張圖都由這裡複製
     for image in ("default_room.jpg", "BG_Final.png"):  # LivelyInfo 縮圖與 LivelyProperties 預設背景
         shutil.copy2(ROOT / "assets" / "backgrounds" / image, wallpaper / "assets" / image)
 

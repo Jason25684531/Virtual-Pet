@@ -16,6 +16,9 @@ import numpy as np
 from opencc import OpenCC
 
 
+_SUPPORTED_LANGUAGES = {"zh", "en"}
+
+
 class SttError(Exception):
     pass
 
@@ -105,20 +108,26 @@ class FasterWhisperSTT:
         with self._lock:
             return self._model is not None
 
+    def _run_model(self, model, audio: np.ndarray, language: str | None):
+        segments, info = model.transcribe(
+            audio,
+            language=language,
+            task="transcribe",
+            beam_size=self._beam_size,
+        )
+        # segments 為 lazy generator;完整消費才能確保推論完成並取得完整文字。
+        return "".join(segment.text for segment in segments).strip(), info
+
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> TranscriptionResult:
         model = self._model
         if model is None:
             raise SttTranscriptionError("model not loaded")
         started_at = time.monotonic()
         try:
-            segments, info = model.transcribe(
-                audio,
-                language=self._language,
-                task="transcribe",
-                beam_size=self._beam_size,
-            )
-            # segments 為 lazy generator;完整消費才能確保推論完成並取得完整文字。
-            text = "".join(segment.text for segment in segments).strip()
+            text, info = self._run_model(model, audio, self._language)
+            # 自動偵測只接受 zh/en;短句常被誤判成其他語言,改以 zh 重轉一次。
+            if self._language is None and info.language not in _SUPPORTED_LANGUAGES:
+                text, info = self._run_model(model, audio, "zh")
         except Exception as exc:  # noqa: BLE001
             self._last_error = str(exc)
             raise SttTranscriptionError(str(exc)) from exc

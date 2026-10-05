@@ -67,6 +67,16 @@ def test_other_characters_get_voai_first():
     assert [provider.name for provider in chain] == ["voai", "elevenlabs"]
 
 
+def test_english_text_gets_elevenlabs_first_even_for_voai_character():
+    chain = build_tts_provider_chain("char-RO", text="Hello there!")
+    assert [provider.name for provider in chain] == ["elevenlabs", "voai"]
+
+
+def test_chinese_text_keeps_character_default_order():
+    chain = build_tts_provider_chain("char-RO", text="你好")
+    assert [provider.name for provider in chain] == ["voai", "elevenlabs"]
+
+
 def test_explicit_preferred_provider_overrides_character_default():
     chain = build_tts_provider_chain("char-Adol", "voai")
     assert [provider.name for provider in chain] == ["voai", "elevenlabs"]

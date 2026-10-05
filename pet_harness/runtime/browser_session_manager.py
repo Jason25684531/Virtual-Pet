@@ -48,7 +48,3 @@ class BrowserSessionManager:
 
     def close(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)
-
-    def snapshot(self, kind: str | None = None) -> dict[str, Any] | None:
-        session = self.first(kind) if kind else next(iter(self._sessions.values()), None)
-        return session.snapshot() if session else None

@@ -42,25 +42,9 @@ class ComfyUIAssetService(AssetService):
     def create_reward_asset_request(self, source_event_id: str, reward_id: str, behavior_id: str, variant_type: str = "development") -> AssetResponse:
         return self.create_asset(AssetRequest(asset_type="variant_png", prompt_params={}, source_event_id=source_event_id, requested_reward=reward_id, behavior_id=behavior_id, metadata={"variant_type": variant_type}))
 
-    def create_character_motion_request(self, source_event_id: str) -> AssetResponse:
-        source_path = self.library.get_preview_image_path(self.character_id)
-        if not source_path:
-            return AssetResponse(request_id=source_event_id, status="failed", error_message="character source image is unavailable")
-        parent, children = self.orchestrator.create_motion_set(self.character_id, source_path, source_event_id)
-        self._start_worker("comfyui-motion-worker")
-        return AssetResponse(request_id=source_event_id, status="queued", job_id=parent.job_id, asset_id=parent.job_id, metadata={"child_job_ids": [item.job_id for item in children]})
-
     def create_character_validation_request(self, upload_path: str, character_name: str, source_event_id: str) -> AssetResponse:
         job = self.orchestrator.create_character_validation_job(upload_path, character_name, source_event_id)
         self._start_worker("comfyui-validation-worker")
-        return AssetResponse(request_id=source_event_id, status="queued", job_id=job.job_id, asset_id=job.job_id)
-
-    def create_background_request(self, character_id: str, source_event_id: str) -> AssetResponse:
-        source_path = self.library.get_preview_image_path(character_id)
-        if not source_path:
-            return AssetResponse(request_id=source_event_id, status="failed", error_message="character source image is unavailable")
-        job = self.orchestrator.create_background_job(character_id, source_path, "assets/backgrounds/default_room.jpg", source_event_id)
-        self._start_worker("comfyui-background-worker")
         return AssetResponse(request_id=source_event_id, status="queued", job_id=job.job_id, asset_id=job.job_id)
 
     def create_variant_motion_request(self, character_id: str, variant: str, source_png: str, source_event_id: str, trigger_reason: str = "") -> AssetResponse:

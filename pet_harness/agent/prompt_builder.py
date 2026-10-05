@@ -5,6 +5,7 @@ from pathlib import Path
 
 from pet_harness.memory.base_memory_store import MemoryHit
 from pet_harness.memory.memory_models import MemoryItem
+from pet_harness.agent.reply_language import detect_reply_language
 from pet_harness.models.events import UserEvent
 from pet_harness.models.skill import Skill
 from pet_harness.tools.tool_models import ToolResult
@@ -39,6 +40,20 @@ class PromptBuildResult:
     section_sizes: dict[str, int] = field(default_factory=dict)
 
 
+_REPLY_LANGUAGE_RULES = {
+    "zh": "Write reply in 繁體中文（台灣用語）.",
+    "en": "Write reply in English, in one or two short sentences.",
+}
+
+
+# ponytail: 英文回覆的指示必須貼著 User Text。只放在 Output Contract 末端時實測無效——
+# 前面的中文 persona／規則／歷史讓 gemma3:12b 照樣用中文回；同一個 adjacency 教訓見下方各段註解。
+# 實測(Adol persona、4 句英文×4 次):「Reply in English」10/16,「Write the entire reply in English, keeping…」16/16。
+_USER_TEXT_LANGUAGE_HINT = {
+    "en": ("(The user wrote in English. Write the entire reply in English, keeping your character's sweet, playful personality.)",),
+}
+
+
 class PromptBuilder:
     def __init__(self, agentic_root: str | Path) -> None:
         self.agentic_root = Path(agentic_root)
@@ -60,6 +75,7 @@ class PromptBuilder:
         media_clarification: str | None = None,
     ) -> PromptBuildResult:
         warnings: list[str] = []
+        reply_language = detect_reply_language(event.text)
         soul_text = self._read_optional(self.agentic_root / "soul.md", "Soul context unavailable.", warnings)
         agentic_text = self._read_optional(
             self.agentic_root / "agentic.md",
@@ -183,6 +199,7 @@ class PromptBuilder:
                 "",
                 "## User Text",
                 event.text,
+                *_USER_TEXT_LANGUAGE_HINT.get(reply_language, ()),
                 "",
                 "## Tool Result",
                 tool_result_text,
@@ -211,7 +228,7 @@ class PromptBuilder:
                 "Do not include private chain-of-thought.",
                 "Only use a skill name from the provided skill list or null.",
                 "action_tag must be one of the available character action tags or null, never idle; never put control tags in reply.",
-                "Write reply in 繁體中文（台灣用語）.",
+                _REPLY_LANGUAGE_RULES[reply_language],
             ]
         )
         section_sizes = {

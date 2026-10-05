@@ -135,9 +135,6 @@ class CharacterUiService:
         ordered.extend(item for item in items.values() if item["character_id"] not in listed)
         return ordered
 
-    def list_presets(self) -> list[dict[str, Any]]:
-        return [item for item in self.list_characters() if item["is_preset"]]
-
     def get_style_unlock_all(self, character_id: str) -> bool:
         profile, _ = self._router.load_profile(character_id)
         store = SQLiteStore(profile.sqlite_path)
@@ -505,6 +502,7 @@ class CharacterUiService:
             "xp_total": 0,
             "level": _level_for_xp(0),
             "background_image": profile.background_image,
+            "idle_motion": (profile.motions or {}).get("idle", ""),
             "playtime_seconds": 0,
             "last_played_at": None,
             "missing_assets": None,
@@ -525,6 +523,7 @@ class CharacterUiService:
             "xp_total": xp_total,
             "level": _level_for_xp(xp_total),
             "background_image": profile.background_image,
+            "idle_motion": (profile.motions or {}).get("idle", ""),
             "playtime_seconds": max(0, playtime_seconds),
             "last_played_at": last_played_at,
             # 缺資產的角色仍保留卡片,由 UI 顯示不可用原因,不以其他角色遞補。

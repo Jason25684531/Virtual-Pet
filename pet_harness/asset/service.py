@@ -15,15 +15,7 @@ class AssetService(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def create_character_motion_request(self, source_event_id: str) -> AssetResponse:
-        raise NotImplementedError
-
-    @abstractmethod
     def create_character_validation_request(self, upload_path: str, character_name: str, source_event_id: str) -> AssetResponse:
-        raise NotImplementedError
-
-    @abstractmethod
-    def create_background_request(self, character_id: str, source_event_id: str) -> AssetResponse:
         raise NotImplementedError
 
     @abstractmethod

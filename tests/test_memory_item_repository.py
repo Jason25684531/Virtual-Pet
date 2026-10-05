@@ -11,7 +11,7 @@ def test_repository_supersedes_changed_value_and_keeps_duplicate(tmp_path):
     first = repo.upsert_candidates([MemoryCandidate("fruit", "semantic", "喜歡蘋果", "e1")])[0]
     assert repo.upsert_candidates([MemoryCandidate("fruit", "semantic", "喜歡蘋果", "e2")])[0].memory_id == first.memory_id
     latest = repo.upsert_candidates([MemoryCandidate("fruit", "semantic", "喜歡梨子", "e3")])[0]
-    assert [item.text for item in repo.list_all_active()] == ["喜歡梨子"]
+    assert _active_texts(repo) == ["喜歡梨子"]
     assert [item.memory_id for item in repo.list_pending_index()] == [latest.memory_id]
 
 
@@ -35,4 +35,9 @@ def test_concurrent_upserts_of_the_same_fact_do_not_duplicate(tmp_path):
     for thread in threads:
         thread.join()
 
-    assert len(repo.list_all_active()) == 1
+    assert len(_active_texts(repo)) == 1
+
+
+def _active_texts(repo):
+    with repo.store.connect() as conn:
+        return [row["text"] for row in conn.execute("SELECT text FROM memory_items WHERE status='active'")]

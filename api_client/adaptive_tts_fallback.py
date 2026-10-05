@@ -36,7 +36,7 @@ class AdaptiveTTSFallbackWorker(QObject):
         super().__init__(parent)
         self._request = request
         self._chain = tuple(chain) if chain is not None else build_tts_provider_chain(
-            request.character_id, request.preferred_provider
+            request.character_id, request.preferred_provider, request.text
         )
         self._running = False
         self._chain_index = -1

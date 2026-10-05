@@ -211,7 +211,6 @@ Virtual-Pet/
 │   │   ├── tool_execution_lifecycle.py  # 工具執行閉環(安全授權/重試/預算/落庫)
 │   │   └── media_session_context.py     # 新聞/音樂 session 上下文(per-character)
 │   ├── agent/
-│   │   ├── provider_factory.py     # LLM provider 工廠(Ollama / API)
 │   │   ├── provider_adapter.py     # LLMProviderAdapter 抽象介面 + ProviderReply
 │   │   ├── ollama_provider.py      # Ollama 本地推論 provider
 │   │   ├── api_provider.py         # OpenAI-compatible REST provider
@@ -339,7 +338,7 @@ Virtual-Pet/
 | `OllamaProvider` | 本地 Ollama 推論 | No(localhost) |
 | `APIProvider` | OpenAI-compatible REST API | Yes |
 
-透過 `provider_factory.py` 依 `ProviderConfig.provider_type` 分派;全域 `ProviderRuntime` 是唯一持有者(自身即 `LLMProviderAdapter`,支援執行期熱切換),角色切換不影響 Provider 選擇。
+透過 `ProviderRuntime._create_provider` 依 `ProviderConfig.provider_type` 分派;全域 `ProviderRuntime` 是唯一持有者(自身即 `LLMProviderAdapter`,支援執行期熱切換),角色切換不影響 Provider 選擇。
 
 ### Skill 系統 (`pet_harness/skills/`)
 

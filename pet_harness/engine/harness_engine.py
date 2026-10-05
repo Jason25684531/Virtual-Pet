@@ -329,10 +329,6 @@ class PetHarnessEngine:
         self._slow_tool_failure_callback = callback
 
     @property
-    def memory_warmup_complete(self) -> bool:
-        return self._memory_warmup_completed_at is not None
-
-    @property
     def memory_warmup_completed_at(self) -> float | None:
         """perf_counter() timestamp of warmup completion, or None if not (yet) complete.
         Compared against a turn's own start time (not "now") to detect the race between

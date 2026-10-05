@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from pet_harness.agent.provider_adapter import LLMProviderAdapter, ProviderReply
-from pet_harness.agent.provider_factory import create_provider
+from pet_harness.agent.api_provider import APIProvider
+from pet_harness.agent.ollama_provider import OllamaProvider
 from pet_harness.models.events import UserEvent
 from pet_harness.models.provider import ProviderConfig, ProviderStatus, ProviderType
 from pet_harness.models.skill import Skill
@@ -189,7 +190,7 @@ class ProviderRuntime:
                     message=message,
                     metadata={"error_category": "missing_api_key", "api_key_env_var": env_var},
                 )
-            provider = create_provider(config, request_fn=self._request_fn)
+            provider = self._create_provider(config)
             return provider, ProviderStatus(
                 provider_type=ProviderType.API,
                 healthy=True,
@@ -199,9 +200,13 @@ class ProviderRuntime:
 
         # OLLAMA:啟動時做一次健康檢查,不健康仍保留 provider(端點恢復後即可用),
         # 但狀態如實回報 unhealthy,generate_reply 失敗時自身也會回傳 unavailable。
-        provider = create_provider(config, request_fn=self._request_fn)
+        provider = self._create_provider(config)
         status = provider.provider_status_from_health()
         return provider, status
+
+    def _create_provider(self, config: ProviderConfig):
+        provider_class = APIProvider if config.provider_type is ProviderType.API else OllamaProvider
+        return provider_class(config, request_fn=self._request_fn)
 
     def _load_config(self) -> ProviderConfig | None:
         if not self._config_path.exists():

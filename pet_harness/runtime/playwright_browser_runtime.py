@@ -31,9 +31,6 @@ class PlaywrightBrowserRuntime(BaseBrowserRuntime):
             return BrowserCommandResult("failed", error={"reason": check.reason, "message": check.message, "retryable": False})
         return self._worker.submit(command, timeout_seconds)
 
-    def active_session_snapshot(self) -> dict[str, Any] | None:
-        return self._sessions.snapshot()
-
     def shutdown(self, timeout_seconds: float = 5.0) -> None:
         if self._worker:
             self._worker.submit(BrowserCommand("shutdown"), min(2, timeout_seconds))

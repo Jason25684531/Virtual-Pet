@@ -25,10 +25,10 @@ def page():
             window.QWebChannel = function (_, ready) {
               var ok = function (data) { return JSON.stringify({ok: true, data: data}); };
               ready({objects: {
-                harnessBridge: {setDragEnabled: function () {}, beginWindowDrag: function () { window.__drag_calls = (window.__drag_calls || 0) + 1; }, refreshState: function () {}, toggleSkill: function () { window.__skill_toggles = (window.__skill_toggles || 0) + 1; }, sendText: function () {}, toggleStt: function () {}, triggerQuickIntent: function () {}, triggerOverlayAction: function (action) { window.__overlay_action = action; }, update_hit_regions: function (payload) { window.__hit_regions = JSON.parse(payload); }},
+                harnessBridge: {setDragEnabled: function () {}, beginWindowDrag: function () { window.__drag_calls = (window.__drag_calls || 0) + 1; }, refreshState: function () {}, toggleSkill: function () { window.__skill_toggles = (window.__skill_toggles || 0) + 1; }, sendText: function (t) { window.__sent_text = t; }, sayText: function (u, r) { window.__said = [u, r]; }, toggleStt: function () {}, triggerQuickIntent: function () {}, triggerOverlayAction: function (action) { window.__overlay_action = action; }, update_hit_regions: function (payload) { window.__hit_regions = JSON.parse(payload); }},
                 characterBridge: {
                   listCharacters: function (done) { done(ok([])); },
-                  listPresets: function (done) { done(ok([{character_id: 'miku', name: 'Miku', persona_description: 'Virtual singer'}])); },
+                  listPresets: function (done) { done(ok(window.__presets || [{character_id: 'miku', name: 'Miku', persona_description: 'Virtual singer'}])); },
                   createFromPreset: function (_, __, done) { done(ok({})); },
                   getActiveState: function (done) { done(ok(Object.assign({active: true, character_id: 'miku', xp: {xp_total: 72, level: 2}}, window.__activeStateExtra || {}))); },
                   listStyleVariants: function (_, done) { done(ok([{variant: 'og', state: 'ready', thumb: '', is_active: true}, {variant: 'event', state: 'generating', thumb: 'preview.png', is_active: false}, {variant: 'development', state: 'ready', thumb: '', is_active: false}])); },
@@ -509,3 +509,75 @@ def test_agent_chips_have_a_toggle_for_the_highest_priority_matching_skill(page)
 
     music_toggle.click()
     assert page.evaluate("window.__skill_toggles") == 1
+
+
+def _open_chat(page):
+    page.locator("#menu-create-button").click()
+    page.locator("#preset-select-button").click()
+    page.locator("#name-character-confirm").click()
+    page.wait_for_timeout(1000)
+    page.locator('[data-hud="hud-chat"]').click()
+
+
+def test_chat_quick_tags_send_text_or_say_fixed_reply(page):
+    _open_chat(page)
+    tags = page.locator("#chat-quick-tags button")
+    assert tags.all_inner_texts() == ["播放輕鬆的音樂", "可愛的居家裝飾推薦", "遊戲攻略介紹", "遊戲新聞"]
+
+    tags.nth(0).click()
+    assert page.evaluate("window.__sent_text") == "播放輕鬆的音樂"
+    tags.nth(3).click()
+    assert page.evaluate("window.__sent_text") == "遊戲新聞"
+
+    tags.nth(2).click()
+    user_text, reply = page.evaluate("window.__said")
+    assert user_text == "遊戲攻略介紹"
+    assert reply.startswith("《艾爾登法環》是一款開放世界動作角色扮演遊戲。")
+
+
+def test_preset_preview_swaps_idle_video_per_character_and_hides_when_missing(page):
+    page.evaluate(
+        """window.__presets = [
+          {character_id: 'a', name: 'A', idle_motion: 'assets/characters/a/idle.webm'},
+          {character_id: 'b', name: 'B', idle_motion: 'assets/characters/b/idle.webm'},
+          {character_id: 'c', name: 'C', idle_motion: ''}]"""
+    )
+    page.locator("#menu-create-button").click()
+    video = page.locator("#preset-portrait-video")
+    page.wait_for_timeout(300)
+    assert video.is_visible()
+    assert video.get_attribute("src").endswith("assets/characters/a/idle.webm")
+
+    page.locator("#preset-carousel-next").click()
+    assert video.get_attribute("src").endswith("assets/characters/b/idle.webm")
+
+    page.locator("#preset-carousel-next").click()
+    assert not video.is_visible()
+    assert video.get_attribute("src") is None
+
+    page.locator("#preset-carousel-next").click()
+    assert video.is_visible()
+    assert video.get_attribute("src").endswith("assets/characters/a/idle.webm")
+
+
+def test_preset_preview_stops_when_leaving_create_screen(page):
+    page.evaluate("window.__presets = [{character_id: 'a', name: 'A', idle_motion: 'assets/characters/a/idle.webm'}]")
+    page.locator("#menu-create-button").click()
+    page.wait_for_timeout(300)
+    assert page.locator("#preset-portrait-video").get_attribute("src")
+
+    page.locator('#screen-create-character [data-screen="screen-main-menu"]').click()
+    assert page.locator("#preset-portrait-video").get_attribute("src") is None
+
+
+def test_preset_preview_stops_when_entering_companion_stage(page):
+    page.evaluate("window.__presets = [{character_id: 'a', name: 'A', idle_motion: 'assets/characters/a/idle.webm'}]")
+    page.locator("#menu-create-button").click()
+    page.wait_for_timeout(300)
+    assert page.locator("#preset-portrait-video").get_attribute("src")
+
+    page.locator("#preset-select-button").click()
+    page.locator("#name-character-confirm").click()
+    page.wait_for_timeout(1200)
+    assert page.locator("#companion-nav").is_visible()
+    assert page.locator("#preset-portrait-video").get_attribute("src") is None

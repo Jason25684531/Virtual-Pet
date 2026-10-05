@@ -853,25 +853,6 @@ class TransparentWindow(QMainWindow):
         print(f"[ECHOES] 播放已解析動作 `{motion_key}`: {motion_path}")
         return self.change_video(motion_path, loop=should_loop)
 
-    def play_action_motion(self, motion_key: str) -> bool:
-        """只用 router snapshot 的角色解析動作;缺動作時回到同角色 idle,
-        絕不 fallback 到另一個角色的動作。"""
-        should_loop = not MOTION_MAP.get(motion_key, {}).get("play_once", True)
-        current_character_id = self.get_current_character_id()
-        if current_character_id:
-            motion_path = self._library.get_action_motion_path(current_character_id, motion_key)
-            if not motion_path:
-                motion_path = self._library.get_motion_path(current_character_id, motion_key)
-            if motion_path:
-                print(f"[ECHOES] 播放角色動作 `{motion_key}`: {motion_path}")
-                return self.change_video(motion_path, loop=should_loop)
-            print(f"[ECHOES] 警告: 角色 {current_character_id} 缺少動作 {motion_key},維持同角色 idle。")
-            self.restore_idle_video()
-            return False
-
-        print(f"[ECHOES] 警告: 找不到可播放的 action 動作 {motion_key}。")
-        return False
-
     def _set_idle_motion_candidates(self, character_id: str | None) -> list[dict[str, object]]:
         if not character_id:
             self._run_javascript("setIdleMotionCandidates", [])
@@ -1583,6 +1564,24 @@ class TransparentWindow(QMainWindow):
             allow_tts=True, wait_for_tts_start=True,
         ):
             self.speak_text(message, trace_id=trace_id)
+        self._proactive_greeting_release_timer.start()
+
+    def say_fixed_text(self, user_text: str, reply_text: str) -> None:
+        """Chat 快捷 tag 的固定文案:顯示一輪對話並直接 TTS,不呼叫 LLM。
+        流程同 _speak_proactive_greeting;沿用其旗標讓使用者後續輸入能打斷。"""
+        if not (user_text and reply_text and self.get_current_character_id()):
+            return
+        TransparentWindow._interrupt_active_conversation(self)
+        self._greeter.reset()
+        self._proactive_greeting_active = True
+        trace_id = f"quicktag-{uuid4().hex}"
+        self.show_synthetic_conversation_turn("Quick", user_text, reply_text)
+        self._log_assistant_utterance(reply_text)
+        if not self.dispatch_action(
+            f"[ACTION:wave_response] {reply_text}", trace_id=trace_id,
+            allow_tts=True, wait_for_tts_start=True,
+        ):
+            self.speak_text(reply_text, trace_id=trace_id)
         self._proactive_greeting_release_timer.start()
 
     def _log_assistant_utterance(self, message: str) -> None:

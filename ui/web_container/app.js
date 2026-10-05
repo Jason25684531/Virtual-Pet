@@ -843,6 +843,8 @@
         screens.forEach(function (screen) { screen.hidden = screen.id !== uiRoute.screen; });
         if (appScreens) appScreens.hidden = !uiRoute.screen;
         if (stageRoot) stageRoot.hidden = Boolean(uiRoute.screen);
+        // 所有離開路徑(routeToScreen / enterCompanionStage)都經過這裡;不在選單就停掉預覽影片。
+        if (uiRoute.screen !== 'screen-create-character') playPresetIdle('');
 
         var hudLayer = document.getElementById('hud-layer');
         dockPanels.forEach(function (panel) { panel.hidden = panel.id !== uiRoute.hud; });
@@ -1072,6 +1074,26 @@
 
     // ── UC02-1 Preset 聚光燈輪播 ───────────────────────────────
 
+    // 預覽用 idle.webm:src 沒變就不重載(hydrate 會重畫),缺 idle 時隱藏只剩背景。
+    // QWebEngine 對 webm 的原生 loop 不可靠(見 startMotionLoop),改在 ended 重播。
+    function playPresetIdle(path) {
+        var video = document.getElementById('preset-portrait-video');
+        if (!video) return;
+        if (!path) {
+            video.hidden = true;
+            video.pause();
+            video.removeAttribute('src');
+            return;
+        }
+        var src = normalizeProjectAssetSource(path);
+        video.hidden = false;
+        if (video.getAttribute('src') !== src) {
+            video.src = src;
+            video.onended = function () { video.currentTime = 0; video.play().catch(function () {}); };
+        }
+        video.play().catch(function () {});
+    }
+
     function renderPresetCarousel() {
         var total = presetList.length;
         var current = total ? presetList[presetIndex] : null;
@@ -1089,6 +1111,7 @@
                 : (current.persona_description || '')
         );
         if (presetPortrait) presetPortrait.style.backgroundImage = current && current.background_image ? 'url("' + normalizeProjectAssetSource(current.background_image) + '")' : '';
+        playPresetIdle(current && current.idle_motion);
         if (presetSelectButton) presetSelectButton.disabled = !current || unavailable;
 
         if (presetThumbList) {
@@ -1474,6 +1497,36 @@
     }
 
     // ── UC05-1 Companion Dock（Talk / Agent / Style / Scene）────
+
+    // Chat 快捷 tag:send = 當作使用者輸入(走技能路由,音樂/新聞不經 LLM 分類);
+    // say = 固定文案直接 TTS(sayText)。所有角色共用同一組。
+    var CHAT_QUICK_TAGS = [
+        { label: '播放輕鬆的音樂', mode: 'send', text: '播放輕鬆的音樂' },
+        {
+            label: '可愛的居家裝飾推薦', mode: 'say', text: '可愛的居家裝飾推薦',
+            reply: '想打造療癒又可愛的小家，可以擺上奶油色抱枕、雲朵造型小夜燈，再搭配幾盆迷你綠植。牆面掛上小幅插畫或照片，搭配木質小物與柔和燈串，整體就會變得溫暖又有生活感'
+        },
+        {
+            label: '遊戲攻略介紹', mode: 'say', text: '遊戲攻略介紹',
+            reply: '《艾爾登法環》是一款開放世界動作角色扮演遊戲。玩家探索地圖、擊敗敵人與頭目，取得裝備與符文提升角色。可自由選擇近戰、魔法或遠程玩法，並透過探索與戰鬥逐步解開世界的故事。'
+        },
+        { label: '遊戲新聞', mode: 'send', text: '遊戲新聞' }
+    ];
+
+    function setupChatQuickTags() {
+        var row = document.getElementById('chat-quick-tags');
+        if (!row) return;
+        CHAT_QUICK_TAGS.forEach(function (tag) {
+            var button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = tag.label;
+            button.addEventListener('click', function () {
+                if (tag.mode === 'say') callBridge('sayText', tag.text, tag.reply);
+                else callBridge('sendText', tag.text);
+            });
+            row.appendChild(button);
+        });
+    }
 
     function sendTalkText() {
         if (!talkTextInput) return;
@@ -2142,6 +2195,7 @@ function pickPrimarySkillForCapability(items, capability) {
 
     function setupCompanionDock() {
         wirePersonaEditor();
+        setupChatQuickTags();
         dockButtons.forEach(function (button) {
             button.addEventListener('click', function () { openHud(button.dataset.hud); });
         });

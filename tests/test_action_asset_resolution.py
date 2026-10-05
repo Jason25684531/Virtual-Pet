@@ -21,38 +21,6 @@ def test_active_character_access_uses_public_adapter_contract(value):
     assert TransparentWindow._active_character(window) is value
 
 
-def _fake_window(character_id, action_path=None, motion_path=None):
-    fake = MagicMock()
-    fake.get_current_character_id.return_value = character_id
-    fake._library.get_action_motion_path.return_value = action_path
-    fake._library.get_motion_path.return_value = motion_path
-    fake.change_video.return_value = True
-    return fake
-
-
-def test_action_motion_resolves_only_active_snapshot_character():
-    fake = _fake_window("Choppr", action_path="assets/webm/characters/Choppr/motions/music_idle.webm")
-
-    assert TransparentWindow.play_action_motion(fake, "music_idle") is True
-
-    # 解析呼叫一律帶 snapshot 的 Choppr,絕不出現其他角色 id
-    fake._library.get_action_motion_path.assert_called_once_with("Choppr", "music_idle")
-    fake.change_video.assert_called_once()
-    assert "Choppr" in fake.change_video.call_args[0][0]
-
-
-def test_missing_motion_falls_back_to_same_character_idle_not_other_character():
-    fake = _fake_window("Choppr", action_path=None, motion_path=None)
-
-    assert TransparentWindow.play_action_motion(fake, "music_idle") is False
-
-    # 缺動作 → 回到同角色 idle;不得播放任何(其他角色的)影片
-    fake.restore_idle_video.assert_called_once()
-    fake.change_video.assert_not_called()
-    for call in fake._library.get_motion_path.call_args_list:
-        assert call[0][0] == "Choppr"
-
-
 def test_get_current_character_id_reads_router_snapshot():
     fake = MagicMock()
     snapshot = MagicMock()

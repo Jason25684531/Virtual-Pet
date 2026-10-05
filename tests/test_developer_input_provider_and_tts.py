@@ -139,7 +139,6 @@ def test_on_agentic_result_speaks_nonempty_reply():
     assert kwargs["allow_tts"] is True
     assert kwargs["wait_for_tts_start"] is True
     assert kwargs["trace_id"]  # non-empty trace_id required by PCM session playback
-    fake_self.play_action_motion.assert_not_called()
     fake_self.speak_text.assert_not_called()
 
 
