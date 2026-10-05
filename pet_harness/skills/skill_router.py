@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pet_harness.models.skill import Skill
-from pet_harness.skills.intent_normalizer import normalize
+from pet_harness.skills.intent_normalizer import RELAX_MUSIC, normalize
 from pet_harness.skills.semantic_skill_retriever import BaseSemanticSkillRetriever
 
 _MEDIA_CAPABILITIES = {"news", "music"}
@@ -14,6 +14,8 @@ _NON_MUSIC_PLAYBACK = ("影片", "video", "電影", "動畫")
 _NEGATION = re.compile(r"不要|不用|不想|不需要|(?<![特分個性類差告級識])別|拒絕|don't|do not|no need")
 _NEWS_WORDS = re.compile(r"新聞|頭條|快報|最新消息|新聞播報|gnn|巴哈|news")
 _MUSIC_WORDS = re.compile(r"音樂|歌曲|歌|music|song|bgm|playlist|soundtrack")
+# 放鬆音樂的請求語氣:「放鬆」自己含「放」,所以 放(?!鬆);只是陳述偏好(「我喜歡輕鬆的音樂」)不算請求。
+_RELAX_REQUEST = re.compile(r"給我|來(?:點|一首)|播|聽|找|放(?!鬆)|play|put on|listen|give me|find")
 _MUSIC_CONTROL = re.compile(r"暫停|繼續播放|停止播放|停止|音量|現在在播放什麼|pause|resume|stop|volume")
 _PLAY_VERB = re.compile(r"^(?:幫我)?(?:播放|播報|念|讀|看|播歌|播|放一首|放|play|put on)\s*(.*)$")
 _LISTEN_VERB = re.compile(r"^(?:我想聽|想聽|聽|來點|listen to)\s*(.*)$")
@@ -73,7 +75,9 @@ def resolve_media_intent(text: str, active_capabilities: set[str] | None = None)
     verb_object = None if blocked_playback else _verb_object(text)
     # 受詞是新聞時,播放動詞不構成音樂意圖;單純聊到音樂(沒有動作)也不算。
     verb_music = bool(verb_object) and not _NEWS_WORDS.search(verb_object)
-    music = control or verb_music or (music_word and bool(verb_object))
+    # 句首就是放鬆音樂(「輕鬆的音樂」),或句中有請求語氣(「…你可以給我一首放鬆的音樂嗎」)。
+    relax = not blocked_playback and bool(RELAX_MUSIC.search(text)) and bool(RELAX_MUSIC.match(text) or _RELAX_REQUEST.search(text))
+    music = control or verb_music or (music_word and bool(verb_object)) or relax
 
     # 否定要先判:「不要播放音樂」沒有可執行的意圖,卻有字面 trigger,
     # 放到意圖成立之後才檢查等於沒檢查。
@@ -88,6 +92,8 @@ def resolve_media_intent(text: str, active_capabilities: set[str] | None = None)
         return MediaIntent("news", "matched")
     if control and not verb_music:
         return MediaIntent("music", "control" if "music" in active else "no_media_session")
+    if relax:
+        return MediaIntent("music", "matched")
     query = _MUSIC_WORDS.sub("", verb_object or "").strip().strip("的 ")
     return MediaIntent("music", "matched" if query else "missing_music_query")
 

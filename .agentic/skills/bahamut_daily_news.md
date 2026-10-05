@@ -1,9 +1,9 @@
 name: bahamut_daily_news
 description: List today's Bahamut GNN gaming news and follow up with an article.
-trigger: 新聞, 最新新聞, 今日新聞, 新聞播報, 念新聞, 讀新聞, 看新聞, 巴哈新聞, GNN新聞, 今日遊戲新聞, 遊戲新聞, game news today
+trigger: 新聞, 最新新聞, 今日新聞, 新聞播報, 念新聞, 讀新聞, 看新聞, 巴哈新聞, GNN新聞, 今日遊戲新聞, 遊戲新聞, game news today, game news, gaming news, video game news
 behavior: report_news
 xp_reward: 7
 required_tool: web_article_tool
 priority: 100
 capability: news
-tool_policy_json: {"allowed_domains":["gnn.gamer.com.tw"],"allowed_actions":["list_articles","get_article_detail","open_article"],"auto_execute":true,"defaults":{"action":"list_articles","limit":5,"url":"https://gnn.gamer.com.tw/rss.xml"},"follow_up":["get_article_detail","open_article"],"timezone":"Asia/Taipei","priority":100}
+tool_policy_json: {"allowed_domains":["gnn.gamer.com.tw","www.polygon.com"],"allowed_actions":["list_articles","get_article_detail","open_article"],"auto_execute":true,"defaults":{"action":"list_articles","limit":5,"url":"https://gnn.gamer.com.tw/rss.xml"},"defaults_en":{"url":"https://www.polygon.com/rss/index.xml"},"follow_up":["get_article_detail","open_article"],"timezone":"Asia/Taipei","priority":100}

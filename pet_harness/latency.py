@@ -30,6 +30,7 @@ class TurnTimeline:
     cancel_reason: str | None = None
     context: dict[str, Any] = field(default_factory=dict)
     _lock: RLock = field(default_factory=RLock, repr=False)
+    _last_logged: dict[str, Any] | None = field(default=None, repr=False)
 
     @classmethod
     def create(cls, turn_id: str, origin: str, *, vad_endpoint: bool = False, warmup_complete: bool = False) -> TurnTimeline:
@@ -112,6 +113,7 @@ class TurnTimeline:
         import config
 
         endpoint_to_audio = self.ms("vad_endpoint", "audio_play_started")
+        hangover = config.STT_VAD_SILENCE_MS if self.checkpoints.get("vad_endpoint") is not None else None
         missing = [name for name in self._expected_checkpoints(streaming=streaming, slow_tool=slow_tool) if self.checkpoints.get(name) is None]
         data = {
             "turn_id": self.turn_id, "character_id": character_id, "route_kind": route_kind,
@@ -129,6 +131,9 @@ class TurnTimeline:
             "tts_first_pcm_ms": self.ms("first_speech_chunk_emitted", "tts_first_pcm"),
             "audio_start_ms": self.ms("tts_first_pcm", "audio_play_started"),
             "endpoint_to_first_audio_ms": endpoint_to_audio,
+            # VAD 靜音等待發生在 vad_endpoint 之前、不在 SLA 內,但使用者實際會等到;只供回報,不參與預算判定。
+            "vad_hangover_ms": hangover,
+            "perceived_first_audio_ms": None if endpoint_to_audio is None or hangover is None else hangover + endpoint_to_audio,
             "turn_complete_ms": self.ms("vad_endpoint", "turn_complete"),
             "warmup_complete_before_turn": self.warmup_complete_before_turn,
             "measurement_semantics": "pcm_submitted", "bottleneck_stage": self.classify(),
@@ -141,6 +146,12 @@ class TurnTimeline:
 
     def log(self, **kwargs: Any) -> dict[str, Any]:
         data = self.report(**kwargs)
+        with self._lock:
+            # 同一輪會從多個播放 hook 重複呼叫(例如 MP3 路徑每句一次);內容沒變就不重複輸出。
+            # 慢工具在 tool_done 後補記的那一筆內容有變(tool_ms 填入),照常輸出。
+            if data == self._last_logged:
+                return data
+            self._last_logged = data
         # 被取消的回合本來就跑不完後面的階段,那是預期行為而不是接線缺口。
         incomplete = (data["budget_exceeded"] or not data["timeline_complete"]) and not data["cancel_reason"]
         log = LOGGER.warning if incomplete else LOGGER.info

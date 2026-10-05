@@ -12,6 +12,8 @@ from pet_harness.storage.sqlite_store import SQLiteStore
 
 
 class MockAssetService(AssetService):
+    growth_mode = "interaction"
+
     def __init__(
         self,
         store: SQLiteStore,

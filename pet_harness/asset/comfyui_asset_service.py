@@ -10,6 +10,8 @@ from pet_harness.asset.service import AssetService
 
 
 class ComfyUIAssetService(AssetService):
+    growth_mode = "xp"
+
     def __init__(self, orchestrator: AssetOrchestrator, worker: AssetJobWorker, character_id: str | None, library: CharacterLibrary | None = None) -> None:
         self.orchestrator, self.worker, self.character_id, self.library = orchestrator, worker, character_id, library or CharacterLibrary()
 

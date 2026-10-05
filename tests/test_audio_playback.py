@@ -168,3 +168,29 @@ def test_chunks_without_an_explicit_rate_are_accepted():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_exit_timeout_covers_unplayed_audio_so_long_replies_are_not_truncated():
+    """PCM 比即時更快送完時(28 秒新聞語音幾乎瞬間寫完),收尾逾時不能只有固定 5 秒。"""
+    fake_process = MagicMock()
+    fake_process.stdin = MagicMock()
+    player = FfplayPcmAudioPlayer(
+        ffplay_path="ffplay", sample_rate=32000, channels=1, popen_factory=MagicMock(return_value=fake_process),
+    )
+
+    player.play_chunks([b"\x00" * (32000 * 2 * 28)])
+
+    timeout = fake_process.wait.call_args.kwargs["timeout"]
+    assert 29.0 < timeout <= 30.0
+
+
+def test_exit_timeout_keeps_five_second_floor_for_short_audio():
+    fake_process = MagicMock()
+    fake_process.stdin = MagicMock()
+    player = FfplayPcmAudioPlayer(
+        ffplay_path="ffplay", sample_rate=32000, channels=1, popen_factory=MagicMock(return_value=fake_process),
+    )
+
+    player.play_chunks([b"\x00\x00"])
+
+    assert fake_process.wait.call_args.kwargs["timeout"] == 5.0

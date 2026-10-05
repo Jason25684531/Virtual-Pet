@@ -113,7 +113,7 @@ def _run(coordinator, trace="greeting-1"):
     coordinator._start_next_tts_worker()
 
 
-def test_greeting_miss_then_hit_skips_provider_factory():
+def test_greeting_miss_then_hit_skips_tts_worker_factory():
     made = []
 
     def factory(request, parent=None):

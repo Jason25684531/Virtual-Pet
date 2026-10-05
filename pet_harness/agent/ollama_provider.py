@@ -15,9 +15,18 @@ from pet_harness.models.provider import ProviderConfig, ProviderStatus, Provider
 from pet_harness.models.skill import Skill
 
 LOGGER = logging.getLogger(__name__)
+# 共用連線池:每輪都 requests.request() 會重新建立 TCP 連線(與 voai_client / api_provider 相同做法)。
+_SESSION = requests.Session()
 
 
 class OllamaProvider(LLMProviderAdapter):
+    def _payload(self, prompt: str, *, stream: bool) -> dict[str, Any]:
+        # 串流與非串流必須送同一組 format/options;串流漏帶 format 時回覆不受 JSON 約束,
+        # result parser 會落到 fallback(log 的 invalid_json raw_length=0)。
+        payload = {"model": self.config.model_name, "prompt": prompt, "stream": stream, "keep_alive": config.ollama_keep_alive_value()}
+        payload.update({key: self.config.metadata[key] for key in ("format", "options") if key in self.config.metadata})
+        return payload
+
     def _http_error(self, status_code: int) -> str:
         if status_code == 404:  # Ollama 對不存在的模型回 404
             return f"Ollama returned status 404: model '{self.config.model_name}' not found (run: ollama pull {self.config.model_name})."
@@ -36,18 +45,11 @@ class OllamaProvider(LLMProviderAdapter):
         base_url = self.config.base_url or "http://localhost:11434" # IP Calling
         prompt = prompt_text or event.text
         try:
-            payload = {
-                "model": self.config.model_name,
-                "prompt": prompt,
-                "stream": False,
-                "keep_alive": config.ollama_keep_alive_value(),
-            }
-            payload.update({key: self.config.metadata[key] for key in ("format", "options") if key in self.config.metadata})
             response = self.request_fn(
                 "POST",
                 f"{base_url}/api/generate",
                 timeout=self.config.timeout_seconds,
-                json=payload,
+                json=self._payload(prompt, stream=False),
             )
             if getattr(response, "status_code", 500) >= 400:
                 return self._unavailable_reply(
@@ -105,7 +107,7 @@ class OllamaProvider(LLMProviderAdapter):
             "POST",
             f"{base_url}/api/generate",
             timeout=self.config.timeout_seconds,
-            json={"model": self.config.model_name, "prompt": prompt, "stream": True, "keep_alive": config.ollama_keep_alive_value()},
+            json=self._payload(prompt, stream=True),
             stream=True,
         )
         if getattr(response, "status_code", 500) >= 400:
@@ -187,4 +189,4 @@ class OllamaProvider(LLMProviderAdapter):
         }
 
     def _default_request(self, method: str, url: str, timeout: float, json: Any | None = None, stream: bool = False):
-        return requests.request(method, url, timeout=timeout, json=json, stream=stream)
+        return _SESSION.request(method, url, timeout=timeout, json=json, stream=stream)

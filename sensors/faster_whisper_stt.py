@@ -7,6 +7,7 @@ UI 或 Harness。CUDA-only（第一版無 CPU fallback），模型全程只載�
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 import threading
 import time
@@ -16,6 +17,7 @@ import numpy as np
 from opencc import OpenCC
 
 
+LOGGER = logging.getLogger(__name__)
 _SUPPORTED_LANGUAGES = {"zh", "en"}
 
 
@@ -71,6 +73,7 @@ class FasterWhisperSTT:
         download_root: str,
         language: str | None = None,
         beam_size: int = 1,
+        warmup: bool = False,
     ) -> None:
         self._model_name = model_name
         self._device = device
@@ -78,6 +81,7 @@ class FasterWhisperSTT:
         self._download_root = download_root
         self._language = language or None  # 空字串/None -> auto detection
         self._beam_size = beam_size
+        self._warmup_enabled = warmup
         self._model = None
         self._lock = threading.Lock()
         self._last_error = ""
@@ -103,6 +107,19 @@ class FasterWhisperSTT:
             except Exception as exc:  # noqa: BLE001
                 self._last_error = str(exc)
                 raise SttModelLoadError(str(exc)) from exc
+        if self._warmup_enabled:
+            self._warmup()
+
+    def _warmup(self) -> None:
+        # 第一次推論要建立 CUDA / cuDNN context,實測首輪 STT 1.06 s、之後 0.3 s;
+        # 載入後先用 1 秒靜音跑一次,讓使用者的第一句話也是暖的。指定 zh 避免自動偵測再多跑一遍。
+        # 暖機失敗不影響 setup():模型已載入,第一句只是慢一點。
+        try:
+            started_at = time.monotonic()
+            self._run_model(self._model, np.zeros(16000, dtype=np.float32), "zh")
+            LOGGER.info("[STT] 暖機完成 %.2fs", time.monotonic() - started_at)
+        except Exception:  # noqa: BLE001
+            LOGGER.warning("[STT] 暖機失敗，第一句辨識會較慢", exc_info=True)
 
     def is_ready(self) -> bool:
         with self._lock:

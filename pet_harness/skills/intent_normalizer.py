@@ -5,6 +5,10 @@ import unicodedata
 from dataclasses import dataclass
 
 
+# 放鬆類音樂(固定播同一支影片,不搜尋):「放鬆/輕鬆/舒壓/relax/chill」後面只能接虛詞就是「音樂/歌」。
+# 「輕鬆的爵士」「chill jazz」中間夾了曲風,不算——那要照常搜尋。路由、引擎、瀏覽器 runtime 共用這一條。
+RELAX_MUSIC = re.compile(r"(?:放鬆|輕鬆|舒壓|relax(?:ing)?|chill)(?:的|一點的?|一些的?|\s)*(?:音樂|歌曲|歌|music|songs?)")
+
 _WHITESPACE = re.compile(r"\s+")
 _PREFIXES = ("可不可以", "能不能", "可以", "麻煩", "幫我", "請", "能")
 # 開頭的語氣詞：感嘆詞一律剝掉；「那你／你／那」只在後面緊接請求詞時才剝，

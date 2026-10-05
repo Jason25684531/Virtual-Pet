@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 from pet_harness.runtime.base_browser_runtime import BaseBrowserRuntime
 from pet_harness.tools.article_fetchers import Article, BaseArticleFetcher, BrowserArticleFetcher, HttpArticleFetcher, RssArticleFetcher
@@ -8,11 +9,16 @@ from pet_harness.runtime.playwright_browser_runtime import PlaywrightBrowserRunt
 from pet_harness.tools.tool_models import ToolRequest, ToolResult
 
 
+_DEFAULT_FEED = "https://gnn.gamer.com.tw/rss.xml"
+# ponytail: Polygon 只有 RSS 一層(HTML/瀏覽器 fetcher 是 GNN 專用);RSS 掛掉就沒有英文新聞,失敗率高再加 HTML 解析。
+_FEED_HOSTS = {"gnn.gamer.com.tw", "www.polygon.com"}
+
+
 class WebArticleTool:
     def __init__(self, fetchers: list[BaseArticleFetcher], runtime: BaseBrowserRuntime | None = None, clock=None) -> None:
         self.fetchers, self.runtime = fetchers, runtime
         self.clock = clock or (lambda: datetime.now(timezone(timedelta(hours=8))))
-        self._cache: dict[str, tuple[datetime, list[Article]]] = {}
+        self._cache: dict[tuple[str, str], tuple[datetime, list[Article]]] = {}
         self._recent: list[dict] = []
 
     def execute(self, request: ToolRequest) -> ToolResult:
@@ -30,12 +36,15 @@ class WebArticleTool:
 
     def _list(self, request: ToolRequest) -> ToolResult:
         now = self.clock()
-        key = str(request.metadata.get("character_id", "default"))
+        url = str(request.arguments.get("url") or _DEFAULT_FEED)
+        if urlparse(url).hostname not in _FEED_HOSTS:
+            return ToolResult("web_article_tool", "failed", error={"reason": "invalid_arguments", "message": "Unsupported news source", "retryable": False}, request_id=request.request_id)
+        key = (str(request.metadata.get("character_id", "default")), url)
         cached = self._cache.get(key)
         articles: list[Article] = cached[1] if cached and now - cached[0] < timedelta(minutes=10) else []
         if not articles:
-            source = {"url": "https://gnn.gamer.com.tw/rss.xml"}
-            for fetcher in self.fetchers:
+            source = {"url": url}
+            for fetcher in (f for f in self.fetchers if f.supports(url)):
                 try:
                     articles = fetcher.fetch(source, self.clock)
                 except Exception:

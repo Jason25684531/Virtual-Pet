@@ -987,6 +987,7 @@ button:disabled {
 .conversation-turn__text {
    margin: 0;
    line-height: 1.55;
+   white-space: pre-line;
 }
 
 .conversation-turn__text--muted {

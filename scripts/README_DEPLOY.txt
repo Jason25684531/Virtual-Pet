@@ -48,3 +48,10 @@ VirtualPet Release 部署說明
   ffmpeg\LICENSE.txt（ffplay，GPLv3，gyan.dev build）
   lively\LICENSE.txt（Lively Wallpaper，GPLv3）
   ms-playwright\LICENSE、NOTICE（Playwright / Chromium）
+  THIRD_PARTY_NOTICES.txt（完整清單，含非商用 / GPL 項目的警示；對外散布前請先確認授權）
+
+（第一次使用請先看同資料夾的「新手啟動指南.md」，有逐步操作與測試清單。）
+
+八、換機注意（完整說明見專案內 docs\release\打包與交接說明.md）
+  - 不要複製 config\.env.secure 到別台電腦或別的 Windows 帳號（DPAPI 解不開），在新機重新填 .env。
+  - 本資料夾若曾被啟動過（有 logs\、data\runtime\ 等執行期產物），不要直接再轉交他人；請由開發端重新 build。

@@ -33,10 +33,14 @@ _SUPPRESSION_REASON_MESSAGES = {
 _EMOJI_JOINERS = {0xFE0F, 0x200D}  # VS16 與 ZWJ
 
 
+_LIST_NUMBER = re.compile(r"(?<![\w.])\d{1,2}\.(?:\s+|$)")
+
+
 def _speakable(text: str) -> str:
     """去掉 TTS 念不出來的 emoji/符號(So 類別、VS16、ZWJ);沒有任何文字或數字就回傳空字串。
     句尾的獨立 `😊` 曾因此觸發 ElevenLabs 400 → VoAI 空音訊 → MP3 fallback。"""
     kept = "".join(c for c in text if unicodedata.category(c) != "So" and ord(c) not in _EMOJI_JOINERS)
+    kept = _LIST_NUMBER.sub("", kept)  # 新聞列表的「1. 」是排版用,不唸
     kept = re.sub(r"\s+", " ", kept).strip()
     return kept if any(c.isalnum() for c in kept) else ""
 

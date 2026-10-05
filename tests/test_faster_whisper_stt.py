@@ -251,3 +251,34 @@ def test_register_windows_cuda_dll_directories_is_noop_off_windows(monkeypatch):
     faster_whisper_stt_module._register_windows_cuda_dll_directories()
 
     assert os.environ["PATH"] == "/existing"
+
+
+def test_warmup_runs_one_silent_zh_inference_after_load(monkeypatch):
+    fake_model = _FakeWhisperModel("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper")
+    _make_fake_module(monkeypatch, fake_model)
+
+    provider = FasterWhisperSTT("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper", warmup=True)
+    provider.setup()
+    provider.setup()  # 冪等:第二次不再暖機
+
+    assert [(c["language"], c["audio_len"]) for c in fake_model.transcribe_calls] == [("zh", 16000)]
+
+
+def test_warmup_failure_does_not_fail_setup(monkeypatch):
+    fake_model = _FakeWhisperModel("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper")
+    fake_model.should_raise = RuntimeError("cuda kernel error")
+    _make_fake_module(monkeypatch, fake_model)
+
+    provider = FasterWhisperSTT("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper", warmup=True)
+    provider.setup()
+
+    assert provider.is_ready() is True
+
+
+def test_warmup_is_off_by_default(monkeypatch):
+    fake_model = _FakeWhisperModel("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper")
+    _make_fake_module(monkeypatch, fake_model)
+
+    FasterWhisperSTT("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper").setup()
+
+    assert fake_model.transcribe_calls == []

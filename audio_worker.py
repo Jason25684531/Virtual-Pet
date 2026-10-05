@@ -342,7 +342,7 @@ class AudioStreamWorker(QObject):
             return
         current_generation = character_generation.current()
         if normalized_trace_id in self._stale_traces:
-            LOGGER.info("[ECHOES] 丟棄已取消回合的遲到 PCM trace=%s reply=%s", normalized_trace_id, reply_id)
+            LOGGER.debug("[ECHOES] 丟棄已取消回合的遲到 PCM trace=%s reply=%s", normalized_trace_id, reply_id)
             return
         timeline = get_turn(normalized_trace_id)
         if timeline is not None:

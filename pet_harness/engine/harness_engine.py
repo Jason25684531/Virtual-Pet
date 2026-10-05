@@ -16,7 +16,6 @@ from pet_harness.agent.prompt_builder import PromptBuilder
 from pet_harness.agent.provider_adapter import LLMProviderAdapter, ProviderReply
 from pet_harness.agent.result_parser import ResultParser
 from pet_harness.asset.factory import build_asset_service
-from pet_harness.asset.mock_asset_service import MockAssetService
 from pet_harness.behavior.behavior_manager import BehaviorManager
 from pet_harness.character import generation as character_generation
 from pet_harness.character.profile import CharacterProfile
@@ -37,9 +36,11 @@ from pet_harness.engine.media_session_context import MediaSessionContext
 from pet_harness.engine.tool_execution_lifecycle import ToolExecutionLifecycle
 from pet_harness.xp.reward_manager import RewardManager
 from pet_harness.xp.xp_manager import XPManager
+from pet_harness.agent.reply_language import detect_reply_language
 from pet_harness.latency import TurnTimeline, create_turn, get_turn
 
 LOGGER = logging.getLogger(__name__)
+_FIRST_PERSON = re.compile(r"我|咱|(?<![A-Za-z])(?:i|i'm|i've|i'd|i'll|my|me|mine|we|our)(?![A-Za-z])", re.IGNORECASE)
 
 
 class _SentenceSplitter:
@@ -52,6 +53,8 @@ class _SentenceSplitter:
     # TTS 請求，部分 provider 對過長文字只合成/播放前半段。超過門檻就在逗號
     # 處強制斷句，避免單一 TTS chunk 過長被截斷。
     _MAX_CHUNK_CHARS = 80
+    # 第一個片段遇到逗號、且有 8 字以上就先送出,讓 TTS 早點開始合成(其後維持原規則)。
+    _FIRST_CHUNK_MIN_CHARS = 8
 
     def __init__(self) -> None:
         self._buffer = ""
@@ -68,18 +71,25 @@ class _SentenceSplitter:
     def _drain(self, final: bool) -> list[str]:
         sentences: list[str] = []
         start = 0
+        first_open = self._first
         for index, char in enumerate(self._buffer):
             is_end = char in self._END
             if is_end and char == "." and index + 1 < len(self._buffer) and self._buffer[index + 1].isdigit():
                 is_end = False
+            if is_end and char == "." and self._buffer[start:index].strip().isdigit():
+                is_end = False  # 「1.」是新聞列表編號,不是句尾;切開會讓編號和標題分家
             is_soft_break = (
                 not is_end
                 and char in self._SOFT_BREAK
-                and index + 1 - start >= self._MAX_CHUNK_CHARS
+                and (
+                    index + 1 - start >= self._MAX_CHUNK_CHARS
+                    or (first_open and len(self._ACTION.sub("", self._buffer[start:index + 1]).strip()) >= self._FIRST_CHUNK_MIN_CHARS)
+                )
             )
             if not (is_end or is_soft_break):
                 continue
             sentences.append(self._buffer[start:index + 1].strip())
+            first_open = False
             start = index + 1
         if start:
             self._buffer = self._buffer[start:]
@@ -1071,7 +1081,7 @@ class PetHarnessEngine:
         if self.growth_trigger is not None:
             growth = (
                 self.growth_trigger.on_interaction(event.event_id)
-                if isinstance(self.asset_service, MockAssetService)
+                if self.asset_service.growth_mode == "interaction"
                 else self.growth_trigger.on_xp_awarded(self.store.get_user_progress()["xp_total"], event.event_id)
             )
             check_time_trigger = getattr(self.growth_trigger, "check_time_trigger", None)
@@ -1086,13 +1096,23 @@ class PetHarnessEngine:
         pet_event.saved_to_db = True
         self._write_snapshot(pet_event)
         self.memory_store.save_turn(user_event.event_id, user_event.text, pet_event.reply)
-        if self._memory_extractor is not None:
+        if self._memory_extractor is not None and self._worth_extracting(user_event.text, pet_event):
             threading.Thread(
                 target=self._index_memory_turn,
                 args=(user_event.event_id, user_event.text, pet_event.reply),
                 daemon=True,
                 name="memory-item-index",
             ).start()
+
+    @staticmethod
+    def _worth_extracting(user_text: str, pet_event) -> bool:
+        """每輪抽取是一次額外的 LLM 呼叫,而且和下一輪搶同一個 Ollama;工具輪與
+        「短句且沒有第一人稱」的輪次不會有可記憶的使用者事實,直接略過(對話紀錄不受影響)。
+        ponytail: regex + 長度的啟發式;短句裡若有助理的承諾會漏抓,記憶命中率下降時改用分類器。"""
+        if pet_event.tool_request is not None:
+            return False
+        text = user_text.strip()
+        return len(text) >= 6 or bool(_FIRST_PERSON.search(text))
 
     def _index_memory_turn(self, event_id: str, user_text: str, reply: str) -> None:
         try:
@@ -1224,6 +1244,8 @@ class PetHarnessEngine:
         if matched_skill and matched_skill.required_tool:
             arguments = {"query": user_event.text, "mode": "skill_required"}
             arguments.update(dict(matched_skill.tool_policy.get("defaults") or {}))
+            if detect_reply_language(user_event.text) == "en":
+                arguments.update(dict(matched_skill.tool_policy.get("defaults_en") or {}))
             arguments.update(self._media_arguments(matched_skill, user_event.text))
             LOGGER.info("[TOOL ROUTE] skill=%s tool=%s action=%s", matched_skill.name, matched_skill.required_tool, arguments.get("action"))
             return ToolRequest(
@@ -1276,7 +1298,7 @@ class PetHarnessEngine:
     def _media_arguments(skill: Skill, text: str) -> dict[str, Any]:
         if skill.capability != "music":
             return {}
-        from pet_harness.skills.intent_normalizer import normalize
+        from pet_harness.skills.intent_normalizer import RELAX_MUSIC, normalize
 
         normalized = normalize(text).stripped_text
         actions = {
@@ -1291,6 +1313,8 @@ class PetHarnessEngine:
         matched = max((phrase for phrase in actions if phrase in normalized), key=len, default=None)
         if matched is not None:
             return {"action": actions[matched], "query": ""}
+        if relax := RELAX_MUSIC.search(normalized):
+            return {"action": "search_and_play", "query": relax.group(0)}
         query = re.sub(r"^(?:播放|播歌|播|放一首|放|我想聽|想聽)\s*", "", normalized).strip()
         return {"action": "search_and_play", "query": query or normalized}
 

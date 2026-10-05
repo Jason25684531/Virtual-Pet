@@ -226,6 +226,7 @@
         video.src = source;
         video.load();
         video.play().catch(function (err) {
+            if (err && err.name === 'AbortError') return;  // 緊接著又換了新的 src,舊的 play() 被中斷是預期的
             console.warn('[ECHOES] video playback failed:', err.message);
         });
     }
@@ -1667,6 +1668,12 @@
         }
     };
 
+    // LLM 常把編號列表擠在同一行(「1. A 2. B」);同時出現「1. 」與「2. 」才視為列表,每個編號另起一行。
+    function listifyNumbered(text) {
+        if (!/(^|\D)1\.\s/.test(text) || !/\D2\.\s/.test(text)) return text;
+        return text.replace(/([^\n\d])[ \t]*(\d{1,2}\.\s)/g, '$1\n$2');
+    }
+
     window.appendConversationAssistant = function (turnId, fragment) {
         if (!turnId || !fragment) return;
         var turn = ensureConversationTurn(String(turnId), 'User');
@@ -1674,13 +1681,13 @@
             turn.assistantText.textContent = '';
             turn.assistantText.classList.remove('conversation-turn__text--muted');
         }
-        turn.assistantText.textContent += String(fragment);
+        turn.assistantText.textContent = listifyNumbered(turn.assistantText.textContent + String(fragment));
     };
 
     window.setConversationAssistant = function (turnId, message) {
         if (!turnId) return;
         var turn = ensureConversationTurn(String(turnId), 'User');
-        turn.assistantText.textContent = String(message || '') || 'No visible reply.';
+        turn.assistantText.textContent = listifyNumbered(String(message || '')) || 'No visible reply.';
         if (turn.assistantText.textContent === 'No visible reply.') {
             turn.assistantText.classList.add('conversation-turn__text--muted');
         } else {
@@ -1819,7 +1826,7 @@
         panelVideo.load();
         panelVideo.style.display = 'block';
         panelVideo.play().catch(function (err) {
-            if (requestGeneration !== panelVideoGeneration) return;
+            if (requestGeneration !== panelVideoGeneration || (err && err.name === 'AbortError')) return;
             console.warn('[ECHOES] panel video playback failed:', err.message);
         });
     };

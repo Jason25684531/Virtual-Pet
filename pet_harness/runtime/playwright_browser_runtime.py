@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 from pet_harness.runtime.base_browser_runtime import BaseBrowserRuntime, BrowserCommand, BrowserCommandResult, RuntimeCheckResult
 from pet_harness.runtime.browser_session_manager import BrowserSessionManager
 from pet_harness.runtime.browser_worker import BrowserWorker
+from pet_harness.skills.intent_normalizer import RELAX_MUSIC
+
+
+LOGGER = logging.getLogger(__name__)
+
+# 放鬆類音樂固定播這支影片,不搜尋;判定規則見 intent_normalizer.RELAX_MUSIC(帶曲風的 query 照舊搜尋)。
+_RELAX_URL = "https://www.youtube.com/watch?v=Ib2osVLmjSU&t=8s"
+
+
+def _fixed_url_for(query: str) -> str | None:
+    return _RELAX_URL if RELAX_MUSIC.search(query.casefold()) else None
 
 
 class PlaywrightBrowserRuntime(BaseBrowserRuntime):
@@ -40,10 +52,11 @@ class PlaywrightBrowserRuntime(BaseBrowserRuntime):
         if command.action == "ensure_started":
             return self._start()
         if command.action == "shutdown":
-            if self._context:
-                self._context.close()
-            if self._playwright:
-                self._playwright.stop()
+            for closer in (self._context and self._context.close, self._playwright and self._playwright.stop):
+                try:
+                    closer and closer()
+                except Exception:  # 使用者可能已手動關掉瀏覽器視窗(TargetClosedError);關不掉也要繼續往下收尾
+                    LOGGER.debug("browser shutdown step failed (already closed?)", exc_info=True)
             self._context = self._playwright = None
             return BrowserCommandResult("success")
         if command.action == "youtube":
@@ -151,19 +164,30 @@ class PlaywrightBrowserRuntime(BaseBrowserRuntime):
 
     @staticmethod
     def _play_youtube(session, page, query: str, recovery_reason: str | None) -> BrowserCommandResult:
-        page.goto("https://www.youtube.com/results?search_query=" + query.replace(" ", "+"), wait_until="domcontentloaded", timeout=15000)
-        page.wait_for_timeout(2500)
-        links = page.locator('a[href*="/watch"]').evaluate_all("els => els.filter(e => e.href.includes('/watch')).slice(0, 8).map(e => ({href:e.href,title:e.textContent,channel:''}))")
-        from pet_harness.tools.youtube_music_tool import rank_candidates
-        links = rank_candidates(links, query)
-        if not links:
-            return BrowserCommandResult("failed", error={"reason": "no_results", "message": "No playable videos found", "retryable": False})
-        selected = links[0]
+        if fixed := _fixed_url_for(query):
+            selected = {"href": fixed, "title": query}
+        else:
+            page.goto("https://www.youtube.com/results?search_query=" + query.replace(" ", "+"), wait_until="domcontentloaded", timeout=15000)
+            try:
+                page.wait_for_selector('a[href*="/watch"]', timeout=5000)  # 結果一出現就繼續,不再固定睡 2.5 秒
+            except Exception:  # 沒有結果:links 會是空的,下面照舊回 no_results
+                pass
+            links = page.locator('a[href*="/watch"]').evaluate_all("els => els.filter(e => e.href.includes('/watch')).slice(0, 8).map(e => ({href:e.href,title:e.textContent,channel:''}))")
+            from pet_harness.tools.youtube_music_tool import rank_candidates
+            links = rank_candidates(links, query)
+            if not links:
+                return BrowserCommandResult("failed", error={"reason": "no_results", "message": "No playable videos found", "retryable": False})
+            selected = links[0]
         page.goto(selected["href"], wait_until="domcontentloaded", timeout=15000)
         page.locator("video").evaluate("video => video.play()")
         first = page.locator("video").evaluate("video => ({paused: video.paused, currentTime: video.currentTime})")
-        page.wait_for_timeout(1000)
-        second = page.locator("video").evaluate("video => ({paused: video.paused, currentTime: video.currentTime})")
+        # 驗證「真的在播」:currentTime 一前進就結束,最多等 1 秒(原本固定睡 1 秒)。
+        second = first
+        for _ in range(10):
+            page.wait_for_timeout(100)
+            second = page.locator("video").evaluate("video => ({paused: video.paused, currentTime: video.currentTime})")
+            if second["currentTime"] > first["currentTime"]:
+                break
         session.current_track, session.current_url = {"title": selected["title"].strip()}, page.url
         session.playback_state = "playing" if not second["paused"] else "paused"
         evidence = {"watch_url": page.url, "video_present": True, "paused": second["paused"], "current_time_samples": [first["currentTime"], second["currentTime"]], "page_alive": not page.is_closed()}

@@ -3,7 +3,10 @@
 由 scripts/build_release.ps1 以專案 venv 呼叫；不要用系統 Python 執行。
 程式邏輯編譯鎖住；.agentic / assets / ComfyUI_Json / config 以原結構放在外部，修改後重啟即生效。
 流程：清除舊 build → 複製原始碼到 build/stage → Cython 編譯核心模組 → Nuitka
-→ 複製外部內容 / 模型 / runtime 工具 → 檢查完整性、無原始碼、無機密。
+→ 複製外部內容 / 模型 / runtime 工具 → 產生第三方授權彙整 → 檢查完整性、無原始碼、無機密。
+
+參數：只有 --verify-only 會被解析（只驗證現有 VirtualPet_Release/，不 clean、不 build）；
+其他任何參數都會觸發完整 build，並先清空 VirtualPet_Release/。
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -64,6 +68,7 @@ VC_RUNTIME = ("msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll", "vcruntime140.
 # Release 必須具備的元件：顯示名稱 → 相對 Release 的 glob（主要檔案，大小需 > 0）。
 REQUIRED = {
     "VirtualPet.exe": "VirtualPet.exe",
+    "THIRD_PARTY_NOTICES": "THIRD_PARTY_NOTICES.txt",
     ".agentic soul": ".agentic/soul.md",
     ".agentic skills": ".agentic/skills/*.md",
     "角色 persona（personal.json）": "data/characters/*/personal.json",
@@ -88,6 +93,75 @@ REQUIRED = {
     "Lively LICENSE": "lively/LICENSE.txt",
     "Playwright/Chromium LICENSE": "ms-playwright/LICENSE",
 }
+
+
+# (名稱, 版本/來源, 授權, 限制備註)。備註非 None 的項目會置頂標示。
+# 這是工程側的整理，不是法律意見；授權判讀請以各專案的官方條款與法務確認為準。
+NON_PYTHON_NOTICES = (
+    ("jina-reranker-v2-base-multilingual (ONNX)", "jinaai", "CC-BY-NC-4.0", "非商用授權：商業散布前必須取得授權，或更換 reranker"),
+    ("ffmpeg / ffplay", "Chocolatey ffmpeg build", "GPLv3", "GPL：散布需附授權文字，並提供對應原始碼的取得方式"),
+    ("Lively Wallpaper", "v2.2.1.0", "GPLv3", "GPL：散布需附授權文字，並提供對應原始碼的取得方式"),
+    ("NVIDIA CUDA cuBLAS / cuDNN / NVRTC runtime DLL", "pip nvidia-* wheels", "NVIDIA Software License Agreement", "再散布受 NVIDIA 條款限制，需對照其 attachment 清單確認"),
+    ("faster-whisper large-v3-turbo", "mobiuslabsgmbh", "MIT", None),
+    ("paraphrase-multilingual-MiniLM-L12-v2 (ONNX-Q)", "Qdrant / fastembed", "Apache-2.0", None),
+    ("Qdrant/bm25", "fastembed", "Apache-2.0", None),
+    ("Silero VAD", "snakers4", "MIT", None),
+    ("Chromium (Playwright)", "ms-playwright", "BSD-3-Clause，及其內含第三方元件授權", None),
+    ("Microsoft Visual C++ Runtime DLL", ">= 14.40", "Microsoft 再散布條款", None),
+)
+# ponytail: Python 套件取 build venv 內已安裝的全部（排除 build 工具），是實際打包內容的超集；
+# 若授權清單需要精確對應，改用 Nuitka 的 --report 輸出過濾。
+_BUILD_ONLY_DISTS = {"nuitka", "cython", "ordered-set", "zstandard", "pip", "setuptools", "wheel", "pytest"}
+
+
+def _is_copyleft(license_text: str) -> bool:
+    return bool(re.search(r"(?<![A-Za-z])A?GPL", license_text) or "General Public" in license_text) \
+        and "Lesser" not in license_text and "LGPL" not in license_text and "Library" not in license_text
+
+
+def _license_of(meta) -> str:
+    if expression := meta.get("License-Expression"):
+        return expression
+    classified = [c.rsplit(" :: ", 1)[-1] for c in (meta.get_all("Classifier") or []) if c.startswith("License ::")]
+    if classified:
+        return " / ".join(classified)
+    return ((meta.get("License") or "UNKNOWN").strip().splitlines() or ["UNKNOWN"])[0][:80] or "UNKNOWN"
+
+
+def python_notices() -> list[tuple[str, str, str, str | None]]:
+    from importlib import metadata
+    rows = {}
+    for dist in metadata.distributions():
+        name = dist.metadata.get("Name")
+        if not name or name.lower() in _BUILD_ONLY_DISTS:
+            continue
+        lic = _license_of(dist.metadata)
+        rows[name.lower()] = (name, dist.version, lic, "copyleft 授權：確認散布方式符合條款" if _is_copyleft(lic) else None)
+    return list(rows.values())
+
+
+def render_notices(rows) -> str:
+    flagged = sorted((r for r in rows if r[3]), key=lambda r: r[0].lower())
+    plain = sorted((r for r in rows if not r[3]), key=lambda r: r[0].lower())
+    lines = [
+        "THIRD-PARTY NOTICES",
+        "本檔由 scripts/build_release.py 自動產生，為工程側整理，不構成法律意見。",
+        "Python 套件為 build 環境已安裝套件（含 runtime 相依，是實際打包內容的超集）。",
+        "",
+        "== 需要注意的授權（非商用 / copyleft / 再散布限制），交付前請法務確認 ==",
+        *(f"- {n} {v}: {lic} — {note}" for n, v, lic, note in flagged),
+        "",
+        "== 其餘元件 ==",
+        *(f"- {n} {v}: {lic}" for n, v, lic, _ in plain),
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def write_third_party_notices() -> None:
+    rows = [*NON_PYTHON_NOTICES, *python_notices()]
+    (RELEASE / "THIRD_PARTY_NOTICES.txt").write_text(render_notices(rows), encoding="utf-8")
+    log(f"已產生 THIRD_PARTY_NOTICES.txt（{len(rows)} 項，其中 {sum(1 for r in rows if r[3])} 項需注意）")
 
 
 def log(message: str) -> None:
@@ -336,7 +410,9 @@ def assemble(dist: Path) -> None:
     (RELEASE / "config").mkdir()
     shutil.copy2(ROOT / ".env.example", RELEASE / "config" / ".env.example")
     shutil.copy2(ROOT / "scripts" / "README_DEPLOY.txt", RELEASE / "README_DEPLOY.txt")
+    shutil.copy2(ROOT / "docs" / "release" / "新手啟動與測試指南.md", RELEASE / "新手啟動指南.md")
     shutil.copy2(ROOT / "scripts" / "release_run.bat", RELEASE / "run.bat")
+    write_third_party_notices()
 
 
 def _secret_values() -> list[bytes]:
@@ -347,6 +423,19 @@ def _secret_values() -> list[bytes]:
         if sep and not key.lstrip().startswith("#") and any(t in key.upper() for t in ("KEY", "TOKEN", "SECRET", "PASSWORD")) and len(value) >= 8 and "${" not in value:
             values.append(value.encode())
     return values
+
+
+def _contains_secret(path: Path, secrets: list[bytes], chunk: int = 8 * 1024 * 1024) -> bool:
+    """分塊讀取並與前一塊重疊（最長機密長度 - 1）bytes：機密剛好跨塊也抓得到，大檔也不必整個載入記憶體。"""
+    overlap = max(map(len, secrets)) - 1
+    tail = b""
+    with path.open("rb") as handle:
+        while block := handle.read(chunk):
+            data = tail + block
+            if any(value in data for value in secrets):
+                return True
+            tail = data[-overlap:] if overlap else b""
+    return False
 
 
 def _file_version(path: Path) -> tuple[int, int]:
@@ -366,9 +455,14 @@ def verify() -> None:
         errors.append(f"VC++ runtime 版本過舊（需 >= 14.40）：{old_vc}")
     # data/ 只允許內建內容（knowledge 索引、角色 persona）；其餘都是執行期資料，應由舊機搬移而不是被打包。
     runtime_state = [str(p.relative_to(RELEASE)) for p in (RELEASE / "data").rglob("*")
-                     if p.name in {"state.db", "qdrant", "pet_state.db", "runtime", "saves"} and "knowledge" not in p.parts]
+                     if p.name in {"state.db", "qdrant", "pet_state.db", "runtime", "saves", "browser_profile", "provider_config.json"}
+                     and "knowledge" not in p.parts]
     if runtime_state:
         errors.append(f"Release 不得包含 runtime data：{runtime_state[:5]}")
+    # logs/ 本身是 build 建立的空資料夾，只擋「裡面有檔案」（Release 被啟動過的痕跡）；debug/ 同理。
+    run_artifacts = [str(p.relative_to(RELEASE)) for name in ("logs", "debug") for p in (RELEASE / name).rglob("*") if p.is_file()]
+    if run_artifacts:
+        errors.append(f"Release 含執行期產物（被啟動過？請重新 build）：{run_artifacts[:5]}")
     if (RELEASE / "runtime_cache").exists():
         errors.append("Release 不得包含 runtime_cache/（含 greetings 語音快取）")
 
@@ -385,11 +479,8 @@ def verify() -> None:
             external_models.append(str(rel))
         if path.name in {".env", ".env.secure"}:
             secret_hits.append(str(rel))
-        # ponytail: 只掃 < 64MB（目前超過的只有模型權重與 CUDA DLL）；若素材影片超過 64MB，改成分塊串流掃描。
-        if secrets and path.stat().st_size < 64 * 1024 * 1024:
-            data = path.read_bytes()
-            if any(value in data for value in secrets):
-                secret_hits.append(str(rel))
+        if secrets and _contains_secret(path, secrets):
+            secret_hits.append(str(rel))
     if leaked:
         errors.append(f"含專案原始碼：{leaked}")
     if external_models:
@@ -404,6 +495,12 @@ def verify() -> None:
 
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # 輸出被導向檔案時預設是 ANSI 編碼
+    if "--verify-only" in sys.argv[1:]:
+        # 交付前對現有 Release 再驗一次；必須在 clean() 之前返回，否則會把要驗的資料夾刪掉。
+        if not RELEASE.exists():
+            raise SystemExit(f"[build] 找不到 {RELEASE}，請先 build")
+        verify()
+        return
     if not (GCC_DIR / "gcc.exe").exists():
         raise SystemExit(f"[build] 找不到 MinGW64：{GCC_DIR}（build_release.ps1 會自動下載）")
     clean()

@@ -54,6 +54,7 @@ def _preload_stt_provider():
         config.STT_MODEL_PATH,
         language=config.STT_LANGUAGE or None,
         beam_size=config.STT_BEAM_SIZE,
+        warmup=True,
     )
     print(f"[STT] 於 QApplication 建構前預先載入模型：model={config.STT_MODEL} device={config.STT_DEVICE}")
     try:
@@ -106,6 +107,7 @@ def _build_stt_controller(window, provider=None):
             config.STT_MODEL_PATH,
             language=config.STT_LANGUAGE or None,
             beam_size=config.STT_BEAM_SIZE,
+            warmup=True,
         )
     recorder = MicrophoneRecorder(
         sample_rate=config.STT_SAMPLE_RATE,

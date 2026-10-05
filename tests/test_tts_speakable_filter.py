@@ -50,3 +50,10 @@ def test_mixed_chunk_displays_original_but_speaks_without_emoji():
     MotionCoordinator._enqueue_stream_chunk(c, "汪汪！🐶 你覺得好笑嗎？", "trace-1")
     c._window.append_conversation_assistant.assert_called_once_with("trace-1", "汪汪！🐶 你覺得好笑嗎？")
     assert c._pending_tts_chunks.get_nowait()[1] == "汪汪！ 你覺得好笑嗎？"
+
+
+def test_speakable_drops_news_list_numbers_but_keeps_other_digits():
+    assert _speakable("1. 薩爾達推出新樂高") == "薩爾達推出新樂高"
+    assert _speakable("好的！2. Denzel's Training Day 免費了") == "好的！Denzel's Training Day 免費了"
+    assert _speakable("1.") == ""
+    assert _speakable("花了 3.5 小時，共 2027 筆") == "花了 3.5 小時，共 2027 筆"
