@@ -44,3 +44,11 @@ def test_say_fixed_text_ignores_empty_input_or_missing_character():
 
     fake.show_synthetic_conversation_turn.assert_not_called()
     fake.dispatch_action.assert_not_called()
+
+
+def test_say_fixed_text_uses_requested_trace_prefix():
+    fake = _window()
+
+    TransparentWindow.say_fixed_text(fake, "demo", "文案", trace_prefix="demo")
+
+    assert fake.dispatch_action.call_args.kwargs["trace_id"].startswith("demo-")

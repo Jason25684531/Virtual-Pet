@@ -14,6 +14,7 @@ import time
 from uuid import uuid4
 
 import config
+import demo_scripts
 from PyQt5.QtCore import QEvent, QPoint, Qt, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter, QRegion
 from PyQt5.QtWebChannel import QWebChannel
@@ -124,6 +125,7 @@ class TransparentWindow(QMainWindow):
     DEV_INPUT_WIDTH = 560
     DEV_INPUT_HEIGHT = 44
     DEV_INPUT_MARGIN_BOTTOM = 28
+    DEMO_RESPONSE_DELAY_MS = 2200
     # 角色預設位移（相對於視窗中心的像素偏移量）
     DEFAULT_CHARACTER_X_OFFSET = 0
     DEFAULT_CHARACTER_Y_OFFSET = 0
@@ -1205,6 +1207,33 @@ class TransparentWindow(QMainWindow):
         if not cleaned:
             self.set_action_status("Please enter text first.", tone="warn", timeout_ms=2200)
             return
+
+        demo_request_id = getattr(self, "_demo_request_id", 0) + 1
+        self._demo_request_id = demo_request_id
+        demo_match = demo_scripts.match(cleaned)
+        if demo_match is not None:
+            _, reply_text = demo_match
+            character_id = self.get_current_character_id()
+            if not character_id:
+                self.set_action_status("No active character.", tone="warn", timeout_ms=2200)
+                return
+            TransparentWindow._interrupt_active_conversation(self)
+            self._greeter.reset()
+            trace_id = f"turn-{uuid4().hex}"
+            self.begin_conversation_turn(trace_id, "Talk", cleaned)
+            self._conversation_pending = True
+            self._conversation_character_id = character_id
+            self._conversation_trace_id = trace_id
+            self._set_agentic_busy(True)
+            self.set_action_status("Processing interaction...", tone="working", timeout_ms=0)
+            QTimer.singleShot(
+                TransparentWindow.DEMO_RESPONSE_DELAY_MS,
+                lambda: TransparentWindow._deliver_demo_reply(
+                    self, demo_request_id, trace_id, character_id, cleaned, reply_text
+                ),
+            )
+            return
+
         coordinator = self._motion_coordinator
         # 使用者輸入優先於主動打招呼：打斷它，不丟棄使用者的字。
         if (
@@ -1241,6 +1270,26 @@ class TransparentWindow(QMainWindow):
             self._conversation_trace_id = None
             self._set_agentic_busy(False)
             self.set_action_status(result.reason or "Interaction rejected.", tone="warn", timeout_ms=2200)
+
+    def _deliver_demo_reply(
+        self,
+        request_id: int,
+        trace_id: str,
+        character_id: str,
+        user_text: str,
+        reply_text: str,
+    ) -> None:
+        if (
+            getattr(self, "_demo_request_id", None) != request_id
+            or self.get_current_character_id() != character_id
+        ):
+            return
+        self.set_conversation_assistant(trace_id, reply_text)
+        self.finish_conversation_turn(trace_id)
+        TransparentWindow._finish_streaming_trace(self, trace_id)
+        self._finish_conversation_for(character_id)
+        self.say_fixed_text(user_text, reply_text, trace_prefix="demo", show_turn=False)
+        self.set_action_status("Interaction complete.", tone="idle", timeout_ms=1800)
 
     def _interrupt_active_conversation(self) -> None:
         """Cancel the active turn before starting another input source."""
@@ -1566,7 +1615,13 @@ class TransparentWindow(QMainWindow):
             self.speak_text(message, trace_id=trace_id)
         self._proactive_greeting_release_timer.start()
 
-    def say_fixed_text(self, user_text: str, reply_text: str) -> None:
+    def say_fixed_text(
+        self,
+        user_text: str,
+        reply_text: str,
+        trace_prefix: str = "quicktag",
+        show_turn: bool = True,
+    ) -> None:
         """Chat 快捷 tag 的固定文案:顯示一輪對話並直接 TTS,不呼叫 LLM。
         流程同 _speak_proactive_greeting;沿用其旗標讓使用者後續輸入能打斷。"""
         if not (user_text and reply_text and self.get_current_character_id()):
@@ -1574,8 +1629,9 @@ class TransparentWindow(QMainWindow):
         TransparentWindow._interrupt_active_conversation(self)
         self._greeter.reset()
         self._proactive_greeting_active = True
-        trace_id = f"quicktag-{uuid4().hex}"
-        self.show_synthetic_conversation_turn("Quick", user_text, reply_text)
+        trace_id = f"{trace_prefix}-{uuid4().hex}"
+        if show_turn:
+            self.show_synthetic_conversation_turn("Quick", user_text, reply_text)
         self._log_assistant_utterance(reply_text)
         if not self.dispatch_action(
             f"[ACTION:wave_response] {reply_text}", trace_id=trace_id,

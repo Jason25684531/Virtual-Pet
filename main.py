@@ -23,6 +23,31 @@ def _configure_sigint_timer(app):
     app._sigint_timer.timeout.connect(lambda: None)
 
 
+def _schedule_youtube_warmup(executor) -> None:
+    """Best-effort startup check; it does not promise ad-free playback."""
+    from PyQt5.QtCore import QTimer
+    from pet_harness.tools.youtube_music_tool import warmup_once
+
+    def done(ok, result) -> None:
+        if not ok:
+            print(f"[YOUTUBE WARMUP] failed: {result}")
+        elif result is None:
+            print("[YOUTUBE WARMUP] failed: no result")
+        elif result.status in {"success", "partial"}:
+            print(f"[YOUTUBE WARMUP] {result.status}: browser closed")
+        else:
+            print(f"[YOUTUBE WARMUP] {result.status}: {result.error}")
+
+    def run() -> None:
+        try:
+            executor.submit(warmup_once, done)
+        except RuntimeError:
+            # The application may have started shutting down before the timer fired.
+            return
+
+    QTimer.singleShot(1000, run)
+
+
 def _create_application(argv):
     from PyQt5.QtCore import QCoreApplication, Qt
     from PyQt5.QtWidgets import QApplication
@@ -205,6 +230,7 @@ def _run_harness_mode(app, stt_provider=None):
         voice_status_adapter=VoiceRuntimeStatusAdapter(stt_controller=stt_controller),
     )
     window.show()
+    _schedule_youtube_warmup(executor)
     window.set_action_status("Harness mode ready.", tone="idle", timeout_ms=2400)
     app.aboutToQuit.connect(coordinator.shutdown)
     return window

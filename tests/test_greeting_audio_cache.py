@@ -25,6 +25,11 @@ def _req(voice="v1", trace="greeting-1", text="今天過得好嗎?", sink=None):
                       voice_id=voice, model_id="m", pcm_stream_sink=sink)
 
 
+def test_is_greeting_accepts_demo_traces_but_not_regular_turns():
+    assert gac.is_greeting(_req(trace="demo-1"))
+    assert not gac.is_greeting(_req(trace="turn-1"))
+
+
 def test_store_load_roundtrip_and_key_changes_with_voice():
     gac.store(_req(), PCM, 24000)
     assert gac.load(_req()) == (PCM, 24000)

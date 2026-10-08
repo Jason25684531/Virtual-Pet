@@ -23,7 +23,7 @@ _FRAME_BYTES = 2  # s16le mono
 
 
 def is_greeting(request) -> bool:
-    return str(request.trace_id or "").startswith("greeting-")
+    return str(request.trace_id or "").startswith(("greeting-", "demo-"))
 
 
 def _key(request) -> str:

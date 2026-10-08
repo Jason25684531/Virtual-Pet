@@ -2159,6 +2159,9 @@ function pickPrimarySkillForCapability(items, capability) {
 
     window.hydrateAgenticUI = function (payload) {
         payload = payload || {};
+        if (payload.state && payload.state.character_id) {
+            activeStyleCharacterId = payload.state.character_id;
+        }
         renderState(payload.state || null);
         renderRuntimeControls(payload.runtimeControls || null);
         renderSkills(payload.skills || []);
