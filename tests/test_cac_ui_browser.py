@@ -30,6 +30,7 @@ def page():
                   listCharacters: function (done) { done(ok([])); },
                   listPresets: function (done) { done(ok(window.__presets || [{character_id: 'miku', name: 'Miku', persona_description: 'Virtual singer'}])); },
                   createFromPreset: function (_, __, done) { done(ok({})); },
+                  pickCharacterImage: function (done) { done(ok({image_path: 'C:/test/avatar.png', preview_url: 'file:///C:/test/avatar.png'})); },
                   getActiveState: function (done) { done(ok(Object.assign({active: true, character_id: 'miku', xp: {xp_total: 72, level: 2}}, window.__activeStateExtra || {}))); },
                   listStyleVariants: function (_, done) { done(ok([{variant: 'og', state: 'ready', thumb: '', is_active: true}, {variant: 'event', state: 'generating', thumb: 'preview.png', is_active: false}, {variant: 'development', state: 'ready', thumb: '', is_active: false}])); },
                   applyStyle: function (_, variant, done) { window.__applied_style = variant; done(ok({})); },
@@ -87,6 +88,17 @@ def test_user_can_create_a_companion_then_switch_between_one_hud_at_a_time(page)
     page.locator("#close-confirm-button").click()
     page.evaluate("window.requestClose()")
     assert not page.locator("#modal-close-confirm").is_visible()
+
+
+def test_custom_upload_shows_a_thumbnail_preview(page):
+    page.locator("#menu-create-button").click()
+    page.locator("#customize-tab-button").click()
+    page.locator("label[for='preset-customize-file']").click()
+
+    preview = page.locator("label[for='preset-customize-file'] img")
+    assert preview.is_visible()
+    assert preview.get_attribute("src") == "file:///C:/test/avatar.png"
+    assert page.locator("label[for='preset-customize-file'] b").inner_text() == "avatar.png"
 
 
 def test_render_activity_badge_is_available_without_progress_overlay(page):

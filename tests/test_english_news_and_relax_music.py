@@ -163,7 +163,7 @@ def _resolve(music_router, text):
     "播放輕鬆的音樂", "放鬆音樂", "放一首放鬆的音樂", "來點輕鬆的音樂", "我想聽放鬆的音樂",
     "給我一首放鬆的音樂", "你可以給我放鬆的音樂嗎", "幫我找一首舒壓的歌",
     "我今天心情不好 你可以給我一首放鬆的音樂嗎?",   # 2026-10-05 實機 log:LLM 嘴上答應、卻沒有播放
-    "play relaxing music", "play some relaxing music", "put on chill music", "give me some relax songs",
+    "play relaxing music", "play some relaxing music", "can you play some relaxing music?", "put on chill music", "give me some relax songs",
 ])
 def test_relax_requests_route_to_music_and_open_the_fixed_video(music_router, text):
     assert _resolve(music_router, text) == (True, FIXED)

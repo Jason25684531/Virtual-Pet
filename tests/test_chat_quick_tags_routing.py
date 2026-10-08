@@ -17,7 +17,7 @@ def skills():
 
 @pytest.mark.parametrize(
     "text,skill_name",
-    [("播放輕鬆的音樂", "youtube_music_playback"), ("遊戲新聞", "bahamut_daily_news")],
+    [("can you play some relaxing music?", "youtube_music_playback"), ("can you tell me some game news?", "bahamut_daily_news")],
 )
 def test_quick_tag_text_routes_deterministically(skills, text, skill_name):
     assert SkillRouter(skills).match(text).name == skill_name
@@ -25,5 +25,11 @@ def test_quick_tag_text_routes_deterministically(skills, text, skill_name):
 
 def test_music_tag_searches_for_relaxing_music(skills):
     music = next(s for s in skills if s.capability == "music")
-    args = PetHarnessEngine._media_arguments(music, "播放輕鬆的音樂")
-    assert args == {"action": "search_and_play", "query": "輕鬆的音樂"}
+    args = PetHarnessEngine._media_arguments(music, "can you play some relaxing music?")
+    assert args == {"action": "search_and_play", "query": "relaxing music"}
+    assert PetHarnessEngine._ack_text(music, args, "en") == "I'll play some relaxing music for you."
+
+
+def test_quick_tag_news_is_limited_to_three_items(skills):
+    news = next(s for s in skills if s.capability == "news")
+    assert news.tool_policy["defaults"]["limit"] == 3

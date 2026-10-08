@@ -712,6 +712,13 @@ button:disabled {
    color: #71717a;
 }
 
+.upload-box img {
+   width: 72px;
+   height: 72px;
+   object-fit: cover;
+   border-radius: 12px;
+}
+
 .customize-preview {
    display: grid;
    min-height: 510px;

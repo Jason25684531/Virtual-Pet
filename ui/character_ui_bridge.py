@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import json
 import logging
 from typing import TYPE_CHECKING, Any
@@ -102,7 +104,7 @@ class CharacterUiBridge(QObject):
             path, _ = QFileDialog.getOpenFileName(
                 self._window, "選擇角色圖片", "", "Images (*.png *.jpg *.jpeg *.webp)"
             )
-            return self._ok({"image_path": path})
+            return self._ok({"image_path": path, "preview_url": Path(path).resolve().as_uri() if path else ""})
         except Exception as exc:  # noqa: BLE001
             return self._error(exc)
 

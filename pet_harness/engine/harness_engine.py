@@ -569,7 +569,7 @@ class PetHarnessEngine:
             timeline.ack_emitted = True
             timeline.mark("first_speech_chunk_emitted")
             if callable(stream_callback):
-                stream_callback(self._ack_text(deterministic_skill, {"query": user_event.text}))
+                stream_callback(self._ack_text(deterministic_skill, {"query": user_event.text}, detect_reply_language(user_event.text)))
 
         # 工具先行:deterministic 命中且帶 required_tool 時,先執行工具再讓 LLM 合成回覆,
         # 讓回覆能引用本輪真實取得的資料,而非上一輪殘留的 tool_result(見
@@ -813,11 +813,11 @@ class PetHarnessEngine:
                 LOGGER.warning("[SLOW TOOL FAILED] turn_id=%s character_id=%s tool=%s detail=%s", timeline.turn_id, self._character_id, candidate.tool_name, message or getattr(result, "error", None))
                 callback = self._slow_tool_failure_callback
                 if callable(callback):
-                    callback(timeline.turn_id, "抱歉，剛才沒有成功找到這首歌。")
+                    callback(timeline.turn_id, "Sorry, I couldn't find that song." if detect_reply_language(event.text) == "en" else "抱歉，剛才沒有成功找到這首歌。")
             else:
                 LOGGER.info("[SLOW TOOL COMPLETE] turn_id=%s character_id=%s tool=%s", timeline.turn_id, self._character_id, candidate.tool_name)
 
-        ack = self._ack_text(skill, candidate.arguments)
+        ack = self._ack_text(skill, candidate.arguments, detect_reply_language(event.text))
         timeline.ack_emitted = True
         timeline.mark("first_speech_chunk_emitted")
         if callable(stream_callback):
@@ -854,7 +854,9 @@ class PetHarnessEngine:
         return pet_event
 
     @staticmethod
-    def _ack_text(skill: Skill, arguments: dict[str, Any]) -> str:
+    def _ack_text(skill: Skill, arguments: dict[str, Any], language: str = "zh") -> str:
+        if language == "en" and skill.capability == "music":
+            return f"I'll play some {str(arguments.get('query') or 'relaxing music').strip()} for you."
         template = skill.ack_template or "我來幫你處理。"
         song = str(arguments.get("query") or "這首歌").strip()
         try:
