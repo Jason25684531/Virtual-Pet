@@ -53,11 +53,17 @@ def _write_workspace(root: Path, monkeypatch) -> Path:
     (assets / "manifest.json").write_text(json.dumps({"id": "Miku", "name": "Miku", "background_image": "", "motions_dir": "", "motions": {}, "idle_pool": [], "layout": {}}), encoding="utf-8")
     skills = root / ".agentic" / "skills"
     skills.mkdir(parents=True)
+    behavior = root / ".agentic" / "behavior"
+    behavior.mkdir()
+    (behavior / "behavior_map.json").write_text(
+        json.dumps({"behaviors": {"idle": {"webm_key": "idle"}, "report_news": {"webm_key": "report_news"}}}),
+        encoding="utf-8",
+    )
     files = {
         "music_bgm": "name: music_bgm\ndescription: old\ntrigger: music\nbehavior: music_idle\nxp_reward: 1\nrequired_tool: youtube_music_tool\n",
         "game_news": "name: game_news\ndescription: old\ntrigger: news\nbehavior: news_idle\nxp_reward: 1\nrequired_tool: web_article_tool\n",
         "youtube_music_playback": "name: youtube_music_playback\ndescription: music\ntrigger: 播歌\nbehavior: music_idle\nxp_reward: 8\nrequired_tool: youtube_music_tool\ntool_policy_json: {\"allowed_domains\":[\"www.youtube.com\"],\"allowed_actions\":[\"search_and_play\",\"pause\",\"resume\",\"stop\",\"get_status\"],\"priority\":100}\n",
-        "bahamut_daily_news": "name: bahamut_daily_news\ndescription: news\ntrigger: 巴哈新聞\nbehavior: news_idle\nxp_reward: 7\nrequired_tool: web_article_tool\npriority: 100\ncapability: news\ntool_policy_json: {\"allowed_domains\":[\"gnn.gamer.com.tw\"],\"allowed_actions\":[\"list_articles\",\"get_article_detail\",\"open_article\"],\"defaults\":{\"action\":\"list_articles\",\"limit\":5,\"url\":\"https://gnn.gamer.com.tw/rss.xml\"}}\n",
+        "bahamut_daily_news": "name: bahamut_daily_news\ndescription: news\ntrigger: 巴哈新聞\nbehavior: report_news\nxp_reward: 7\nrequired_tool: web_article_tool\npriority: 100\ncapability: news\ntool_policy_json: {\"allowed_domains\":[\"gnn.gamer.com.tw\"],\"allowed_actions\":[\"list_articles\",\"get_article_detail\",\"open_article\"],\"defaults\":{\"action\":\"list_articles\",\"limit\":5,\"url\":\"https://gnn.gamer.com.tw/rss.xml\"}}\n",
     }
     for name, content in files.items():
         (skills / f"{name}.md").write_text(content, encoding="utf-8")
@@ -71,6 +77,41 @@ def test_loader_normalizes_policy_priority_and_capability(tmp_path, monkeypatch)
     assert loaded["youtube_music_playback"].capability == "music"
     assert loaded["bahamut_daily_news"].priority == 100
     assert loaded["bahamut_daily_news"].capability == "news"
+
+
+def test_news_tool_result_skips_llm_and_finishes_with_news_action(tmp_path, monkeypatch):
+    agentic = _write_workspace(tmp_path, monkeypatch)
+    profile_path = tmp_path / "data" / "characters" / "Miku" / "profile.json"
+    profile_path.write_text(
+        json.dumps({"persona_description": "test", "skill_config": ["bahamut_daily_news"]}),
+        encoding="utf-8",
+    )
+    provider = RecordingProvider()
+    engine = PetHarnessEngine(provider, agentic_root=agentic, character_id="Miku")
+    registry = ToolRegistry()
+    definition = registry.get("web_article_tool")
+    registry.register_definition(
+        definition,
+        lambda request: ToolResult(
+            "web_article_tool",
+            "success",
+            payload={"articles": [{"title": "A", "summary": "first"}, {"title": "B", "summary": "second"}]},
+            request_id=request.request_id,
+        ),
+    )
+    engine.refresh_tool_registry(registry)
+    chunks = []
+    news_skill = next(skill for skill in engine.skills if skill.name == "bahamut_daily_news")
+
+    event = engine.handle_event({"text": "game news", "source": "test"}, stream_callback=chunks.append)
+
+    assert engine.last_tool_result is not None, engine.router.last_route_diagnostics
+    assert engine.last_tool_result.payload.get("articles"), engine.last_tool_result.to_dict()
+    assert event.matched_skill == news_skill.name
+    assert provider.calls == []
+    assert chunks == ["1. A — first", "2. B — second"]
+    assert event.behavior_id == news_skill.behavior
+    assert event.metadata["agentic"]["llm_calls"] == 0
 
 
 def test_ack_only_skill_skips_llm_and_emits_one_ack(tmp_path, monkeypatch):
@@ -242,9 +283,8 @@ def test_migration_discovery_and_conflicting_agent_tool(tmp_path, monkeypatch):
     assert event.metadata["tool_result"]["tool_name"] == "youtube_music_tool"
 
 
-def test_required_tool_skill_executes_tool_before_llm_call(tmp_path, monkeypatch):
-    """deterministic 命中帶 required_tool 的 skill 時,工具 MUST 先執行,LLM 只呼叫一次,
-    且 prompt 必須包含本輪真實工具結果(而非事後才附加)(fix-core-interaction-experience)。"""
+def test_news_required_tool_returns_result_without_llm_call(tmp_path, monkeypatch):
+    """新聞工具成功後直接回覆,不再增加一次 LLM 延遲。"""
     agentic = _write_workspace(tmp_path, monkeypatch)
     provider = RecordingProvider()
     engine = PetHarnessEngine(provider, agentic_root=agentic, character_id="Miku")
@@ -262,8 +302,9 @@ def test_required_tool_skill_executes_tool_before_llm_call(tmp_path, monkeypatch
 
     event = engine.handle_event({"text": "跟我說今天的巴哈新聞", "source": "test"})
 
-    assert len(provider.calls) == 1
-    assert "今日新聞頭條" in (provider.calls[0] or "")
+    assert provider.calls == []
+    assert event.reply == "1. 今日新聞頭條 — 重點摘要"
+    assert event.metadata["agentic"]["llm_calls"] == 0
     assert event.tool_request.tool_name == "web_article_tool"
     assert event.metadata["tool_result"]["payload"]["articles"][0]["title"] == "今日新聞頭條"
 

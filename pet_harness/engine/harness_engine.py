@@ -663,15 +663,53 @@ class PetHarnessEngine:
 
         prompt_result = self._build_prompt(user_event, state_before, deterministic_skill, tool_first_result, conversation_history, memory_hits, retrieval_result, knowledge_evidence, ack_emitted=timeline.ack_emitted)
         LOGGER.info("[PROMPT SIZE] turn_id=%s chars=%s", timeline.turn_id, prompt_result.section_sizes)
-        provider_reply, agent_result = self._invoke_provider(
-            user_event,
-            deterministic_skill,
-            prompt_result.prompt,
-            stream_callback=stream_callback,
-            action_callback=action_callback,
-            cancel=cancel,
-            timeline=timeline,
+        direct_news_reply = (
+            self._news_reply(tool_first_result)
+            if deterministic_skill is not None and deterministic_skill.capability == "news"
+            else None
         )
+        if direct_news_reply:
+            self.last_prompt = prompt_result.prompt
+            status_getter = getattr(self.provider, "get_status", None)
+            status = (
+                status_getter()
+                if callable(status_getter)
+                else ProviderStatus(healthy=True, message="deterministic news")
+            )
+            cancelled = bool(cancel is not None and cancel.is_set())
+            provider_reply = ProviderReply(
+                reply=direct_news_reply,
+                provider_status=status,
+                raw_text=direct_news_reply,
+                prompt_text=prompt_result.prompt,
+                metadata={"streaming": bool(stream_callback), "cancelled": cancelled, "deterministic": True},
+            )
+            agent_result = AgentResult(
+                reply=direct_news_reply,
+                matched_skill=deterministic_skill.name,
+                behavior_hint=deterministic_skill.behavior,
+                confidence=1.0,
+                raw_text=direct_news_reply,
+                parser_status="deterministic_tool_result",
+                provider_type="deterministic",
+                metadata={"llm_calls": 0},
+            )
+            self.last_provider_raw_result = direct_news_reply
+            self.last_agent_result = agent_result
+            if stream_callback and not cancelled:
+                for line in direct_news_reply.splitlines():
+                    stream_callback(line)
+                    timeline.mark("first_speech_chunk_emitted")
+        else:
+            provider_reply, agent_result = self._invoke_provider(
+                user_event,
+                deterministic_skill,
+                prompt_result.prompt,
+                stream_callback=stream_callback,
+                action_callback=action_callback,
+                cancel=cancel,
+                timeline=timeline,
+            )
         stream_cancelled = bool(provider_reply.metadata.get("cancelled")) or bool(cancel is not None and cancel.is_set())
         if stream_cancelled:
             timeline.cancel("stream_interrupted")
@@ -725,6 +763,7 @@ class PetHarnessEngine:
                 "behavior": behavior_event.to_dict(),
                 "agentic": {
                     "streaming": bool(provider_reply.metadata.get("streaming")),
+                    "llm_calls": 0 if direct_news_reply else 1,
                     "provider_type": agent_result.provider_type,
                     "parser_status": agent_result.parser_status,
                     "fallback_used": agent_result.fallback_used,
@@ -750,7 +789,7 @@ class PetHarnessEngine:
             route_kind="deterministic" if deterministic_skill else "conversation",
             skill_name=matched_skill.name if matched_skill else None,
             streaming=bool(provider_reply.metadata.get("streaming")),
-            slow_tool=False,
+            slow_tool=bool(direct_news_reply),
             route_source=skill_source,
             character_generation=character_generation.current(),
             tool_status=(tool_result_payload or {}).get("status"),
@@ -1007,6 +1046,24 @@ class PetHarnessEngine:
             timeline.mark("llm_first_token")
             timeline.mark("llm_done")
         return provider_reply, agent_result
+
+    @staticmethod
+    def _news_reply(result: ToolResult | None) -> str | None:
+        """Render a verified news-tool result without another LLM round trip."""
+        if result is None or result.tool_name != "web_article_tool" or result.status != "success":
+            return None
+        articles = (result.payload or {}).get("articles") if isinstance(result.payload, dict) else None
+        if not isinstance(articles, list):
+            return None
+        lines = []
+        for index, article in enumerate(articles[:5], start=1):
+            if not isinstance(article, dict):
+                continue
+            title = str(article.get("title") or "").strip()
+            summary = str(article.get("summary") or "").strip()
+            if title:
+                lines.append(f"{index}. {title}{f' — {summary}' if summary else ''}")
+        return "\n".join(lines) or None
 
     def _parse_and_route(self, event: UserEvent, result: AgentResult, capabilities: set[str]):
         import config

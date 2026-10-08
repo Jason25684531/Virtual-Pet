@@ -85,6 +85,16 @@ def test_polygon_returns_latest_five_and_skips_gnn_only_fetchers():
     assert gnn_only.urls == []
 
 
+def test_successful_news_result_has_a_direct_reply():
+    result = ToolResult(
+        "web_article_tool",
+        "success",
+        payload={"articles": [{"title": "A", "summary": "first"}, {"title": "B", "summary": "second"}]},
+    )
+
+    assert PetHarnessEngine._news_reply(result) == "1. A — first\n2. B — second"
+
+
 def test_unknown_feed_host_is_rejected():
     result = _list(WebArticleTool([RecordingFetcher()]), "https://evil.example.com/rss.xml")
     assert result.status == "failed" and result.error["reason"] == "invalid_arguments"
