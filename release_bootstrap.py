@@ -17,7 +17,7 @@ from pathlib import Path
 import requests
 
 import config
-from ui.lively_wallpaper import BACKGROUND_TITLE, find_lively_executable, lively_data_roots
+from ui.lively_wallpaper import BACKGROUND_TITLE, find_lively_executable, lively_command, lively_data_roots
 
 LOGGER = logging.getLogger(__name__)
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -75,11 +75,11 @@ def _ensure_lively(app_root: Path) -> None:
         LOGGER.warning("[BOOTSTRAP] 找不到 Lively，略過桌布背景（可手動安裝 Lively 或設定 LIVELY_EXE）")
         return
     if not _is_running("Lively.exe"):
-        subprocess.Popen([executable], creationflags=_DETACHED, close_fds=True)
+        subprocess.Popen(lively_command(executable), creationflags=_DETACHED, close_fds=True)
         LOGGER.info("[BOOTSTRAP] 已啟動 Lively")
     wallpaper = app_root / "lively" / "echoes_background"
     if wallpaper.is_dir() and not _has_echoes_wallpaper():
-        subprocess.run([executable, "setwp", "--file", str(wallpaper)], timeout=60, creationflags=_NO_WINDOW)
+        subprocess.run(lively_command(executable, "setwp", "--file", str(wallpaper)), check=True, timeout=60, creationflags=_NO_WINDOW)
         LOGGER.info("[BOOTSTRAP] 已匯入 ECHOES Background Host 桌布")
 
 

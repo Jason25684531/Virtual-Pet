@@ -230,7 +230,9 @@ class TransparentWindow(QMainWindow):
         # 左上角的裁切（角色與底部導覽整個落在畫面外）。availableGeometry 已扣除工作列。
         screen = QApplication.primaryScreen()
         if screen:
-            self.setGeometry(screen.availableGeometry())
+            # 少 1px：剛好蓋滿螢幕的 GL 視窗會被當成獨佔全螢幕而停止 DWM 合成，畫面卡在最後一格
+            # （切角色時就停在黑色 loading）。工作列自動隱藏時 availableGeometry 等於整個螢幕。
+            self.setGeometry(screen.availableGeometry().adjusted(0, 0, 0, -1))
         self._apply_left_clickthrough_mask()
 
     def _apply_left_clickthrough_mask(self) -> None:
@@ -826,9 +828,11 @@ class TransparentWindow(QMainWindow):
         self._background_status = status
         self._background_url = safe_url
         lively = getattr(self, "_lively_wallpaper", None)
-        if getattr(config, "LIVELY_BACKGROUND_ENABLED", False) and lively is not None:
-            lively.sync_background(safe_url)
+        if getattr(config, "LIVELY_BACKGROUND_ENABLED", False):
+            # A room image in this window covers desktop icons, even when Lively fails.
             self._run_javascript("setExternalBackgroundMode", True)
+            if lively is not None:
+                lively.sync_background(safe_url)
             return
         self._run_javascript("setExternalBackgroundMode", False)
         if safe_url:
@@ -1118,8 +1122,9 @@ class TransparentWindow(QMainWindow):
         character_id = str(profile_payload.get("character_id") or "").strip()
         if character_id:
             self.apply_character(character_id)
-        self._adapter.warm_active_engine()
+        # 先讀 UI 狀態再暖機：暖機執行緒會搶 GIL，讓這段 SQLite 讀取從約 50ms 拖到 1.4 秒。
         self.refresh_agentic_ui(message="Character switched.", tone="idle", timeoutMs=2200)
+        self._adapter.warm_active_engine()
 
     def closeEvent(self, event) -> None:
         self._stop_playtime_session()

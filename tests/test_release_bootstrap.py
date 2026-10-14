@@ -97,6 +97,20 @@ def test_running_lively_with_wallpaper_does_nothing(tmp_path, monkeypatch):
     assert rec.popen == [] and rec.run == []
 
 
+def test_store_lively_bootstrap_uses_package_launcher(tmp_path, monkeypatch):
+    rec = Recorder().install(monkeypatch)
+    monkeypatch.setattr(rb.config, "LIVELY_BACKGROUND_ENABLED", True)
+    monkeypatch.setattr(rb, "find_lively_executable", lambda: "C:/Program Files/WindowsApps/LivelyWallpaper_1.0_x64__publisher/Build/Lively.exe")
+    monkeypatch.setattr(rb, "_has_echoes_wallpaper", lambda: False)
+    (tmp_path / "lively" / "echoes_background").mkdir(parents=True)
+
+    rb._ensure_lively(tmp_path)
+
+    assert rec.popen[0][0] == rec.run[0][0] == "powershell.exe"
+    assert "Invoke-CommandInDesktopPackage" in rec.popen[0][-1]
+    assert "setwp --file" in rec.run[0][-1]
+
+
 def test_comfyui_launch_cmd_only_when_configured_and_down(tmp_path, monkeypatch):
     rec = Recorder().install(monkeypatch)
     monkeypatch.setattr(rb.config, "COMFYUI_ENABLED", True)

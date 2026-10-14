@@ -1,11 +1,37 @@
 from types import SimpleNamespace
 import ctypes
 
+import pytest
+
 from PyQt5.QtCore import QPoint, QRect, Qt
 from PyQt5.QtGui import QRegion
 
 from ui.transparent_window import TransparentWindow
 from ui.interaction_region_manager import InteractionRegionManager
+
+
+@pytest.mark.parametrize("enabled,available,source", [
+    (True, True, "assets/room.png"),
+    (True, False, "assets/room.png"),
+    (False, True, "assets/room.png"),
+    (True, True, None),
+])
+def test_lively_mode_keeps_desktop_visible_even_when_wallpaper_is_unavailable(monkeypatch, enabled, available, source):
+    calls, synced = [], []
+    monkeypatch.setattr("ui.transparent_window.config.LIVELY_BACKGROUND_ENABLED", enabled)
+    fake = SimpleNamespace(
+        _background_resolver=SimpleNamespace(resolve=lambda **_: ("loaded", source)),
+        _lively_wallpaper=SimpleNamespace(sync_background=synced.append) if available else None,
+        _run_javascript=lambda *args: calls.append(args),
+    )
+
+    TransparentWindow._apply_resolved_background(fake, source)
+
+    assert calls == ([("setExternalBackgroundMode", True)] if enabled else [
+        ("setExternalBackgroundMode", False),
+        ("setRoomBackground", source) if source else ("clearRoomBackground",),
+    ])
+    assert synced == ([source] if enabled and available else [])
 
 
 def test_companion_mode_does_not_set_always_on_top(monkeypatch):

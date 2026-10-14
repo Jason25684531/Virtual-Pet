@@ -56,6 +56,25 @@ def _wallpaper_folder(root: Path, value: str) -> Path:
     return root / "Library" / "wallpapers" / folder.name
 
 
+def lively_command(executable: str, *arguments: str) -> list[str]:
+    """Run Store Lively in its package context; ordinary installs run directly."""
+    installation = Path(executable).parent.parent
+    if installation.parent.name.lower() != "windowsapps":
+        return [executable, *arguments]
+
+    # WindowsApps 資料夾名 = Name_Version_Arch_Resource_PublisherId；直接推出 family name，
+    # 省掉每次切換都要跑一次約 0.4 秒的 Get-AppxPackage。
+    parts = installation.name.split("_")
+    family = f"{parts[0]}_{parts[-1]}".replace("'", "''")
+    program = executable.replace("'", "''")
+    args = subprocess.list2cmdline(arguments).replace("'", "''")
+    script = (
+        f"Invoke-CommandInDesktopPackage -PackageFamilyName '{family}' "
+        f"-AppId App -Command '{program}' -Args '{args}' -PreventBreakaway -ErrorAction Stop"
+    )
+    return ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script]
+
+
 def prepare_command(
     source: str | None,
     *,
@@ -93,8 +112,8 @@ def prepare_command(
                 if not target.exists() or target.stat().st_size != media.stat().st_size:
                     shutil.copy2(media, target)
                 value = f"assets/{name}"
-            return [executable, "setprop", "--monitor", str(entry["LivelyScreen"]["Index"]),
-                    "--property", f"{property_name}={value}"]
+            return lively_command(executable, "setprop", "--monitor", str(entry["LivelyScreen"]["Index"]),
+                                  "--property", f"{property_name}={value}")
     return None
 
 
@@ -113,7 +132,13 @@ class LivelyWallpaper:
     def __init__(self, parent):
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="Lively")
         self._pending = None
-        parent.destroyed.connect(lambda: self._executor.shutdown(wait=False, cancel_futures=True))
+        self._shell = None
+        parent.destroyed.connect(self._close)
+
+    def _close(self):
+        self._executor.shutdown(wait=False, cancel_futures=True)
+        if self._shell is not None:
+            self._shell.kill()
 
     def sync(self, source):
         self._queue(source, prepare_command)
@@ -126,12 +151,20 @@ class LivelyWallpaper:
             self._pending.cancel()
         self._pending = self._executor.submit(self._send, source, builder)
 
-    @staticmethod
-    def _send(source, builder):
+    def _send(self, source, builder):
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
             command = builder(source)
-            if command:
-                subprocess.run(command, check=True, timeout=5,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if not command:
+                return
+            if command[0] != "powershell.exe":
+                subprocess.run(command, check=True, timeout=5, creationflags=flags)
+                return
+            # Store 版每次冷啟 PowerShell 約 0.8 秒；常駐一個 shell 後每次約 0.03 秒。
+            # ponytail: fire-and-forget，PowerShell 錯誤只會出現在 stderr，需要時再改成讀回結果。
+            if self._shell is None or self._shell.poll() is not None:
+                self._shell = subprocess.Popen([*command[:-1], "-"], stdin=subprocess.PIPE, text=True, creationflags=flags)
+            self._shell.stdin.write(command[-1] + "\n")
+            self._shell.stdin.flush()
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, subprocess.SubprocessError):
             LOGGER.exception("Could not synchronize Lively wallpaper")

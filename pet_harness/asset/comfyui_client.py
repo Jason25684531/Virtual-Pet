@@ -87,7 +87,8 @@ class ComfyUIClient:
 
     def health_check(self) -> bool:
         try:
-            return self.session.get(f"{self.base_url}/system_stats", timeout=5).ok
+            # 連線逾時要短：ComfyUI 沒開時 Windows 會重試被拒的連線約 2 秒，而切換角色在主執行緒上跑這段。
+            return self.session.get(f"{self.base_url}/system_stats", timeout=(0.5, 5)).ok
         except requests.RequestException:
             return False
 

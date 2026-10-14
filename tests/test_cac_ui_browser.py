@@ -387,6 +387,19 @@ def test_stage_keeps_the_background_clean_and_the_character_at_its_native_size(p
     assert (char["width"], char["height"]) == (VIEWPORT["width"], VIEWPORT["height"])
 
 
+def test_lively_mode_hides_room_image_and_keeps_the_stage_transparent(page):
+    _enter_companion_stage(page)
+    page.evaluate("window.setExternalBackgroundMode(true)")
+
+    assert page.locator("#stage-background").is_hidden()
+    for selector in ("html", "body", "#stage-root", "#stage-pet-layer"):
+        assert page.locator(selector).evaluate(
+            "e => getComputedStyle(e).backgroundColor"
+        ) == "rgba(0, 0, 0, 0)"
+    assert page.locator("#companion-nav").is_visible()
+    assert page.locator("#pet-character").is_visible()
+
+
 def test_companion_stage_offers_a_way_back_to_the_main_menu(page):
     _enter_companion_stage(page)
 
