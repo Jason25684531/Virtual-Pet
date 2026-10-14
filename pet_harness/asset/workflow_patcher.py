@@ -110,17 +110,23 @@ class WorkflowPatcher:
     @staticmethod
     def _inject_secrets(workflow: dict[str, Any]) -> dict[str, Any]:
         key, endpoint = os.getenv("AZURE_OPENAI_API_KEY", ""), os.getenv("AZURE_OPENAI_ENDPOINT", "")
+        from credential_lifecycle import require_usable
         for node in workflow.values():
             inputs = node.get("inputs", {})
             if node.get("class_type") == "Azure_ChatGPT_Node":
                 if key:
+                    require_usable("AZURE_OPENAI_API_KEY")
                     inputs["api_key"] = key
                 if endpoint:
                     inputs["azure_endpoint"] = endpoint
             if node.get("class_type") == "ParallelGen_Azure_EditSubmit":
                 # 影像模型可能部署在另一個 Azure 資源:key 與端點都優先取 IMAGES 專用變數。
-                images_key = os.getenv("AZURE_OPENAI_IMAGES_API_KEY", "") or key
+                dedicated_images_key = os.getenv("AZURE_OPENAI_IMAGES_API_KEY", "")
+                images_key = dedicated_images_key or key
                 if images_key:
+                    require_usable(
+                        "AZURE_OPENAI_IMAGES_API_KEY" if dedicated_images_key else "AZURE_OPENAI_API_KEY"
+                    )
                     inputs["api_key"] = images_key
                 images_endpoint = os.getenv("AZURE_OPENAI_IMAGES_ENDPOINT", "") or (f"{endpoint.rstrip('/')}/openai/v1/images/generations" if endpoint else "")
                 if images_endpoint:

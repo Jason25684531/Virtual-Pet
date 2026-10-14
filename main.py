@@ -28,9 +28,9 @@ def _schedule_youtube_warmup(executor) -> None:
     from PyQt5.QtCore import QTimer
     from pet_harness.tools.youtube_music_tool import warmup_once
 
-    def done(ok, result) -> None:
+    def done(ok, message, result) -> None:
         if not ok:
-            print(f"[YOUTUBE WARMUP] failed: {result}")
+            print(f"[YOUTUBE WARMUP] failed: {message}")
         elif result is None:
             print("[YOUTUBE WARMUP] failed: no result")
         elif result.status in {"success", "partial"}:
@@ -233,6 +233,8 @@ def _run_harness_mode(app, stt_provider=None):
     _schedule_youtube_warmup(executor)
     window.set_action_status("Harness mode ready.", tone="idle", timeout_ms=2400)
     app.aboutToQuit.connect(coordinator.shutdown)
+    from PyQt5.QtCore import QTimer
+    coordinator.lifecycle.watch_credentials(QTimer(window), window.set_credential_status)
     return window
 
 
@@ -277,6 +279,9 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--expire-credentials" in sys.argv[1:]:
+        from credential_lifecycle import maintenance_cli
+        raise SystemExit(maintenance_cli(sys.argv[1:], Path(__file__).resolve().parent))
     # Release 的 stdout/stderr 被導向 logs/*.log：預設用系統 ANSI 編碼（如 cp1252）會在印中文時崩潰；
     # 預設是區塊緩衝，PyQt 遇到未處理例外會 abort，緩衝中的 traceback 會跟著消失，所以逐行寫入。
     for _stream in (sys.stdout, sys.stderr):

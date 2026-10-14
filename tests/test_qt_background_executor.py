@@ -53,13 +53,12 @@ def test_executor_bounded_stop_keeps_running_qthread_referenced_until_it_finishe
     assert all(not worker.isRunning() for worker in executor._jobs)
 
 
-def test_job_submitted_from_inside_another_job_still_delivers_its_callback():
+def test_job_submitted_from_inside_another_job_still_delivers_its_callback(qt_app):
     """對話回合（job）內再送出慢速工具（job）。Nuitka 版曾因每個 job 各自 connect 而永遠收不到
     內層 callback；此測試在 CPython 下鎖住「完成訊號只在 executor 建構時連一次」的契約。"""
     import time
-    from PyQt5.QtCore import QCoreApplication
 
-    app = QCoreApplication.instance() or QCoreApplication([])
+    app = qt_app
     executor = QtBackgroundExecutor()
     results = []
 

@@ -35,12 +35,14 @@ GCC_DIR = LOCAL / "Nuitka/Nuitka/Cache/downloads/gcc/x86_64/15.2.0posix-13.0.0-m
 
 FIRST_PARTY_PACKAGES = ("pet_harness", "ui", "sensors", "api_client")
 FIRST_PARTY_TOP_MODULES = (
+    "credential_lifecycle", "credential_scheduler",
     "main", "config", "action_dispatcher", "action_services", "audio_playback", "audio_worker",
-    "character_library", "interaction_trace", "tts_playback", "release_bootstrap", "secure_env",
+    "character_library", "interaction_trace", "tts_playback", "release_bootstrap", "secure_env", "demo_scripts",
 )
 # 核心邏輯：設定 / prompt / skills 路由 / 記憶 / engine / 行為 / 成長 / workflow 組裝。
 # __init__.py 一律留給 Nuitka（package 本體做成 .pyd 會讓 Nuitka 找不到子模組）。
 CYTHON_GLOBS = (
+    "credential_lifecycle.py", "credential_scheduler.py",
     "config.py",
     "secure_env.py",  # 含 DPAPI entropy，編成 .pyd
     "pet_harness/agent/*.py",
@@ -393,7 +395,7 @@ def scrub_media_metadata() -> None:
 def assemble(dist: Path) -> None:
     shutil.move(str(dist), RELEASE)
     for name in EXTERNAL_DIRS:
-        _copy_dir(ROOT / name, RELEASE / name, ignore=shutil.ignore_patterns("Thumbs.db", "__pycache__"))
+        _copy_dir(ROOT / name, RELEASE / name, ignore=shutil.ignore_patterns("Thumbs.db", "__pycache__", ".lock", ".locks"))
     scrub_media_metadata()
     # 角色 persona prompt / 角色專屬 skill 屬於可修改內容（同 .agentic）；state.db、qdrant 記憶是 runtime data，不帶。
     for source in (ROOT / "data" / "characters").iterdir():
@@ -477,7 +479,7 @@ def verify() -> None:
             leaked.append(str(rel))
         if path.suffix.lower() in {".safetensors", ".ckpt", ".gguf"}:
             external_models.append(str(rel))
-        if path.name in {".env", ".env.secure"}:
+        if path.name in {".env", ".env.secure"} or path.name.startswith(".env-secure-"):
             secret_hits.append(str(rel))
         if secrets and _contains_secret(path, secrets):
             secret_hits.append(str(rel))

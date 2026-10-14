@@ -34,7 +34,7 @@
   {"text":"明天要下雨嗎","skill_id":null},
   {"text":"你喜歡什麼顏色","skill_id":null},
   {"text":"播放動畫","skill_id":null},
-  {"text":"video music","skill_id":"music_bgm"},
+  {"text":"video music","skill_id":null},
   {"text":"我需要休息一下","skill_id":null},
   {"text":"可以幫我嗎","skill_id":null},
   {"text":"查一下股票","skill_id":null},

@@ -280,13 +280,12 @@ def test_preset_characters_have_all_unlockable_motion_sets():
             assert (root / character / "motions" / variant / "idle.webm").is_file()
 
 
-def test_proactive_greeter_round_robin_and_busy_skip():
+def test_proactive_greeter_round_robin_and_busy_skip(qt_app):
     pytest.importorskip("PyQt5")
-    from PyQt5.QtCore import QCoreApplication
 
     from ui.proactive_greeter import ProactiveGreeter
 
-    app = QCoreApplication.instance() or QCoreApplication([])
+    app = qt_app
     spoken = []
     busy = [True]
     greeter = ProactiveGreeter(spoken.append, lambda: busy[0], ["a", "b", "c"], 30)
@@ -303,14 +302,13 @@ def test_proactive_greeter_round_robin_and_busy_skip():
     app.processEvents()
 
 
-def test_proactive_greeter_reset_restarts_full_t_plus_interval():
+def test_proactive_greeter_reset_restarts_full_t_plus_interval(qt_app):
     pytest.importorskip("PyQt5")
-    from PyQt5.QtCore import QCoreApplication
     from PyQt5.QtTest import QTest
 
     from ui.proactive_greeter import ProactiveGreeter
 
-    app = QCoreApplication.instance() or QCoreApplication([])
+    app = qt_app
     greeter = ProactiveGreeter(lambda _message: None, lambda: False, ["hello"], 0.2)
     greeter.start()
     QTest.qWait(80)
@@ -357,14 +355,13 @@ def test_proactive_greeting_only_runs_on_character_stage():
     coordinator.interrupt_all.assert_called_once()
 
 
-def test_transparent_window_wires_busy_property_as_callback(monkeypatch):
+def test_transparent_window_wires_busy_property_as_callback(monkeypatch, qt_app):
     pytest.importorskip("PyQt5")
-    from PyQt5.QtWidgets import QApplication
 
     import ui.transparent_window as window_module
     from ui.transparent_window import TransparentWindow
 
-    app = QApplication.instance() or QApplication([])
+    app = qt_app
     captured = {}
 
     class FakeGreeter:

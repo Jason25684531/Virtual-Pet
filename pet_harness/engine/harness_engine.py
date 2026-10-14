@@ -1056,13 +1056,18 @@ class PetHarnessEngine:
         if not isinstance(articles, list):
             return None
         lines = []
-        for index, article in enumerate(articles[:5], start=1):
+        for index, article in enumerate(articles[:3], start=1):
             if not isinstance(article, dict):
                 continue
             title = str(article.get("title") or "").strip()
             summary = str(article.get("summary") or "").strip()
             if title:
-                lines.append(f"{index}. {title}{f' — {summary}' if summary else ''}")
+                prefix = f"{index}. "
+                text = f"{title}{f' — {summary}' if summary else ''}"
+                limit = 100 if any("\u4e00" <= char <= "\u9fff" for char in text) else 150
+                if len(prefix) + len(text) > limit:
+                    text = f"{text[:limit - len(prefix) - 1].rstrip()}…"
+                lines.append(f"{prefix}{text}")
         return "\n".join(lines) or None
 
     def _parse_and_route(self, event: UserEvent, result: AgentResult, capabilities: set[str]):

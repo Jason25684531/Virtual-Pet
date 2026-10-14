@@ -95,6 +95,29 @@ def test_successful_news_result_has_a_direct_reply():
     assert PetHarnessEngine._news_reply(result) == "1. A — first\n2. B — second"
 
 
+def test_direct_news_reply_has_at_most_three_items_with_language_specific_limits():
+    result = ToolResult(
+        "web_article_tool",
+        "success",
+        payload={
+            "articles": [
+                {"title": "A very long English headline", "summary": "x" * 200},
+                {"title": "第二則新聞標題", "summary": "中" * 200},
+                {"title": "Third headline", "summary": "summary"},
+                {"title": "Fourth headline", "summary": "must not be shown"},
+            ]
+        },
+    )
+
+    lines = PetHarnessEngine._news_reply(result).splitlines()
+
+    assert len(lines) == 3
+    assert len(lines[0]) <= 150
+    assert len(lines[1]) <= 100
+    assert lines[0].endswith("…")
+    assert lines[1].endswith("…")
+
+
 def test_unknown_feed_host_is_rejected():
     result = _list(WebArticleTool([RecordingFetcher()]), "https://evil.example.com/rss.xml")
     assert result.status == "failed" and result.error["reason"] == "invalid_arguments"

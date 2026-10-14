@@ -15,7 +15,9 @@ import secure_env
 PROJECT_ROOT = Path(__file__).resolve().parent
 # Release 把設定放在 config/.env（首次啟動會被加密成 .env.secure）；開發機沿用根目錄 .env。
 ENV_PATH = secure_env.resolve(PROJECT_ROOT)
-_env_text = secure_env.read_text(ENV_PATH)
+from credential_lifecycle import CredentialLifecycle
+CREDENTIAL_LIFECYCLE = CredentialLifecycle(PROJECT_ROOT) if os.name == "nt" and ENV_PATH.parent.name == "config" else None
+_env_text = CREDENTIAL_LIFECYCLE.import_environment() if CREDENTIAL_LIFECYCLE else secure_env.read_text(ENV_PATH)
 if _env_text:
     try:
         import io
@@ -24,9 +26,14 @@ if _env_text:
 
         for _key, _value in dotenv_values(stream=io.StringIO(_env_text)).items():
             if _value is not None:
+                if CREDENTIAL_LIFECYCLE and _key not in os.environ:
+                    CREDENTIAL_LIFECYCLE.track_injected(_key, _value)
                 os.environ.setdefault(_key, _value)  # 與原 load_dotenv(override=False) 相同：環境變數優先
     except ModuleNotFoundError:  # pragma: no cover - 允許在依賴尚未安裝時安全匯入
         pass
+
+_env_text = None
+_value = None
 
 # Release 內附 models/ 與 ms-playwright/ 時預設使用它們並禁止下載；環境變數與 .env 仍可覆寫（setdefault）。
 BUNDLED_MODELS_DIR = PROJECT_ROOT / "models"

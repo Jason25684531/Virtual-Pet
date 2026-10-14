@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from credential_lifecycle import CredentialError, require_usable, runtime_status
 import threading
 from threading import Event
 from pathlib import Path
@@ -118,7 +119,15 @@ class ProviderRuntime:
 
     def get_status(self) -> ProviderStatus:
         with self._lock:
-            return self._status
+            config, status = self._config, self._status
+        if config and config.provider_type is ProviderType.API:
+            try:
+                require_usable(config.api_key_env_var or "API_KEY")
+            except CredentialError as exc:
+                return ProviderStatus(provider_type=ProviderType.API, healthy=False,
+                                      message="金鑰已到期或不可用，請重新建立 config/.env 並重啟。",
+                                      metadata={"error_category": str(exc)})
+        return status
 
     def get_config(self) -> ProviderConfig | None:
         with self._lock:
@@ -162,6 +171,12 @@ class ProviderRuntime:
             env_var = config.api_key_env_var or ""
             payload["api_key_env_var"] = env_var
             payload["api_key_status"] = "configured" if os.environ.get(env_var) else "missing"
+        credential_status = runtime_status()
+        payload["credential_status"] = credential_status
+        if credential_status and credential_status != "credentials_schedule_failed" and config and config.provider_type is ProviderType.API:
+            payload.update(healthy=False, error_category=credential_status,
+                           api_key_status="expired" if credential_status == "credentials_expired" else "unavailable",
+                           message="金鑰已到期或不可用，請重新建立 config/.env 並重啟。")
         return payload
 
     # ── 內部 ────────────────────────────────────────────────
@@ -181,6 +196,14 @@ class ProviderRuntime:
 
         if config.provider_type is ProviderType.API:
             env_var = config.api_key_env_var or ""
+            try:
+                require_usable(env_var)
+            except CredentialError as exc:
+                message = "金鑰已到期或不可用，請重新建立 config/.env 並重啟。"
+                return UnavailableProvider(message, str(exc), ProviderType.API), ProviderStatus(
+                    provider_type=ProviderType.API, healthy=False, message=message,
+                    metadata={"error_category": str(exc)},
+                )
             if not env_var or not os.environ.get(env_var):
                 message = f"missing API key environment variable: {env_var or '(unset)'}"
                 provider = UnavailableProvider(message, "missing_api_key", ProviderType.API)

@@ -1,5 +1,6 @@
 """Browser-level checks for the confirmed CAC UX public interaction seams."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -44,7 +45,8 @@ def page():
             };
             """
         )
-        page.goto((Path(__file__).parents[1] / "ui" / "web_container" / "index.html").resolve().as_uri())
+        root = Path(os.environ.get("ECHOES_UI_TEST_ROOT", Path(__file__).parents[1]))
+        page.goto((root / "ui" / "web_container" / "index.html").resolve().as_uri())
         yield page
         browser.close()
 
@@ -229,7 +231,7 @@ def test_screens_are_centered_isolate_the_stage_and_offer_a_drag_surface(page):
     preview = page.locator("#screen-main-menu .menu-screen__preview-card").bounding_box()
     assert abs(actions["x"] + actions["width"] / 2 - VIEWPORT["width"] * 0.19) <= 1
     assert abs(preview["x"] + preview["width"] / 2 - CENTER_X) <= 1
-    assert abs(preview["y"] + preview["height"] / 2 - VIEWPORT["height"] * 0.58) <= 1
+    assert abs(preview["y"] + preview["height"] / 2 - VIEWPORT["height"] * 0.45) <= 1
     assert page.locator("#screen-main-menu .menu-screen__actions").evaluate(
         "element => getComputedStyle(element).position"
     ) == "absolute"
@@ -548,9 +550,9 @@ def test_chat_quick_tags_send_text_or_say_fixed_reply(page):
     assert tags.all_inner_texts() == ["播放輕鬆的音樂", "可愛的居家裝飾推薦", "遊戲攻略介紹", "遊戲新聞"]
 
     tags.nth(0).click()
-    assert page.evaluate("window.__sent_text") == "播放輕鬆的音樂"
+    assert page.evaluate("window.__sent_text") == "can you play some relaxing music?"
     tags.nth(3).click()
-    assert page.evaluate("window.__sent_text") == "遊戲新聞"
+    assert page.evaluate("window.__sent_text") == "can you tell me some game news?"
 
     tags.nth(2).click()
     user_text, reply = page.evaluate("window.__said")

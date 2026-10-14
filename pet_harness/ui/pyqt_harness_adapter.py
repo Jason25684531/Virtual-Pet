@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from credential_lifecycle import CredentialError, require_usable, sensitive_name
 import re
 import threading
 import time
@@ -777,7 +778,14 @@ class PyQtHarnessAdapter:
         resolved = str(provider_status.get("provider_type") or selected)
         api_key_env_var = provider_config.get("api_key_env_var") or "OPENAI_API_KEY"
         key_available = bool(self._project_env.get(str(api_key_env_var)) or os.environ.get(str(api_key_env_var)))
-        if selected == "api" and key_available and provider_status.get("healthy") is not False:
+        credential_error = None
+        try:
+            require_usable(str(api_key_env_var))
+        except CredentialError as exc:
+            key_available, credential_error = False, str(exc)
+        if selected == "api" and credential_error:
+            api_config_status = credential_error
+        elif selected == "api" and key_available and provider_status.get("healthy") is not False:
             api_config_status = "api configured"
         elif selected == "api" and not key_available:
             api_config_status = "api missing key"
@@ -792,7 +800,7 @@ class PyQtHarnessAdapter:
                 "provider_status": provider_status,
                 "api_config_status": api_config_status,
                 "api_key_env_var": api_key_env_var,
-                "api_key_status": "configured" if key_available else "missing",
+                "api_key_status": "expired" if credential_error == "credentials_expired" else "unavailable" if credential_error else "configured" if key_available else "missing",
                 "model_name": provider_config.get("model_name"),
             }
         )
@@ -890,6 +898,11 @@ class PyQtHarnessAdapter:
         summary: dict[str, str] = {}
         for key in keys:
             configured = bool(self._project_env.get(key) or os.environ.get(key))
+            if sensitive_name(key):
+                try:
+                    require_usable(key)
+                except CredentialError:
+                    configured = False
             summary[key] = "[configured]" if configured else "[missing]"
         return summary
 

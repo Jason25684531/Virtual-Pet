@@ -2,6 +2,7 @@
 
 只用 tmp_path 假目錄;絕不執行 build 腳本本體(main 會 clean 並刪除 VirtualPet_Release/)。
 """
+import ast
 import importlib.util
 import sys
 from pathlib import Path
@@ -34,6 +35,11 @@ def _verify_error(bb) -> str:
 def test_clean_release_with_empty_logs_dir_passes(bb):
     (bb.RELEASE / "logs").mkdir()  # build 本來就會建立空的 logs/
     bb.verify()
+
+
+def test_encrypted_atomic_write_leftover_is_not_deliverable(bb):
+    (bb.RELEASE / ".env-secure-fake").write_bytes(b"encrypted-not-plaintext")
+    assert ".env-secure-fake" in _verify_error(bb)
 
 
 @pytest.mark.parametrize("relative", ["logs/echoes.log", "debug/events/e.json", "data/runtime/browser_profile/Cookies"])
@@ -75,6 +81,24 @@ def test_verify_only_never_cleans_or_builds(bb, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["build_release.py", "--verify-only"])
     bb.main()
     assert called == [True]
+
+
+def test_staging_includes_local_modules_imported_by_runtime(bb, monkeypatch, tmp_path):
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    monkeypatch.setattr(bb, "STAGE", stage)
+    bb.stage_sources()
+    required = set()
+    for path in stage.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                required.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                required.add(node.module.split(".")[0])
+    local_modules = {path.stem for path in bb.ROOT.glob("*.py")}
+    assert all((stage / f"{name}.py").is_file() for name in required & local_modules), (
+        sorted(name for name in required & local_modules if not (stage / f"{name}.py").is_file())
+    )
 
 
 def test_notices_are_required_and_flag_noncommercial_first(bb):

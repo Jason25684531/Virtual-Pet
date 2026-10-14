@@ -1789,6 +1789,12 @@
         setStatus(message, tone, Number(timeoutMs) || 0);
     };
 
+    window.setCredentialStatus = function (message) {
+        var notice = document.getElementById('credential-notice');
+        notice.textContent = message || '';
+        notice.hidden = !message;
+    };
+
     window.clearActionStatus = function () {
         setStatus('', 'idle', 0);
     };

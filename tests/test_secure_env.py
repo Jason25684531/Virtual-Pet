@@ -8,6 +8,14 @@ pytestmark = pytest.mark.skipif(os.name != "nt", reason="DPAPI 只在 Windows")
 TEXT = "ELEVENLABS_API_KEY=sk_test_1234567890\nOLLAMA_MODEL=gemma3:12b\n"
 
 
+def test_empty_development_config_directory_does_not_override_root_env(tmp_path):
+    (tmp_path / "config").mkdir()
+    (tmp_path / ".env").write_text(TEXT)
+    assert secure_env.resolve(tmp_path) == tmp_path / ".env"
+    (tmp_path / "VirtualPet.exe").write_bytes(b"fake-executable")
+    assert secure_env.resolve(tmp_path) == tmp_path / "config" / ".env"
+
+
 def test_protect_roundtrip_is_not_plaintext():
     blob = secure_env.protect(TEXT.encode())
     assert b"sk_test_1234567890" not in blob
@@ -22,6 +30,8 @@ def test_config_env_is_encrypted_and_plaintext_removed(tmp_path):
     assert secure_env.read_text(cfg / ".env") == TEXT
     assert not (cfg / ".env").exists()
     assert b"sk_test_1234567890" not in (cfg / ".env.secure").read_bytes()
+    from credential_lifecycle import PREFIX
+    assert secure_env.unprotect((cfg / ".env.secure").read_bytes()).decode().startswith(PREFIX)
     # 之後啟動只剩加密檔，仍讀得到
     assert secure_env.resolve(tmp_path) == cfg / ".env"
     assert secure_env.read_text(cfg / ".env") == TEXT

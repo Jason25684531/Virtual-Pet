@@ -40,6 +40,7 @@ def _crypt(protect: bool, data: bytes) -> bytes:
     try:
         return ctypes.string_at(out.pbData, out.cbData)
     finally:
+        ctypes.windll.kernel32.LocalFree.argtypes = (ctypes.c_void_p,)
         ctypes.windll.kernel32.LocalFree(out.pbData)
 
 
@@ -54,23 +55,18 @@ def unprotect(data: bytes) -> bytes:
 def resolve(root: Path) -> Path:
     """config/.env（含其加密檔）優先，否則根目錄 .env。回傳的路徑不保證存在。"""
     env = Path(root) / "config" / ".env"
-    return env if env.is_file() or env.with_name(SECURE_NAME).is_file() else Path(root) / ".env"
+    return env if env.is_file() or env.with_name(SECURE_NAME).is_file() or (Path(root) / "VirtualPet.exe").is_file() else Path(root) / ".env"
 
 
 def read_text(env_path: str | Path) -> str | None:
     """回傳 .env 內容；沒有檔案或解不開回傳 None。必要時順便把 config/.env 加密並刪掉明文。"""
     env = Path(env_path)
+    if os.name == "nt" and env.parent.name == "config":
+        from credential_lifecycle import CredentialLifecycle
+        return CredentialLifecycle(env.parent.parent).import_environment()
     secure = env.with_name(SECURE_NAME)
     if env.is_file():
-        text = env.read_text(encoding="utf-8")
-        if os.name == "nt" and env.parent.name == "config":
-            try:
-                secure.write_bytes(protect(text.encode("utf-8")))
-                env.unlink()
-                LOGGER.info("[ENV] 已將 %s 加密為 %s 並刪除明文", env.name, secure.name)
-            except OSError as exc:
-                LOGGER.warning("[ENV] 無法加密或刪除明文 %s，請手動刪除：%s", env, exc)
-        return text
+        return env.read_text(encoding="utf-8")
     if secure.is_file():
         try:
             return unprotect(secure.read_bytes()).decode("utf-8")

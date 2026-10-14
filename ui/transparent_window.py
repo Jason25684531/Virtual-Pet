@@ -1532,6 +1532,9 @@ class TransparentWindow(QMainWindow):
     def set_action_status(self, message: str, tone: str = "idle", timeout_ms: int = 0):
         self._run_javascript("setActionStatus", message, tone, timeout_ms)
 
+    def set_credential_status(self, message: str):
+        self._run_javascript("setCredentialStatus", message)
+
     def set_room_character(self, name: str):
         self._run_javascript("setRoomCharacter", name)
 

@@ -105,7 +105,21 @@ class VoAIStreamingTTSWorker(QThread):
         self._transport_session_factory = transport_session_factory
         self._pcm_stream_sink = request.pcm_stream_sink
 
+    def _credentials_available(self) -> bool:
+        from credential_lifecycle import CredentialError, require_usable
+        try:
+            for name in ("VOAI_API_KEY", "VoAI_API_KEY", "VOAI_TOKEN"):
+                require_usable(name)
+        except CredentialError as exc:
+            self.finished_signal.emit(False, "金鑰已到期或不可用，請重新建立 config/.env 並重啟。",
+                                      self._build_fast_fail_payload(stage="credentials", reason_code=str(exc), detail=str(exc),
+                                                                    audio_format="", transport=""))
+            return False
+        return True
+
     def run(self):
+        if not self._credentials_available():
+            return
         if not self._text:
             self.finished_signal.emit(False, "略過 VoAI TTS：沒有可朗讀的文字。", self._build_result_payload())
             return
@@ -136,7 +150,8 @@ class VoAIStreamingTTSWorker(QThread):
                 return
             LOGGER.warning("[ECHOES] VoAI PCM 串流不可用，改用 MP3 fallback。%s", fallback_reason)
 
-        self._run_mp3_fallback(api_key, payload)
+        if self._credentials_available():
+            self._run_mp3_fallback(api_key, payload)
 
     def _build_payload(self, voice_cfg: dict) -> dict:
         return {

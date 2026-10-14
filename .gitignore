@@ -92,3 +92,6 @@ build/
 VirtualPet_Release/
 !.env.example
 scripts/vendor/
+.playwright-cli/*
+omni_tts_win_bundle/*
+playwright/*

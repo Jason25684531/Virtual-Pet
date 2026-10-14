@@ -13,6 +13,22 @@ class RuntimeLifecycle:
     def register(self, runtime: "CallbackRuntime") -> None:
         self._runtimes.append(runtime)
 
+    def watch_credentials(self, timer, on_status: Callable[[str], None]) -> None:
+        from credential_lifecycle import runtime_status
+        last_status = [None]
+
+        def check():
+            status = runtime_status()
+            if status != last_status[0]:
+                on_status("" if status is None else "金鑰已到期或設定不可用，請重建 config/.env 並重啟。" if status != "credentials_schedule_failed"
+                          else "金鑰清除排程建立失敗；程式仍會檢查到期期限。")
+            last_status[0] = status
+
+        timer.timeout.connect(check)
+        timer.start(60000)
+        self.register(CallbackRuntime("credentials", lambda _wait_ms: timer.stop()))
+        check()
+
     def shutdown_all(self, wait_ms: int = 5000) -> None:
         if self._shutdown:
             return
