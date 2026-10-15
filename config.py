@@ -91,7 +91,7 @@ BUILTIN_CHARACTER_ELEVENLABS_VOICE_IDS: dict[str, str] = {
     "char-Nico": "cNYrMw9glwJZXR8RwbuR",
     "char-Luke": "h5eZa8VFAq0EQ8E81dfL",
     "char-ROG": "RoUNDCtoHQPMwQQoROwA",
-    "char-Omni": "pekFz6QhW6VUmG0FJ3RV",
+    "char-omni": "pekFz6QhW6VUmG0FJ3RV",  # manifest id,不是資料夾名 char-Omni
     "char-Zenni": "2Zlm5u8veOiqFWNIOc0K",
 }
 
@@ -280,6 +280,44 @@ ACTION_SYNC_TIMEOUT_MS = _read_int_env("ACTION_SYNC_TIMEOUT_MS", 6000)
 # 沒有 32000);VoAI 的 x-sample-rate 是請求參數,實測四種取樣率都正常且時長一致。
 TTS_PCM_SAMPLE_RATE = _read_int_env("TTS_PCM_SAMPLE_RATE", 24000)
 
+# char-Omni 專用本機 TTS(omni_tts_win_bundle,外部服務,不打包)。0 = 回復既有雲端鏈與快取。
+OMNI_TTS_CHARACTER_ID = "char-omni"  # manifest id;資料夾名 char-Omni 不是 runtime id
+OMNI_TTS_ENABLED = _read_bool_env("OMNI_TTS_ENABLED", True)
+_DEFAULT_OMNI_TTS_BASE_URL = "http://127.0.0.1:8760"
+
+
+def _parse_loopback_http_url(value: str) -> str | None:
+    """只接受 http://127.x.x.x|localhost:port,不含帳密/path/query/fragment;否則 None。"""
+    from urllib.parse import urlsplit
+    import ipaddress
+
+    try:
+        parts = urlsplit(value.strip())
+        port = parts.port
+    except ValueError:
+        return None
+    host = parts.hostname or ""
+    if (parts.scheme != "http" or parts.username or parts.password or parts.query
+            or parts.fragment or parts.path.strip("/") or not port):
+        return None
+    if host != "localhost":
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return None
+        if ip.version != 4 or not ip.is_loopback:
+            return None
+    return f"http://{host}:{port}"
+
+
+OMNI_TTS_BASE_URL = _parse_loopback_http_url(
+    os.getenv("OMNI_TTS_BASE_URL", "") or _DEFAULT_OMNI_TTS_BASE_URL
+) or _DEFAULT_OMNI_TTS_BASE_URL
+
+
+def is_omni_local_tts(character_id: str | None) -> bool:
+    return OMNI_TTS_ENABLED and str(character_id or "").strip() == OMNI_TTS_CHARACTER_ID
+
 # ComfyUI asset generation is opt-in; the mock service remains the safe default.
 COMFYUI_BASE_URL = os.getenv("COMFYUI_BASE_URL", "http://127.0.0.1:8188").strip().rstrip("/")
 COMFYUI_WS_URL = os.getenv("COMFYUI_WS_URL", "ws://127.0.0.1:8188").strip().rstrip("/")
@@ -466,14 +504,16 @@ def get_voai_api_key() -> str:
     )
 
 
-def resolve_tts_runtime_mode() -> tuple[str, str | None]:
+def resolve_tts_runtime_mode(character_id: str | None = None) -> tuple[str, str | None]:
     """決定 TTS 運行時模式與原因。
 
     Returns:
         (mode, reason) tuple：
-        - mode: "voai_first" | "fallback_enabled"
+        - mode: "omni_local_only" | "voai_first" | "fallback_enabled"
         - reason: 解析原因（debug 用），e.g. "voai_api_key_available" 或 "voai_api_key_missing"
     """
+    if is_omni_local_tts(character_id):
+        return ("omni_local_only", "omni_local_enabled")
     voai_key = get_voai_api_key()
 
     if not voai_key:

@@ -136,6 +136,7 @@ def test_greeting_miss_then_hit_skips_tts_worker_factory():
     _run(c2)
     assert len(made) == 1  # 第二次命中,沒再建 provider worker
     assert isinstance(c2._active_tts_worker, gac.CachedGreetingWorker)
+    assert c2._active_tts_worker.wait(2000)  # 真的 QThread:沒等它結束就被回收會 qFatal(EXIT=127)
 
 
 def test_non_greeting_trace_never_touches_cache():

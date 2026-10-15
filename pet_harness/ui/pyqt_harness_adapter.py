@@ -370,18 +370,37 @@ class PyQtHarnessAdapter:
     def _build_tts_provider_status(self) -> dict[str, Any]:
         """构建 TTS provider 状态."""
         voice_status = self._voice_status_adapter.get_status()
-        resolved_mode, resolution_reason = config.resolve_tts_runtime_mode()
+        resolved_mode, resolution_reason = config.resolve_tts_runtime_mode(self._active_character_id())
+        omni = self._omni_tts_health()
 
         return {
             "resolved_mode": resolved_mode,
             "resolution_reason": resolution_reason,
-            "requested_mode": "voai_first",
+            "requested_mode": "omni_local" if omni else "voai_first",
             "attempted_providers": [],
             "selected_provider": None,
             "fallback_reason": None,
             "outcome": None,
-            "status": voice_status.tts_primary_status,
+            "status": self._omni_tts_status(omni) if omni else voice_status.tts_primary_status,
+            "message": omni.last_error if omni else None,
         }
+
+    def _active_character_id(self) -> str | None:
+        snapshot = self.router.get_active_snapshot()
+        return snapshot.character_id if snapshot else None
+
+    def _omni_tts_health(self):
+        """active character 走本機 Omni TTS 時回傳 health probe(並在背景刷新),否則 None。"""
+        if not config.is_omni_local_tts(self._active_character_id()):
+            return None
+        from api_client.omni_tts_client import OMNI_HEALTH
+
+        OMNI_HEALTH.refresh()
+        return OMNI_HEALTH
+
+    @staticmethod
+    def _omni_tts_status(omni) -> str:
+        return "configured_and_ready" if omni.ready else "configured_missing_runtime"
 
     def _build_stt_provider_status(self) -> dict[str, Any]:
         """构建 STT provider 状态."""
@@ -739,6 +758,29 @@ class PyQtHarnessAdapter:
     def _build_voice_status(self) -> dict[str, Any]:
         dto = self._voice_status_adapter.get_status()
         stt_provider = "none" if dto.stt_status == "configured_missing_runtime" else "faster_whisper"
+        omni = self._omni_tts_health()
+        if omni is not None:
+            omni_status = self._omni_tts_status(omni)
+            tts = {
+                "provider": "omni_local",
+                "status": omni_status,
+                "configured": True,
+                "implemented": True,
+                "required_env": ["OMNI_TTS_ENABLED", "OMNI_TTS_BASE_URL"],
+                "message": omni.last_error or omni_status,
+            }
+            tts_fallback = {"provider": "none", "status": "configured_missing_runtime",
+                            "message": "char-Omni 本機 TTS 不使用雲端備援"}
+        else:
+            tts = {
+                "provider": "adaptive",
+                "status": dto.tts_primary_status,
+                "configured": dto.tts_primary_status != "configured_missing_runtime",
+                "implemented": dto.tts_primary_status != "configured_missing_runtime",
+                "required_env": ["ELEVENLABS_API_KEY", "ELEVENLABS_*_VOICE_ID", "ELEVENLABS_MODEL_ID", "ELEVENLABS_*_MODEL_ID"],
+                "message": dto.tts_primary_status,
+            }
+            tts_fallback = {"provider": "elevenlabs", "status": dto.tts_fallback_status, "message": dto.tts_fallback_status}
         return {
             "stt": {
                 "provider": stt_provider,
@@ -748,19 +790,8 @@ class PyQtHarnessAdapter:
                 "required_env": ["STT_ENABLED", "STT_MODEL", "STT_DEVICE"],
                 "message": dto.stt_status,
             },
-            "tts": {
-                "provider": "adaptive",
-                "status": dto.tts_primary_status,
-                "configured": dto.tts_primary_status != "configured_missing_runtime",
-                "implemented": dto.tts_primary_status != "configured_missing_runtime",
-                "required_env": ["ELEVENLABS_API_KEY", "ELEVENLABS_*_VOICE_ID", "ELEVENLABS_MODEL_ID", "ELEVENLABS_*_MODEL_ID"],
-                "message": dto.tts_primary_status,
-            },
-            "tts_fallback": {
-                "provider": "elevenlabs",
-                "status": dto.tts_fallback_status,
-                "message": dto.tts_fallback_status,
-            },
+            "tts": tts,
+            "tts_fallback": tts_fallback,
             "audio_worker": {
                 "status": dto.audio_worker_status,
                 "message": dto.audio_worker_status,

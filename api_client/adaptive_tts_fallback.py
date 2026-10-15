@@ -126,12 +126,12 @@ class AdaptiveTTSFallbackWorker(QObject):
         normalized_payload.setdefault("reply_id", self._request.reply_id)
         normalized_payload.setdefault("trace_id", self._request.trace_id)
         normalized_payload.setdefault("provider", provider)
-        normalized_payload.setdefault("selected_provider", provider)
         normalized_payload.setdefault("requested_mode", self._chain[0].name)
         normalized_payload.setdefault("resolved_mode", self._request.resolved_tts_mode)
         normalized_payload.setdefault("attempted_providers", list(self._provider_chain))
 
         if success:
+            normalized_payload.setdefault("selected_provider", provider)
             normalized_payload["outcome"] = "success"
             self._finish(success, message, normalized_payload)
             return
@@ -165,7 +165,8 @@ class AdaptiveTTSFallbackWorker(QObject):
             self._advance(reason=fallback_reason)
             return
 
-        if len(self._provider_chain) > 1:
+        normalized_payload["selected_provider"] = None  # 失敗沒有選中的 provider,只有 attempted
+        if len(self._provider_chain) > 1 or normalized_payload.get("critical_tts_failure"):
             normalized_payload.update(
                 {
                     "critical_tts_failure": True,

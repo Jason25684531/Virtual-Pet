@@ -273,6 +273,8 @@ def main():
     stt_provider = _preload_stt_provider()
 
     app = _create_application(sys.argv)
+    from api_client.omni_tts_client import ensure_omni_service_started
+    ensure_omni_service_started()  # 背景:Omni TTS 沒開就跑 run.bat,和 UI 載入並行暖機
     _configure_sigint_timer(app)
     _run_harness_mode(app, stt_provider=stt_provider)
     sys.exit(app.exec_())

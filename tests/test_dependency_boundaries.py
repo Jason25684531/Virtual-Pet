@@ -151,11 +151,13 @@ def test_streaming_tts_worker_implementations_declare_the_full_contract():
     hasattr 逐一檢查 STREAMING_TTS_WORKER_MEMBERS,作為這個契約可行的自動化驗證。"""
     from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
     from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
+    from api_client.omni_tts_client import OmniLocalTTSWorker
     from api_client.tts_contract import STREAMING_TTS_WORKER_MEMBERS
     from api_client.voai_client import VoAIStreamingTTSWorker
 
     violations = []
-    for implementation in (ElevenLabsStreamingTTSWorker, VoAIStreamingTTSWorker, AdaptiveTTSFallbackWorker):
+    for implementation in (ElevenLabsStreamingTTSWorker, VoAIStreamingTTSWorker, AdaptiveTTSFallbackWorker,
+                           OmniLocalTTSWorker):
         missing = [member for member in STREAMING_TTS_WORKER_MEMBERS if not hasattr(implementation, member)]
         if missing:
             violations.append(f"{implementation.__name__} missing {missing}")
@@ -169,7 +171,7 @@ def test_tts_orchestration_layer_has_no_provider_identity_branching():
     (組鏈的資料層,不是編排層的控制流),那裡不受這條規則檢查。"""
     root = Path(__file__).parents[1]
     orchestration_files = (root / "api_client" / "adaptive_tts_fallback.py", root / "tts_playback.py")
-    provider_literals = {"voai", "elevenlabs"}
+    provider_literals = {"voai", "elevenlabs", "omni_local"}
 
     violations = []
     for path in orchestration_files:

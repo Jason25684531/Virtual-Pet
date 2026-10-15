@@ -90,6 +90,8 @@ class TtsProvider:
     should_advance_on_failure: Callable[[dict], bool] = lambda payload: True
     fallback_reason: Callable[[str, dict], str] = lambda message, payload: str(message or "provider_failed")
     needs_fallback_timeout_grace: bool = False
+    # 打招呼/demo 的 PCM 快取只適用雲端聲線;本機 Omni 不讀也不寫,避免播出舊雲端聲音。
+    supports_greeting_cache: bool = True
 
 
 def _normalize_provider_name(value: str | None) -> str:
@@ -107,10 +109,21 @@ def build_tts_provider_chain(
     未明確指定偏好時,有專屬 ElevenLabs 聲線的角色以 ElevenLabs 為首選,
     否則維持 VoAI 優先——與改寫前 AdaptiveTTSFallbackWorker.__init__ 的規則相同。
     文字為英文時一律 ElevenLabs 優先(VoAI 的 speaker 是中文聲線);中文行為不變。
+    啟用本機路由的 char-Omni 先於上述規則,只走 omni_local(不 fallback 雲端)。
     """
     from pet_harness.agent.reply_language import detect_reply_language
 
     import config
+
+    if config.is_omni_local_tts(character_id):
+        from api_client.omni_tts_client import OmniLocalTTSWorker
+
+        return (TtsProvider(
+            name="omni_local",
+            factory=OmniLocalTTSWorker,
+            supports_greeting_cache=False,
+        ),)
+
     from api_client.elevenlabs_client import ElevenLabsStreamingTTSWorker
     from api_client.voai_client import VoAIStreamingTTSWorker
 

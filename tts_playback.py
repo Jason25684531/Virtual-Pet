@@ -14,7 +14,7 @@ from uuid import uuid4
 import config
 from api_client import greeting_audio_cache
 from api_client.adaptive_tts_fallback import AdaptiveTTSFallbackWorker
-from api_client.tts_contract import TtsRequest
+from api_client.tts_contract import TtsRequest, build_tts_provider_chain
 from pet_harness.app.commands import ACTION_DIRECTIVE_PATTERN
 
 LOGGER = logging.getLogger(__name__)
@@ -46,6 +46,9 @@ def _speakable(text: str) -> str:
 
 
 class TtsPlaybackMixin:
+    # reset/shutdown 時遞增;request 建立時捕捉,晚到音訊比對不符就丟棄。
+    _tts_generation = 0
+
     def _synthesize_tts(self, message: str, tone: str, trace_id: str | None = None):
         if not self._tts_enabled or tone in {"warn", "error"}:
             return
@@ -130,7 +133,12 @@ class TtsPlaybackMixin:
 
         current_character_id = self._current_character_id()
         preferred_provider = self._trace_tts_providers.get(normalized_trace_id, "")
-        resolved_mode, _ = config.resolve_tts_runtime_mode()
+        resolved_mode, _ = config.resolve_tts_runtime_mode(current_character_id)
+        generation = self._tts_generation
+
+        def playback_guard(t_id: str | None, r_id: str | None = None) -> bool:
+            # reset 會清空 _suppressed_traces,只靠 trace 判斷會讓 reset 前的晚到音訊被當成可播。
+            return generation == self._tts_generation and self._can_start_trace_audio(t_id, r_id)
 
         request = TtsRequest(
             text=speech_text,
@@ -142,11 +150,13 @@ class TtsPlaybackMixin:
             preferred_provider=preferred_provider,
             resolved_tts_mode=resolved_mode,
             pcm_stream_sink=self._audio_worker,
-            playback_guard=self._can_start_trace_audio,
+            playback_guard=playback_guard,
         )
 
         recorder = None
-        is_greeting = greeting_audio_cache.is_greeting(request)
+        # 與 AdaptiveTTSFallbackWorker 同輸入、同決策點;首選 provider 不支援快取就不讀不寫。
+        chain = build_tts_provider_chain(request.character_id, request.preferred_provider, request.text)
+        is_greeting = greeting_audio_cache.is_greeting(request) and chain[0].supports_greeting_cache
         cached = greeting_audio_cache.load(request) if is_greeting else None
         if cached is not None:
             worker = greeting_audio_cache.CachedGreetingWorker(request, cached, parent=self)
@@ -159,7 +169,7 @@ class TtsPlaybackMixin:
         self._workers.append(worker)
 
         def handle_audio_ready(audio_bytes, r_id: str, t_id: str):
-            if t_id and t_id in self._suppressed_traces:
+            if not playback_guard(t_id, r_id):
                 return
             self._record_spoken_reply(r_id, t_id)
             self._audio_worker.enqueue(audio_bytes, r_id, t_id)
@@ -368,6 +378,7 @@ class TtsPlaybackMixin:
         self._activate_pending_action(normalized_trace_id, promoted=False)
 
     def reset_runtime_state(self):
+        self._tts_generation += 1
         for trace_id in list(self._pending_actions):
             self._clear_pending_action(trace_id)
         self._pending_actions.clear()
@@ -505,6 +516,7 @@ class TtsPlaybackMixin:
         return normalized_trace_id not in self._suppressed_traces
 
     def shutdown(self, wait_ms: int = 5000):
+        self._tts_generation += 1
         for trace_id in list(self._pending_actions):
             self._clear_pending_action(trace_id)
         self._pending_actions.clear()

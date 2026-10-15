@@ -64,7 +64,7 @@ def is_raw_pcm_content_type(content_type: str | None) -> bool:
 
 
 class PygameInMemoryAudioPlayer:
-    """Play a complete MP3 buffer from memory through pygame."""
+    """Play a complete MP3 or WAV buffer from memory through pygame."""
 
     _global_lock = threading.Lock()
 
@@ -88,7 +88,10 @@ class PygameInMemoryAudioPlayer:
             except Exception:
                 LOGGER.debug("pygame unload during cleanup failed", exc_info=True)
 
-            self._mixer.music.load(audio_buffer, "mp3")
+            # 本機 Omni TTS 回 WAV;雲端備援是 MP3。namehint 錯了 SDL 會判成 corrupt。
+            namehint = "wav" if audio_buffer.read(4) == b"RIFF" else "mp3"
+            audio_buffer.seek(0)
+            self._mixer.music.load(audio_buffer, namehint)
             if callable(before_start) and before_start() is False:
                 raise PlaybackStartSuppressed("記憶體音訊在起播前被抑制。")
             self._mixer.music.play()
