@@ -13,7 +13,6 @@ from unittest.mock import MagicMock
 import config
 from api_client.tts_contract import (
     STREAMING_TTS_WORKER_MEMBERS,
-    TtsProvider,
     TtsRequest,
     build_tts_provider_chain,
 )

@@ -13,7 +13,7 @@ from pet_harness.models.events import UserEvent
 from pet_harness.models.provider import ProviderConfig, ProviderType
 from pet_harness.runtime.provider_runtime import ProviderRuntime
 from pet_harness.app.runtime_lifecycle import RuntimeLifecycle
-from tests.test_credential_lifecycle import release
+from tests.test_credential_lifecycle import release  # noqa: F401
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows retention integration")
 
