@@ -1777,11 +1777,14 @@
         document.body.classList.toggle('external-background', Boolean(enabled));
     };
 
-    window.moveCharacter = function (x, y, scale) {
+    window.moveCharacter = function (x, y, scale, originY) {
         document.documentElement.style.setProperty('--pet-anchor-shift', Number(x || 0) + 'px');
         document.documentElement.style.setProperty('--pet-floor-offset', Number(y || 0) + 'px');
         if (scale != null) {
             document.documentElement.style.setProperty('--pet-scale', String(scale));
+        }
+        if (originY != null) {
+            document.documentElement.style.setProperty('--pet-scale-origin-y', (Number(originY) * 100) + '%');
         }
     };
 

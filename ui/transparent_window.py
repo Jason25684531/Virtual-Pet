@@ -130,6 +130,7 @@ class TransparentWindow(QMainWindow):
     DEFAULT_CHARACTER_X_OFFSET = 0
     DEFAULT_CHARACTER_Y_OFFSET = 0
     DEFAULT_CHARACTER_SCALE = 1.0
+    DEFAULT_CHARACTER_SCALE_ORIGIN_Y = 0.5  # 縮放基準點(畫面高度比例);設成腳底比例 = 縮放時腳不動
     DEFAULT_CHARACTER_OBJECT_POSITION = "center bottom"
 
     def __init__(
@@ -173,6 +174,7 @@ class TransparentWindow(QMainWindow):
         self._character_x_offset = self.DEFAULT_CHARACTER_X_OFFSET
         self._character_y_offset = self.DEFAULT_CHARACTER_Y_OFFSET
         self._character_scale = self.DEFAULT_CHARACTER_SCALE
+        self._character_scale_origin_y = self.DEFAULT_CHARACTER_SCALE_ORIGIN_Y
         self._character_object_position = self.DEFAULT_CHARACTER_OBJECT_POSITION
         self._background_status = "fallback_placeholder"
         self._background_url: str | None = None
@@ -1683,6 +1685,7 @@ class TransparentWindow(QMainWindow):
             self._character_y_offset,
             self._character_scale,
             self._character_object_position,
+            self._character_scale_origin_y,
         )
 
     def apply_character_layout(self, character_id: str | None = None):
@@ -1701,6 +1704,12 @@ class TransparentWindow(QMainWindow):
             minimum=0.1,
             maximum=4.0,
         )
+        self._character_scale_origin_y = self._coerce_float(
+            layout.get("scale_origin_y"),
+            self.DEFAULT_CHARACTER_SCALE_ORIGIN_Y,
+            minimum=0.0,
+            maximum=1.0,
+        )
         self._character_object_position = self._coerce_object_position(
             layout.get("object_position"),
             self.DEFAULT_CHARACTER_OBJECT_POSITION,
@@ -1713,8 +1722,9 @@ class TransparentWindow(QMainWindow):
         y_offset: int,
         scale: float,
         object_position: str,
+        scale_origin_y: float = DEFAULT_CHARACTER_SCALE_ORIGIN_Y,
     ):
-        self._run_javascript("moveCharacter", x_offset, y_offset, scale)
+        self._run_javascript("moveCharacter", x_offset, y_offset, scale, scale_origin_y)
         self._run_javascript("setCharacterObjectPosition", object_position)
 
     def nativeEvent(self, event_type, message):

@@ -122,6 +122,7 @@ button:disabled {
    border: 0;
    background: transparent;
    transform: translate(var(--pet-anchor-shift, 0px), calc(-1 * var(--pet-floor-offset, 0px))) scale(var(--pet-scale, 1));
+   transform-origin: center var(--pet-scale-origin-y, 50%);
    pointer-events: auto;
 }
 
