@@ -102,7 +102,7 @@ def test_direct_news_reply_has_at_most_three_items_with_language_specific_limits
         payload={
             "articles": [
                 {"title": "A very long English headline", "summary": "x" * 200},
-                {"title": "第二則新聞標題", "summary": "中" * 200},
+                {"title": "第二則新聞標題", "summary": "第一句說完。" + "中" * 200},
                 {"title": "Third headline", "summary": "summary"},
                 {"title": "Fourth headline", "summary": "must not be shown"},
             ]
@@ -112,10 +112,10 @@ def test_direct_news_reply_has_at_most_three_items_with_language_specific_limits
     lines = PetHarnessEngine._news_reply(result).splitlines()
 
     assert len(lines) == 3
-    assert len(lines[0]) <= 150
-    assert len(lines[1]) <= 100
-    assert lines[0].endswith("…")
-    assert lines[1].endswith("…")
+    # 超長時不半句斷掉:沒有句尾就只留標題,有句尾就停在最後一個完整句子。
+    assert lines[0] == "1. A very long English headline"
+    assert lines[1] == "2. 第二則新聞標題 — 第一句說完。"
+    assert not any(line.endswith("…") for line in lines)
 
 
 def test_unknown_feed_host_is_rejected():

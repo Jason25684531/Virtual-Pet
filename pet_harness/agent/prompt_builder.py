@@ -48,7 +48,7 @@ _REPLY_LANGUAGE_RULES = {
 
 # 新聞列表輪次:英文不能再被壓成一到兩句,否則五則會擠成一坨。
 _NEWS_LANGUAGE_RULES = {
-    "zh": "Write reply in 繁體中文（台灣用語）。新聞回覆格式：每則一句、各占一行（用換行分開），行首編號 1. 2. 3. …；這個編號列表格式優先於其他格式規則。",
+    "zh": "Write reply in 繁體中文（台灣用語）。新聞回覆格式：每則一句完整的話、100 字以內、各占一行（用換行分開），行首編號 1. 2. 3. …；這個編號列表格式優先於其他格式規則。",
     "en": "Write reply in English, one short sentence per article.",
 }
 

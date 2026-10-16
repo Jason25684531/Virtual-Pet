@@ -12,6 +12,7 @@ from character_library import CharacterLibrary
 from pet_harness.asset.asset_contract import AssetRequest
 from pet_harness.asset.asset_repository import AssetRepository
 from pet_harness.asset.factory import build_asset_service
+from pet_harness.asset.mock_render_worker import MockRenderWorker
 from pet_harness.character.customization_service import CharacterCustomizationService
 from pet_harness.character.exceptions import NoActiveCharacterError
 from pet_harness.character.profile import CharacterProfile
@@ -228,6 +229,7 @@ class CharacterUiService:
         profile, _ = self._router.load_profile(character_id)
         store = SQLiteStore(profile.sqlite_path)
         store.initialize()
+        MockRenderWorker.cancel_orphaned_jobs(store, character_id)
         jobs = store.list_asset_jobs(character_id)
         generated_variants = {
             str(job["variant"])
@@ -258,6 +260,7 @@ class CharacterUiService:
         profile, _ = self._router.load_profile(character_id)
         store = SQLiteStore(profile.sqlite_path)
         store.initialize()
+        MockRenderWorker.cancel_orphaned_jobs(store, character_id)
         result = []
         for job in store.list_asset_jobs(character_id):
             maximum = job.get("progress_max")

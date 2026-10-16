@@ -41,6 +41,8 @@ MOTION_MAP = {spec["key"]: spec for spec in [*MOTION_SPECS, *ACTION_MOTION_SPECS
 #情緒對應詞
 CANONICAL_ACTION_ALIASES = {"annoy": "angry", "waving": "wave_response"}
 LEGACY_TO_CANONICAL_ACTION_ALIASES = {legacy: canonical for canonical, legacy in CANONICAL_ACTION_ALIASES.items()}
+# 動作 key 找不到同名檔時改找的檔名（例如 Omni 的新聞用 talk.webm、音樂用 music.webm）
+MOTION_FILE_ALIASES = {"angry": "annoy", "report_news": "talk", "play_music": "music"}
 
 
 def _now_iso() -> str:
@@ -290,7 +292,11 @@ class CharacterLibrary:
             self._ensure_flat_import(character_id, variant)
             revisions = self._revision_inventory(character_id, variant)
             wearable = [item for item in revisions if item["wearable"]]
-            images = sorted((images_root / variant).glob("*.png"), key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
+            own = sorted((images_root / variant).glob("*.png"), key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
+            # 檔名是別的變體名(development_a.png)的圖屬於那個變體;資料夾只剩這種圖就不是獨立格子
+            images = [path for path in own if path.stem == variant or path.stem not in variants]
+            if own and not images and not revisions:
+                continue
             if not images:
                 # ponytail: development_a/development_b 共用 images/development/ 一個資料夾,靠檔名(不是資料夾名)分辨
                 shared = images_root / "development" / f"{variant}.png"
@@ -405,7 +411,8 @@ class CharacterLibrary:
         if revision.is_file() or generation != 1:
             return revision
         flat = root / f"{motion_key}.webm"
-        return root / "annoy.webm" if motion_key == "angry" and not flat.is_file() else flat
+        alias = MOTION_FILE_ALIASES.get(motion_key)
+        return root / f"{alias}.webm" if alias and not flat.is_file() else flat
 
     def _generation_motion_path(self, character_id: str, variant: str, generation: int, motion_key: str) -> str | None:
         path = self._generation_motion_file(character_id, variant, generation, motion_key)

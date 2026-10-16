@@ -821,7 +821,10 @@
             var relevant = (jobs || []).filter(function (job) { return job.character_id === requestedCharacter; });
             var active = relevant.filter(function (job) { return ['queued', 'uploading', 'submitted', 'running'].indexOf(job.status) >= 0; })[0];
             var terminal = relevant[0];
-            renderActivity(active || (terminal && ['failed', 'timed_out'].indexOf(terminal.status) >= 0 ? terminal : null));
+            var freshFailure = !active && terminal && ['failed', 'timed_out'].indexOf(terminal.status) >= 0 && terminal.job_id !== lastFailedRenderJobId;
+            if (active) renderActivity(active);
+            else if (freshFailure) { lastFailedRenderJobId = terminal.job_id; renderActivity(terminal); }
+            else if (renderActivityBadge && !renderActivityBadge.classList.contains('is-failed')) renderActivity(null);
             if (active) lastNullRenderJobId = null;
             if (terminal && terminal.status === 'completed' && terminal.job_id !== lastCompletedRenderJobId) {
                 lastCompletedRenderJobId = terminal.job_id;
@@ -966,6 +969,7 @@
     var renderProgressCloseTimer = null;
     var lastCompletedRenderJobId = null;
     var lastNullRenderJobId = null;
+    var lastFailedRenderJobId = null;
 
     function refreshStyleSlots(characterId) {
         if (!characterId) return Promise.resolve();

@@ -452,6 +452,16 @@ class TestGetActiveState:
         assert ui_service.list_render_jobs("Choppr")[0]["status"] == "completed"
         assert ui_service.list_render_jobs("miku") == []
 
+    def test_orphaned_mock_render_job_is_cancelled_instead_of_spinning_forever(self, service):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        job = AssetRepository(store).create_job(AssetJob("Choppr", "reward_asset", "development", "orphan", job_id="mock-orphan"))
+        AssetRepository(store).update(job.job_id, JobStatus.RUNNING, stage="rendering", progress_value=42, progress_max=100)
+
+        assert ui_service.list_render_jobs("Choppr")[0]["status"] == "cancelled"
+
     def test_style_variant_awaiting_confirm_when_motion_offer_pending(self, service, monkeypatch):
         ui_service, router, _registry = service
         router.switch_character("Choppr")

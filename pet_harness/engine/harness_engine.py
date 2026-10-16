@@ -1065,8 +1065,13 @@ class PetHarnessEngine:
                 prefix = f"{index}. "
                 text = f"{title}{f' — {summary}' if summary else ''}"
                 limit = 100 if any("\u4e00" <= char <= "\u9fff" for char in text) else 150
-                if len(prefix) + len(text) > limit:
-                    text = f"{text[:limit - len(prefix) - 1].rstrip()}…"
+                room = limit - len(prefix)
+                if len(text) > room:
+                    # 超長時退回到最後一個完整句尾,沒有就只念標題;不能念到一半斷掉。
+                    ends = [m.end() for m in re.finditer(r"[。！？!?]|\.(?=\s)", text[:room]) if m.end() > len(title)]
+                    text = text[:ends[-1]] if ends else title
+                    if len(text) > room:
+                        text = f"{text[:room - 1].rstrip()}…"  # ponytail: 只剩標題本身就超長時才硬切
                 lines.append(f"{prefix}{text}")
         return "\n".join(lines) or None
 
