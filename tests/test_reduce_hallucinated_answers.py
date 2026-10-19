@@ -145,9 +145,10 @@ def test_prompt_keeps_knowledge_source_and_identity_boundaries(tmp_path):
     assert prompt.index("## Knowledge Reference") < prompt.index("## User Text")
     assert "Global source rule." in prompt
 
-    # The general "say you're not sure" instruction must be the last content the
-    # model reads before the Output Contract — closer to generation than the
-    # same rule buried mid-document in Global Response Rules.
+    # The general "say you're not sure" instruction must sit closer to generation
+    # than the same rule buried mid-document in Global Response Rules. Since
+    # omni-response-under-2500ms the Output Contract lives in the cacheable prefix,
+    # so this line now follows the per-turn content and precedes only the closing lines.
     assert "never state it with confidence" in prompt
-    assert prompt.index("never state it with confidence") < prompt.index("## Output Contract")
+    assert prompt.index("## Output Contract") < prompt.index("## User Text") < prompt.index("never state it with confidence")
     assert prompt.index("Global source rule.") < prompt.index("never state it with confidence")

@@ -355,6 +355,8 @@ STT_VAD_SILENCE_MS = _read_int_env("STT_VAD_SILENCE_MS", 500)
 STT_VAD_THRESHOLD = _read_float_env("STT_VAD_THRESHOLD", 0.5)
 STT_VAD_MODEL_DIR = os.getenv("STT_VAD_MODEL_DIR", str(_MODEL_ROOT / "vad")).strip()
 TURN_LATENCY_BUDGET_MS = _read_int_env("TURN_LATENCY_BUDGET_MS", 3000)
+# char-omni 專用:輸入(文字送出/STT 完成)→首音。只影響告警,不改行為。
+OMNI_TURN_LATENCY_BUDGET_MS = _read_int_env("OMNI_TURN_LATENCY_BUDGET_MS", 2500)
 
 LOW_LATENCY_REPLY_POLICY = (
     "即時互動請優先用 1 句短句完成回覆，只有必要時才允許第 2 句。"

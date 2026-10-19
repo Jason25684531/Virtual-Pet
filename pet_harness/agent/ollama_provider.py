@@ -9,6 +9,7 @@ from typing import Any, Callable, Iterator
 import requests
 
 import config
+from pet_harness.latency import get_turn
 from pet_harness.agent.provider_adapter import LLMProviderAdapter, ProviderReply
 from pet_harness.models.events import UserEvent
 from pet_harness.models.provider import ProviderConfig, ProviderStatus, ProviderType
@@ -77,21 +78,27 @@ class OllamaProvider(LLMProviderAdapter):
             prompt_text=prompt,
         )
 
-    def preload(self) -> bool:
-        """不帶 prompt 的 /api/generate 只載入模型不產生 token;失敗只記 warning,首輪回落成冷啟動。"""
+    def preload(self, prompt: str | None = None) -> bool:
+        """不帶 prompt 只載入模型;帶 prompt(角色的固定前段)時只生 1 token,讓 KV cache 先存好前綴。
+        失敗只記 warning,首輪回落成冷啟動。"""
         started = time.perf_counter()
         success = False
+        payload = {"model": self.config.model_name, "keep_alive": config.ollama_keep_alive_value()}
+        if prompt:
+            # 與正式請求同一組 format/options,否則 Ollama 可能因參數不同重載模型。
+            payload = self._payload(prompt, stream=False)
+            payload["options"] = {**payload.get("options", {}), "num_predict": 1}
         try:
             response = self.request_fn(
                 "POST",
                 f"{self.config.base_url or 'http://localhost:11434'}/api/generate",
                 timeout=self.config.timeout_seconds,
-                json={"model": self.config.model_name, "keep_alive": config.ollama_keep_alive_value()},
+                json=payload,
             )
             success = getattr(response, "status_code", 500) < 400
         except Exception as exc:  # noqa: BLE001 - 預載失敗不得影響啟動
             LOGGER.warning("[LLM PRELOAD] failed: %s", exc)
-        LOGGER.info("[LLM PRELOAD] done preload_ms=%s success=%s", round((time.perf_counter() - started) * 1000), success)
+        LOGGER.info("[LLM PRELOAD] done preload_ms=%s success=%s prefix_chars=%s", round((time.perf_counter() - started) * 1000), success, len(prompt or ""))
         return success
 
     def generate_reply_stream(
@@ -125,11 +132,25 @@ class OllamaProvider(LLMProviderAdapter):
                 if fragment:
                     yield fragment
                 if payload.get("done"):
+                    self._record_stream_stats(event, payload)
                     break
         finally:
             close = getattr(response, "close", None)
             if callable(close):
                 close()
+
+    @staticmethod
+    def _record_stream_stats(event: UserEvent, payload: dict[str, Any]) -> None:
+        """把 Ollama 的 load/prompt_eval(ns)掛到該回合 timeline,讓 TTFT 離群值分得出是重載還是重算。"""
+        timeline = get_turn((getattr(event, "metadata", None) or {}).get("turn_id"))
+        if timeline is None:
+            return
+        to_ms = lambda key: round(payload[key] / 1e6) if isinstance(payload.get(key), (int, float)) else None
+        timeline.llm_stats = {
+            "llm_load_ms": to_ms("load_duration"),
+            "llm_prompt_eval_ms": to_ms("prompt_eval_duration"),
+            "llm_prompt_tokens": payload.get("prompt_eval_count"),
+        }
 
     def _unavailable_reply(self, prompt_text: str, error_category: str, message: str) -> ProviderReply:
         metadata = {"error_category": error_category, "requested_provider": ProviderType.OLLAMA.value}

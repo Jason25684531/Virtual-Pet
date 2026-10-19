@@ -112,10 +112,10 @@ class ProviderRuntime:
             return None
         return method(event, matched_skill=matched_skill, prompt_text=prompt_text, cancel=cancel)
 
-    def preload(self) -> bool:
+    def preload(self, prompt: str | None = None) -> bool:
         """轉交給當下 adapter 的 preload;API provider 等沒有預載概念的直接回 False。"""
         method = getattr(self.get_provider(), "preload", None)
-        return bool(method()) if callable(method) else False
+        return bool(method(prompt)) if callable(method) else False
 
     def get_status(self) -> ProviderStatus:
         with self._lock:

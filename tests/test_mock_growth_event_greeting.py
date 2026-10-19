@@ -39,7 +39,7 @@ def test_mock_interaction_thresholds_and_reset(tmp_path, monkeypatch):
     monkeypatch.setattr("config.COMFYUI_ENABLED", False)
     store = SQLiteStore(tmp_path / "state.db")
     store.initialize()
-    growth = GrowthTriggerService(store, object(), "pet", 6, 3)
+    growth = GrowthTriggerService(store, "pet", 6, 3)
 
     offers = []
     for count in range(1, 10):
@@ -62,7 +62,7 @@ def test_mock_interaction_milestone_defers_until_offer_slot_is_free(tmp_path, mo
     monkeypatch.setattr("config.COMFYUI_ENABLED", False)
     store = SQLiteStore(tmp_path / "state.db")
     store.initialize()
-    growth = GrowthTriggerService(store, object(), "pet", 6, 3)
+    growth = GrowthTriggerService(store, "pet", 6, 3)
     store.set_setting("interaction_count", 2)
     store.set_setting("asset_pending_offer", {"busy": True})
 
@@ -78,7 +78,7 @@ def test_mock_interaction_thresholds_name_the_prebuilt_variant_directories(tmp_p
     monkeypatch.setattr("config.COMFYUI_ENABLED", False)
     store = SQLiteStore(tmp_path / "state.db")
     store.initialize()
-    growth = GrowthTriggerService(store, object(), "char-Adol", 6, 3)
+    growth = GrowthTriggerService(store, "char-Adol", 6, 3)
 
     offers = []
     for count in range(1, 7):

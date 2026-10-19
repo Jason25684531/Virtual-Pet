@@ -238,7 +238,7 @@ Virtual-Pet/
 │   │   ├── result_policy.py        # 檢索結果過濾/去重策略
 │   │   └── memory_models.py        # MemoryItem 等 dataclass
 │   ├── character/
-│   │   ├── profile.py              # CharacterProfile(sqlite_path / qdrant_collection 等)
+│   │   ├── profile.py              # CharacterProfile(sqlite_path、motions 等)
 │   │   ├── personal.py             # personal.json + local skills 驗證式讀寫
 │   │   ├── registry.py             # CharacterRegistry(載入/建立/刪除角色)
 │   │   ├── router.py               # CharacterRouter(角色切換中樞,持有 active engine)

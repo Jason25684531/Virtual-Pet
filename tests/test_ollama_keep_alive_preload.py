@@ -60,7 +60,7 @@ def test_provider_runtime_preload_delegates_to_current_adapter():
 
     from pet_harness.runtime.provider_runtime import ProviderRuntime
 
-    assert ProviderRuntime(provider=NS(preload=lambda: True)).preload() is True
+    assert ProviderRuntime(provider=NS(preload=lambda _prefix=None: True)).preload() is True
     assert ProviderRuntime(provider=NS()).preload() is False  # 無預載能力(如 API provider)
 
 

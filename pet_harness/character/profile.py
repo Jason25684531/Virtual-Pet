@@ -45,7 +45,6 @@ class CharacterProfile:
 
     # 自動計算
     sqlite_path: str = field(init=False)
-    qdrant_collection: str = field(init=False)
 
     def __post_init__(self) -> None:
         if not _ID_PATTERN.match(self.character_id):
@@ -53,7 +52,6 @@ class CharacterProfile:
                 f"character_id '{self.character_id}' must match [a-zA-Z0-9_-]+"
             )
         self.sqlite_path = f"data/characters/{self.character_id}/state.db"
-        self.qdrant_collection = f"{self.character_id}_memory"
 
     @classmethod
     def load(cls, character_id: str) -> "CharacterProfile":

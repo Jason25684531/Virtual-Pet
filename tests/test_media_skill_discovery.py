@@ -109,9 +109,35 @@ def test_news_tool_result_skips_llm_and_finishes_with_news_action(tmp_path, monk
     assert engine.last_tool_result.payload.get("articles"), engine.last_tool_result.to_dict()
     assert event.matched_skill == news_skill.name
     assert provider.calls == []
-    assert chunks == ["1. A — first", "2. B — second"]
+    # 確認語先於工具送出(omni-response-under-2500ms 4.5.5),列表不重複確認語。
+    assert chunks == ["Let me pull up today's game news for you.", "1. A — first", "2. B — second"]
     assert event.behavior_id == news_skill.behavior
     assert event.metadata["agentic"]["llm_calls"] == 0
+
+
+def test_news_ack_is_spoken_before_the_tool_runs_and_failure_still_gets_a_reply(tmp_path, monkeypatch):
+    agentic = _write_workspace(tmp_path, monkeypatch)
+    (tmp_path / "data" / "characters" / "Miku" / "profile.json").write_text(
+        json.dumps({"persona_description": "test", "skill_config": ["bahamut_daily_news"]}), encoding="utf-8")
+    skill_file = agentic / "skills" / "bahamut_daily_news.md"
+    skill_file.write_text(skill_file.read_text(encoding="utf-8") + "ack_template: 幫你整理今天的遊戲新聞。\n", encoding="utf-8")
+    provider = RecordingProvider()
+    engine = PetHarnessEngine(provider, agentic_root=agentic, character_id="Miku")
+    chunks = []
+    registry = ToolRegistry()
+    registry.register_definition(registry.get("web_article_tool"), lambda request: (
+        chunks.append("<tool>"), ToolResult("web_article_tool", "failed", error={"message": "offline"}, request_id=request.request_id))[1])
+    engine.refresh_tool_registry(registry)
+
+    engine.handle_event({"text": "巴哈新聞", "source": "test"}, stream_callback=chunks.append)
+
+    assert chunks[:2] == ["幫你整理今天的遊戲新聞。", "<tool>"]
+    assert chunks.count("幫你整理今天的遊戲新聞。") == 1
+    assert len(provider.calls) == 1 and "A deterministic acknowledgement was already spoken" in provider.calls[0]
+
+    chunks.clear()
+    engine.handle_event({"text": "巴哈新聞第二則", "source": "test"}, stream_callback=chunks.append)
+    assert "幫你整理今天的遊戲新聞。" not in chunks  # 追問單篇不是列表,不說列表確認語
 
 
 def test_ack_only_skill_skips_llm_and_emits_one_ack(tmp_path, monkeypatch):

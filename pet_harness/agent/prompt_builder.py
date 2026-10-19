@@ -65,24 +65,14 @@ class PromptBuilder:
     def __init__(self, agentic_root: str | Path) -> None:
         self.agentic_root = Path(agentic_root)
 
-    def build(
-        self,
-        event: UserEvent,
-        skills: list[Skill],
-        state_snapshot: dict,
-        matched_skill: Skill | None = None,
-        persona: str | None = None,
-        action_tags: list[str] | None = None,
-        tool_result: ToolResult | None = None,
-        conversation_history: list[dict] | None = None,
-        memory_hits: list[MemoryHit] | None = None,
-        retrieval_result=None,
-        knowledge_evidence: list[MemoryItem] | None = None,
-        ack_emitted: bool = False,
-        media_clarification: str | None = None,
-    ) -> PromptBuildResult:
-        warnings: list[str] = []
-        reply_language = detect_reply_language(event.text)
+    def stable_prefix(self, skills: list[Skill], persona: str | None = None, action_tags: list[str] | None = None) -> str:
+        """同一角色各回合逐字相同的前段;切角色後拿它預熱 Ollama 的前綴快取。"""
+        return self._stable_prefix(skills, persona, action_tags, [])[0]
+
+    def _stable_prefix(self, skills, persona, action_tags, warnings: list[str]) -> tuple[str, dict[str, int]]:
+        # ponytail: 前段逐字不變,Ollama 才能重用前綴 KV cache(未命中 ~1.2 s、命中 ~0.1 s,
+        # omni-response-under-2500ms)。每回合會變的東西一律放 build() 的後段;
+        # 區塊使用指示仍貼著各自內容留在後段,adjacency 教訓不受影響。
         soul_text = self._read_optional(self.agentic_root / "soul.md", "Soul context unavailable.", warnings)
         agentic_text = self._read_optional(
             self.agentic_root / "agentic.md",
@@ -98,13 +88,8 @@ class PromptBuilder:
             f"- {skill.name}: {skill.description} | triggers={', '.join(skill.triggers)} | behavior={skill.behavior}"
             for skill in skills
         ]
-        matched_text = matched_skill.name if matched_skill else "none"
         valid_action_tags = [str(tag).strip() for tag in (action_tags or []) if str(tag).strip()]
         skills_text = "\n".join(skill_lines) if skill_lines else "- none"
-        history_text = self._conversation_history_text(conversation_history)
-        memory_text = self._memory_hits_text(retrieval_result.evidence if retrieval_result else memory_hits)
-        knowledge_text = self._knowledge_text(knowledge_evidence)
-        tool_result_text = self._tool_result_text(tool_result)
         has_persona = bool(persona and persona.strip())
         #Prompt Setting  可以在這裡做設置
         # persona 存在時 MUST NOT 宣告 "You are ECHOES" 身分 —— 這句話在 Character
@@ -116,7 +101,7 @@ class PromptBuilder:
             if has_persona
             else "You are ECHOES, a local-first desktop companion."
         )
-        prompt = "\n".join(
+        prefix = "\n".join(
             [
                 identity_line,
                 "",
@@ -135,13 +120,61 @@ class PromptBuilder:
                 "## Available Skills",
                 skills_text,
                 "",
-                f"## Deterministic Matched Skill\n{matched_text}",
-                "",
                 "## Available Character Action Tags",
                 "\n".join(
                     f"- {tag}: {ACTION_TAG_GUIDANCE[tag]}" if tag in ACTION_TAG_GUIDANCE else f"- {tag}"
                     for tag in valid_action_tags
                 ) if valid_action_tags else "none",
+                "",
+                "## Global Response Rules",
+                response_rules_text,
+                "",
+                "## Output Contract",
+                'Return JSON only with keys: "reply", "matched_skill", "action_tag", "confidence", "tool_request", and either "notes" or "reasoning_summary".',
+                '"reply" must always be a single JSON string, never an array/list of strings — '
+                "even when summarizing multiple items, join them into one string.",
+                '"reply" value must be plain natural language text only — never JSON syntax, never '
+                'another {"reply": ...} object nested inside it.',
+                "Do not include private chain-of-thought.",
+                "Only use a skill name from the provided skill list or null.",
+                "action_tag must be one of the available character action tags or null, never idle; never put control tags in reply.",
+            ]
+        )
+        sizes = {"soul": len(soul_text), "agentic": len(agentic_text), "persona": len(persona or ""),
+                 "skills": len(skills_text), "response_rules": len(response_rules_text)}
+        return prefix, sizes
+
+    def build(
+        self,
+        event: UserEvent,
+        skills: list[Skill],
+        state_snapshot: dict,
+        matched_skill: Skill | None = None,
+        persona: str | None = None,
+        action_tags: list[str] | None = None,
+        tool_result: ToolResult | None = None,
+        conversation_history: list[dict] | None = None,
+        memory_hits: list[MemoryHit] | None = None,
+        retrieval_result=None,
+        knowledge_evidence: list[MemoryItem] | None = None,
+        ack_emitted: bool = False,
+        media_clarification: str | None = None,
+        last_action_tag: str | None = None,
+    ) -> PromptBuildResult:
+        warnings: list[str] = []
+        reply_language = detect_reply_language(event.text)
+        prefix, sizes = self._stable_prefix(skills, persona, action_tags, warnings)
+        matched_text = matched_skill.name if matched_skill else "none"
+        history_text = self._conversation_history_text(conversation_history)
+        memory_text = self._memory_hits_text(retrieval_result.evidence if retrieval_result else memory_hits)
+        knowledge_text = self._knowledge_text(knowledge_evidence)
+        tool_result_text = self._tool_result_text(tool_result)
+        # 動作清單整份放前段(每回合排除上一個動作會讓前綴變動),改在後段指名避開。
+        avoid_tag_line = f"This turn, choose an action_tag other than {last_action_tag}, or null." if last_action_tag and any(t != last_action_tag for t in action_tags or []) else ""
+        prompt = prefix + "\n" + "\n".join(
+            [
+                "",
+                f"## Deterministic Matched Skill\n{matched_text}",
                 "",
                 "## Current Pet State",
                 self._pet_state_text(state_snapshot),
@@ -216,34 +249,22 @@ class PromptBuilder:
                 if ack_emitted else "No acknowledgement has been spoken.",
                 MEDIA_CLARIFICATION_GUIDANCE.get(media_clarification or "", ""),
                 "",
-                "## Global Response Rules",
-                response_rules_text,
-                "",
+                avoid_tag_line,
                 # ponytail: 貼著 Output Contract 放,同一個 adjacency 教訓見上面
                 # Conversation History/Knowledge Reference 段的註解——這是模型生成
                 # JSON 前讀到的最後一段內容,比埋在 Global Response Rules 清單中段的
                 # 「準確」規則更接近生成點,不確定就說不確定的優先權放在這裡最高。
                 "If nothing above resolves a fact, spec, number, or model you are asked about, say "
                 "plainly that you are not sure — never state it with confidence.",
-                "",
-                "## Output Contract",
-                'Return JSON only with keys: "reply", "matched_skill", "action_tag", "confidence", "tool_request", and either "notes" or "reasoning_summary".',
-                '"reply" must always be a single JSON string, never an array/list of strings — '
-                "even when summarizing multiple items, join them into one string.",
-                '"reply" value must be plain natural language text only — never JSON syntax, never '
-                'another {"reply": ...} object nested inside it.',
-                "Do not include private chain-of-thought.",
-                "Only use a skill name from the provided skill list or null.",
-                "action_tag must be one of the available character action tags or null, never idle; never put control tags in reply.",
+                "Return JSON only, following the Output Contract above.",
                 (_NEWS_LANGUAGE_RULES if "\n1. " in tool_result_text else _REPLY_LANGUAGE_RULES)[reply_language],
             ]
         )
         section_sizes = {
-            "soul": len(soul_text), "agentic": len(agentic_text), "persona": len(persona or ""),
-            "skills": len(skills_text), "history": len(history_text), "memory": len(memory_text),
+            **sizes, "history": len(history_text), "memory": len(memory_text),
             "knowledge": len(knowledge_text),
             "tool_result": len(tool_result_text), "user_text": len(event.text),
-            "response_rules": len(response_rules_text), "total": len(prompt),
+            "total": len(prompt),
         }
         return PromptBuildResult(prompt=prompt, warnings=warnings, section_sizes=section_sizes)
 

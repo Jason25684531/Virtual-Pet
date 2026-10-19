@@ -325,6 +325,10 @@ class AudioStreamWorker(QObject):
 
     def enqueue(self, audio_bytes: io.BytesIO, reply_id: str, trace_id: str = "") -> None:
         """將一段音訊放入播放佇列。可在任意 Thread 呼叫。"""
+        # 容器音訊(Omni WAV、MP3 fallback)整段取得即可播放,對應串流路徑的首個 PCM。
+        timeline = get_turn(trace_id)
+        if timeline is not None:
+            timeline.mark("tts_first_pcm")
         self._queue.put((audio_bytes, reply_id, str(trace_id)))
 
     def enqueue_pcm_chunk(

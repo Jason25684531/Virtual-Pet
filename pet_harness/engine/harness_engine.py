@@ -202,7 +202,6 @@ LEGACY_MEDIA_SKILLS = {"music_bgm": "youtube_music_playback", "game_news": "baha
 @dataclass
 class ResolvedSkillView:
     resolved_skills: list[Skill]
-    resolved_skill_map: dict[str, Skill]
     skip_diagnostics: list[dict[str, str]]
 
 
@@ -312,7 +311,6 @@ class PetHarnessEngine:
             from pet_harness.asset.growth_trigger import GrowthTriggerService
             self.growth_trigger = GrowthTriggerService(
                 self.store,
-                self.asset_service,
                 self._character_id,
                 config.XP_PER_LEVEL,
                 config.EVENT_INTERVAL_MINUTES,
@@ -325,7 +323,6 @@ class PetHarnessEngine:
         self.last_provider_raw_result: str | None = None
         self.last_agent_result: AgentResult | None = None
         self.last_tool_result: ToolResult | None = None
-        self.last_asset_result: dict[str, Any] | None = None
         self._shutdown = False
         self._background_executor = None
         self._slow_tool_failure_callback = None
@@ -365,6 +362,17 @@ class PetHarnessEngine:
         finally:
             self._memory_warmup_completed_at = perf_counter() if success else None
             LOGGER.info("[MEMORY WARMUP] done warmup_ms=%s success=%s", round((perf_counter() - started) * 1000), success)
+
+    def warmup_llm(self) -> bool:
+        """以本角色的 prompt 固定前段預熱 LLM;切角色後第一句就能命中前綴快取。"""
+        preload = getattr(self.provider, "preload", None)
+        if not callable(preload):
+            return False
+        return bool(preload(self.prompt_builder.stable_prefix(
+            self.skills,
+            self._profile.effective_persona if self._profile else None,
+            self.character_library.list_action_tags(self._character_id),
+        )))
 
     def shutdown(self) -> None:
         if self._shutdown:
@@ -514,7 +522,7 @@ class PetHarnessEngine:
                 diagnostics.append({"skill_id": "local", "reason": "load_error", "detail": str(exc)})
         for path, error in self.skill_load_errors.items():
             diagnostics.append({"skill_id": path, "reason": "load_error", "detail": error})
-        return ResolvedSkillView(resolved, {skill.name: skill for skill in resolved}, diagnostics)
+        return ResolvedSkillView(resolved, diagnostics)
 
     def _initialize_character_skill_overlay(self, authorized_skill_ids: list[str]) -> None:
         """首次使用角色時，以 profile 授權技能建立私有 SQLite enablement overlay。"""
@@ -565,7 +573,12 @@ class PetHarnessEngine:
 
         if self._is_ack_only_skill(deterministic_skill):
             return self._handle_ack_only_turn(user_event, deterministic_skill, timeline, stream_callback)
-        if self._is_llm_synthesis_skill(deterministic_skill):
+        # 新聞列表也要等工具(0.5–1.5 s 網路),先送確認語讓首音不被工具拖住;「第二則」等追問不是列表,不說這句。
+        news_list = (
+            deterministic_skill is not None and deterministic_skill.capability == "news"
+            and self.media_session_context.follow_up_index(user_event.text) is None
+        )
+        if self._is_llm_synthesis_skill(deterministic_skill) or news_list:
             timeline.ack_emitted = True
             timeline.mark("first_speech_chunk_emitted")
             if callable(stream_callback):
@@ -896,6 +909,8 @@ class PetHarnessEngine:
     def _ack_text(skill: Skill, arguments: dict[str, Any], language: str = "zh") -> str:
         if language == "en" and skill.capability == "music":
             return f"I'll play some {str(arguments.get('query') or 'relaxing music').strip()} for you."
+        if language == "en" and skill.capability == "news":
+            return "Let me pull up today's game news for you."
         template = skill.ack_template or "我來幫你處理。"
         song = str(arguments.get("query") or "這首歌").strip()
         try:
@@ -924,14 +939,8 @@ class PetHarnessEngine:
             state_snapshot=state,
             matched_skill=deterministic_skill,
             persona=self._profile.effective_persona if self._profile else None,
-            action_tags=(
-                [
-                    tag
-                    for tag in self.character_library.list_action_tags(self._character_id)
-                    if tag != self._last_action_tag
-                ]
-                or self.character_library.list_action_tags(self._character_id)
-            ),
+            action_tags=self.character_library.list_action_tags(self._character_id),
+            last_action_tag=self._last_action_tag,
             tool_result=tool_result,
             conversation_history=history,
             memory_hits=memory_hits,
@@ -1277,7 +1286,6 @@ class PetHarnessEngine:
             reward_id="debug_reward",
             behavior_id="idle",
         )
-        self.last_asset_result = response.to_dict()
         return {
             "asset_result": response.to_dict(),
             "asset_manifest": self.store.list_asset_manifest(limit=1),
@@ -1410,7 +1418,6 @@ class PetHarnessEngine:
         behavior_id: str,
     ) -> dict[str, Any] | None:
         if not reward_events:
-            self.last_asset_result = None
             return None
         reward = reward_events[0]
         reward_id = reward.reward_id if hasattr(reward, "reward_id") else reward.get("reward_id")
@@ -1420,5 +1427,4 @@ class PetHarnessEngine:
             behavior_id=behavior_id,
             variant_type=str(getattr(reward, "metadata", {}).get("variant_type", "development")),
         )
-        self.last_asset_result = response.to_dict()
         return response.to_dict()

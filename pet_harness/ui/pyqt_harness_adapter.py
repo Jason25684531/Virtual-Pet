@@ -237,9 +237,6 @@ class PyQtHarnessAdapter:
             if callable(self._stream_chunk_callback) else None
         )
         self._submit_warmups(engine)
-        preload = getattr(engine.provider, "preload", None)
-        if callable(preload):
-            executor.submit(preload, lambda ok, message, _payload: LOGGER.warning("[LLM PRELOAD] executor error=%s", message) if not ok else None)
 
     def warm_active_engine(self) -> None:
         """切換角色會新建 engine,啟動時的預熱只暖到舊 engine;UI 切換完成後呼叫這裡補暖。"""
@@ -252,6 +249,12 @@ class PyQtHarnessAdapter:
             engine.warmup_memory,
             lambda ok, message, _payload: LOGGER.warning("[MEMORY WARMUP] executor error=%s", message) if not ok else None,
         )
+        warmup_llm = getattr(engine, "warmup_llm", None)
+        if callable(warmup_llm):
+            self._background_executor.submit(
+                warmup_llm,
+                lambda ok, message, _payload: LOGGER.warning("[LLM PRELOAD] executor error=%s", message) if not ok else None,
+            )
 
     def prepare_turn(self, text: str, source: str, character_id: str, trace_id: str | None = None) -> PreparedTurn:
         cleaned = str(text or "").strip()
@@ -270,6 +273,8 @@ class PyQtHarnessAdapter:
         if voice_timeline is not None and voice_timeline.turn_id != turn_id:
             rekey_turn(voice_timeline, turn_id)
         timeline = get_turn(turn_id) or create_turn(turn_id, "text")
+        if timeline.origin != "vad":
+            timeline.mark("input_submitted")  # 文字回合的首音起點;語音回合用 stt_done
         # Compare against this turn's own start time (not "now"), so a warmup that
         # finishes mid-STT/engine-processing is still correctly reported as not
         # complete at the moment the turn actually began. Safe to recompute even

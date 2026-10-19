@@ -19,7 +19,6 @@ class TestLoadChoppr:
         assert "idle" in p.motions
         assert "laugh" in p.motions
         assert p.sqlite_path == "data/characters/Choppr/state.db"
-        assert p.qdrant_collection == "Choppr_memory"
         assert p.voice_id_env_key == "CHOPPER_VOICE_ID"
         assert isinstance(p.idle_pool, list)
         assert len(p.idle_pool) > 0
@@ -44,7 +43,6 @@ class TestLoadMiku:
         assert "idle" in p.motions
         assert p.voice_id_env_key == ""
         assert p.sqlite_path == "data/characters/miku/state.db"
-        assert p.qdrant_collection == "miku_memory"
 
 
 class TestLoadMissing:

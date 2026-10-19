@@ -6,9 +6,7 @@ from pet_harness.engine.media_session_context import MediaSessionContext
 from pet_harness.tools.tool_models import ToolRequest, ToolResult
 
 
-MAX_TOOL_ROUNDS = 3
 MAX_EXECUTION_ATTEMPTS = 2
-MAX_REPLAN_ROUNDS = 1
 MAX_TOTAL_RUN_DURATION_SECONDS = 45
 
 
