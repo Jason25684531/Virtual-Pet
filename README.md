@@ -211,7 +211,6 @@ Virtual-Pet/
 │   │   ├── tool_execution_lifecycle.py  # 工具執行閉環(安全授權/重試/預算/落庫)
 │   │   └── media_session_context.py     # 新聞/音樂 session 上下文(per-character)
 │   ├── agent/
-│   │   ├── provider_factory.py     # LLM provider 工廠(Ollama / API)
 │   │   ├── provider_adapter.py     # LLMProviderAdapter 抽象介面 + ProviderReply
 │   │   ├── ollama_provider.py      # Ollama 本地推論 provider
 │   │   ├── api_provider.py         # OpenAI-compatible REST provider
@@ -239,7 +238,7 @@ Virtual-Pet/
 │   │   ├── result_policy.py        # 檢索結果過濾/去重策略
 │   │   └── memory_models.py        # MemoryItem 等 dataclass
 │   ├── character/
-│   │   ├── profile.py              # CharacterProfile(sqlite_path / qdrant_collection 等)
+│   │   ├── profile.py              # CharacterProfile(sqlite_path、motions 等)
 │   │   ├── personal.py             # personal.json + local skills 驗證式讀寫
 │   │   ├── registry.py             # CharacterRegistry(載入/建立/刪除角色)
 │   │   ├── router.py               # CharacterRouter(角色切換中樞,持有 active engine)
@@ -339,7 +338,7 @@ Virtual-Pet/
 | `OllamaProvider` | 本地 Ollama 推論 | No(localhost) |
 | `APIProvider` | OpenAI-compatible REST API | Yes |
 
-透過 `provider_factory.py` 依 `ProviderConfig.provider_type` 分派;全域 `ProviderRuntime` 是唯一持有者(自身即 `LLMProviderAdapter`,支援執行期熱切換),角色切換不影響 Provider 選擇。
+透過 `ProviderRuntime._create_provider` 依 `ProviderConfig.provider_type` 分派;全域 `ProviderRuntime` 是唯一持有者(自身即 `LLMProviderAdapter`,支援執行期熱切換),角色切換不影響 Provider 選擇。
 
 ### Skill 系統 (`pet_harness/skills/`)
 
@@ -528,6 +527,11 @@ BROWSER_SESSION_RECOVERY_MAX_RETRIES=1
 
 ---
 
+## 打包與交接
+
+Windows 發布版（Nuitka standalone + Cython 核心）的打包步驟、選用理由、驗證與換機交接，見 [`docs/release/打包與交接說明.md`](docs/release/打包與交接說明.md)。
+第三方授權風險（jina reranker 非商用、PyQt5 GPL 等）見 [`docs/adr/0018-release-third-party-license-exposure.md`](docs/adr/0018-release-third-party-license-exposure.md)。
+
 ## 啟動
 
 ```bash
@@ -591,7 +595,6 @@ COMFYUI_SMOKE=1 python -m pytest tests/test_comfyui_smoke.py
 | 腳本 | 跑法 | 驗什麼 |
 |---|---|---|
 | `debug_harness.py` | `python scripts/debug_harness.py --text "..."`;另有 `--list-skills / --state / --recent-events / --run-tool / --ollama-health` | 不開 UI 直接驅動 harness engine 的 CLI 除錯工具,可切 api/ollama provider,事件輸出到 `debug/events/` |
-| `verify_memory_retrieval.py` | `python scripts/verify_memory_retrieval.py "問題" --character Choppr` | 對單一問題印出 Qdrant 檢索 trace 與 evidence,人工檢查記憶命中(需真實角色 qdrant 資料) |
 | `eval_retrieval.py` | `python scripts/eval_retrieval.py`(eval set 在 `tests/data/retrieval_eval_set.json`) | 記憶檢索評測:recall@5、MRR、nDCG@5、空檢索率、p50/p95 延遲、跨角色洩漏 |
 | `backfill_memory_items.py` | `python scripts/backfill_memory_items.py --character miku [--dry-run]` | 把 SQLite 記憶回填到 Qdrant 混合索引(一次性遷移工具,有測試守護) |
 | `eval_harness.py` | (程式庫,非 CLI;由 `eval_retrieval.py` 與測試引用) | 記憶檢索評測核心:依 eval set 建臨時索引跑檢索、nDCG/門檻掃描、可選 Ollama pointwise 證據評分 |

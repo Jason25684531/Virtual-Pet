@@ -2,27 +2,22 @@
 
 from __future__ import annotations
 
+import io
 import os
-import re
 from pathlib import Path
 from typing import Any
 
+from dotenv import dotenv_values
+
+import secure_env
+
 
 def load_project_env(path: str | Path) -> dict[str, str]:
-    loaded: dict[str, str] = {}
-    env_path = Path(path)
-    if not env_path.exists():
-        return loaded
-    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key, value = key.strip(), value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1]
-        value = re.sub(r"\$\{([^}]+)\}", lambda match: loaded.get(match.group(1), os.environ.get(match.group(1), "")), value)
-        loaded[key] = value
+    text = secure_env.read_text(path)
+    if text is None:
+        return {}
+    loaded = {key: value for key, value in dotenv_values(stream=io.StringIO(text)).items() if value is not None}
+    for key, value in loaded.items():
         os.environ.setdefault(key, value)
     return loaded
 

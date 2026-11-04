@@ -71,6 +71,20 @@ def execute(request: ToolRequest) -> ToolResult:
     return YouTubeMusicTool().execute(request)
 
 
+def warmup_once(query: str = "lofi music") -> ToolResult:
+    """Open one visible YouTube result, verify playback, then close the session."""
+    try:
+        return YouTubeMusicTool().execute(
+            ToolRequest(
+                "youtube_music_tool",
+                "startup_warmup",
+                {"action": "search_and_play", "query": query},
+            )
+        )
+    finally:
+        shutdown_default_runtime()
+
+
 def shutdown_default_runtime() -> None:
     if _runtime is not None:
         _runtime.shutdown()

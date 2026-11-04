@@ -41,10 +41,6 @@ class MemoryItemRepository:
         if memory_ids:
             with self.store.connect() as conn, conn: conn.executemany("UPDATE memory_items SET indexed_at=? WHERE memory_id=?", [(datetime.now(UTC).isoformat(), item) for item in memory_ids])
 
-    def list_all_active(self) -> list[MemoryItem]:
-        with self.store.connect() as conn: rows = conn.execute("SELECT * FROM memory_items WHERE status='active'").fetchall()
-        return [self._item(row) for row in rows]
-
     def forget(self, memory_key: str) -> list[str]:
         with self.store.connect() as conn, conn:
             rows = conn.execute("SELECT memory_id FROM memory_items WHERE memory_key=? AND status='active'", (memory_key,)).fetchall()

@@ -16,7 +16,6 @@ from pet_harness.agent.prompt_builder import PromptBuilder
 from pet_harness.agent.provider_adapter import LLMProviderAdapter, ProviderReply
 from pet_harness.agent.result_parser import ResultParser
 from pet_harness.asset.factory import build_asset_service
-from pet_harness.asset.mock_asset_service import MockAssetService
 from pet_harness.behavior.behavior_manager import BehaviorManager
 from pet_harness.character import generation as character_generation
 from pet_harness.character.profile import CharacterProfile
@@ -37,9 +36,11 @@ from pet_harness.engine.media_session_context import MediaSessionContext
 from pet_harness.engine.tool_execution_lifecycle import ToolExecutionLifecycle
 from pet_harness.xp.reward_manager import RewardManager
 from pet_harness.xp.xp_manager import XPManager
+from pet_harness.agent.reply_language import detect_reply_language
 from pet_harness.latency import TurnTimeline, create_turn, get_turn
 
 LOGGER = logging.getLogger(__name__)
+_FIRST_PERSON = re.compile(r"我|咱|(?<![A-Za-z])(?:i|i'm|i've|i'd|i'll|my|me|mine|we|our)(?![A-Za-z])", re.IGNORECASE)
 
 
 class _SentenceSplitter:
@@ -52,6 +53,8 @@ class _SentenceSplitter:
     # TTS 請求，部分 provider 對過長文字只合成/播放前半段。超過門檻就在逗號
     # 處強制斷句，避免單一 TTS chunk 過長被截斷。
     _MAX_CHUNK_CHARS = 80
+    # 第一個片段遇到逗號、且有 8 字以上就先送出,讓 TTS 早點開始合成(其後維持原規則)。
+    _FIRST_CHUNK_MIN_CHARS = 8
 
     def __init__(self) -> None:
         self._buffer = ""
@@ -68,18 +71,25 @@ class _SentenceSplitter:
     def _drain(self, final: bool) -> list[str]:
         sentences: list[str] = []
         start = 0
+        first_open = self._first
         for index, char in enumerate(self._buffer):
             is_end = char in self._END
             if is_end and char == "." and index + 1 < len(self._buffer) and self._buffer[index + 1].isdigit():
                 is_end = False
+            if is_end and char == "." and self._buffer[start:index].strip().isdigit():
+                is_end = False  # 「1.」是新聞列表編號,不是句尾;切開會讓編號和標題分家
             is_soft_break = (
                 not is_end
                 and char in self._SOFT_BREAK
-                and index + 1 - start >= self._MAX_CHUNK_CHARS
+                and (
+                    index + 1 - start >= self._MAX_CHUNK_CHARS
+                    or (first_open and len(self._ACTION.sub("", self._buffer[start:index + 1]).strip()) >= self._FIRST_CHUNK_MIN_CHARS)
+                )
             )
             if not (is_end or is_soft_break):
                 continue
             sentences.append(self._buffer[start:index + 1].strip())
+            first_open = False
             start = index + 1
         if start:
             self._buffer = self._buffer[start:]
@@ -192,7 +202,6 @@ LEGACY_MEDIA_SKILLS = {"music_bgm": "youtube_music_playback", "game_news": "baha
 @dataclass
 class ResolvedSkillView:
     resolved_skills: list[Skill]
-    resolved_skill_map: dict[str, Skill]
     skip_diagnostics: list[dict[str, str]]
 
 
@@ -302,7 +311,6 @@ class PetHarnessEngine:
             from pet_harness.asset.growth_trigger import GrowthTriggerService
             self.growth_trigger = GrowthTriggerService(
                 self.store,
-                self.asset_service,
                 self._character_id,
                 config.XP_PER_LEVEL,
                 config.EVENT_INTERVAL_MINUTES,
@@ -315,7 +323,6 @@ class PetHarnessEngine:
         self.last_provider_raw_result: str | None = None
         self.last_agent_result: AgentResult | None = None
         self.last_tool_result: ToolResult | None = None
-        self.last_asset_result: dict[str, Any] | None = None
         self._shutdown = False
         self._background_executor = None
         self._slow_tool_failure_callback = None
@@ -327,10 +334,6 @@ class PetHarnessEngine:
 
     def configure_slow_tool_failure_callback(self, callback) -> None:
         self._slow_tool_failure_callback = callback
-
-    @property
-    def memory_warmup_complete(self) -> bool:
-        return self._memory_warmup_completed_at is not None
 
     @property
     def memory_warmup_completed_at(self) -> float | None:
@@ -359,6 +362,17 @@ class PetHarnessEngine:
         finally:
             self._memory_warmup_completed_at = perf_counter() if success else None
             LOGGER.info("[MEMORY WARMUP] done warmup_ms=%s success=%s", round((perf_counter() - started) * 1000), success)
+
+    def warmup_llm(self) -> bool:
+        """以本角色的 prompt 固定前段預熱 LLM;切角色後第一句就能命中前綴快取。"""
+        preload = getattr(self.provider, "preload", None)
+        if not callable(preload):
+            return False
+        return bool(preload(self.prompt_builder.stable_prefix(
+            self.skills,
+            self._profile.effective_persona if self._profile else None,
+            self.character_library.list_action_tags(self._character_id),
+        )))
 
     def shutdown(self) -> None:
         if self._shutdown:
@@ -508,7 +522,7 @@ class PetHarnessEngine:
                 diagnostics.append({"skill_id": "local", "reason": "load_error", "detail": str(exc)})
         for path, error in self.skill_load_errors.items():
             diagnostics.append({"skill_id": path, "reason": "load_error", "detail": error})
-        return ResolvedSkillView(resolved, {skill.name: skill for skill in resolved}, diagnostics)
+        return ResolvedSkillView(resolved, diagnostics)
 
     def _initialize_character_skill_overlay(self, authorized_skill_ids: list[str]) -> None:
         """首次使用角色時，以 profile 授權技能建立私有 SQLite enablement overlay。"""
@@ -559,11 +573,16 @@ class PetHarnessEngine:
 
         if self._is_ack_only_skill(deterministic_skill):
             return self._handle_ack_only_turn(user_event, deterministic_skill, timeline, stream_callback)
-        if self._is_llm_synthesis_skill(deterministic_skill):
+        # 新聞列表也要等工具(0.5–1.5 s 網路),先送確認語讓首音不被工具拖住;「第二則」等追問不是列表,不說這句。
+        news_list = (
+            deterministic_skill is not None and deterministic_skill.capability == "news"
+            and self.media_session_context.follow_up_index(user_event.text) is None
+        )
+        if self._is_llm_synthesis_skill(deterministic_skill) or news_list:
             timeline.ack_emitted = True
             timeline.mark("first_speech_chunk_emitted")
             if callable(stream_callback):
-                stream_callback(self._ack_text(deterministic_skill, {"query": user_event.text}))
+                stream_callback(self._ack_text(deterministic_skill, {"query": user_event.text}, detect_reply_language(user_event.text)))
 
         # 工具先行:deterministic 命中且帶 required_tool 時,先執行工具再讓 LLM 合成回覆,
         # 讓回覆能引用本輪真實取得的資料,而非上一輪殘留的 tool_result(見
@@ -657,15 +676,53 @@ class PetHarnessEngine:
 
         prompt_result = self._build_prompt(user_event, state_before, deterministic_skill, tool_first_result, conversation_history, memory_hits, retrieval_result, knowledge_evidence, ack_emitted=timeline.ack_emitted)
         LOGGER.info("[PROMPT SIZE] turn_id=%s chars=%s", timeline.turn_id, prompt_result.section_sizes)
-        provider_reply, agent_result = self._invoke_provider(
-            user_event,
-            deterministic_skill,
-            prompt_result.prompt,
-            stream_callback=stream_callback,
-            action_callback=action_callback,
-            cancel=cancel,
-            timeline=timeline,
+        direct_news_reply = (
+            self._news_reply(tool_first_result)
+            if deterministic_skill is not None and deterministic_skill.capability == "news"
+            else None
         )
+        if direct_news_reply:
+            self.last_prompt = prompt_result.prompt
+            status_getter = getattr(self.provider, "get_status", None)
+            status = (
+                status_getter()
+                if callable(status_getter)
+                else ProviderStatus(healthy=True, message="deterministic news")
+            )
+            cancelled = bool(cancel is not None and cancel.is_set())
+            provider_reply = ProviderReply(
+                reply=direct_news_reply,
+                provider_status=status,
+                raw_text=direct_news_reply,
+                prompt_text=prompt_result.prompt,
+                metadata={"streaming": bool(stream_callback), "cancelled": cancelled, "deterministic": True},
+            )
+            agent_result = AgentResult(
+                reply=direct_news_reply,
+                matched_skill=deterministic_skill.name,
+                behavior_hint=deterministic_skill.behavior,
+                confidence=1.0,
+                raw_text=direct_news_reply,
+                parser_status="deterministic_tool_result",
+                provider_type="deterministic",
+                metadata={"llm_calls": 0},
+            )
+            self.last_provider_raw_result = direct_news_reply
+            self.last_agent_result = agent_result
+            if stream_callback and not cancelled:
+                for line in direct_news_reply.splitlines():
+                    stream_callback(line)
+                    timeline.mark("first_speech_chunk_emitted")
+        else:
+            provider_reply, agent_result = self._invoke_provider(
+                user_event,
+                deterministic_skill,
+                prompt_result.prompt,
+                stream_callback=stream_callback,
+                action_callback=action_callback,
+                cancel=cancel,
+                timeline=timeline,
+            )
         stream_cancelled = bool(provider_reply.metadata.get("cancelled")) or bool(cancel is not None and cancel.is_set())
         if stream_cancelled:
             timeline.cancel("stream_interrupted")
@@ -719,6 +776,7 @@ class PetHarnessEngine:
                 "behavior": behavior_event.to_dict(),
                 "agentic": {
                     "streaming": bool(provider_reply.metadata.get("streaming")),
+                    "llm_calls": 0 if direct_news_reply else 1,
                     "provider_type": agent_result.provider_type,
                     "parser_status": agent_result.parser_status,
                     "fallback_used": agent_result.fallback_used,
@@ -744,7 +802,7 @@ class PetHarnessEngine:
             route_kind="deterministic" if deterministic_skill else "conversation",
             skill_name=matched_skill.name if matched_skill else None,
             streaming=bool(provider_reply.metadata.get("streaming")),
-            slow_tool=False,
+            slow_tool=bool(direct_news_reply),
             route_source=skill_source,
             character_generation=character_generation.current(),
             tool_status=(tool_result_payload or {}).get("status"),
@@ -807,11 +865,11 @@ class PetHarnessEngine:
                 LOGGER.warning("[SLOW TOOL FAILED] turn_id=%s character_id=%s tool=%s detail=%s", timeline.turn_id, self._character_id, candidate.tool_name, message or getattr(result, "error", None))
                 callback = self._slow_tool_failure_callback
                 if callable(callback):
-                    callback(timeline.turn_id, "抱歉，剛才沒有成功找到這首歌。")
+                    callback(timeline.turn_id, "Sorry, I couldn't find that song." if detect_reply_language(event.text) == "en" else "抱歉，剛才沒有成功找到這首歌。")
             else:
                 LOGGER.info("[SLOW TOOL COMPLETE] turn_id=%s character_id=%s tool=%s", timeline.turn_id, self._character_id, candidate.tool_name)
 
-        ack = self._ack_text(skill, candidate.arguments)
+        ack = self._ack_text(skill, candidate.arguments, detect_reply_language(event.text))
         timeline.ack_emitted = True
         timeline.mark("first_speech_chunk_emitted")
         if callable(stream_callback):
@@ -848,7 +906,11 @@ class PetHarnessEngine:
         return pet_event
 
     @staticmethod
-    def _ack_text(skill: Skill, arguments: dict[str, Any]) -> str:
+    def _ack_text(skill: Skill, arguments: dict[str, Any], language: str = "zh") -> str:
+        if language == "en" and skill.capability == "music":
+            return f"I'll play some {str(arguments.get('query') or 'relaxing music').strip()} for you."
+        if language == "en" and skill.capability == "news":
+            return "Let me pull up today's game news for you."
         template = skill.ack_template or "我來幫你處理。"
         song = str(arguments.get("query") or "這首歌").strip()
         try:
@@ -877,14 +939,8 @@ class PetHarnessEngine:
             state_snapshot=state,
             matched_skill=deterministic_skill,
             persona=self._profile.effective_persona if self._profile else None,
-            action_tags=(
-                [
-                    tag
-                    for tag in self.character_library.list_action_tags(self._character_id)
-                    if tag != self._last_action_tag
-                ]
-                or self.character_library.list_action_tags(self._character_id)
-            ),
+            action_tags=self.character_library.list_action_tags(self._character_id),
+            last_action_tag=self._last_action_tag,
             tool_result=tool_result,
             conversation_history=history,
             memory_hits=memory_hits,
@@ -1000,6 +1056,34 @@ class PetHarnessEngine:
             timeline.mark("llm_done")
         return provider_reply, agent_result
 
+    @staticmethod
+    def _news_reply(result: ToolResult | None) -> str | None:
+        """Render a verified news-tool result without another LLM round trip."""
+        if result is None or result.tool_name != "web_article_tool" or result.status != "success":
+            return None
+        articles = (result.payload or {}).get("articles") if isinstance(result.payload, dict) else None
+        if not isinstance(articles, list):
+            return None
+        lines = []
+        for index, article in enumerate(articles[:3], start=1):
+            if not isinstance(article, dict):
+                continue
+            title = str(article.get("title") or "").strip()
+            summary = str(article.get("summary") or "").strip()
+            if title:
+                prefix = f"{index}. "
+                text = f"{title}{f' — {summary}' if summary else ''}"
+                limit = 100 if any("\u4e00" <= char <= "\u9fff" for char in text) else 150
+                room = limit - len(prefix)
+                if len(text) > room:
+                    # 超長時退回到最後一個完整句尾,沒有就只念標題;不能念到一半斷掉。
+                    ends = [m.end() for m in re.finditer(r"[。！？!?]|\.(?=\s)", text[:room]) if m.end() > len(title)]
+                    text = text[:ends[-1]] if ends else title
+                    if len(text) > room:
+                        text = f"{text[:room - 1].rstrip()}…"  # ponytail: 只剩標題本身就超長時才硬切
+                lines.append(f"{prefix}{text}")
+        return "\n".join(lines) or None
+
     def _parse_and_route(self, event: UserEvent, result: AgentResult, capabilities: set[str]):
         import config
 
@@ -1075,7 +1159,7 @@ class PetHarnessEngine:
         if self.growth_trigger is not None:
             growth = (
                 self.growth_trigger.on_interaction(event.event_id)
-                if isinstance(self.asset_service, MockAssetService)
+                if self.asset_service.growth_mode == "interaction"
                 else self.growth_trigger.on_xp_awarded(self.store.get_user_progress()["xp_total"], event.event_id)
             )
             check_time_trigger = getattr(self.growth_trigger, "check_time_trigger", None)
@@ -1090,13 +1174,23 @@ class PetHarnessEngine:
         pet_event.saved_to_db = True
         self._write_snapshot(pet_event)
         self.memory_store.save_turn(user_event.event_id, user_event.text, pet_event.reply)
-        if self._memory_extractor is not None:
+        if self._memory_extractor is not None and self._worth_extracting(user_event.text, pet_event):
             threading.Thread(
                 target=self._index_memory_turn,
                 args=(user_event.event_id, user_event.text, pet_event.reply),
                 daemon=True,
                 name="memory-item-index",
             ).start()
+
+    @staticmethod
+    def _worth_extracting(user_text: str, pet_event) -> bool:
+        """每輪抽取是一次額外的 LLM 呼叫,而且和下一輪搶同一個 Ollama;工具輪與
+        「短句且沒有第一人稱」的輪次不會有可記憶的使用者事實,直接略過(對話紀錄不受影響)。
+        ponytail: regex + 長度的啟發式;短句裡若有助理的承諾會漏抓,記憶命中率下降時改用分類器。"""
+        if pet_event.tool_request is not None:
+            return False
+        text = user_text.strip()
+        return len(text) >= 6 or bool(_FIRST_PERSON.search(text))
 
     def _index_memory_turn(self, event_id: str, user_text: str, reply: str) -> None:
         try:
@@ -1192,7 +1286,6 @@ class PetHarnessEngine:
             reward_id="debug_reward",
             behavior_id="idle",
         )
-        self.last_asset_result = response.to_dict()
         return {
             "asset_result": response.to_dict(),
             "asset_manifest": self.store.list_asset_manifest(limit=1),
@@ -1228,6 +1321,8 @@ class PetHarnessEngine:
         if matched_skill and matched_skill.required_tool:
             arguments = {"query": user_event.text, "mode": "skill_required"}
             arguments.update(dict(matched_skill.tool_policy.get("defaults") or {}))
+            if detect_reply_language(user_event.text) == "en":
+                arguments.update(dict(matched_skill.tool_policy.get("defaults_en") or {}))
             arguments.update(self._media_arguments(matched_skill, user_event.text))
             LOGGER.info("[TOOL ROUTE] skill=%s tool=%s action=%s", matched_skill.name, matched_skill.required_tool, arguments.get("action"))
             return ToolRequest(
@@ -1280,7 +1375,7 @@ class PetHarnessEngine:
     def _media_arguments(skill: Skill, text: str) -> dict[str, Any]:
         if skill.capability != "music":
             return {}
-        from pet_harness.skills.intent_normalizer import normalize
+        from pet_harness.skills.intent_normalizer import RELAX_MUSIC, normalize
 
         normalized = normalize(text).stripped_text
         actions = {
@@ -1295,6 +1390,8 @@ class PetHarnessEngine:
         matched = max((phrase for phrase in actions if phrase in normalized), key=len, default=None)
         if matched is not None:
             return {"action": actions[matched], "query": ""}
+        if relax := RELAX_MUSIC.search(normalized):
+            return {"action": "search_and_play", "query": relax.group(0)}
         query = re.sub(r"^(?:播放|播歌|播|放一首|放|我想聽|想聽)\s*", "", normalized).strip()
         return {"action": "search_and_play", "query": query or normalized}
 
@@ -1321,7 +1418,6 @@ class PetHarnessEngine:
         behavior_id: str,
     ) -> dict[str, Any] | None:
         if not reward_events:
-            self.last_asset_result = None
             return None
         reward = reward_events[0]
         reward_id = reward.reward_id if hasattr(reward, "reward_id") else reward.get("reward_id")
@@ -1331,5 +1427,4 @@ class PetHarnessEngine:
             behavior_id=behavior_id,
             variant_type=str(getattr(reward, "metadata", {}).get("variant_type", "development")),
         )
-        self.last_asset_result = response.to_dict()
         return response.to_dict()

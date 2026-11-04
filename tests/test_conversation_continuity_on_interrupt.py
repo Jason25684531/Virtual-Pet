@@ -6,7 +6,6 @@ recent_events 是 prompt 短期歷史的唯一來源；掉一筆就等於模型�
 from unittest.mock import MagicMock
 
 from pet_harness.engine.harness_engine import PetHarnessEngine
-from pet_harness.models.events import UserEvent
 from pet_harness.storage.sqlite_store import SQLiteStore
 from ui.transparent_window import TransparentWindow
 

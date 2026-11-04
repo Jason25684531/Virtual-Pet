@@ -10,7 +10,7 @@ from typing import Any
 
 LOGGER = logging.getLogger(__name__)
 CHECKPOINTS = (
-    "vad_endpoint", "stt_started", "stt_done", "route_done", "retrieval_done",
+    "input_submitted", "vad_endpoint", "stt_started", "stt_done", "route_done", "retrieval_done",
     "pre_llm_done", "tool_started", "tool_done", "llm_request_started",
     "llm_first_token", "first_speech_chunk_emitted", "llm_done",
     "tts_request_started", "tts_first_pcm", "audio_play_started", "turn_complete",
@@ -29,7 +29,10 @@ class TurnTimeline:
     ack_emitted: bool = False
     cancel_reason: str | None = None
     context: dict[str, Any] = field(default_factory=dict)
+    # Ollama 最後一個 stream chunk 的 load/prompt_eval;拆解 TTFT 離群值用(其他 provider 留空)。
+    llm_stats: dict[str, int | None] = field(default_factory=dict)
     _lock: RLock = field(default_factory=RLock, repr=False)
+    _last_logged: dict[str, Any] | None = field(default=None, repr=False)
 
     @classmethod
     def create(cls, turn_id: str, origin: str, *, vad_endpoint: bool = False, warmup_complete: bool = False) -> TurnTimeline:
@@ -112,6 +115,7 @@ class TurnTimeline:
         import config
 
         endpoint_to_audio = self.ms("vad_endpoint", "audio_play_started")
+        hangover = config.STT_VAD_SILENCE_MS if self.checkpoints.get("vad_endpoint") is not None else None
         missing = [name for name in self._expected_checkpoints(streaming=streaming, slow_tool=slow_tool) if self.checkpoints.get(name) is None]
         data = {
             "turn_id": self.turn_id, "character_id": character_id, "route_kind": route_kind,
@@ -129,6 +133,9 @@ class TurnTimeline:
             "tts_first_pcm_ms": self.ms("first_speech_chunk_emitted", "tts_first_pcm"),
             "audio_start_ms": self.ms("tts_first_pcm", "audio_play_started"),
             "endpoint_to_first_audio_ms": endpoint_to_audio,
+            # VAD 靜音等待發生在 vad_endpoint 之前、不在 SLA 內,但使用者實際會等到;只供回報,不參與預算判定。
+            "vad_hangover_ms": hangover,
+            "perceived_first_audio_ms": None if endpoint_to_audio is None or hangover is None else hangover + endpoint_to_audio,
             "turn_complete_ms": self.ms("vad_endpoint", "turn_complete"),
             "warmup_complete_before_turn": self.warmup_complete_before_turn,
             "measurement_semantics": "pcm_submitted", "bottleneck_stage": self.classify(),
@@ -137,12 +144,26 @@ class TurnTimeline:
         # A metric that couldn't be computed is unmeasurable, not "within budget" —
         # collapsing that into False would silently report a fake pass.
         data["budget_exceeded"] = None if endpoint_to_audio is None else endpoint_to_audio > config.TURN_LATENCY_BUDGET_MS
+        # 文字回合從送出起算、語音回合從 STT 完成起算;不含 STT/VAD,與 endpoint 指標並存。
+        input_to_audio = self.ms("stt_done" if self.origin == "vad" else "input_submitted", "audio_play_started")
+        data["input_to_first_audio_ms"] = input_to_audio
+        data["omni_budget_exceeded"] = (
+            input_to_audio > config.OMNI_TURN_LATENCY_BUDGET_MS
+            if character_id == config.OMNI_TTS_CHARACTER_ID and input_to_audio is not None else None
+        )
+        data.update({key: self.llm_stats.get(key) for key in ("llm_load_ms", "llm_prompt_eval_ms", "llm_prompt_tokens")})
         return data
 
     def log(self, **kwargs: Any) -> dict[str, Any]:
         data = self.report(**kwargs)
+        with self._lock:
+            # 同一輪會從多個播放 hook 重複呼叫(例如 MP3 路徑每句一次);內容沒變就不重複輸出。
+            # 慢工具在 tool_done 後補記的那一筆內容有變(tool_ms 填入),照常輸出。
+            if data == self._last_logged:
+                return data
+            self._last_logged = data
         # 被取消的回合本來就跑不完後面的階段,那是預期行為而不是接線缺口。
-        incomplete = (data["budget_exceeded"] or not data["timeline_complete"]) and not data["cancel_reason"]
+        incomplete = (data["budget_exceeded"] or data["omni_budget_exceeded"] or not data["timeline_complete"]) and not data["cancel_reason"]
         log = LOGGER.warning if incomplete else LOGGER.info
         log("[TURN LATENCY] %s", data)
         return data

@@ -289,7 +289,8 @@ class ResultParser:
         包裝直接洩漏給使用者(回報:前端偶爾看到一整包 JSON)。原始文字長得像
         JSON/程式碼區塊就不採信,退回通用訊息;非 JSON provider 的一般文字
         fallback 不受影響。"""
-        if fallback_reply and fallback_reply.strip().startswith(("{", "[", "```")):
+        candidate = re.sub(r"^\s*\[ACTION:[A-Za-z0-9_-]+\]\s*", "", fallback_reply or "", count=1, flags=re.IGNORECASE)
+        if candidate.strip().startswith(("{", "[", "```")):
             return self.default_reply
         return fallback_reply or self.default_reply
 

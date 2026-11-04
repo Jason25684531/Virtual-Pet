@@ -64,7 +64,7 @@ def is_raw_pcm_content_type(content_type: str | None) -> bool:
 
 
 class PygameInMemoryAudioPlayer:
-    """Play a complete MP3 buffer from memory through pygame."""
+    """Play a complete MP3 or WAV buffer from memory through pygame."""
 
     _global_lock = threading.Lock()
 
@@ -88,7 +88,10 @@ class PygameInMemoryAudioPlayer:
             except Exception:
                 LOGGER.debug("pygame unload during cleanup failed", exc_info=True)
 
-            self._mixer.music.load(audio_buffer, "mp3")
+            # 本機 Omni TTS 回 WAV;雲端備援是 MP3。namehint 錯了 SDL 會判成 corrupt。
+            namehint = "wav" if audio_buffer.read(4) == b"RIFF" else "mp3"
+            audio_buffer.seek(0)
+            self._mixer.music.load(audio_buffer, namehint)
             if callable(before_start) and before_start() is False:
                 raise PlaybackStartSuppressed("記憶體音訊在起播前被抑制。")
             self._mixer.music.play()
@@ -125,8 +128,10 @@ class FfplayPcmAudioPlayer:
     # 省略 ffplay_path 代表「自動找」,明確傳 None 代表「沒有播放器」。兩者共用
     # 同一個預設值時,呼叫端無法表達後者,is_available() 永遠是系統裝了什麼說了算。
     AUTO_DISCOVER = object()
-    # ponytail: 固定 5 秒,若未來需要依裝置/佇列長度動態調整再拆成參數。
+    # 收尾等待的下限;實際逾時 = max(下限, 尚未播完的音訊長度 + 緩衝)。固定 5 秒時,
+    # PCM 比即時更快送完的長回覆(例如 28 秒的新聞語音)尾段會被強制終止而截斷。
     _PROCESS_EXIT_TIMEOUT_SECONDS = 5.0
+    _EXIT_TIMEOUT_MARGIN_SECONDS = 2.0
 
     def __init__(
         self,
@@ -142,6 +147,11 @@ class FfplayPcmAudioPlayer:
 
     def is_available(self) -> bool:
         return bool(self._ffplay_path)
+
+    def _exit_timeout(self, bytes_written: int, started_at: float | None) -> float:
+        audio_seconds = bytes_written / (self._sample_rate * self._channels * 2)  # s16le = 2 bytes/sample
+        remaining = audio_seconds - (time.monotonic() - started_at) if started_at is not None else 0.0
+        return max(self._PROCESS_EXIT_TIMEOUT_SECONDS, remaining + self._EXIT_TIMEOUT_MARGIN_SECONDS)
 
     def play_chunks(self, chunks: Iterable[bytes], before_start=None) -> int:
         if not self._ffplay_path:
@@ -169,6 +179,7 @@ class FfplayPcmAudioPlayer:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         bytes_written = 0
+        started_at: float | None = None
         try:
             if process.stdin is None:
                 raise RuntimeError("ffplay stdin 不可用。")
@@ -180,6 +191,7 @@ class FfplayPcmAudioPlayer:
                     started = True
                     if callable(before_start) and before_start() is False:
                         raise PlaybackStartSuppressed("PCM 音訊在起播前被抑制。")
+                    started_at = time.monotonic()
                 process.stdin.write(chunk)
                 process.stdin.flush()
                 bytes_written += len(chunk)
@@ -194,7 +206,7 @@ class FfplayPcmAudioPlayer:
             # 第三條獨立路徑,和音訊內容本身無關。逾時後強制 kill,寧可截斷
             # 尾音也不要整條收尾鏈路卡死。
             try:
-                process.wait(timeout=self._PROCESS_EXIT_TIMEOUT_SECONDS)
+                process.wait(timeout=self._exit_timeout(bytes_written, started_at))
             except subprocess.TimeoutExpired:
                 LOGGER.warning("[ECHOES] ffplay 逾時未退出,強制終止。")
                 process.kill()

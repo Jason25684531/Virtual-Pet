@@ -18,8 +18,13 @@ def load_keywords(path: str | Path) -> frozenset[str]:
     """讀不到（尚未灌庫）時回傳空集合——閘門會判定一律不需要檢索，安全降級。"""
     try:
         return frozenset(json.loads(Path(path).read_text(encoding="utf-8")))
+    except FileNotFoundError:
+        # 尚未灌庫是預期狀態(知識 RAG 維持關閉),不是錯誤;每次啟動一筆 ERROR 只會蓋掉真正的錯誤。
+        LOGGER.info("knowledge keywords sidecar not found at %s; knowledge retrieval stays off until ingested", path)
+        return frozenset()
     except Exception:
-        LOGGER.error("knowledge keywords sidecar unavailable at %s; retrieval gate defaults to closed", path)
+        # 檔案存在但讀不了(毀損、權限):這才是需要注意的錯誤。
+        LOGGER.error("knowledge keywords sidecar unreadable at %s; retrieval gate defaults to closed", path, exc_info=True)
         return frozenset()
 
 

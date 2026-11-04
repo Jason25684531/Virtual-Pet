@@ -1,5 +1,6 @@
 """Browser-level checks for the confirmed CAC UX public interaction seams."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -25,15 +26,16 @@ def page():
             window.QWebChannel = function (_, ready) {
               var ok = function (data) { return JSON.stringify({ok: true, data: data}); };
               ready({objects: {
-                harnessBridge: {setDragEnabled: function () {}, beginWindowDrag: function () { window.__drag_calls = (window.__drag_calls || 0) + 1; }, refreshState: function () {}, toggleSkill: function () { window.__skill_toggles = (window.__skill_toggles || 0) + 1; }, sendText: function () {}, toggleStt: function () {}, triggerQuickIntent: function () {}, triggerOverlayAction: function (action) { window.__overlay_action = action; }, update_hit_regions: function (payload) { window.__hit_regions = JSON.parse(payload); }},
+                harnessBridge: {setDragEnabled: function () {}, beginWindowDrag: function () { window.__drag_calls = (window.__drag_calls || 0) + 1; }, refreshState: function () {}, toggleSkill: function () { window.__skill_toggles = (window.__skill_toggles || 0) + 1; }, sendText: function (t) { window.__sent_text = t; }, sayText: function (u, r) { window.__said = [u, r]; }, toggleStt: function () {}, triggerQuickIntent: function () {}, triggerOverlayAction: function (action) { window.__overlay_action = action; }, update_hit_regions: function (payload) { window.__hit_regions = JSON.parse(payload); }},
                 characterBridge: {
                   listCharacters: function (done) { done(ok([])); },
-                  listPresets: function (done) { done(ok([{character_id: 'miku', name: 'Miku', persona_description: 'Virtual singer'}])); },
+                  listPresets: function (done) { done(ok(window.__presets || [{character_id: 'miku', name: 'Miku', persona_description: 'Virtual singer'}])); },
                   createFromPreset: function (_, __, done) { done(ok({})); },
+                  pickCharacterImage: function (done) { done(ok({image_path: 'C:/test/avatar.png', preview_url: 'file:///C:/test/avatar.png'})); },
                   getActiveState: function (done) { done(ok(Object.assign({active: true, character_id: 'miku', xp: {xp_total: 72, level: 2}}, window.__activeStateExtra || {}))); },
                   listStyleVariants: function (_, done) { done(ok([{variant: 'og', state: 'ready', thumb: '', is_active: true}, {variant: 'event', state: 'generating', thumb: 'preview.png', is_active: false}, {variant: 'development', state: 'ready', thumb: '', is_active: false}])); },
                   applyStyle: function (_, variant, done) { window.__applied_style = variant; done(ok({})); },
-                  confirmGrowthOffer: function (_, __, done) { done(ok({accepted: window.__growthAccepted !== false})); },
+                  confirmGrowthOffer: function (characterId, _, done) { window.__growthCharacterId = characterId; done(ok({accepted: window.__growthAccepted !== false})); },
                   confirmMotionGeneration: function (_, accept, done) { window.__motion_confirm = accept; done(ok({accepted: true})); },
                   listSceneBackgrounds: function (_, done) { done(ok(window.__sceneBackgrounds || [])); },
                   applyScene: function (_, sceneId, done) { window.__applied_scene = sceneId; done(ok({})); },
@@ -43,7 +45,8 @@ def page():
             };
             """
         )
-        page.goto((Path(__file__).parents[1] / "ui" / "web_container" / "index.html").resolve().as_uri())
+        root = Path(os.environ.get("ECHOES_UI_TEST_ROOT", Path(__file__).parents[1]))
+        page.goto((root / "ui" / "web_container" / "index.html").resolve().as_uri())
         yield page
         browser.close()
 
@@ -89,6 +92,17 @@ def test_user_can_create_a_companion_then_switch_between_one_hud_at_a_time(page)
     assert not page.locator("#modal-close-confirm").is_visible()
 
 
+def test_custom_upload_shows_a_thumbnail_preview(page):
+    page.locator("#menu-create-button").click()
+    page.locator("#customize-tab-button").click()
+    page.locator("label[for='preset-customize-file']").click()
+
+    preview = page.locator("label[for='preset-customize-file'] img")
+    assert preview.is_visible()
+    assert preview.get_attribute("src") == "file:///C:/test/avatar.png"
+    assert page.locator("label[for='preset-customize-file'] b").inner_text() == "avatar.png"
+
+
 def test_render_activity_badge_is_available_without_progress_overlay(page):
     page.evaluate("""
         document.querySelector('#stage-root').hidden = false;
@@ -118,6 +132,17 @@ def test_hydrate_opens_pending_offer_without_hud_polling(page):
     )
 
     assert page.locator("#modal-growth-offer").is_visible()
+
+
+def test_pending_offer_confirmation_uses_hydrated_active_character(page):
+    page.evaluate("window.__growthAccepted = true")
+    page.evaluate(
+        "window.hydrateAgenticUI({state: {active: true, character_id: 'char-omni', pending_offer: {variant: 'event', reason: 'shortcut_f'}}})"
+    )
+
+    page.locator("#growth-offer-accept").click()
+
+    assert page.evaluate("window.__growthCharacterId") == "char-omni"
 
 
 def test_pending_offer_does_not_reenter_an_open_modal(page):
@@ -206,7 +231,7 @@ def test_screens_are_centered_isolate_the_stage_and_offer_a_drag_surface(page):
     preview = page.locator("#screen-main-menu .menu-screen__preview-card").bounding_box()
     assert abs(actions["x"] + actions["width"] / 2 - VIEWPORT["width"] * 0.19) <= 1
     assert abs(preview["x"] + preview["width"] / 2 - CENTER_X) <= 1
-    assert abs(preview["y"] + preview["height"] / 2 - VIEWPORT["height"] * 0.58) <= 1
+    assert abs(preview["y"] + preview["height"] / 2 - VIEWPORT["height"] * 0.45) <= 1
     assert page.locator("#screen-main-menu .menu-screen__actions").evaluate(
         "element => getComputedStyle(element).position"
     ) == "absolute"
@@ -362,6 +387,19 @@ def test_stage_keeps_the_background_clean_and_the_character_at_its_native_size(p
     assert (char["width"], char["height"]) == (VIEWPORT["width"], VIEWPORT["height"])
 
 
+def test_lively_mode_hides_room_image_and_keeps_the_stage_transparent(page):
+    _enter_companion_stage(page)
+    page.evaluate("window.setExternalBackgroundMode(true)")
+
+    assert page.locator("#stage-background").is_hidden()
+    for selector in ("html", "body", "#stage-root", "#stage-pet-layer"):
+        assert page.locator(selector).evaluate(
+            "e => getComputedStyle(e).backgroundColor"
+        ) == "rgba(0, 0, 0, 0)"
+    assert page.locator("#companion-nav").is_visible()
+    assert page.locator("#pet-character").is_visible()
+
+
 def test_companion_stage_offers_a_way_back_to_the_main_menu(page):
     _enter_companion_stage(page)
 
@@ -509,3 +547,75 @@ def test_agent_chips_have_a_toggle_for_the_highest_priority_matching_skill(page)
 
     music_toggle.click()
     assert page.evaluate("window.__skill_toggles") == 1
+
+
+def _open_chat(page):
+    page.locator("#menu-create-button").click()
+    page.locator("#preset-select-button").click()
+    page.locator("#name-character-confirm").click()
+    page.wait_for_timeout(1000)
+    page.locator('[data-hud="hud-chat"]').click()
+
+
+def test_chat_quick_tags_send_text_or_say_fixed_reply(page):
+    _open_chat(page)
+    tags = page.locator("#chat-quick-tags button")
+    assert tags.all_inner_texts() == ["播放輕鬆的音樂", "可愛的居家裝飾推薦", "遊戲攻略介紹", "遊戲新聞"]
+
+    tags.nth(0).click()
+    assert page.evaluate("window.__sent_text") == "can you play some relaxing music?"
+    tags.nth(3).click()
+    assert page.evaluate("window.__sent_text") == "can you tell me some game news?"
+
+    tags.nth(2).click()
+    user_text, reply = page.evaluate("window.__said")
+    assert user_text == "遊戲攻略介紹"
+    assert reply.startswith("《艾爾登法環》是一款開放世界動作角色扮演遊戲。")
+
+
+def test_preset_preview_swaps_idle_video_per_character_and_hides_when_missing(page):
+    page.evaluate(
+        """window.__presets = [
+          {character_id: 'a', name: 'A', idle_motion: 'assets/characters/a/idle.webm'},
+          {character_id: 'b', name: 'B', idle_motion: 'assets/characters/b/idle.webm'},
+          {character_id: 'c', name: 'C', idle_motion: ''}]"""
+    )
+    page.locator("#menu-create-button").click()
+    video = page.locator("#preset-portrait-video")
+    page.wait_for_timeout(300)
+    assert video.is_visible()
+    assert video.get_attribute("src").endswith("assets/characters/a/idle.webm")
+
+    page.locator("#preset-carousel-next").click()
+    assert video.get_attribute("src").endswith("assets/characters/b/idle.webm")
+
+    page.locator("#preset-carousel-next").click()
+    assert not video.is_visible()
+    assert video.get_attribute("src") is None
+
+    page.locator("#preset-carousel-next").click()
+    assert video.is_visible()
+    assert video.get_attribute("src").endswith("assets/characters/a/idle.webm")
+
+
+def test_preset_preview_stops_when_leaving_create_screen(page):
+    page.evaluate("window.__presets = [{character_id: 'a', name: 'A', idle_motion: 'assets/characters/a/idle.webm'}]")
+    page.locator("#menu-create-button").click()
+    page.wait_for_timeout(300)
+    assert page.locator("#preset-portrait-video").get_attribute("src")
+
+    page.locator('#screen-create-character [data-screen="screen-main-menu"]').click()
+    assert page.locator("#preset-portrait-video").get_attribute("src") is None
+
+
+def test_preset_preview_stops_when_entering_companion_stage(page):
+    page.evaluate("window.__presets = [{character_id: 'a', name: 'A', idle_motion: 'assets/characters/a/idle.webm'}]")
+    page.locator("#menu-create-button").click()
+    page.wait_for_timeout(300)
+    assert page.locator("#preset-portrait-video").get_attribute("src")
+
+    page.locator("#preset-select-button").click()
+    page.locator("#name-character-confirm").click()
+    page.wait_for_timeout(1200)
+    assert page.locator("#companion-nav").is_visible()
+    assert page.locator("#preset-portrait-video").get_attribute("src") is None

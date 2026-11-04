@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from typing import Callable
 
@@ -7,6 +8,8 @@ from pet_harness.memory.memory_models import RetrievalCandidate, RetrievalReques
 from pet_harness.memory.query_rewriter import FollowUpDetector
 from pet_harness.memory.result_policy import ResultPolicy
 from pet_harness.memory.reranker import Reranker
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ContextualMemoryRetriever:
@@ -89,4 +92,12 @@ class ContextualMemoryRetriever:
 
     def warmup(self, character_id: str) -> RetrievalResult:
         """Exercise the real read path without inserting synthetic memory."""
+        # 「記憶預熱」這個查詢常沒有候選,rerank 會被跳過;不在這裡載入的話,
+        # 首輪真實查詢要多付約 1.4 秒的重排序模型載入(實測 retrieval_ms 1812 vs 111)。
+        warm = getattr(self.reranker, "warmup", None)
+        if callable(warm):
+            try:
+                warm()
+            except Exception:  # noqa: BLE001 - 失敗回落成首輪惰性載入
+                LOGGER.warning("[MEMORY WARMUP] reranker warmup failed", exc_info=True)
         return self.retrieve(RetrievalRequest(character_id, "記憶預熱"))

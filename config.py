@@ -10,20 +10,43 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-try:
-    from dotenv import load_dotenv
-except ModuleNotFoundError:  # pragma: no cover - 允許在依賴尚未安裝時安全匯入
-    def load_dotenv(*_args, **_kwargs):  # type: ignore[override]
-        return False
-
+import secure_env
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-ENV_PATH = PROJECT_ROOT / ".env"
-load_dotenv(ENV_PATH, override=False)
+# Release 把設定放在 config/.env（首次啟動會被加密成 .env.secure）；開發機沿用根目錄 .env。
+ENV_PATH = secure_env.resolve(PROJECT_ROOT)
+from credential_lifecycle import CredentialLifecycle
+CREDENTIAL_LIFECYCLE = CredentialLifecycle(PROJECT_ROOT) if os.name == "nt" and ENV_PATH.parent.name == "config" else None
+_env_text = CREDENTIAL_LIFECYCLE.import_environment() if CREDENTIAL_LIFECYCLE else secure_env.read_text(ENV_PATH)
+if _env_text:
+    try:
+        import io
+
+        from dotenv import dotenv_values
+
+        for _key, _value in dotenv_values(stream=io.StringIO(_env_text)).items():
+            if _value is not None:
+                if CREDENTIAL_LIFECYCLE and _key not in os.environ:
+                    CREDENTIAL_LIFECYCLE.track_injected(_key, _value)
+                os.environ.setdefault(_key, _value)  # 與原 load_dotenv(override=False) 相同：環境變數優先
+    except ModuleNotFoundError:  # pragma: no cover - 允許在依賴尚未安裝時安全匯入
+        pass
+
+_env_text = None
+_value = None
+
+# Release 內附 models/ 與 ms-playwright/ 時預設使用它們並禁止下載；環境變數與 .env 仍可覆寫（setdefault）。
+BUNDLED_MODELS_DIR = PROJECT_ROOT / "models"
+if BUNDLED_MODELS_DIR.is_dir():
+    os.environ.setdefault("FASTEMBED_CACHE_PATH", str(BUNDLED_MODELS_DIR / "fastembed"))
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+if (PROJECT_ROOT / "ms-playwright").is_dir():
+    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(PROJECT_ROOT / "ms-playwright"))
+_MODEL_ROOT = BUNDLED_MODELS_DIR if BUNDLED_MODELS_DIR.is_dir() else PROJECT_ROOT / "runtime_cache"
 
 DEFAULT_PERSONA_KEY = "default"
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
-DEFAULT_OLLAMA_MODEL = "gemma3:12b-it-qat"
+DEFAULT_OLLAMA_MODEL = "gemma3:12b"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_ELEVENLABS_VOICE_ID = "zENt0ljwLXypGqHDsdzz"
 DEFAULT_TTS_MODEL_ID = "eleven_flash_v2_5"
@@ -60,7 +83,7 @@ DEFAULT_CHARACTER_IDS: tuple[str, ...] = (
     "char-ROG",
 )
 
-#如果要換Voice ID這裡可以改咬
+#如果要換Evanlab_sVoice ID這裡可以改咬
 BUILTIN_CHARACTER_ELEVENLABS_VOICE_IDS: dict[str, str] = {
     "char-Adol": "fUjY9K2nAIwlALOwSiwc",
     "char-Jack": "1iu1W6qkEusxMp5pZvus",
@@ -68,7 +91,7 @@ BUILTIN_CHARACTER_ELEVENLABS_VOICE_IDS: dict[str, str] = {
     "char-Nico": "cNYrMw9glwJZXR8RwbuR",
     "char-Luke": "h5eZa8VFAq0EQ8E81dfL",
     "char-ROG": "RoUNDCtoHQPMwQQoROwA",
-    "char-Omni": "pekFz6QhW6VUmG0FJ3RV",
+    "char-omni": "pekFz6QhW6VUmG0FJ3RV",  # manifest id,不是資料夾名 char-Omni
     "char-Zenni": "2Zlm5u8veOiqFWNIOc0K",
 }
 
@@ -186,6 +209,17 @@ def _read_float_env(name: str, default: float) -> float:
         return float(default)
 
 
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "").strip() or "-1"
+
+
+def ollama_keep_alive_value() -> int | str:
+    """Ollama 的 keep_alive：整數秒(-1=常駐)要送 int,"10m" 這類 duration 才送字串;"-1" 字串會被拒。"""
+    try:
+        return int(OLLAMA_KEEP_ALIVE)
+    except ValueError:
+        return OLLAMA_KEEP_ALIVE
+
+
 POINTWISE_OLLAMA_MODEL = os.getenv("POINTWISE_OLLAMA_MODEL", "gemma3:12b-it-qat").strip() or "gemma3:12b-it-qat"
 POINTWISE_OLLAMA_BASE_URL = os.getenv("POINTWISE_OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip().rstrip("/")
 POINTWISE_OLLAMA_TIMEOUT_SEC = _read_float_env("POINTWISE_OLLAMA_TIMEOUT_SEC", 120.0)
@@ -246,6 +280,44 @@ ACTION_SYNC_TIMEOUT_MS = _read_int_env("ACTION_SYNC_TIMEOUT_MS", 6000)
 # 沒有 32000);VoAI 的 x-sample-rate 是請求參數,實測四種取樣率都正常且時長一致。
 TTS_PCM_SAMPLE_RATE = _read_int_env("TTS_PCM_SAMPLE_RATE", 24000)
 
+# char-Omni 專用本機 TTS(omni_tts_win_bundle,外部服務,不打包)。0 = 回復既有雲端鏈與快取。
+OMNI_TTS_CHARACTER_ID = "char-omni"  # manifest id;資料夾名 char-Omni 不是 runtime id
+OMNI_TTS_ENABLED = _read_bool_env("OMNI_TTS_ENABLED", True)
+_DEFAULT_OMNI_TTS_BASE_URL = "http://127.0.0.1:8760"
+
+
+def _parse_loopback_http_url(value: str) -> str | None:
+    """只接受 http://127.x.x.x|localhost:port,不含帳密/path/query/fragment;否則 None。"""
+    from urllib.parse import urlsplit
+    import ipaddress
+
+    try:
+        parts = urlsplit(value.strip())
+        port = parts.port
+    except ValueError:
+        return None
+    host = parts.hostname or ""
+    if (parts.scheme != "http" or parts.username or parts.password or parts.query
+            or parts.fragment or parts.path.strip("/") or not port):
+        return None
+    if host != "localhost":
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return None
+        if ip.version != 4 or not ip.is_loopback:
+            return None
+    return f"http://{host}:{port}"
+
+
+OMNI_TTS_BASE_URL = _parse_loopback_http_url(
+    os.getenv("OMNI_TTS_BASE_URL", "") or _DEFAULT_OMNI_TTS_BASE_URL
+) or _DEFAULT_OMNI_TTS_BASE_URL
+
+
+def is_omni_local_tts(character_id: str | None) -> bool:
+    return OMNI_TTS_ENABLED and str(character_id or "").strip() == OMNI_TTS_CHARACTER_ID
+
 # ComfyUI asset generation is opt-in; the mock service remains the safe default.
 COMFYUI_BASE_URL = os.getenv("COMFYUI_BASE_URL", "http://127.0.0.1:8188").strip().rstrip("/")
 COMFYUI_WS_URL = os.getenv("COMFYUI_WS_URL", "ws://127.0.0.1:8188").strip().rstrip("/")
@@ -253,9 +325,11 @@ COMFYUI_TIMEOUT_SEC = _read_int_env("COMFYUI_TIMEOUT_SEC", 300)
 COMFYUI_VIDEO_TIMEOUT_SEC = _read_int_env("COMFYUI_VIDEO_TIMEOUT_SEC", 900)
 COMFYUI_MAX_RETRIES = _read_int_env("COMFYUI_MAX_RETRIES", 2)
 COMFYUI_ENABLED = _read_bool_env("COMFYUI_ENABLED", False)
+# Demo PC 的 ComfyUI 安裝根目錄；workflow 內寫死的製作機路徑會被換成這裡（見 workflow_patcher）。
+COMFYUI_PATH = os.getenv("COMFYUI_PATH", "").strip()
 INTERACTION_TRIGGER_THRESHOLDS = (3, 6, 9)
 MOCK_RENDER_DURATION_SEC = _read_float_env("MOCK_RENDER_DURATION_SEC", 8.0)
-PROACTIVE_GREETING_INTERVAL_SEC = _read_float_env("PROACTIVE_GREETING_INTERVAL_SEC", 30.0)
+PROACTIVE_GREETING_INTERVAL_SEC = _read_float_env("PROACTIVE_GREETING_INTERVAL_SEC", 120.0)
 PROACTIVE_GREETING_PHRASES = (
     "我在這裡陪你喔！",
     "今天也一起加油吧！",
@@ -270,7 +344,7 @@ STT_ENABLED = _read_bool_env("STT_ENABLED", True)
 STT_MODEL = os.getenv("STT_MODEL", "large-v3-turbo").strip() or "large-v3-turbo" #Whisper Modeljjj
 STT_DEVICE = os.getenv("STT_DEVICE", "cuda").strip() or "cuda"
 STT_COMPUTE_TYPE = os.getenv("STT_COMPUTE_TYPE", "float16").strip() or "float16"
-STT_MODEL_PATH = os.getenv("STT_MODEL_PATH", str(PROJECT_ROOT / "runtime_cache" / "whisper")).strip()
+STT_MODEL_PATH = os.getenv("STT_MODEL_PATH", str(_MODEL_ROOT / "whisper")).strip()
 STT_LANGUAGE = os.getenv("STT_LANGUAGE", "").strip()  # 空字串 = auto detection
 STT_BEAM_SIZE = _read_int_env("STT_BEAM_SIZE",1) #文字精準度的判讀
 STT_SAMPLE_RATE = _read_int_env("STT_SAMPLE_RATE", 16000)
@@ -279,7 +353,10 @@ STT_MAX_RECORDING_SECONDS = _read_int_env("STT_MAX_RECORDING_SECONDS", 30)
 STT_VAD_ENABLED = _read_bool_env("STT_VAD_ENABLED", False)
 STT_VAD_SILENCE_MS = _read_int_env("STT_VAD_SILENCE_MS", 500)
 STT_VAD_THRESHOLD = _read_float_env("STT_VAD_THRESHOLD", 0.5)
+STT_VAD_MODEL_DIR = os.getenv("STT_VAD_MODEL_DIR", str(_MODEL_ROOT / "vad")).strip()
 TURN_LATENCY_BUDGET_MS = _read_int_env("TURN_LATENCY_BUDGET_MS", 3000)
+# char-omni 專用:輸入(文字送出/STT 完成)→首音。只影響告警,不改行為。
+OMNI_TURN_LATENCY_BUDGET_MS = _read_int_env("OMNI_TURN_LATENCY_BUDGET_MS", 2500)
 
 LOW_LATENCY_REPLY_POLICY = (
     "即時互動請優先用 1 句短句完成回覆，只有必要時才允許第 2 句。"
@@ -429,14 +506,16 @@ def get_voai_api_key() -> str:
     )
 
 
-def resolve_tts_runtime_mode() -> tuple[str, str | None]:
+def resolve_tts_runtime_mode(character_id: str | None = None) -> tuple[str, str | None]:
     """決定 TTS 運行時模式與原因。
 
     Returns:
         (mode, reason) tuple：
-        - mode: "voai_first" | "fallback_enabled"
+        - mode: "omni_local_only" | "voai_first" | "fallback_enabled"
         - reason: 解析原因（debug 用），e.g. "voai_api_key_available" 或 "voai_api_key_missing"
     """
+    if is_omni_local_tts(character_id):
+        return ("omni_local_only", "omni_local_enabled")
     voai_key = get_voai_api_key()
 
     if not voai_key:

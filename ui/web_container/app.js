@@ -226,6 +226,7 @@
         video.src = source;
         video.load();
         video.play().catch(function (err) {
+            if (err && err.name === 'AbortError') return;  // 緊接著又換了新的 src,舊的 play() 被中斷是預期的
             console.warn('[ECHOES] video playback failed:', err.message);
         });
     }
@@ -820,7 +821,10 @@
             var relevant = (jobs || []).filter(function (job) { return job.character_id === requestedCharacter; });
             var active = relevant.filter(function (job) { return ['queued', 'uploading', 'submitted', 'running'].indexOf(job.status) >= 0; })[0];
             var terminal = relevant[0];
-            renderActivity(active || (terminal && ['failed', 'timed_out'].indexOf(terminal.status) >= 0 ? terminal : null));
+            var freshFailure = !active && terminal && ['failed', 'timed_out'].indexOf(terminal.status) >= 0 && terminal.job_id !== lastFailedRenderJobId;
+            if (active) renderActivity(active);
+            else if (freshFailure) { lastFailedRenderJobId = terminal.job_id; renderActivity(terminal); }
+            else if (renderActivityBadge && !renderActivityBadge.classList.contains('is-failed')) renderActivity(null);
             if (active) lastNullRenderJobId = null;
             if (terminal && terminal.status === 'completed' && terminal.job_id !== lastCompletedRenderJobId) {
                 lastCompletedRenderJobId = terminal.job_id;
@@ -843,6 +847,8 @@
         screens.forEach(function (screen) { screen.hidden = screen.id !== uiRoute.screen; });
         if (appScreens) appScreens.hidden = !uiRoute.screen;
         if (stageRoot) stageRoot.hidden = Boolean(uiRoute.screen);
+        // 所有離開路徑(routeToScreen / enterCompanionStage)都經過這裡;不在選單就停掉預覽影片。
+        if (uiRoute.screen !== 'screen-create-character') playPresetIdle('');
 
         var hudLayer = document.getElementById('hud-layer');
         dockPanels.forEach(function (panel) { panel.hidden = panel.id !== uiRoute.hud; });
@@ -963,6 +969,7 @@
     var renderProgressCloseTimer = null;
     var lastCompletedRenderJobId = null;
     var lastNullRenderJobId = null;
+    var lastFailedRenderJobId = null;
 
     function refreshStyleSlots(characterId) {
         if (!characterId) return Promise.resolve();
@@ -1072,6 +1079,26 @@
 
     // ── UC02-1 Preset 聚光燈輪播 ───────────────────────────────
 
+    // 預覽用 idle.webm:src 沒變就不重載(hydrate 會重畫),缺 idle 時隱藏只剩背景。
+    // QWebEngine 對 webm 的原生 loop 不可靠(見 startMotionLoop),改在 ended 重播。
+    function playPresetIdle(path) {
+        var video = document.getElementById('preset-portrait-video');
+        if (!video) return;
+        if (!path) {
+            video.hidden = true;
+            video.pause();
+            video.removeAttribute('src');
+            return;
+        }
+        var src = normalizeProjectAssetSource(path);
+        video.hidden = false;
+        if (video.getAttribute('src') !== src) {
+            video.src = src;
+            video.onended = function () { video.currentTime = 0; video.play().catch(function () {}); };
+        }
+        video.play().catch(function () {});
+    }
+
     function renderPresetCarousel() {
         var total = presetList.length;
         var current = total ? presetList[presetIndex] : null;
@@ -1089,6 +1116,7 @@
                 : (current.persona_description || '')
         );
         if (presetPortrait) presetPortrait.style.backgroundImage = current && current.background_image ? 'url("' + normalizeProjectAssetSource(current.background_image) + '")' : '';
+        playPresetIdle(current && current.idle_motion);
         if (presetSelectButton) presetSelectButton.disabled = !current || unavailable;
 
         if (presetThumbList) {
@@ -1303,6 +1331,10 @@
                 customImagePath = result.image_path;
                 var nameEl = customUploadBox.querySelector('b');
                 if (nameEl) nameEl.textContent = customImagePath.split(/[\\/]/).pop();
+                var previewEl = customUploadBox.querySelector('img') || document.createElement('img');
+                previewEl.src = result.preview_url || customImagePath;
+                previewEl.alt = 'Uploaded character preview';
+                customUploadBox.prepend(previewEl);
             }).catch(function (err) {
                 setStatus('選擇圖片失敗：' + err.message, 'error', 4000);
             });
@@ -1475,6 +1507,36 @@
 
     // ── UC05-1 Companion Dock（Talk / Agent / Style / Scene）────
 
+    // Chat 快捷 tag:send = 當作使用者輸入(走技能路由,音樂/新聞不經 LLM 分類);
+    // say = 固定文案直接 TTS(sayText)。所有角色共用同一組。
+    var CHAT_QUICK_TAGS = [
+        { label: '播放輕鬆的音樂', mode: 'send', text: 'can you play some relaxing music?' },
+        {
+            label: '可愛的居家裝飾推薦', mode: 'say', text: '可愛的居家裝飾推薦',
+            reply: '想打造療癒又可愛的小家，可以擺上奶油色抱枕、雲朵造型小夜燈，再搭配幾盆迷你綠植。牆面掛上小幅插畫或照片，搭配木質小物與柔和燈串，整體就會變得溫暖又有生活感'
+        },
+        {
+            label: '遊戲攻略介紹', mode: 'say', text: '遊戲攻略介紹',
+            reply: '《艾爾登法環》是一款開放世界動作角色扮演遊戲。玩家探索地圖、擊敗敵人與頭目，取得裝備與符文提升角色。可自由選擇近戰、魔法或遠程玩法，並透過探索與戰鬥逐步解開世界的故事。'
+        },
+        { label: '遊戲新聞', mode: 'send', text: 'can you tell me some game news?' }
+    ];
+
+    function setupChatQuickTags() {
+        var row = document.getElementById('chat-quick-tags');
+        if (!row) return;
+        CHAT_QUICK_TAGS.forEach(function (tag) {
+            var button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = tag.label;
+            button.addEventListener('click', function () {
+                if (tag.mode === 'say') callBridge('sayText', tag.text, tag.reply);
+                else callBridge('sendText', tag.text);
+            });
+            row.appendChild(button);
+        });
+    }
+
     function sendTalkText() {
         if (!talkTextInput) return;
         var text = talkTextInput.value.trim();
@@ -1614,6 +1676,12 @@
         }
     };
 
+    // LLM 常把編號列表擠在同一行(「1. A 2. B」);同時出現「1. 」與「2. 」才視為列表,每個編號另起一行。
+    function listifyNumbered(text) {
+        if (!/(^|\D)1\.\s/.test(text) || !/\D2\.\s/.test(text)) return text;
+        return text.replace(/([^\n\d])[ \t]*(\d{1,2}\.\s)/g, '$1\n$2');
+    }
+
     window.appendConversationAssistant = function (turnId, fragment) {
         if (!turnId || !fragment) return;
         var turn = ensureConversationTurn(String(turnId), 'User');
@@ -1621,13 +1689,13 @@
             turn.assistantText.textContent = '';
             turn.assistantText.classList.remove('conversation-turn__text--muted');
         }
-        turn.assistantText.textContent += String(fragment);
+        turn.assistantText.textContent = listifyNumbered(turn.assistantText.textContent + String(fragment));
     };
 
     window.setConversationAssistant = function (turnId, message) {
         if (!turnId) return;
         var turn = ensureConversationTurn(String(turnId), 'User');
-        turn.assistantText.textContent = String(message || '') || 'No visible reply.';
+        turn.assistantText.textContent = listifyNumbered(String(message || '')) || 'No visible reply.';
         if (turn.assistantText.textContent === 'No visible reply.') {
             turn.assistantText.classList.add('conversation-turn__text--muted');
         } else {
@@ -1709,11 +1777,14 @@
         document.body.classList.toggle('external-background', Boolean(enabled));
     };
 
-    window.moveCharacter = function (x, y, scale) {
+    window.moveCharacter = function (x, y, scale, originY) {
         document.documentElement.style.setProperty('--pet-anchor-shift', Number(x || 0) + 'px');
         document.documentElement.style.setProperty('--pet-floor-offset', Number(y || 0) + 'px');
         if (scale != null) {
             document.documentElement.style.setProperty('--pet-scale', String(scale));
+        }
+        if (originY != null) {
+            document.documentElement.style.setProperty('--pet-scale-origin-y', (Number(originY) * 100) + '%');
         }
     };
 
@@ -1723,6 +1794,12 @@
 
     window.setActionStatus = function (message, tone, timeoutMs) {
         setStatus(message, tone, Number(timeoutMs) || 0);
+    };
+
+    window.setCredentialStatus = function (message) {
+        var notice = document.getElementById('credential-notice');
+        notice.textContent = message || '';
+        notice.hidden = !message;
     };
 
     window.clearActionStatus = function () {
@@ -1766,7 +1843,7 @@
         panelVideo.load();
         panelVideo.style.display = 'block';
         panelVideo.play().catch(function (err) {
-            if (requestGeneration !== panelVideoGeneration) return;
+            if (requestGeneration !== panelVideoGeneration || (err && err.name === 'AbortError')) return;
             console.warn('[ECHOES] panel video playback failed:', err.message);
         });
     };
@@ -2099,6 +2176,9 @@ function pickPrimarySkillForCapability(items, capability) {
 
     window.hydrateAgenticUI = function (payload) {
         payload = payload || {};
+        if (payload.state && payload.state.character_id) {
+            activeStyleCharacterId = payload.state.character_id;
+        }
         renderState(payload.state || null);
         renderRuntimeControls(payload.runtimeControls || null);
         renderSkills(payload.skills || []);
@@ -2142,6 +2222,7 @@ function pickPrimarySkillForCapability(items, capability) {
 
     function setupCompanionDock() {
         wirePersonaEditor();
+        setupChatQuickTags();
         dockButtons.forEach(function (button) {
             button.addEventListener('click', function () { openHud(button.dataset.hud); });
         });

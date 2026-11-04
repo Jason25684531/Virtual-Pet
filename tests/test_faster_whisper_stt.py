@@ -145,6 +145,31 @@ def test_transcribe_does_not_convert_non_chinese_text(monkeypatch):
     assert result.language == "en"
 
 
+def test_unsupported_detected_language_retranscribes_as_chinese(monkeypatch):
+    fake_model = _FakeWhisperModel("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper")
+    fake_model.segments_to_return = [_FakeSegment("你好")]
+    fake_model.info_to_return = _FakeInfo(language="ja")
+    _make_fake_module(monkeypatch, fake_model)
+
+    provider = FasterWhisperSTT("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper")
+    provider.setup()
+    provider.transcribe(np.zeros(1600, dtype=np.float32), 16000)
+
+    assert [c["language"] for c in fake_model.transcribe_calls] == [None, "zh"]
+
+
+def test_supported_detected_language_is_not_retranscribed(monkeypatch):
+    fake_model = _FakeWhisperModel("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper")
+    fake_model.info_to_return = _FakeInfo(language="en")
+    _make_fake_module(monkeypatch, fake_model)
+
+    provider = FasterWhisperSTT("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper")
+    provider.setup()
+    provider.transcribe(np.zeros(1600, dtype=np.float32), 16000)
+
+    assert len(fake_model.transcribe_calls) == 1
+
+
 def test_transcribe_trims_only_whitespace_without_rewriting(monkeypatch):
     fake_model = _FakeWhisperModel("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper")
     fake_model.segments_to_return = [_FakeSegment("  hello world  ")]
@@ -226,3 +251,34 @@ def test_register_windows_cuda_dll_directories_is_noop_off_windows(monkeypatch):
     faster_whisper_stt_module._register_windows_cuda_dll_directories()
 
     assert os.environ["PATH"] == "/existing"
+
+
+def test_warmup_runs_one_silent_zh_inference_after_load(monkeypatch):
+    fake_model = _FakeWhisperModel("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper")
+    _make_fake_module(monkeypatch, fake_model)
+
+    provider = FasterWhisperSTT("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper", warmup=True)
+    provider.setup()
+    provider.setup()  # 冪等:第二次不再暖機
+
+    assert [(c["language"], c["audio_len"]) for c in fake_model.transcribe_calls] == [("zh", 16000)]
+
+
+def test_warmup_failure_does_not_fail_setup(monkeypatch):
+    fake_model = _FakeWhisperModel("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper")
+    fake_model.should_raise = RuntimeError("cuda kernel error")
+    _make_fake_module(monkeypatch, fake_model)
+
+    provider = FasterWhisperSTT("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper", warmup=True)
+    provider.setup()
+
+    assert provider.is_ready() is True
+
+
+def test_warmup_is_off_by_default(monkeypatch):
+    fake_model = _FakeWhisperModel("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper")
+    _make_fake_module(monkeypatch, fake_model)
+
+    FasterWhisperSTT("large-v3-turbo", "cuda", "float16", "runtime_cache/whisper").setup()
+
+    assert fake_model.transcribe_calls == []

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pet_harness.engine.harness_engine import PetHarnessEngine
-from pet_harness.memory.base_memory_store import MemoryStoreStatus
 from pet_harness.memory.memory_models import MemoryItem, RetrievalResult, RetrievalTrace
 
 from tests.test_harness_per_character import harness_env  # noqa: F401

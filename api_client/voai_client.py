@@ -34,8 +34,6 @@ _DEFAULT_SPEED = 1.2
 _DEFAULT_STYLE_WEIGHT = 0.0
 _DEFAULT_BREATH_PAUSE = 0.0
 _PCM_SAMPLE_RATE = config.TTS_PCM_SAMPLE_RATE
-_DEFAULT_TRANSPORT_MODE = "http"
-_WARNED_DEPRECATED_TRANSPORT_MODES: set[str] = set()
 LOGGER = logging.getLogger(__name__)
 
 
@@ -53,17 +51,6 @@ def _classify_fast_fail(exc: Exception) -> tuple[str, str, bool]:
     if isinstance(exc, requests.ConnectionError):
         return "connection_error", "VoAI connection failed before playback", True
     return "request_error", str(exc), False
-
-
-def _normalize_transport_mode(value: str | None) -> str:
-    normalized = str(value or "").strip().lower()
-    if normalized and normalized != "http" and normalized not in _WARNED_DEPRECATED_TRANSPORT_MODES:
-        _WARNED_DEPRECATED_TRANSPORT_MODES.add(normalized)
-        LOGGER.warning(
-            "[ECHOES] 提示: "
-            f"VOAI_TRANSPORT_MODE={normalized} 已棄用，VoAI 目前固定走文件化 HTTP PCM 主路徑。"
-        )
-    return _DEFAULT_TRANSPORT_MODE
 
 
 class VoAIStreamingTTSWorker(QThread):
@@ -86,8 +73,6 @@ class VoAIStreamingTTSWorker(QThread):
         *,
         requests_post=None,
         pcm_player_factory=None,
-        transport_mode: str | None = None,
-        transport_session_factory=None,
     ):
         super().__init__(parent)
         self._text = str(request.text or "").strip()
@@ -99,13 +84,23 @@ class VoAIStreamingTTSWorker(QThread):
             lambda: FfplayPcmAudioPlayer(sample_rate=_PCM_SAMPLE_RATE, channels=1)
         )
         self._playback_guard = request.playback_guard
-        self._transport_mode = _normalize_transport_mode(
-            transport_mode or os.getenv("VOAI_TRANSPORT_MODE", _DEFAULT_TRANSPORT_MODE)
-        )
-        self._transport_session_factory = transport_session_factory
         self._pcm_stream_sink = request.pcm_stream_sink
 
+    def _credentials_available(self) -> bool:
+        from credential_lifecycle import CredentialError, require_usable
+        try:
+            for name in ("VOAI_API_KEY", "VoAI_API_KEY", "VOAI_TOKEN"):
+                require_usable(name)
+        except CredentialError as exc:
+            self.finished_signal.emit(False, "金鑰已到期或不可用，請重新建立 config/.env 並重啟。",
+                                      self._build_fast_fail_payload(stage="credentials", reason_code=str(exc), detail=str(exc),
+                                                                    audio_format="", transport=""))
+            return False
+        return True
+
     def run(self):
+        if not self._credentials_available():
+            return
         if not self._text:
             self.finished_signal.emit(False, "略過 VoAI TTS：沒有可朗讀的文字。", self._build_result_payload())
             return
@@ -136,7 +131,8 @@ class VoAIStreamingTTSWorker(QThread):
                 return
             LOGGER.warning("[ECHOES] VoAI PCM 串流不可用，改用 MP3 fallback。%s", fallback_reason)
 
-        self._run_mp3_fallback(api_key, payload)
+        if self._credentials_available():
+            self._run_mp3_fallback(api_key, payload)
 
     def _build_payload(self, voice_cfg: dict) -> dict:
         return {

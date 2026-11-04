@@ -39,7 +39,7 @@ def test_mock_interaction_thresholds_and_reset(tmp_path, monkeypatch):
     monkeypatch.setattr("config.COMFYUI_ENABLED", False)
     store = SQLiteStore(tmp_path / "state.db")
     store.initialize()
-    growth = GrowthTriggerService(store, object(), "pet", 6, 3)
+    growth = GrowthTriggerService(store, "pet", 6, 3)
 
     offers = []
     for count in range(1, 10):
@@ -62,7 +62,7 @@ def test_mock_interaction_milestone_defers_until_offer_slot_is_free(tmp_path, mo
     monkeypatch.setattr("config.COMFYUI_ENABLED", False)
     store = SQLiteStore(tmp_path / "state.db")
     store.initialize()
-    growth = GrowthTriggerService(store, object(), "pet", 6, 3)
+    growth = GrowthTriggerService(store, "pet", 6, 3)
     store.set_setting("interaction_count", 2)
     store.set_setting("asset_pending_offer", {"busy": True})
 
@@ -78,7 +78,7 @@ def test_mock_interaction_thresholds_name_the_prebuilt_variant_directories(tmp_p
     monkeypatch.setattr("config.COMFYUI_ENABLED", False)
     store = SQLiteStore(tmp_path / "state.db")
     store.initialize()
-    growth = GrowthTriggerService(store, object(), "char-Adol", 6, 3)
+    growth = GrowthTriggerService(store, "char-Adol", 6, 3)
 
     offers = []
     for count in range(1, 7):
@@ -280,13 +280,12 @@ def test_preset_characters_have_all_unlockable_motion_sets():
             assert (root / character / "motions" / variant / "idle.webm").is_file()
 
 
-def test_proactive_greeter_round_robin_and_busy_skip():
+def test_proactive_greeter_round_robin_and_busy_skip(qt_app):
     pytest.importorskip("PyQt5")
-    from PyQt5.QtCore import QCoreApplication
 
     from ui.proactive_greeter import ProactiveGreeter
 
-    app = QCoreApplication.instance() or QCoreApplication([])
+    app = qt_app
     spoken = []
     busy = [True]
     greeter = ProactiveGreeter(spoken.append, lambda: busy[0], ["a", "b", "c"], 30)
@@ -303,14 +302,13 @@ def test_proactive_greeter_round_robin_and_busy_skip():
     app.processEvents()
 
 
-def test_proactive_greeter_reset_restarts_full_t_plus_interval():
+def test_proactive_greeter_reset_restarts_full_t_plus_interval(qt_app):
     pytest.importorskip("PyQt5")
-    from PyQt5.QtCore import QCoreApplication
     from PyQt5.QtTest import QTest
 
     from ui.proactive_greeter import ProactiveGreeter
 
-    app = QCoreApplication.instance() or QCoreApplication([])
+    app = qt_app
     greeter = ProactiveGreeter(lambda _message: None, lambda: False, ["hello"], 0.2)
     greeter.start()
     QTest.qWait(80)
@@ -357,14 +355,13 @@ def test_proactive_greeting_only_runs_on_character_stage():
     coordinator.interrupt_all.assert_called_once()
 
 
-def test_transparent_window_wires_busy_property_as_callback(monkeypatch):
+def test_transparent_window_wires_busy_property_as_callback(monkeypatch, qt_app):
     pytest.importorskip("PyQt5")
-    from PyQt5.QtWidgets import QApplication
 
     import ui.transparent_window as window_module
     from ui.transparent_window import TransparentWindow
 
-    app = QApplication.instance() or QApplication([])
+    app = qt_app
     captured = {}
 
     class FakeGreeter:

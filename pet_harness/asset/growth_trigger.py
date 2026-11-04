@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from pet_harness.asset.asset_contract import GrowthOffer
-from pet_harness.asset.service import AssetService
 from pet_harness.storage.sqlite_store import SQLiteStore
 
 
@@ -24,9 +23,8 @@ def is_generation_frozen(store: SQLiteStore, ttl_hours: float) -> bool:
 
 
 class GrowthTriggerService:
-    def __init__(self, store: SQLiteStore, asset_service: AssetService, character_id: str, xp_per_level: int, event_interval_minutes: float) -> None:
+    def __init__(self, store: SQLiteStore, character_id: str, xp_per_level: int, event_interval_minutes: float) -> None:
         self._store = store
-        self._asset_service = asset_service
         self._character_id = character_id
         self._xp_per_level = max(1, xp_per_level)
         self._event_interval = timedelta(minutes=event_interval_minutes)

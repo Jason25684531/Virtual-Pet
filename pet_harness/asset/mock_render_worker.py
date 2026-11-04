@@ -38,6 +38,21 @@ class MockRenderWorker:
         thread.start()
         return thread
 
+    @staticmethod
+    def cancel_orphaned_jobs(store: SQLiteStore, character_id: str) -> None:
+        """Mock 渲染只活在本行程的 daemon thread;程式中途關閉後 DB 殘留的進行中列不會再有人推進,改標 cancelled。"""
+        alive = {thread.name for thread in threading.enumerate()}
+        orphans = [
+            job for job in store.list_asset_jobs(character_id)
+            if str(job["job_id"]).startswith("mock-")
+            and job["status"] in {"queued", "uploading", "submitted", "running"}
+            and f"mock-render-{job['job_id']}" not in alive
+        ]
+        for job in orphans:
+            store.update_asset_job_status(job["job_id"], JobStatus.CANCELLED.value, error_code="orphaned", error_message="render interrupted", stage="cancelled")
+        if orphans:
+            store.set_setting("asset_generation_freeze", None)
+
     def cancel(self) -> None:
         with self._lock:
             jobs = list(self._events.items())

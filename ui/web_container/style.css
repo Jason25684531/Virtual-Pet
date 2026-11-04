@@ -9,6 +9,23 @@
    --stage-scale: 1;
 }
 
+.credential-notice {
+  position: fixed;
+  z-index: 1000;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 32px);
+  padding: 12px 18px;
+  border: 1px solid #d9aa62;
+  border-radius: 10px;
+  background: rgba(24, 24, 27, .96);
+  color: #fff0d4;
+  font-size: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
 * {
    box-sizing: border-box;
 }
@@ -105,6 +122,7 @@ button:disabled {
    border: 0;
    background: transparent;
    transform: translate(var(--pet-anchor-shift, 0px), calc(-1 * var(--pet-floor-offset, 0px))) scale(var(--pet-scale, 1));
+   transform-origin: center var(--pet-scale-origin-y, 50%);
    pointer-events: auto;
 }
 
@@ -592,6 +610,17 @@ button:disabled {
    border: 1px solid var(--line);
    border-radius: 28px;
    background: #151515 center / cover no-repeat;
+   overflow: hidden;
+}
+
+/* idle.webm 是 1920x1080 透明全幅:contain 完整顯示不裁切,空白處透出底層背景圖 */
+.preset-portrait video {
+   width: 100%;
+   height: 100%;
+   object-fit: contain;
+   /* object-position: 50% 20%; */
+   transform: scale(0.75);          /* 1 = 原大小，越小越小 */
+   transform-origin: 50% 50%;     /* 縮放的錨點 */
 }
 
 .counter-pill {
@@ -699,6 +728,13 @@ button:disabled {
 
 .upload-box small {
    color: #71717a;
+}
+
+.upload-box img {
+   width: 72px;
+   height: 72px;
+   object-fit: cover;
+   border-radius: 12px;
 }
 
 .customize-preview {
@@ -976,6 +1012,7 @@ button:disabled {
 .conversation-turn__text {
    margin: 0;
    line-height: 1.55;
+   white-space: pre-line;
 }
 
 .conversation-turn__text--muted {
@@ -1034,6 +1071,16 @@ button:disabled {
    background: rgba(255, 255, 255, .05);
    color: rgba(255, 255, 255, .82);
    padding: 9px 14px;
+}
+
+.chat-quick-tags {
+   gap: 8px;
+   margin: 10px 0 0;
+}
+
+.chat-quick-tags button {
+   padding: 6px 12px;
+   font-size: 13px;
 }
 
 .agent-result {

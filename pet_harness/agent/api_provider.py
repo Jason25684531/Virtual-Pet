@@ -6,6 +6,7 @@ from threading import Event
 from typing import Any, Callable, Iterator
 
 import requests
+from credential_lifecycle import CredentialError, require_usable
 
 from pet_harness.agent.provider_adapter import LLMProviderAdapter, ProviderReply
 from pet_harness.models.events import UserEvent
@@ -34,6 +35,11 @@ class APIProvider(LLMProviderAdapter):
         prompt_text: str | None = None,
     ) -> ProviderReply:
         prompt_text = prompt_text or event.text
+        try:
+            require_usable(self.config.api_key_env_var or "API_KEY")
+        except CredentialError as exc:
+            return self._fallback_reply(event=event, matched_skill=matched_skill, prompt_text=prompt_text, error_category=str(exc),
+                                        message="金鑰已到期或不可用，請重新建立 config/.env 並重啟。")
         api_key = os.getenv(self.config.api_key_env_var or "")
         if self.config.api_key_env_var and not api_key:
             return self._fallback_reply(
@@ -150,6 +156,10 @@ class APIProvider(LLMProviderAdapter):
         Returns None (not raise) on any setup failure — the harness engine falls back to the
         blocking generate_reply() path when this happens, per the LLMProviderAdapter protocol."""
         prompt = prompt_text or event.text
+        try:
+            require_usable(self.config.api_key_env_var or "API_KEY")
+        except CredentialError:
+            return None
         api_key = os.getenv(self.config.api_key_env_var or "")
         if self.config.api_key_env_var and not api_key:
             return None

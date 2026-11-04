@@ -1,51 +1,41 @@
 from __future__ import annotations
 
 import json
-import os
+import logging
+import time
 from threading import Event
 from typing import Any, Callable, Iterator
 
 import requests
 
+import config
+from pet_harness.latency import get_turn
 from pet_harness.agent.provider_adapter import LLMProviderAdapter, ProviderReply
 from pet_harness.models.events import UserEvent
 from pet_harness.models.provider import ProviderConfig, ProviderStatus, ProviderType
 from pet_harness.models.skill import Skill
 
-
-# 模型駐留 VRAM 時長;Ollama 預設 5m,閒置後下一輪要重付冷載入(gemma3:12b 實測 60s+)。
-_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
-# 上下文上限:prompt 實測 ~4.3k 字元,預設載到 131k 的 KV cache 只會拖慢載入與推理。
-# 注意:所有請求(含 warmup)必須用同一個 num_ctx,不同值會觸發 Ollama 重載模型。
-_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
+LOGGER = logging.getLogger(__name__)
+# 共用連線池:每輪都 requests.request() 會重新建立 TCP 連線(與 voai_client / api_provider 相同做法)。
+_SESSION = requests.Session()
 
 
 class OllamaProvider(LLMProviderAdapter):
+    def _payload(self, prompt: str, *, stream: bool) -> dict[str, Any]:
+        # 串流與非串流必須送同一組 format/options;串流漏帶 format 時回覆不受 JSON 約束,
+        # result parser 會落到 fallback(log 的 invalid_json raw_length=0)。
+        payload = {"model": self.config.model_name, "prompt": prompt, "stream": stream, "keep_alive": config.ollama_keep_alive_value()}
+        payload.update({key: self.config.metadata[key] for key in ("format", "options") if key in self.config.metadata})
+        return payload
+
+    def _http_error(self, status_code: int) -> str:
+        if status_code == 404:  # Ollama 對不存在的模型回 404
+            return f"Ollama returned status 404: model '{self.config.model_name}' not found (run: ollama pull {self.config.model_name})."
+        return f"Ollama returned status {status_code}."
+
     def __init__(self, config: ProviderConfig, request_fn: Callable[..., Any] | None = None) -> None:
         self.config = config
         self.request_fn = request_fn or self._default_request
-
-    def warmup(self) -> bool:
-        """啟動時預載模型並用長 prompt 預熱 prefill kernel。
-
-        冷載入實測 30s+;首次大 prompt 的 GPU kernel 編譯另需 20s+,兩者都在
-        背景啟動時付掉,首輪對話才守得住延遲預算(app prompt 約 4.3k 字元)。"""
-        base_url = self.config.base_url or "http://localhost:11434"
-        try:
-            response = self.request_fn(
-                "POST",
-                f"{base_url}/api/generate",
-                timeout=300,
-                json={
-                    "model": self.config.model_name,
-                    "prompt": "暖機用的長輸入。" * 500,
-                    "keep_alive": _KEEP_ALIVE,
-                    "options": {"num_ctx": _NUM_CTX, "num_predict": 1},
-                },
-            )
-            return getattr(response, "status_code", 500) < 400
-        except Exception:  # noqa: BLE001 - 暖機失敗不擋啟動
-            return False
 
     def generate_reply(
         self,
@@ -56,24 +46,16 @@ class OllamaProvider(LLMProviderAdapter):
         base_url = self.config.base_url or "http://localhost:11434" # IP Calling
         prompt = prompt_text or event.text
         try:
-            payload = {
-                "model": self.config.model_name,
-                "prompt": prompt,
-                "stream": False,
-                "keep_alive": _KEEP_ALIVE,
-                "options": {"num_ctx": _NUM_CTX},
-            }
-            payload.update({key: self.config.metadata[key] for key in ("format", "options") if key in self.config.metadata})
             response = self.request_fn(
                 "POST",
                 f"{base_url}/api/generate",
                 timeout=self.config.timeout_seconds,
-                json=payload,
+                json=self._payload(prompt, stream=False),
             )
             if getattr(response, "status_code", 500) >= 400:
                 return self._unavailable_reply(
                     prompt, "ollama_http_error",
-                    f"Ollama returned status {response.status_code}.",
+                    self._http_error(response.status_code),
                 )
             payload = response.json()
         except Exception as exc:  # noqa: BLE001 - fail-closed,不偽造回覆
@@ -96,6 +78,29 @@ class OllamaProvider(LLMProviderAdapter):
             prompt_text=prompt,
         )
 
+    def preload(self, prompt: str | None = None) -> bool:
+        """不帶 prompt 只載入模型;帶 prompt(角色的固定前段)時只生 1 token,讓 KV cache 先存好前綴。
+        失敗只記 warning,首輪回落成冷啟動。"""
+        started = time.perf_counter()
+        success = False
+        payload = {"model": self.config.model_name, "keep_alive": config.ollama_keep_alive_value()}
+        if prompt:
+            # 與正式請求同一組 format/options,否則 Ollama 可能因參數不同重載模型。
+            payload = self._payload(prompt, stream=False)
+            payload["options"] = {**payload.get("options", {}), "num_predict": 1}
+        try:
+            response = self.request_fn(
+                "POST",
+                f"{self.config.base_url or 'http://localhost:11434'}/api/generate",
+                timeout=self.config.timeout_seconds,
+                json=payload,
+            )
+            success = getattr(response, "status_code", 500) < 400
+        except Exception as exc:  # noqa: BLE001 - 預載失敗不得影響啟動
+            LOGGER.warning("[LLM PRELOAD] failed: %s", exc)
+        LOGGER.info("[LLM PRELOAD] done preload_ms=%s success=%s prefix_chars=%s", round((time.perf_counter() - started) * 1000), success, len(prompt or ""))
+        return success
+
     def generate_reply_stream(
         self,
         event: UserEvent,
@@ -109,11 +114,11 @@ class OllamaProvider(LLMProviderAdapter):
             "POST",
             f"{base_url}/api/generate",
             timeout=self.config.timeout_seconds,
-            json={"model": self.config.model_name, "prompt": prompt, "stream": True, "keep_alive": _KEEP_ALIVE, "options": {"num_ctx": _NUM_CTX}},
+            json=self._payload(prompt, stream=True),
             stream=True,
         )
         if getattr(response, "status_code", 500) >= 400:
-            raise RuntimeError(f"Ollama returned status {response.status_code}.")
+            raise RuntimeError(self._http_error(response.status_code))
         try:
             for line in response.iter_lines():
                 if cancel is not None and cancel.is_set():
@@ -127,11 +132,25 @@ class OllamaProvider(LLMProviderAdapter):
                 if fragment:
                     yield fragment
                 if payload.get("done"):
+                    self._record_stream_stats(event, payload)
                     break
         finally:
             close = getattr(response, "close", None)
             if callable(close):
                 close()
+
+    @staticmethod
+    def _record_stream_stats(event: UserEvent, payload: dict[str, Any]) -> None:
+        """把 Ollama 的 load/prompt_eval(ns)掛到該回合 timeline,讓 TTFT 離群值分得出是重載還是重算。"""
+        timeline = get_turn((getattr(event, "metadata", None) or {}).get("turn_id"))
+        if timeline is None:
+            return
+        to_ms = lambda key: round(payload[key] / 1e6) if isinstance(payload.get(key), (int, float)) else None
+        timeline.llm_stats = {
+            "llm_load_ms": to_ms("load_duration"),
+            "llm_prompt_eval_ms": to_ms("prompt_eval_duration"),
+            "llm_prompt_tokens": payload.get("prompt_eval_count"),
+        }
 
     def _unavailable_reply(self, prompt_text: str, error_category: str, message: str) -> ProviderReply:
         metadata = {"error_category": error_category, "requested_provider": ProviderType.OLLAMA.value}
@@ -191,4 +210,4 @@ class OllamaProvider(LLMProviderAdapter):
         }
 
     def _default_request(self, method: str, url: str, timeout: float, json: Any | None = None, stream: bool = False):
-        return requests.request(method, url, timeout=timeout, json=json, stream=stream)
+        return _SESSION.request(method, url, timeout=timeout, json=json, stream=stream)

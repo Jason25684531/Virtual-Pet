@@ -116,14 +116,14 @@ def test_switch_character_choppr(router):
 
 def test_switch_character_updates_motions(router):
     router.switch_character("Choppr")
-    motions = router.get_active_motions()
+    motions = router.get_active_snapshot().motions
     assert "idle" in motions
     assert motions == CharacterProfile.load("Choppr").motions
 
 
 def test_switch_character_updates_voice_id(router):
     router.switch_character("Choppr")
-    assert router.get_voice_id_env_key() == CharacterProfile.load("Choppr").voice_id_env_key
+    assert router.get_active_snapshot().voice_id_env_key == CharacterProfile.load("Choppr").voice_id_env_key
 
 
 def test_switch_not_found_preserves_active(router):
@@ -159,5 +159,5 @@ def test_dispatch_no_active_raises(router):
         router.dispatch_event({"text": "hi"})
 
 
-def test_get_active_motions_no_active(router):
-    assert router.get_active_motions() == {}
+def test_get_active_snapshot_none_before_switch(router):
+    assert router.get_active_snapshot() is None

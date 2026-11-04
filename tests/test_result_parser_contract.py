@@ -16,6 +16,18 @@ def _parse(raw: str):
     return ResultParser().parse(raw, provider_type="ollama", fallback_reply="fallback")
 
 
+@pytest.mark.parametrize("raw,allowed", [
+    ("[ACTION:laugh] First sentence.", True),
+    ("[1, 2]", False),
+    ("[not an action] hidden", False),
+    ('[ACTION:laugh] {"data":"hidden"}', False),
+])
+def test_safe_fallback_preserves_only_action_prefixed_plain_text(raw, allowed):
+    parser = ResultParser()
+    result = parser.parse(raw, provider_type="ollama", fallback_reply=raw)
+    assert result.reply == (raw if allowed else parser.default_reply)
+
+
 class TestNonObjectRoot:
     @pytest.mark.parametrize(
         "raw",

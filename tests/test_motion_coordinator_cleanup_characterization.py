@@ -108,14 +108,11 @@ def test_exact_motion_returns_to_idle_once_its_trace_speech_finishes():
         dispatcher.shutdown(wait_ms=100)
 
 
-def test_exact_motion_without_any_speech_still_schedules_protective_cleanup():
+def test_exact_motion_without_any_speech_still_schedules_protective_cleanup(qt_app):
     """代打機制已移除(決策 4);改用 report_news 自己有專屬素材的 stub。
     一支沒有任何語音的 loop action(例如選單/快捷鍵觸發、沒有 trace)仍必須排定
     保護性清理計時器：否則沒有 TTS 可以排空，會永遠循環、沒人呼叫
     restore_idle_video()。"""
-    from PyQt5.QtWidgets import QApplication
-
-    _app = QApplication.instance() or QApplication([])  # noqa: F841 - keep alive, else QTimer.start() is a no-op
     dispatcher = MotionCoordinator(MagicMock(), MagicMock(), tts_enabled=False)
     try:
         dispatcher._find_motion_path = lambda motion_key: f"assets/{motion_key}.webm"

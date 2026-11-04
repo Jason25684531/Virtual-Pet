@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 import queue
 import threading
 from collections.abc import Callable
 
 from pet_harness.runtime.base_browser_runtime import BrowserCommand, BrowserCommandResult
+
+LOGGER = logging.getLogger(__name__)
 
 
 class BrowserWorker:
@@ -43,6 +47,7 @@ class BrowserWorker:
             try:
                 result = self._handler(command)
             except Exception as exc:  # browser failures must stay inside the worker boundary.
+                LOGGER.warning("browser command %s failed: %s", command.action, exc, exc_info=True)
                 result = BrowserCommandResult("failed", error={"reason": "browser_error", "message": str(exc), "retryable": False})
             if not done.is_set():
                 slot["result"] = result

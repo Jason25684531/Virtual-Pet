@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any
 
 
+# AIA_2026_video_gen 的 CRTLoadLastMedia / AutoMotionSequenceOpen 節點寫死了製作機的 ComfyUI 根目錄。
+_WORKFLOW_COMFYUI_ROOT = r"C:\ComfyUI_windows_portable_260701"
+
+
 class WorkflowPatchError(ValueError):
     pass
 
@@ -16,6 +20,13 @@ class WorkflowPatcher:
     def __init__(self, template: str | Path) -> None:
         self.template = Path(template)
         self._source = json.loads(self.template.read_text(encoding="utf-8"))
+        comfyui_path = os.getenv("COMFYUI_PATH", "").strip().rstrip("\\/")
+        if comfyui_path:
+            for node in self._source.values():
+                inputs = node.get("inputs", {}) if isinstance(node, dict) else {}
+                for key, value in inputs.items():
+                    if isinstance(value, str) and value.startswith(_WORKFLOW_COMFYUI_ROOT):
+                        inputs[key] = comfyui_path + value[len(_WORKFLOW_COMFYUI_ROOT):]
 
     def fresh(self) -> dict[str, Any]:
         return copy.deepcopy(self._source)
@@ -99,17 +110,23 @@ class WorkflowPatcher:
     @staticmethod
     def _inject_secrets(workflow: dict[str, Any]) -> dict[str, Any]:
         key, endpoint = os.getenv("AZURE_OPENAI_API_KEY", ""), os.getenv("AZURE_OPENAI_ENDPOINT", "")
+        from credential_lifecycle import require_usable
         for node in workflow.values():
             inputs = node.get("inputs", {})
             if node.get("class_type") == "Azure_ChatGPT_Node":
                 if key:
+                    require_usable("AZURE_OPENAI_API_KEY")
                     inputs["api_key"] = key
                 if endpoint:
                     inputs["azure_endpoint"] = endpoint
             if node.get("class_type") == "ParallelGen_Azure_EditSubmit":
                 # 影像模型可能部署在另一個 Azure 資源:key 與端點都優先取 IMAGES 專用變數。
-                images_key = os.getenv("AZURE_OPENAI_IMAGES_API_KEY", "") or key
+                dedicated_images_key = os.getenv("AZURE_OPENAI_IMAGES_API_KEY", "")
+                images_key = dedicated_images_key or key
                 if images_key:
+                    require_usable(
+                        "AZURE_OPENAI_IMAGES_API_KEY" if dedicated_images_key else "AZURE_OPENAI_API_KEY"
+                    )
                     inputs["api_key"] = images_key
                 images_endpoint = os.getenv("AZURE_OPENAI_IMAGES_ENDPOINT", "") or (f"{endpoint.rstrip('/')}/openai/v1/images/generations" if endpoint else "")
                 if images_endpoint:

@@ -25,7 +25,7 @@ def test_sheet_c4_forget_instruction_removes_memory_immediately(tmp_path):
     store, repository = _repository(tmp_path)
     repository.upsert_candidates([MemoryCandidate("使用者.喜好.拉麵", "semantic", "我喜歡拉麵", "c4")])
     repository.forget("使用者.喜好.拉麵")
-    assert not repository.list_all_active()
+    assert not _active_texts(repository)
 
 
 def test_sheet_c5_forget_instruction_persists_after_repository_rebuild(tmp_path):
@@ -34,4 +34,9 @@ def test_sheet_c5_forget_instruction_persists_after_repository_rebuild(tmp_path)
     repository.forget("使用者.事件.秘密")
     rebuilt_store = SQLiteStore(tmp_path / "state.sqlite")
     rebuilt_store.initialize()
-    assert not MemoryItemRepository(rebuilt_store, "acceptance").list_all_active()
+    assert not _active_texts(MemoryItemRepository(rebuilt_store, "acceptance"))
+
+
+def _active_texts(repo):
+    with repo.store.connect() as conn:
+        return [row["text"] for row in conn.execute("SELECT text FROM memory_items WHERE status='active'")]

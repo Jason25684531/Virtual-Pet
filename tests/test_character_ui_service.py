@@ -127,11 +127,19 @@ class TestListCharacters:
         assert result["offer"]["variant"] == "event"
         assert result["offer"]["reason"] == "shortcut_f"
 
+    def test_preset_summaries_carry_idle_motion(self, service):
+        ui_service, _router, _registry = service
+
+        fast = {item["character_id"]: item for item in ui_service.list_presets_fast()}
+        full = ui_service.enrich_preset_summaries(["Choppr"])
+        assert fast["Choppr"]["idle_motion"].endswith("idle.webm")
+        assert full["Choppr"]["idle_motion"] == fast["Choppr"]["idle_motion"]
+
     def test_list_presets_filters_to_preset_only(self, service, tmp_path):
         ui_service, _router, _registry = service
         _write_character(tmp_path, "Choppr_1", ["joke_skill"], is_preset=False)
 
-        preset_ids = {item["character_id"] for item in ui_service.list_presets()}
+        preset_ids = {item["character_id"] for item in ui_service.list_presets_fast()}
         assert preset_ids == {"Choppr", "miku"}
 
 
@@ -443,6 +451,16 @@ class TestGetActiveState:
         AssetRepository(store).update(job.job_id, JobStatus.COMPLETED, stage="saving")
         assert ui_service.list_render_jobs("Choppr")[0]["status"] == "completed"
         assert ui_service.list_render_jobs("miku") == []
+
+    def test_orphaned_mock_render_job_is_cancelled_instead_of_spinning_forever(self, service):
+        ui_service, router, _registry = service
+        router.switch_character("Choppr")
+        store = SQLiteStore(router.get_active_character().sqlite_path)
+        store.initialize()
+        job = AssetRepository(store).create_job(AssetJob("Choppr", "reward_asset", "development", "orphan", job_id="mock-orphan"))
+        AssetRepository(store).update(job.job_id, JobStatus.RUNNING, stage="rendering", progress_value=42, progress_max=100)
+
+        assert ui_service.list_render_jobs("Choppr")[0]["status"] == "cancelled"
 
     def test_style_variant_awaiting_confirm_when_motion_offer_pending(self, service, monkeypatch):
         ui_service, router, _registry = service

@@ -23,6 +23,31 @@ def _configure_sigint_timer(app):
     app._sigint_timer.timeout.connect(lambda: None)
 
 
+def _schedule_youtube_warmup(executor) -> None:
+    """Best-effort startup check; it does not promise ad-free playback."""
+    from PyQt5.QtCore import QTimer
+    from pet_harness.tools.youtube_music_tool import warmup_once
+
+    def done(ok, message, result) -> None:
+        if not ok:
+            print(f"[YOUTUBE WARMUP] failed: {message}")
+        elif result is None:
+            print("[YOUTUBE WARMUP] failed: no result")
+        elif result.status in {"success", "partial"}:
+            print(f"[YOUTUBE WARMUP] {result.status}: browser closed")
+        else:
+            print(f"[YOUTUBE WARMUP] {result.status}: {result.error}")
+
+    def run() -> None:
+        try:
+            executor.submit(warmup_once, done)
+        except RuntimeError:
+            # The application may have started shutting down before the timer fired.
+            return
+
+    QTimer.singleShot(1000, run)
+
+
 def _create_application(argv):
     from PyQt5.QtCore import QCoreApplication, Qt
     from PyQt5.QtWidgets import QApplication
@@ -54,6 +79,7 @@ def _preload_stt_provider():
         config.STT_MODEL_PATH,
         language=config.STT_LANGUAGE or None,
         beam_size=config.STT_BEAM_SIZE,
+        warmup=True,
     )
     print(f"[STT] 於 QApplication 建構前預先載入模型：model={config.STT_MODEL} device={config.STT_DEVICE}")
     try:
@@ -87,6 +113,7 @@ def _build_stt_controller(window, provider=None):
         vad = SileroVad(
             silence_ms=config.STT_VAD_SILENCE_MS,
             threshold=config.STT_VAD_THRESHOLD,
+            cache_dir=Path(config.STT_VAD_MODEL_DIR),
         )
         silence_source = "env" if os.getenv("STT_VAD_SILENCE_MS") is not None else "default"
         print(
@@ -105,6 +132,7 @@ def _build_stt_controller(window, provider=None):
             config.STT_MODEL_PATH,
             language=config.STT_LANGUAGE or None,
             beam_size=config.STT_BEAM_SIZE,
+            warmup=True,
         )
     recorder = MicrophoneRecorder(
         sample_rate=config.STT_SAMPLE_RATE,
@@ -202,8 +230,11 @@ def _run_harness_mode(app, stt_provider=None):
         voice_status_adapter=VoiceRuntimeStatusAdapter(stt_controller=stt_controller),
     )
     window.show()
+    _schedule_youtube_warmup(executor)
     window.set_action_status("Harness mode ready.", tone="idle", timeout_ms=2400)
     app.aboutToQuit.connect(coordinator.shutdown)
+    from PyQt5.QtCore import QTimer
+    coordinator.lifecycle.watch_credentials(QTimer(window), window.set_credential_status)
     return window
 
 
@@ -221,6 +252,10 @@ def _preload_onnx_runtime():
 
 
 def main():
+    # 必須在 _preload_onnx_runtime 匯入 qdrant_client→huggingface_hub 之前：config 會設定
+    # HF_HUB_OFFLINE / FASTEMBED_CACHE_PATH，而 huggingface_hub 只在 import 當下讀一次。
+    import config  # noqa: F401
+
     log_dir = Path(__file__).resolve().parent / "logs"
     log_dir.mkdir(exist_ok=True)
     logging.basicConfig(
@@ -238,10 +273,30 @@ def main():
     stt_provider = _preload_stt_provider()
 
     app = _create_application(sys.argv)
+    from api_client.omni_tts_client import ensure_omni_service_started
+    ensure_omni_service_started()  # 背景:Omni TTS 沒開就跑 run.bat,和 UI 載入並行暖機
     _configure_sigint_timer(app)
     _run_harness_mode(app, stt_provider=stt_provider)
     sys.exit(app.exec_())
 
 
 if __name__ == "__main__":
+    if "--expire-credentials" in sys.argv[1:]:
+        from credential_lifecycle import maintenance_cli
+        raise SystemExit(maintenance_cli(sys.argv[1:], Path(__file__).resolve().parent))
+    # Release 的 stdout/stderr 被導向 logs/*.log：預設用系統 ANSI 編碼（如 cp1252）會在印中文時崩潰；
+    # 預設是區塊緩衝，PyQt 遇到未處理例外會 abort，緩衝中的 traceback 會跟著消失，所以逐行寫入。
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    # .agentic、data/runtime 等是相對 CWD 的路徑；從捷徑或其他目錄啟動 Release EXE 時也要落在 App 根目錄。
+    _app_root = Path(__file__).resolve().parent
+    os.chdir(_app_root)
+    # Release 內附 ffmpeg/ffplay.exe 與 CUDA DLL（nvidia/*/bin）時優先使用，新機不需另外安裝。
+    # nvidia.* 是沒有程式碼的 namespace package，Nuitka 不會帶，faster_whisper_stt 找不到時改由這裡補 PATH。
+    _bundled_bins = [_app_root / "ffmpeg", *sorted((_app_root / "nvidia").glob("*/bin"))]
+    os.environ["PATH"] = os.pathsep.join([*(str(p) for p in _bundled_bins if p.is_dir()), os.environ.get("PATH", "")])
+    import release_bootstrap
+
+    release_bootstrap.start(_app_root)  # 背景準備 Lively / Ollama / ComfyUI，不延遲主視窗
     main()

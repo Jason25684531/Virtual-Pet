@@ -206,6 +206,30 @@ def test_prebuilt_variant_directory_wins_over_stale_manifest_motion(tmp_path, mo
         assert Path(library.get_motion_path("char-Adol", "angry")).read_bytes() == variant.encode()
 
 
+def test_news_and_music_actions_use_talk_and_music_files(tmp_path, monkeypatch):
+    """Omni 的新聞/音樂動作檔叫 talk.webm/music.webm；event 沒有就退回 og。"""
+    library = _library(tmp_path, monkeypatch)
+    character_dir = tmp_path / "assets" / "characters" / "char-Omni"
+    motions = character_dir / "motions"
+    for variant in ("og", "development_a", "event"):
+        (motions / variant).mkdir(parents=True, exist_ok=True)
+        (motions / variant / "idle.webm").write_bytes(variant.encode())
+    for variant in ("og", "development_a"):
+        (motions / variant / "talk.webm").write_bytes(f"talk-{variant}".encode())
+        (motions / variant / "music.webm").write_bytes(f"music-{variant}".encode())
+    (character_dir / "manifest.json").write_text(json.dumps({
+        "id": "char-Omni", "motions_dir": "assets/characters/char-Omni/motions/og",
+        "motions": {"idle": "", "report_news": "", "play_music": ""},
+        "active_variant": "development_a", "selected_generations": {},
+    }), encoding="utf-8")
+
+    assert Path(library.get_action_motion_path("char-Omni", "report_news")).read_bytes() == b"talk-development_a"
+    assert Path(library.get_action_motion_path("char-Omni", "play_music")).read_bytes() == b"music-development_a"
+    library.set_active_variant("char-Omni", "event")
+    assert Path(library.get_motion_path("char-Omni", "report_news")).read_bytes() == b"talk-og"
+    assert Path(library.get_motion_path("char-Omni", "play_music")).read_bytes() == b"music-og"
+
+
 def test_reset_style_state_returns_to_og_and_forgets_selected_generations(tmp_path, monkeypatch):
     library = _library(tmp_path, monkeypatch)
     character_dir = tmp_path / "assets" / "characters" / "pet"
@@ -378,3 +402,23 @@ def test_panel_motion_resolves_when_action_key_is_declared(tmp_path, monkeypatch
 
     assert path is not None
     assert path.endswith("Play_Music_Panel.webm")
+
+
+def test_shared_development_image_folder_is_not_its_own_style_slot(tmp_path, monkeypatch):
+    """images/development/ 只放 development_a/b.png 時,不該冒出一格卡在生成中的 development。"""
+    library = _library(tmp_path, monkeypatch)
+    character_dir = tmp_path / "assets" / "characters" / "char-Kai"
+    for variant in ("og", "development_a", "development_b"):
+        (character_dir / "motions" / variant).mkdir(parents=True)
+        (character_dir / "motions" / variant / "idle.webm").write_bytes(b"idle")
+    shared = character_dir / "images" / "development"
+    shared.mkdir(parents=True)
+    (shared / "development_a.png").write_bytes(b"a")
+    (shared / "development_b.png").write_bytes(b"b")
+    (character_dir / "manifest.json").write_text(json.dumps({
+        "id": "char-Kai", "motions_dir": "assets/characters/char-Kai/motions/og", "motions": {"idle": ""},
+    }), encoding="utf-8")
+
+    items = {item["variant"]: item for item in library.list_variant_inventory("char-Kai")}
+    assert set(items) == {"og", "development_a", "development_b"}
+    assert items["development_a"]["thumb"].endswith("development/development_a.png")

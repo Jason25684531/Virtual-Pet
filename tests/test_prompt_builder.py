@@ -50,9 +50,24 @@ def test_action_tags_are_none_when_unavailable(tmp_path):
 
 
 def test_output_contract_requires_traditional_chinese_taiwan_usage(tmp_path):
-    prompt = PromptBuilder(tmp_path).build(UserEvent(text="hello"), [], {}).prompt
+    prompt = PromptBuilder(tmp_path).build(UserEvent(text="你好"), [], {}).prompt
 
     assert "繁體中文（台灣用語）" in prompt
+
+
+def test_output_contract_requires_english_for_english_user_text(tmp_path):
+    prompt = PromptBuilder(tmp_path).build(UserEvent(text="Tell me a fun fact"), [], {}).prompt
+
+    assert "Write reply in English" in prompt
+    assert "繁體中文（台灣用語）" not in prompt
+    # 指示必須緊貼 User Text,不能只在遠處的 Output Contract
+    assert "## User Text" + chr(10) + "Tell me a fun fact" + chr(10) + "(The user wrote in English." in prompt
+
+
+def test_chinese_user_text_gets_no_english_hint(tmp_path):
+    prompt = PromptBuilder(tmp_path).build(UserEvent(text="你好"), [], {}).prompt
+
+    assert "Reply in English" not in prompt
 
 
 def test_persona_present_drops_echoes_identity_claim(tmp_path):

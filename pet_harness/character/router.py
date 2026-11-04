@@ -214,16 +214,6 @@ class CharacterRouter:
     def get_active_snapshot(self) -> ActiveCharacterSnapshot | None:
         return self._active_snapshot
 
-    def get_active_motions(self) -> dict[str, str]:
-        if self._active_snapshot is None:
-            return {}
-        return self._active_snapshot.motions
-
-    def get_voice_id_env_key(self) -> str | None:
-        if self._active_snapshot is None:
-            return None
-        return self._active_snapshot.voice_id_env_key
-
     def dispatch_event(self, event: UserEvent | dict) -> PetEvent:
         profile = self.get_active_character()
         if profile is None:

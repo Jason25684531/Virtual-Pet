@@ -13,7 +13,6 @@ from unittest.mock import MagicMock
 import config
 from api_client.tts_contract import (
     STREAMING_TTS_WORKER_MEMBERS,
-    TtsProvider,
     TtsRequest,
     build_tts_provider_chain,
 )
@@ -64,6 +63,16 @@ def test_dedicated_voice_character_gets_elevenlabs_first():
 
 def test_other_characters_get_voai_first():
     chain = build_tts_provider_chain("char-RO")
+    assert [provider.name for provider in chain] == ["voai", "elevenlabs"]
+
+
+def test_english_text_gets_elevenlabs_first_even_for_voai_character():
+    chain = build_tts_provider_chain("char-RO", text="Hello there!")
+    assert [provider.name for provider in chain] == ["elevenlabs", "voai"]
+
+
+def test_chinese_text_keeps_character_default_order():
+    chain = build_tts_provider_chain("char-RO", text="你好")
     assert [provider.name for provider in chain] == ["voai", "elevenlabs"]
 
 

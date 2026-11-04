@@ -33,15 +33,26 @@ def build_asset_service(
     if not client.health_check():
         LOGGER.warning("ComfyUI health check failed at %s, falling back to MockAssetService — queued jobs will not be processed by ComfyUI; mock worker active", config.COMFYUI_BASE_URL)
         return MockAssetService(store, character_id=character_id, library=library)
-    root = Path(__file__).resolve().parents[2]
+    workflows = Path(__file__).resolve().parents[2] / "ComfyUI_Json"
+    video, image, validation, background = paths = [workflows / name for name in (
+        "AIA_2026_video_gen_260728.json",
+        "AIA_2026_image_gen_260720.json",
+        "AIA_2026_character validation_260811_API.json",
+        "AIA_2026_background_gen_260728.json",
+    )]
+    missing = [path.name for path in paths if not path.is_file()]
+    if missing:
+        # Release 部署者可自行刪除 ComfyUI_Json/（現階段不使用）；缺檔時降級而不是在建構 engine 時崩潰。
+        LOGGER.warning("ComfyUI workflow missing %s, falling back to MockAssetService", missing)
+        return MockAssetService(store, character_id=character_id, library=library)
     orchestrator = AssetOrchestrator(
         AssetRepository(store),
-        root / "ComfyUI_Json" / "AIA_2026_video_gen_260728.json",
-        root / "ComfyUI_Json" / "AIA_2026_image_gen_260720.json",
+        video,
+        image,
         config.COMFYUI_TIMEOUT_SEC,
         config.COMFYUI_MAX_RETRIES,
-        root / "ComfyUI_Json" / "AIA_2026_character validation_260811_API.json",
-        root / "ComfyUI_Json" / "AIA_2026_background_gen_260728.json",
+        validation,
+        background,
         config.COMFYUI_VIDEO_TIMEOUT_SEC,
     )
     worker = AssetJobWorker(orchestrator.repository, orchestrator, client, library, on_motion_offer_ready)

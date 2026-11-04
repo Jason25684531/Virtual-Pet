@@ -92,6 +92,13 @@ class ElevenLabsStreamingTTSWorker(QThread):
             self.finished_signal.emit(False, "略過串流 TTS：沒有可朗讀的文字。", None)
             return
 
+        from credential_lifecycle import CredentialError, require_usable
+        try:
+            require_usable("ELEVENLABS_API_KEY")
+        except CredentialError as exc:
+            self.finished_signal.emit(False, "金鑰已到期或不可用，請重新建立 config/.env 並重啟。",
+                                      {"failure_code": str(exc)})
+            return
         api_key = os.getenv("ELEVENLABS_API_KEY", "").strip()
         voice_id = self._voice_id or config.ELEVENLABS_VOICE_ID
         if not api_key or not voice_id:

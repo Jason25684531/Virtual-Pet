@@ -28,9 +28,6 @@ class FakeRuntime(BaseBrowserRuntime):
         self.commands.append(command)
         return self.result
 
-    def active_session_snapshot(self):
-        return None
-
     def shutdown(self, timeout_seconds=5):
         pass
 

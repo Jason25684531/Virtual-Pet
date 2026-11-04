@@ -53,7 +53,6 @@ class SileroVad:
         self._session: object | None = None
         self._ready = False
         self._failure_logged = False
-        self._failure_reason = ""
         self.reset()
 
     def setup(self) -> bool:
@@ -196,7 +195,6 @@ class SileroVad:
     def _disable(self, exc: Exception) -> None:
         self._ready = False
         self._session = None
-        self._failure_reason = str(exc)
         if not self._failure_logged:
             LOGGER.warning("[VAD] disabled; falling back to manual stop: %s", exc)
             self._failure_logged = True

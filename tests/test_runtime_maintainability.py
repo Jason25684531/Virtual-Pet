@@ -19,8 +19,10 @@ pytestmark = pytest.mark.uses_repo_cwd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _SKIP_DIRS = {
-    "venv", "__pycache__", ".git", "outputs", "runtime_cache", "openspec",
+    "venv", ".venv", "__pycache__", ".git", "outputs", "runtime_cache", "openspec",
     "debug", "data", "assets", "FinalReport", "ComfyUI_Json", "node_modules",
+    "build", "VirtualPet_Release",  # build_release 產物：Nuitka 生成的 C 原始碼與 7GB Release，掃描會卡死
+    "omni_tts_win_bundle",  # 外部 Omni TTS 服務:vendored MeloTTS/OpenVoice + 自己的 .venv,不是產品程式碼
 }
 _CORPUS_PATTERNS = ("*.py", "*.md", "*.json", "*.js", "*.html", "*.ini", "*.txt")
 # 獨立的研究 spike:有自己的 __main__,靠 docs/spikes/ 的紀錄存在,不是產品執行路徑。
@@ -47,8 +49,8 @@ def _reference_corpus() -> str:
     blobs = []
     for pattern in _CORPUS_PATTERNS:
         for path in PROJECT_ROOT.rglob(pattern):
-            if any(part in _SCAN_SKIP_DIRS for part in path.relative_to(PROJECT_ROOT).parts):
-                continue
+            if any(part in _SCAN_SKIP_DIRS | {"tests"} for part in path.relative_to(PROJECT_ROOT).parts):
+                continue  # tests/ 不算呼叫者:只有測試在用的 production API 一樣是死碼
             # 保留清單本身寫了這些名字;把自己算進語料會讓每一項都「看起來有引用」。
             if path.resolve() == Path(__file__).resolve():
                 continue
@@ -96,12 +98,17 @@ def test_retention_list_does_not_rot():
 
 
 def test_removed_dead_code_stays_removed():
-    """本次變更移除的兩個無入口 CRUD 方法;重新出現代表又有人加了沒有呼叫者的程式碼。"""
+    """歷次清理移除的無入口方法;重新出現代表又有人加了沒有呼叫者的程式碼。"""
     from pet_harness.asset.comfyui_client import ComfyUIClient
     from pet_harness.character.registry import CharacterRegistry
+    from pet_harness.character.router import CharacterRouter
 
     assert not hasattr(ComfyUIClient, "cancel_prompt")
     assert not hasattr(CharacterRegistry, "update_profile")
+    for name in ("create_character", "update_manifest", "set_active", "get_active"):
+        assert not hasattr(CharacterRegistry, name), name
+    for name in ("get_active_motions", "get_voice_id_env_key"):
+        assert not hasattr(CharacterRouter, name), name
 
 
 def test_dynamic_entry_points_still_resolve():

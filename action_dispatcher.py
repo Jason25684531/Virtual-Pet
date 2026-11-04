@@ -866,10 +866,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
                 self._call_library_method("get_motion_path", current_character_id, motion_key)
             )
 
-        demo_path = self._build_demo_motion_path(motion_key)
-        if demo_path:
-            candidates.append(demo_path)
-
         if motion_key == "idle":
             candidates.append(os.path.join(str(ASSETS_WEBM_DIR), "Idle.webm"))
             candidates.append(os.path.join(str(ASSETS_WEBM_DIR), "idle.webm"))
@@ -890,15 +886,6 @@ class MotionCoordinator(TtsPlaybackMixin, QObject):
             print(f"[ECHOES] 警告: motion_path_resolver 發生異常: {exc}")
             return None
         return self._resolve_existing_webm_path(candidate)
-
-    def _build_demo_motion_path(self, motion_key: str) -> str | None:
-        mapping = self._window.DEMO_MOTION_MAPPING
-        animations_dir = self._window.DEMO_ANIMATIONS_DIR
-
-        demo_filename = mapping.get(motion_key)
-        if not demo_filename:
-            return None
-        return os.path.join(os.fspath(animations_dir), demo_filename)
 
     def _current_character_id(self) -> str | None:
         """active character 唯一來源是 window 背後的 router snapshot,不讀持久化 UI 狀態。"""

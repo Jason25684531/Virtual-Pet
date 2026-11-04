@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from credential_lifecycle import CredentialError, require_usable, sensitive_name
 import re
 import threading
 import time
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import config
+import secure_env
 from pet_harness.character.registry import CharacterRegistry
 from pet_harness.character.router import CharacterRouter
 from pet_harness.engine.harness_engine import PetHarnessEngine
@@ -234,17 +236,25 @@ class PyQtHarnessAdapter:
             lambda turn_id, text: self._stream_chunk_callback(text, turn_id)
             if callable(self._stream_chunk_callback) else None
         )
-        executor.submit(engine.warmup_memory, lambda ok, message, _payload: LOGGER.warning("[MEMORY WARMUP] executor error=%s", message) if not ok else None)
-        executor.submit(self._warmup_llm, lambda ok, message, _payload: LOGGER.warning("[LLM WARMUP] executor error=%s", message) if not ok else None)
+        self._submit_warmups(engine)
 
-    def _warmup_llm(self) -> None:
-        """Ollama 模型冷載入實測 60s+;啟動時預載進 VRAM,首輪對話才守得住延遲預算。"""
-        warmup = getattr(self.provider_runtime.get_provider(), "warmup", None)
-        if not callable(warmup):
-            return
-        started = time.perf_counter()
-        success = warmup()
-        LOGGER.info("[LLM WARMUP] done warmup_ms=%s success=%s", round((time.perf_counter() - started) * 1000), success)
+    def warm_active_engine(self) -> None:
+        """切換角色會新建 engine,啟動時的預熱只暖到舊 engine;UI 切換完成後呼叫這裡補暖。"""
+        engine = self.router.get_active_engine()
+        if self._background_executor is not None and engine is not None:
+            self._submit_warmups(engine)
+
+    def _submit_warmups(self, engine) -> None:
+        self._background_executor.submit(
+            engine.warmup_memory,
+            lambda ok, message, _payload: LOGGER.warning("[MEMORY WARMUP] executor error=%s", message) if not ok else None,
+        )
+        warmup_llm = getattr(engine, "warmup_llm", None)
+        if callable(warmup_llm):
+            self._background_executor.submit(
+                warmup_llm,
+                lambda ok, message, _payload: LOGGER.warning("[LLM PRELOAD] executor error=%s", message) if not ok else None,
+            )
 
     def prepare_turn(self, text: str, source: str, character_id: str, trace_id: str | None = None) -> PreparedTurn:
         cleaned = str(text or "").strip()
@@ -263,6 +273,8 @@ class PyQtHarnessAdapter:
         if voice_timeline is not None and voice_timeline.turn_id != turn_id:
             rekey_turn(voice_timeline, turn_id)
         timeline = get_turn(turn_id) or create_turn(turn_id, "text")
+        if timeline.origin != "vad":
+            timeline.mark("input_submitted")  # 文字回合的首音起點;語音回合用 stt_done
         # Compare against this turn's own start time (not "now"), so a warmup that
         # finishes mid-STT/engine-processing is still correctly reported as not
         # complete at the moment the turn actually began. Safe to recompute even
@@ -363,18 +375,37 @@ class PyQtHarnessAdapter:
     def _build_tts_provider_status(self) -> dict[str, Any]:
         """构建 TTS provider 状态."""
         voice_status = self._voice_status_adapter.get_status()
-        resolved_mode, resolution_reason = config.resolve_tts_runtime_mode()
+        resolved_mode, resolution_reason = config.resolve_tts_runtime_mode(self._active_character_id())
+        omni = self._omni_tts_health()
 
         return {
             "resolved_mode": resolved_mode,
             "resolution_reason": resolution_reason,
-            "requested_mode": "voai_first",
+            "requested_mode": "omni_local" if omni else "voai_first",
             "attempted_providers": [],
             "selected_provider": None,
             "fallback_reason": None,
             "outcome": None,
-            "status": voice_status.tts_primary_status,
+            "status": self._omni_tts_status(omni) if omni else voice_status.tts_primary_status,
+            "message": omni.last_error if omni else None,
         }
+
+    def _active_character_id(self) -> str | None:
+        snapshot = self.router.get_active_snapshot()
+        return snapshot.character_id if snapshot else None
+
+    def _omni_tts_health(self):
+        """active character 走本機 Omni TTS 時回傳 health probe(並在背景刷新),否則 None。"""
+        if not config.is_omni_local_tts(self._active_character_id()):
+            return None
+        from api_client.omni_tts_client import OMNI_HEALTH
+
+        OMNI_HEALTH.refresh()
+        return OMNI_HEALTH
+
+    @staticmethod
+    def _omni_tts_status(omni) -> str:
+        return "configured_and_ready" if omni.ready else "configured_missing_runtime"
 
     def _build_stt_provider_status(self) -> dict[str, Any]:
         """构建 STT provider 状态."""
@@ -732,6 +763,29 @@ class PyQtHarnessAdapter:
     def _build_voice_status(self) -> dict[str, Any]:
         dto = self._voice_status_adapter.get_status()
         stt_provider = "none" if dto.stt_status == "configured_missing_runtime" else "faster_whisper"
+        omni = self._omni_tts_health()
+        if omni is not None:
+            omni_status = self._omni_tts_status(omni)
+            tts = {
+                "provider": "omni_local",
+                "status": omni_status,
+                "configured": True,
+                "implemented": True,
+                "required_env": ["OMNI_TTS_ENABLED", "OMNI_TTS_BASE_URL"],
+                "message": omni.last_error or omni_status,
+            }
+            tts_fallback = {"provider": "none", "status": "configured_missing_runtime",
+                            "message": "char-Omni 本機 TTS 不使用雲端備援"}
+        else:
+            tts = {
+                "provider": "adaptive",
+                "status": dto.tts_primary_status,
+                "configured": dto.tts_primary_status != "configured_missing_runtime",
+                "implemented": dto.tts_primary_status != "configured_missing_runtime",
+                "required_env": ["ELEVENLABS_API_KEY", "ELEVENLABS_*_VOICE_ID", "ELEVENLABS_MODEL_ID", "ELEVENLABS_*_MODEL_ID"],
+                "message": dto.tts_primary_status,
+            }
+            tts_fallback = {"provider": "elevenlabs", "status": dto.tts_fallback_status, "message": dto.tts_fallback_status}
         return {
             "stt": {
                 "provider": stt_provider,
@@ -741,19 +795,8 @@ class PyQtHarnessAdapter:
                 "required_env": ["STT_ENABLED", "STT_MODEL", "STT_DEVICE"],
                 "message": dto.stt_status,
             },
-            "tts": {
-                "provider": "adaptive",
-                "status": dto.tts_primary_status,
-                "configured": dto.tts_primary_status != "configured_missing_runtime",
-                "implemented": dto.tts_primary_status != "configured_missing_runtime",
-                "required_env": ["ELEVENLABS_API_KEY", "ELEVENLABS_*_VOICE_ID", "ELEVENLABS_MODEL_ID", "ELEVENLABS_*_MODEL_ID"],
-                "message": dto.tts_primary_status,
-            },
-            "tts_fallback": {
-                "provider": "elevenlabs",
-                "status": dto.tts_fallback_status,
-                "message": dto.tts_fallback_status,
-            },
+            "tts": tts,
+            "tts_fallback": tts_fallback,
             "audio_worker": {
                 "status": dto.audio_worker_status,
                 "message": dto.audio_worker_status,
@@ -771,7 +814,14 @@ class PyQtHarnessAdapter:
         resolved = str(provider_status.get("provider_type") or selected)
         api_key_env_var = provider_config.get("api_key_env_var") or "OPENAI_API_KEY"
         key_available = bool(self._project_env.get(str(api_key_env_var)) or os.environ.get(str(api_key_env_var)))
-        if selected == "api" and key_available and provider_status.get("healthy") is not False:
+        credential_error = None
+        try:
+            require_usable(str(api_key_env_var))
+        except CredentialError as exc:
+            key_available, credential_error = False, str(exc)
+        if selected == "api" and credential_error:
+            api_config_status = credential_error
+        elif selected == "api" and key_available and provider_status.get("healthy") is not False:
             api_config_status = "api configured"
         elif selected == "api" and not key_available:
             api_config_status = "api missing key"
@@ -786,7 +836,7 @@ class PyQtHarnessAdapter:
                 "provider_status": provider_status,
                 "api_config_status": api_config_status,
                 "api_key_env_var": api_key_env_var,
-                "api_key_status": "configured" if key_available else "missing",
+                "api_key_status": "expired" if credential_error == "credentials_expired" else "unavailable" if credential_error else "configured" if key_available else "missing",
                 "model_name": provider_config.get("model_name"),
             }
         )
@@ -884,6 +934,11 @@ class PyQtHarnessAdapter:
         summary: dict[str, str] = {}
         for key in keys:
             configured = bool(self._project_env.get(key) or os.environ.get(key))
+            if sensitive_name(key):
+                try:
+                    require_usable(key)
+                except CredentialError:
+                    configured = False
             summary[key] = "[configured]" if configured else "[missing]"
         return summary
 
@@ -978,4 +1033,4 @@ class PyQtHarnessAdapter:
         return SecretMasker(self._project_env).payload(value)
 
     def _load_project_env(self) -> dict[str, str]:
-        return load_project_env(self._project_root / ".env")
+        return load_project_env(secure_env.resolve(self._project_root))  # 與 config.ENV_PATH 同一規則

@@ -45,7 +45,6 @@ class CharacterProfile:
 
     # 自動計算
     sqlite_path: str = field(init=False)
-    qdrant_collection: str = field(init=False)
 
     def __post_init__(self) -> None:
         if not _ID_PATTERN.match(self.character_id):
@@ -53,7 +52,6 @@ class CharacterProfile:
                 f"character_id '{self.character_id}' must match [a-zA-Z0-9_-]+"
             )
         self.sqlite_path = f"data/characters/{self.character_id}/state.db"
-        self.qdrant_collection = f"{self.character_id}_memory"
 
     @classmethod
     def load(cls, character_id: str) -> "CharacterProfile":
@@ -158,41 +156,4 @@ class CharacterProfile:
         profile_path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
-        )
-
-    def to_json(self) -> str:
-        """序列化為 JSON 字串，包含所有欄位。"""
-        data = {
-            "character_id": self.character_id,
-            "name": self.name,
-            "background_image": self.background_image,
-            "motions_dir": self.motions_dir,
-            "motions": self.motions,
-            "idle_pool": self.idle_pool,
-            "voice_id_env_key": self.voice_id_env_key,
-            "layout": self.layout,
-            "persona_description": self.persona_description,
-            "skill_config": self.skill_config,
-            "is_preset": self.is_preset,
-            "sqlite_path": self.sqlite_path,
-            "qdrant_collection": self.qdrant_collection,
-        }
-        return json.dumps(data, ensure_ascii=False, indent=2)
-
-    @classmethod
-    def from_json(cls, json_str: str) -> "CharacterProfile":
-        """從 JSON 字串重建 CharacterProfile。"""
-        data = json.loads(json_str)
-        return cls(
-            character_id=data["character_id"],
-            name=data["name"],
-            background_image=data["background_image"],
-            motions_dir=data["motions_dir"],
-            motions=data["motions"],
-            idle_pool=data["idle_pool"],
-            voice_id_env_key=data["voice_id_env_key"],
-            layout=data["layout"],
-            persona_description=data["persona_description"],
-            skill_config=data["skill_config"],
-            is_preset=bool(data.get("is_preset", False)),
         )
