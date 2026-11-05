@@ -900,7 +900,8 @@ class TransparentWindow(QMainWindow):
     @property
     def is_busy(self) -> bool:
         return (
-            self._proactive_greeting_active
+            not self._stage_active  # 還在主選單／選角畫面時不主動打招呼
+            or self._proactive_greeting_active
             or self._conversation_pending
             or self._stt_listening
             or (self._motion_coordinator is not None and (
