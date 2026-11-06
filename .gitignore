@@ -95,3 +95,14 @@ scripts/vendor/
 .playwright-cli/*
 omni_tts_win_bundle/*
 playwright/*
+.build/*
+
+# local_tts_service：venv、模型、聲線、訓練與 POC 產物不進 git
+local_tts_service/.venv-*/
+local_tts_service/models/
+local_tts_service/voices/*/
+local_tts_service/training/
+local_tts_service/poc/out/
+local_tts_service/poc/voices.json
+voice/*
+!voice/README.txt

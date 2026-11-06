@@ -1,0 +1,5 @@
+# Python 3.11。OmniVoice 權重 CC-BY-NC、audio tokenizer 為 Boson Higgs Audio 2 Community License：只供內部非商用 POC 比較。
+# transformers>=5.3 與 qwen-tts 衝突，必須獨立 venv。安裝後會 freeze 成 requirements-omnivoice.lock.txt。
+torch==2.8.0
+torchaudio==2.8.0
+omnivoice==0.2.1

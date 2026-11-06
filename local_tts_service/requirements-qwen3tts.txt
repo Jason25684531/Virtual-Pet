@@ -1,0 +1,5 @@
+# Python 3.11。torch 由 setup_env.ps1 先從 PyTorch cu128 index 安裝（RTX 5090 需 cu128）。
+# 安裝後 setup_env.ps1 會 pip freeze 成 requirements-qwen3tts.lock.txt，重建環境以 lock 為準。
+torch==2.8.0
+torchaudio==2.8.0
+qwen-tts==0.1.1  # 內部釘 transformers==4.57.3、accelerate==1.12.0
